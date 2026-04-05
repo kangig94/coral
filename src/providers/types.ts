@@ -1,11 +1,56 @@
-import type { ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
+import type { ProviderContinuityBlob, ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
+
+export type { ProviderContinuityBlob } from '../shared/types.js';
 
 /** Recovery metadata persisted at launch time by the provider. */
 export interface ProviderRecoveryMeta {
   /** Provider-specific key-value data needed for recovery. */
   [key: string]: unknown;
+}
+
+export interface ProviderServerSpec {
+  provider: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env?: Record<string, string>;
+  shared?: boolean;
+  shutdownCapability?: {
+    method: string;
+    timeoutMs: number;
+  };
+}
+
+export interface ProviderServerLease {
+  rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
+  subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
+  release(): void;
+  closed: Promise<Error | void>;
+  generation?: number;
+}
+
+export interface ProviderAppServerContract {
+  buildServerSpec(
+    persistedContinuity: ProviderContinuityBlob | undefined,
+    request: ProviderRequest,
+  ): ProviderServerSpec;
+  interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  probe(
+    lease: ProviderServerLease,
+    continuity: ProviderContinuityBlob,
+  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
+  finalizeInterrupted(
+    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
+    continuity: ProviderContinuityBlob,
+  ): {
+    conversationRef?: string;
+    nonResumable?: boolean;
+    continuityMutation?: ProviderContinuityBlob;
+  };
+  /** Migrate legacy runtime meta to the provider continuity blob format. */
+  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 }
 
 /** Contract for provider-owned recovery after backend replacement. */
@@ -65,6 +110,12 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   onEvent: (event: ProviderProgressEvent) => void;
   runCli: ProviderCliRunner;
+  acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
+  persistedContinuity?: ProviderContinuityBlob;
+  checkpointRecovery?: (update: {
+    conversationRef?: string;
+    providerMeta: ProviderRecoveryMeta;
+  }) => void;
 }
 
 export interface Provider {
@@ -74,9 +125,29 @@ export interface Provider {
   preflight?(): Promise<void>;
   /** Recovery contract for durable execution handoff. */
   recovery?: ProviderRecoveryContract;
+  appServer?: ProviderAppServerContract;
 }
 
 export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
   if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);
   return request.conversationRef;
+}
+
+export function requireAppServerRuntime(
+  runtime: ProviderRuntime,
+  providerName: string,
+): {
+  acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
+  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
+} {
+  if (!runtime.acquireServer) {
+    throw new Error(`${providerName} provider requires ProviderRuntime.acquireServer().`);
+  }
+  if (!runtime.checkpointRecovery) {
+    throw new Error(`${providerName} provider requires ProviderRuntime.checkpointRecovery().`);
+  }
+  return {
+    acquireServer: runtime.acquireServer,
+    checkpointRecovery: runtime.checkpointRecovery,
+  };
 }

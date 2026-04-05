@@ -339,18 +339,19 @@ describe('cli format', () => {
   });
 
   describe('kb formatters', () => {
-    it('formats kb search results as JSON and rewrites kb_reindex warnings', () => {
+    it('formats hybrid kb search results as JSON, adds an indicator, and rewrites kb_reindex warnings', () => {
       const formatted = formatKbSearch(
         {
           results: [
             {
               note: 'cli-kb-tooling',
+              kind: 'note',
               title: 'KB CLI Tooling',
               matchedBy: ['filename', 'content'],
               snippet: 'Use kb_reindex after stale writes.',
             },
           ],
-          mode: 'text',
+          mode: 'hybrid',
           warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
         },
         'node "/tmp/coral-cli.cjs"',
@@ -358,7 +359,9 @@ describe('cli format', () => {
 
       const parsed = JSON.parse(formatted);
       expect(parsed.count).toBe(1);
+      expect(parsed.indicator).toBe('[hybrid]');
       expect(parsed.results[0].note).toBe('cli-kb-tooling');
+      expect(parsed.results[0].kind).toBe('note');
       expect(parsed.warning).toContain('node "/tmp/coral-cli.cjs" kb reindex');
     });
 
@@ -470,6 +473,8 @@ describe('cli format', () => {
       const formatted = formatKbReindex(
         {
           notes: 4,
+          sources: 0,
+          communities: 0,
           principles: 2,
           tags: 3,
           duration_ms: 25,
@@ -480,7 +485,7 @@ describe('cli format', () => {
       );
 
       expect(formatted).toBe(
-        'Reindexed: 4 notes, 2 principles, 3 tags (25ms, text)\n' +
+        'Reindexed: 4 notes, 0 communities, 2 principles, 3 tags (25ms, text)\n' +
           'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
       );
     });
@@ -499,6 +504,12 @@ describe('cli format', () => {
 
     it('formats an Error instance', () => {
       expect(formatError(new Error('boom'))).toBe('boom');
+    });
+
+    it('formats plain objects with message property', () => {
+      expect(formatError({ message: 'KB note already exists: /path/to/note.md' })).toBe(
+        'KB note already exists: /path/to/note.md',
+      );
     });
 
     it('formats unknown string values', () => {

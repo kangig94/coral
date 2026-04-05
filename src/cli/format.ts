@@ -193,12 +193,14 @@ export function formatProviderList(result: ListResult): string {
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
-  const subsampledLine =
-    result.subsampled === undefined
-      ? undefined
-      : result.subsampled
-        ? `Subsampled: yes${result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`}`
-        : 'Subsampled: no';
+  let subsampledLine: string | undefined;
+  if (result.subsampled === true) {
+    const fromPool =
+      result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`;
+    subsampledLine = `Subsampled: yes${fromPool}`;
+  } else if (result.subsampled === false) {
+    subsampledLine = 'Subsampled: no';
+  }
 
   return joinLines([
     `Seed used: ${result.seed_used}`,
@@ -265,7 +267,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const results = data.results.map((result) => {
     if (!isRecord(result)) {
-      return { note: '-', title: '-', matched: [] as string[], snippet: '-' };
+      return { note: '-', kind: '-', title: '-', matched: [] as string[], snippet: '-' };
     }
 
     const matched = Array.isArray(result.matchedBy)
@@ -274,6 +276,7 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
 
     return {
       note: typeof result.note === 'string' ? result.note : '-',
+      kind: typeof result.kind === 'string' ? result.kind : '-',
       title: typeof result.title === 'string' ? result.title : '-',
       matched,
       snippet: typeof result.snippet === 'string' ? result.snippet : '-',
@@ -285,6 +288,10 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
     mode: data.mode,
     count: results.length,
   };
+
+  if (data.mode === 'hybrid') {
+    output.indicator = '[hybrid]';
+  }
 
   if (warning !== undefined) {
     output.warning = warning;
@@ -434,10 +441,57 @@ export function formatKbDelete(data: unknown): string {
   return `Deleted: ${data.deleted}`;
 }
 
+export function formatKbSourceImport(data: unknown): string {
+  if (!isRecord(data) || typeof data.path !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Imported: ${data.path}`;
+}
+
+export function formatKbSourceList(data: unknown): string {
+  if (!isRecord(data) || !Array.isArray(data.sources)) {
+    return formatUnknown(data);
+  }
+
+  const rows = data.sources.flatMap((source) => {
+    if (
+      !isRecord(source) ||
+      typeof source.slug !== 'string' ||
+      typeof source.title !== 'string' ||
+      typeof source.type !== 'string' ||
+      typeof source.importedAt !== 'string'
+    ) {
+      return [];
+    }
+
+    return [[source.slug, source.title, source.type, source.importedAt]];
+  });
+
+  if (rows.length !== data.sources.length) {
+    return formatUnknown(data);
+  }
+
+  if (rows.length === 0) {
+    return 'No sources';
+  }
+
+  return formatTable(['SLUG', 'TITLE', 'TYPE', 'IMPORTED AT'], rows);
+}
+
+export function formatKbSourceDelete(data: unknown): string {
+  if (!isRecord(data) || typeof data.deleted !== 'string') {
+    return formatUnknown(data);
+  }
+
+  return `Deleted: ${data.deleted}`;
+}
+
 export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string {
   if (
     !isRecord(data) ||
     typeof data.notes !== 'number' ||
+    typeof data.communities !== 'number' ||
     typeof data.principles !== 'number' ||
     typeof data.tags !== 'number' ||
     typeof data.duration_ms !== 'number' ||
@@ -449,7 +503,7 @@ export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string 
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([
-    `Reindexed: ${data.notes} notes, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
+    `Reindexed: ${data.notes} notes, ${data.communities} communities, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
 }
@@ -486,6 +540,10 @@ export function formatError(error: unknown): string {
   }
 
   if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (isRecord(error) && typeof error.message === 'string') {
     return error.message;
   }
 

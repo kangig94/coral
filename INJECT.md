@@ -64,6 +64,25 @@ For multi-step tasks, state a brief plan:
 1. [Step] → verify: [check]
 2. [Step] → verify: [check]
 
+## 5. Stay Cold
+
+Large tasks create momentum — a pull toward completion that distorts judgment.
+
+The longer you work, the stronger the pull to dismiss obstacles and declare done.
+A test failure, a warning, a hook reminder — each is a signal. The instinct under
+pressure is to classify it as noise. This is where most defects escape.
+
+- Treat every failure, warning, and injected reminder as a signal until proven otherwise.
+  "It's probably nothing" is not proof — it is pressure talking.
+- The correct response to an obstacle near the finish line is to slow down, not speed up.
+  Investigate with the same rigor you had at the start.
+- There is no such thing as a pre-existing failure. If it was broken before, it would have
+  been fixed then. A failure in your session is your responsibility until evidence says otherwise.
+
+Emotional discipline matters. Frustration, fatigue, and the urge to finish are real forces.
+Recognize them as inputs that degrade judgment, not reasons to cut corners.
+The correct response to "I'm almost done and something broke" is not speed — it is stillness.
+
 # Knowledge Base
 
 CLI: `{{CORAL_CLI}}`
@@ -73,11 +92,17 @@ Source code and official docs (via WebFetch) are the source of truth — always 
 KB stores past decisions and lessons learned. Search it when you're stuck, not as a first step.
 `kb read` returns note age — older notes may be stale, so verify against current code before acting.
 1. `CLI kb principles` — list principle names (cross-domain decision patterns). Names are self-descriptive (e.g., `atomic-persistence-or-nothing`). Use `--verbose` for statements and referring notes.
-2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance.
-3. `CLI kb read <note-slug>` — read a note or principle by slug. Resolves memo → note → principle precedence. Always use this instead of reading KB files directly.
+2. `CLI kb search "<keywords>"` — searches filename, principles, tags, title, content. Returns top 20 results ranked by relevance. Use `--scope notes|sources|communities|all` to filter by entry type (default: `all`).
+3. `CLI kb read <slug>` — read an entry by slug. Resolves memo → note → community → source → principle precedence. Use `kb read sources:<slug>` or `kb read communities:<slug>` for explicit access. Always use this instead of reading KB files directly.
+4. `CLI kb source list` — list imported source documents with metadata.
 
 <!-- OWNER_ONLY:BEGIN -->
 When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+
+## Source Management
+사용자의 명시적 요구가 있을 때에만 실행. 자율적으로 실행 금지.
+`CLI kb source import <file> [--slug <name>]`
+`CLI kb source delete <slug>`
 <!-- OWNER_ONLY:END -->
 
 <!-- SESSION_ID_ONLY:BEGIN -->
@@ -98,6 +123,9 @@ Timestamps, paths, and frontmatter are generated automatically.
 Most memos are disposable — only promote if the lesson is reusable across future sessions.
 Check for duplicates via `CLI kb search` before promoting:
 `CLI kb promote --memo "<filename>" --title "..." --content-file <temp-file> --domain d --topic t`
+The final note slug is `{domain}-{topic}.md` — topic must be specific enough to avoid collisions.
+Bad: `--domain cpp --topic duckdb` (too broad, blocks future DuckDB notes).
+Good: `--domain cpp --topic duckdb-split-amalgamation` (scoped to the specific finding).
 Write the full markdown body (e.g., `## Rule\n...\n## Why\n...\n## Pattern\n...`) to a temporary file first via the Write tool, then pass its path as `--content-file`. Use any writable temp path.
 Promote automatically deletes the source memo and creates a new KB note — no separate delete step needed.
 

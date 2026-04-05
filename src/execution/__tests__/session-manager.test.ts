@@ -16,23 +16,26 @@ vi.mock('node:os', async () => {
 });
 
 import { SessionManager } from '../session-manager.js';
-import { eventBus } from '../event-bus.js';
+import { TypedEventBus } from '../event-bus.js';
+
+let eventBus: TypedEventBus;
 
 describe('execution SessionManager', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
+    eventBus = new TypedEventBus();
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
-    eventBus.removeAllListeners();
+    eventBus.reset();
     vi.restoreAllMocks();
   });
 
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir), workDir };
+    return { mgr: new SessionManager(workDir, eventBus), workDir };
   }
 
   it('allocate creates an entry with state pending', () => {
@@ -73,7 +76,7 @@ describe('execution SessionManager', () => {
   it('session:updated payload includes projectRoot when present', () => {
     const { mgr, workDir } = setup('emit-root');
     const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload) => emitted.push(payload));
+    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
     mgr.allocate('codex', 'delta', 'gpt-5', workDir, '/proj/root');
 
@@ -84,7 +87,7 @@ describe('execution SessionManager', () => {
   it('session:updated payload omits projectRoot when not set', () => {
     const { mgr, workDir } = setup('emit-no-root');
     const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload) => emitted.push(payload));
+    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
     mgr.allocate('codex', 'epsilon', 'gpt-5', workDir);
 
@@ -203,6 +206,84 @@ describe('execution SessionManager', () => {
     mgr.setNonResumable(entry.sessionId);
 
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
+  });
+
+  it('finalizeJobContinuityAtomic releases the claim and stores a resumable conversationRef', async () => {
+    const { mgr, workDir } = setup('finalize-resumable');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    await expect(
+      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        mutation: {
+          type: 'set_resumable',
+          conversationRef: 'thread-1',
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+      activeJobId: undefined,
+      lastJobId: 'job-1',
+      state: 'ready',
+      conversationRef: 'thread-1',
+    });
+  });
+
+  it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
+    const { mgr, workDir } = setup('finalize-non-resumable');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.setConversationRef(entry.sessionId, 'thread-stale');
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    await expect(
+      mgr.clearConversationRefAndMarkNonResumableAtomic(entry.sessionId, 'job-1', claimed.version),
+    ).resolves.toBe(true);
+
+    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+      activeJobId: undefined,
+      lastJobId: 'job-1',
+      state: 'non_resumable',
+    });
+    expect(mgr.get('codex', entry.sessionId)?.conversationRef).toBeUndefined();
+  });
+
+  it('finalizeJobContinuityAtomic returns false when the version is stale', async () => {
+    const { mgr, workDir } = setup('finalize-stale-version');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    await expect(
+      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version - 1,
+        mutation: {
+          type: 'set_resumable',
+          conversationRef: 'thread-1',
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
+    expect(mgr.get('codex', entry.sessionId)?.lastJobId).toBeUndefined();
+    expect(mgr.get('codex', entry.sessionId)?.state).toBe('pending');
   });
 
   it('increments version on each write', () => {

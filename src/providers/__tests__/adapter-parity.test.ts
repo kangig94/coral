@@ -1,11 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../../shared/types.js';
-
-vi.mock('../codex/codex-executor.js', () => ({
-  executeOneShot: vi.fn(),
-  executeResume: vi.fn(),
-  executeFork: vi.fn(),
-}));
+import type { ProviderRuntime, ProviderServerLease } from '../types.js';
 
 vi.mock('../claude/claude-executor.js', () => {
   class MockClaudeExecParseError extends Error {
@@ -25,28 +20,15 @@ vi.mock('../claude/claude-executor.js', () => {
 
   return {
     ClaudeExecParseError: MockClaudeExecParseError,
-    executeClaudeOneShot: vi.fn(),
-    executeClaudeResume: vi.fn(),
     executeClaudeFork: vi.fn(),
   };
 });
 
-import { executeFork, executeOneShot, executeResume } from '../codex/codex-executor.js';
-import {
-  ClaudeExecParseError,
-  executeClaudeFork,
-  executeClaudeOneShot,
-  executeClaudeResume,
-} from '../claude/claude-executor.js';
-import { codexProvider } from '../codex/adapter.js';
+import { ClaudeExecParseError, executeClaudeFork } from '../claude/claude-executor.js';
 import { claudeProvider, OUTPUT_STYLE_OVERRIDE } from '../claude/adapter.js';
 
-const mockExecuteOneShot = vi.mocked(executeOneShot);
-const mockExecuteResume = vi.mocked(executeResume);
-const mockExecuteFork = vi.mocked(executeFork);
-const mockExecuteClaudeOneShot = vi.mocked(executeClaudeOneShot);
-const mockExecuteClaudeResume = vi.mocked(executeClaudeResume);
 const mockExecuteClaudeFork = vi.mocked(executeClaudeFork);
+const BROKER_SESSION_KEY = 'broker-session-parity';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -59,7 +41,41 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-function makeRuntime() {
+function makeLease(options: {
+  rpcImpl?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}): ProviderServerLease & {
+  emit(msg: { method: string; params?: Record<string, unknown> }): void;
+  rpcMock: ReturnType<typeof vi.fn>;
+} {
+  let notificationHandler: ((msg: { method: string; params?: Record<string, unknown> }) => void) | null = null;
+  const rpcMock = vi.fn(async (method: string, params: Record<string, unknown>) => {
+    if (options.rpcImpl) {
+      return options.rpcImpl(method, params);
+    }
+    return {};
+  });
+
+  return {
+    rpc: rpcMock as unknown as ProviderServerLease['rpc'],
+    subscribe: vi.fn((handler) => {
+      notificationHandler = handler;
+      return () => {
+        notificationHandler = null;
+      };
+    }),
+    release: vi.fn(),
+    closed: new Promise<Error | void>(() => {}),
+    rpcMock,
+    emit(msg) {
+      notificationHandler?.(msg);
+    },
+  };
+}
+
+function makeRuntime(lease?: ProviderServerLease): {
+  runCli: ReturnType<typeof vi.fn>;
+  runtime: ProviderRuntime;
+} {
   const controller = new AbortController();
   const runCli = vi.fn();
   return {
@@ -68,36 +84,13 @@ function makeRuntime() {
       signal: controller.signal,
       onEvent: () => {},
       runCli,
+      acquireServer: lease ? vi.fn(async () => lease) : undefined,
+      checkpointRecovery: vi.fn(),
     },
   };
 }
 
-function baseCodexResult(
-  overrides: Partial<{
-    response: string;
-    sessionId: string | null;
-    model: string;
-    durationMs: number;
-    exitCode: number | null;
-    errors: string[];
-    warnings: string[];
-    aborted: boolean;
-  }> = {},
-) {
-  return {
-    response: 'ok',
-    sessionId: 'thread-1',
-    model: 'o4-mini',
-    durationMs: 10,
-    exitCode: 0,
-    errors: [],
-    warnings: [],
-    aborted: false,
-    ...overrides,
-  };
-}
-
-function baseClaudeResult(
+function baseForkResult(
   overrides: Partial<{
     response: string;
     sessionId: string | null;
@@ -117,7 +110,7 @@ function baseClaudeResult(
   return {
     response: 'ok',
     sessionId: 'claude-thread',
-    model: 'sonnet',
+    model: 'claude-sonnet-4-6-20250514',
     durationMs: 15,
     costUsd: 0,
     aborted: false,
@@ -125,217 +118,16 @@ function baseClaudeResult(
   };
 }
 
-// Global setup for adversarial describes below. The describe-level beforeEach in the
-// main provider describes overrides these for their own tests.
 beforeEach(() => {
   vi.clearAllMocks();
-  mockExecuteOneShot.mockResolvedValue(baseCodexResult());
-  mockExecuteResume.mockResolvedValue(baseCodexResult({ sessionId: 'thread-resume' }));
-  mockExecuteFork.mockResolvedValue(baseCodexResult({ sessionId: 'thread-fork' }));
-  mockExecuteClaudeOneShot.mockResolvedValue(baseClaudeResult());
-  mockExecuteClaudeResume.mockResolvedValue(baseClaudeResult({ sessionId: 'claude-resume' }));
-  mockExecuteClaudeFork.mockResolvedValue(baseClaudeResult({ sessionId: 'claude-fork' }));
-});
-
-describe('codex provider adapter', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockExecuteOneShot.mockResolvedValue(
-      baseCodexResult({
-        response: 'codex response',
-        sessionId: 'codex-thread',
-        durationMs: 25,
-      }),
-    );
-    mockExecuteResume.mockResolvedValue(
-      baseCodexResult({
-        response: 'codex resume',
-        sessionId: 'codex-thread-resume',
-        durationMs: 30,
-      }),
-    );
-    mockExecuteFork.mockResolvedValue(
-      baseCodexResult({
-        response: 'codex fork',
-        sessionId: 'codex-thread-fork',
-        durationMs: 35,
-      }),
-    );
-  });
-
-  it('exec calls executeOneShot with instruction-prefixed prompt', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(
-      makeRequest({
-        instruction: { channel: 'prompt', content: 'Follow the repo rules' },
-        systemPrompt: 'System guidance',
-        model: 'o4-mini',
-        cwd: '/repo',
-        effort: 'high',
-        bypassPermissions: true,
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(
-      'Follow the repo rules\n\n---\n\nSystem guidance\n\n---\n\nRun checks',
-      expect.objectContaining({
-        model: 'o4-mini',
-        workingDirectory: '/repo',
-        effort: 'high',
-        bypassSandbox: true,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-
-  it('exec passes prompt through unchanged when no instruction or systemPrompt is set', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(makeRequest({ prompt: 'Only the user prompt' }), runtime);
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(
-      'Only the user prompt',
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: undefined,
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-
-  it('resume calls executeResume with conversationRef', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(
-      makeRequest({
-        action: 'resume',
-        conversationRef: 'codex-thread-123',
-        prompt: 'Continue',
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteResume).toHaveBeenCalledWith(
-      'codex-thread-123',
-      'Continue',
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: undefined,
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-
-  it('fork calls executeFork with conversationRef', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(
-      makeRequest({
-        action: 'fork',
-        conversationRef: 'codex-thread-456',
-        prompt: 'Fork this',
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteFork).toHaveBeenCalledWith(
-      'codex-thread-456',
-      'Fork this',
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: undefined,
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-
-  it('re-throws ClaudeExecParseError from codex exec', async () => {
-    const error = new ClaudeExecParseError({
-      exitCode: 99,
-      stdout: 'bad',
-      stderr: 'bad',
-      parseError: 'bad output',
-    });
-    mockExecuteOneShot.mockRejectedValueOnce(error);
-
-    await expect(codexProvider.execute(makeRequest(), makeRuntime().runtime)).rejects.toBe(error);
-  });
-
-  it('maps Codex executor output into ProviderResult fields', async () => {
-    mockExecuteOneShot.mockResolvedValueOnce({
-      response: 'mapped codex text',
-      sessionId: 'thread-mapped',
-      model: 'o4-mini',
-      durationMs: 12,
-      exitCode: 3,
-      errors: ['executor warning'],
-      warnings: ['be careful'],
-      aborted: true,
-    });
-
-    const result = await codexProvider.execute(makeRequest(), makeRuntime().runtime);
-
-    expect(result).toEqual({
-      content: 'mapped codex text',
-      conversationRef: 'thread-mapped',
-      model: 'o4-mini',
-      durationMs: 12,
-      aborted: true,
-      exitCode: 3,
-      errors: ['executor warning'],
-      warnings: ['be careful'],
-    });
-  });
-
-  it.each(['opus', 'sonnet', 'haiku'])('resolves abstract tier "%s" to default model (undefined)', async (tier) => {
-    const { runtime } = makeRuntime();
-
-    await codexProvider.execute(makeRequest({ model: tier }), runtime);
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ model: undefined }));
-  });
-
-  it('passes explicit codex model names through unchanged', async () => {
-    const { runtime } = makeRuntime();
-
-    await codexProvider.execute(makeRequest({ model: 'gpt-5.4' }), runtime);
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ model: 'gpt-5.4' }));
-  });
+  mockExecuteClaudeFork.mockResolvedValue(baseForkResult({ sessionId: 'claude-fork' }));
 });
 
 describe('claude provider adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockExecuteClaudeOneShot.mockResolvedValue(
-      baseClaudeResult({
-        response: 'claude response',
-        durationMs: 20,
-        costUsd: 0.001,
-      }),
-    );
-    mockExecuteClaudeResume.mockResolvedValue(
-      baseClaudeResult({
-        response: 'claude resume',
-        sessionId: 'claude-thread-resume',
-        durationMs: 22,
-        costUsd: 0.002,
-      }),
-    );
     mockExecuteClaudeFork.mockResolvedValue(
-      baseClaudeResult({
+      baseForkResult({
         response: 'claude fork',
         sessionId: 'claude-thread-fork',
         durationMs: 24,
@@ -345,13 +137,32 @@ describe('claude provider adapter', () => {
   });
 
   it('exec combines system-channel instruction with systemPrompt', async () => {
-    const { runtime, runCli } = makeRuntime();
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            bootstrapSignature: {
+              cwd: '/repo',
+              systemPromptHash: 'sha256:ensure',
+              permissionMode: 'bypassPermissions',
+            },
+            sessionId: null,
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-1' };
+        }
+        return {};
+      },
+    });
+    const { runtime, runCli } = makeRuntime(lease);
 
-    await claudeProvider.execute(
+    const execution = claudeProvider.execute(
       makeRequest({
         instruction: { channel: 'system', content: 'You are the architect agent' },
         systemPrompt: 'Honor repository policy',
-        model: 'sonnet',
+        
         cwd: '/repo',
         effort: 'medium',
         bypassPermissions: true,
@@ -359,68 +170,138 @@ describe('claude provider adapter', () => {
       runtime,
     );
 
-    expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('Run checks', {
-      model: 'sonnet',
-      workingDirectory: '/repo',
-      systemPrompt: `You are the architect agent\n\nHonor repository policy\n\n${OUTPUT_STYLE_OVERRIDE}`,
-      effort: 'medium',
-      bypassPermissions: true,
-      environment: {},
-      runCli,
-      onEvent: expect.any(Function),
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
+        cwd: '/repo',
+        permissionMode: 'bypassPermissions',
+        systemPrompt: `You are the architect agent\n\nHonor repository policy\n\n${OUTPUT_STYLE_OVERRIDE}`,
+      }));
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+        prompt: 'Run checks',
+        
+      }));
     });
+    lease.emit({
+      method: 'turn/completed',
+      params: { brokerSessionKey: BROKER_SESSION_KEY, brokerTurnId: 'turn-1', result: 'done', costUsd: 0 },
+    });
+    await execution;
+    expect(runCli).not.toHaveBeenCalled();
   });
 
   it('exec prepends prompt-channel instruction and keeps systemPrompt separate', async () => {
-    const { runtime, runCli } = makeRuntime();
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            bootstrapSignature: {
+              cwd: process.cwd(),
+              systemPromptHash: 'sha256:ensure',
+              permissionMode: 'default',
+            },
+            sessionId: null,
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-2' };
+        }
+        return {};
+      },
+    });
+    const { runtime, runCli } = makeRuntime(lease);
 
-    await claudeProvider.execute(
+    const execution = claudeProvider.execute(
       makeRequest({
         instruction: { channel: 'prompt', content: 'First follow this instruction' },
         systemPrompt: 'System stays separate',
-        model: 'sonnet',
+        
       }),
       runtime,
     );
 
-    expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('First follow this instruction\n\n---\n\nRun checks', {
-      model: 'sonnet',
-      workingDirectory: undefined,
-      systemPrompt: `System stays separate\n\n${OUTPUT_STYLE_OVERRIDE}`,
-      effort: undefined,
-      bypassPermissions: false,
-      environment: {},
-      runCli,
-      onEvent: expect.any(Function),
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
+        systemPrompt: `System stays separate\n\n${OUTPUT_STYLE_OVERRIDE}`,
+      }));
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+        prompt: 'First follow this instruction\n\n---\n\nRun checks',
+        
+      }));
     });
+    lease.emit({
+      method: 'turn/completed',
+      params: { brokerSessionKey: BROKER_SESSION_KEY, brokerTurnId: 'turn-2', result: 'done', costUsd: 0 },
+    });
+    await execution;
+    expect(runCli).not.toHaveBeenCalled();
   });
 
   it('exec passes systemPrompt through unchanged when no instruction is set', async () => {
-    const { runtime, runCli } = makeRuntime();
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            bootstrapSignature: {
+              cwd: process.cwd(),
+              systemPromptHash: 'sha256:ensure',
+              permissionMode: 'default',
+            },
+            sessionId: null,
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-3' };
+        }
+        return {};
+      },
+    });
+    const { runtime, runCli } = makeRuntime(lease);
 
-    await claudeProvider.execute(
+    const execution = claudeProvider.execute(
       makeRequest({
         systemPrompt: 'Just the system prompt',
       }),
       runtime,
     );
 
-    expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('Run checks', {
-      model: undefined,
-      workingDirectory: undefined,
-      systemPrompt: `Just the system prompt\n\n${OUTPUT_STYLE_OVERRIDE}`,
-      effort: undefined,
-      bypassPermissions: false,
-      environment: {},
-      runCli,
-      onEvent: expect.any(Function),
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
+        systemPrompt: `Just the system prompt\n\n${OUTPUT_STYLE_OVERRIDE}`,
+      }));
     });
+    lease.emit({
+      method: 'turn/completed',
+      params: { brokerSessionKey: BROKER_SESSION_KEY, brokerTurnId: 'turn-3', result: 'done', costUsd: 0 },
+    });
+    await execution;
+    expect(runCli).not.toHaveBeenCalled();
   });
 
-  it('resume calls executeClaudeResume with conversationRef', async () => {
-    const { runtime, runCli } = makeRuntime();
+  it('resume uses the persistent broker path with conversationRef', async () => {
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            bootstrapSignature: {
+              cwd: process.cwd(),
+              systemPromptHash: 'sha256:ensure',
+              permissionMode: 'default',
+            },
+            sessionId: 'claude-thread-123',
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-resume' };
+        }
+        return {};
+      },
+    });
+    const { runtime, runCli } = makeRuntime(lease);
 
-    await claudeProvider.execute(
+    const execution = claudeProvider.execute(
       makeRequest({
         action: 'resume',
         conversationRef: 'claude-thread-123',
@@ -430,20 +311,31 @@ describe('claude provider adapter', () => {
       runtime,
     );
 
-    expect(mockExecuteClaudeResume).toHaveBeenCalledWith('claude-thread-123', 'Continue', {
-      model: undefined,
-      workingDirectory: undefined,
-      systemPrompt: `Restore persona\n\n${OUTPUT_STYLE_OVERRIDE}`,
-      effort: undefined,
-      bypassPermissions: false,
-      environment: {},
-      runCli,
-      onEvent: expect.any(Function),
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
+        conversationRef: 'claude-thread-123',
+        systemPrompt: `Restore persona\n\n${OUTPUT_STYLE_OVERRIDE}`,
+      }));
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({
+        prompt: 'Continue',
+      }));
     });
+    lease.emit({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: BROKER_SESSION_KEY,
+        brokerTurnId: 'turn-resume',
+        result: 'resumed',
+        conversationRef: 'claude-thread-123',
+        costUsd: 0,
+      },
+    });
+    await execution;
+    expect(runCli).not.toHaveBeenCalled();
   });
 
-  it('returns nonResumable ProviderResult when Claude exec throws ClaudeExecParseError', async () => {
-    mockExecuteClaudeOneShot.mockRejectedValueOnce(
+  it('returns nonResumable ProviderResult when fork throws ClaudeExecParseError', async () => {
+    mockExecuteClaudeFork.mockRejectedValueOnce(
       new ClaudeExecParseError({
         exitCode: 7,
         stdout: 'not json',
@@ -452,7 +344,10 @@ describe('claude provider adapter', () => {
       }),
     );
 
-    const result = await claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime().runtime);
+    const result = await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'claude-thread-123', model: 'sonnet' }),
+      makeRuntime().runtime,
+    );
 
     expect(result).toEqual({
       content: '',
@@ -471,321 +366,52 @@ describe('claude provider adapter', () => {
     });
   });
 
-  it('maps Claude executor output into ProviderResult fields including usage.costUsd', async () => {
-    mockExecuteClaudeOneShot.mockResolvedValueOnce({
-      response: 'mapped claude text',
-      sessionId: 'claude-session-9',
-      model: 'sonnet',
-      durationMs: 18,
-      costUsd: 0.42,
-      aborted: true,
+  it('maps persistent broker output into ProviderResult fields including usage.costUsd', async () => {
+    const lease = makeLease({
+      rpcImpl: async (method) => {
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: BROKER_SESSION_KEY,
+            bootstrapSignature: {
+              cwd: process.cwd(),
+              systemPromptHash: 'sha256:ensure',
+              permissionMode: 'default',
+            },
+            sessionId: 'claude-session-9',
+          };
+        }
+        if (method === 'turn/start') {
+          return { brokerTurnId: 'turn-result' };
+        }
+        return {};
+      },
     });
+    const execution = claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime(lease).runtime);
 
-    const result = await claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime().runtime);
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+    });
+    lease.emit({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: BROKER_SESSION_KEY,
+        brokerTurnId: 'turn-result',
+        result: 'mapped claude text',
+        sessionId: 'claude-session-9',
+        
+        durationMs: 18,
+        costUsd: 0.42,
+      },
+    });
+    const result = await execution;
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       content: 'mapped claude text',
       conversationRef: 'claude-session-9',
-      model: 'sonnet',
+      
       durationMs: 18,
-      aborted: true,
+      exitCode: 0,
       usage: { costUsd: 0.42 },
     });
-  });
-});
-
-describe('codex adapter: instruction channel mapping', () => {
-  it("channel='system' is treated identically to channel='prompt' — content prepended to prompt", async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(
-      makeRequest({
-        instruction: { channel: 'system', content: 'System-style instruction' },
-        prompt: 'User prompt',
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(
-      'System-style instruction\n\n---\n\nUser prompt',
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: undefined,
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-
-  it("channel='system' with systemPrompt also prepends systemPrompt before base prompt", async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(
-      makeRequest({
-        instruction: { channel: 'system', content: 'Agent rules' },
-        systemPrompt: 'System policy',
-        prompt: 'Base prompt',
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(
-      'Agent rules\n\n---\n\nSystem policy\n\n---\n\nBase prompt',
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: undefined,
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-});
-
-describe('codex adapter: nonResumable mapping', () => {
-  it('exec with null sessionId result sets nonResumable:true and no conversationRef', async () => {
-    mockExecuteOneShot.mockResolvedValueOnce(baseCodexResult({ sessionId: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await codexProvider.execute(makeRequest(), runtime);
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.conversationRef).toBeUndefined();
-  });
-
-  it('fork with null sessionId result sets nonResumable:true and no conversationRef', async () => {
-    mockExecuteFork.mockResolvedValueOnce(baseCodexResult({ sessionId: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await codexProvider.execute(
-      makeRequest({
-        action: 'fork',
-        conversationRef: 'thread-src',
-      }),
-      runtime,
-    );
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.conversationRef).toBeUndefined();
-  });
-
-  it('resume with null sessionId result falls back to the request conversationRef', async () => {
-    mockExecuteResume.mockResolvedValueOnce(baseCodexResult({ sessionId: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await codexProvider.execute(
-      makeRequest({
-        action: 'resume',
-        conversationRef: 'original-ref',
-      }),
-      runtime,
-    );
-
-    expect(result.conversationRef).toBe('original-ref');
-  });
-});
-
-describe('codex adapter: missing conversationRef guard', () => {
-  it('resume without conversationRef throws immediately', async () => {
-    const { runtime } = makeRuntime();
-
-    await expect(
-      codexProvider.execute(makeRequest({ action: 'resume', conversationRef: undefined }), runtime),
-    ).rejects.toThrow('resume requires conversationRef');
-  });
-
-  it('fork without conversationRef throws immediately', async () => {
-    const { runtime } = makeRuntime();
-
-    await expect(
-      codexProvider.execute(makeRequest({ action: 'fork', conversationRef: undefined }), runtime),
-    ).rejects.toThrow('fork requires conversationRef');
-  });
-});
-
-describe('codex adapter: effort values', () => {
-  it("passes 'max' effort through to executeOneShot", async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await codexProvider.execute(makeRequest({ effort: 'max' }), runtime);
-
-    expect(mockExecuteOneShot).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        model: undefined,
-        workingDirectory: undefined,
-        effort: 'max',
-        bypassSandbox: false,
-        onEvent: expect.any(Function),
-        runCli,
-      }),
-    );
-  });
-});
-
-describe('claude adapter: ClaudeExecParseError handling', () => {
-  it('resume with ClaudeExecParseError returns nonResumable ProviderResult (no rethrow)', async () => {
-    mockExecuteClaudeResume.mockRejectedValueOnce(
-      new ClaudeExecParseError({
-        exitCode: 3,
-        stdout: 'garbage',
-        stderr: '',
-        parseError: 'unexpected token',
-      }),
-    );
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(
-      makeRequest({
-        action: 'resume',
-        conversationRef: 'claude-ref',
-        model: 'sonnet',
-      }),
-      runtime,
-    );
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.exitCode).toBe(3);
-    expect(result.content).toBe('');
-    expect(Array.isArray(result.errors)).toBe(true);
-    expect(result.errors).toHaveLength(1);
-  });
-
-  it('fork with ClaudeExecParseError returns nonResumable ProviderResult (no rethrow)', async () => {
-    mockExecuteClaudeFork.mockRejectedValueOnce(
-      new ClaudeExecParseError({
-        exitCode: 5,
-        stdout: 'not json',
-        stderr: 'err',
-        parseError: 'bad parse',
-      }),
-    );
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(
-      makeRequest({
-        action: 'fork',
-        conversationRef: 'claude-ref',
-        model: 'opus',
-      }),
-      runtime,
-    );
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.exitCode).toBe(5);
-    expect(result.model).toBe('opus');
-  });
-
-  it('non-ClaudeExecParseError on exec is re-thrown, not swallowed', async () => {
-    const networkError = new Error('ECONNREFUSED');
-    mockExecuteClaudeOneShot.mockRejectedValueOnce(networkError);
-    const { runtime } = makeRuntime();
-
-    await expect(claudeProvider.execute(makeRequest(), runtime)).rejects.toBe(networkError);
-  });
-
-  it('non-ClaudeExecParseError on resume is re-thrown, not swallowed', async () => {
-    const timeoutError = new Error('spawn timeout');
-    mockExecuteClaudeResume.mockRejectedValueOnce(timeoutError);
-    const { runtime } = makeRuntime();
-
-    await expect(
-      claudeProvider.execute(
-        makeRequest({
-          action: 'resume',
-          conversationRef: 'ref-1',
-        }),
-        runtime,
-      ),
-    ).rejects.toBe(timeoutError);
-  });
-});
-
-describe('claude adapter: systemPrompt edge cases', () => {
-  it('with no instruction and no systemPrompt still includes output-style override', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await claudeProvider.execute(makeRequest({ prompt: 'bare prompt' }), runtime);
-
-    expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith('bare prompt', {
-      model: undefined,
-      workingDirectory: undefined,
-      systemPrompt: OUTPUT_STYLE_OVERRIDE,
-      effort: undefined,
-      bypassPermissions: false,
-      environment: {},
-      runCli,
-      onEvent: expect.any(Function),
-    });
-  });
-
-  it('prompt-channel instruction without systemPrompt still includes output-style override', async () => {
-    const { runtime, runCli } = makeRuntime();
-
-    await claudeProvider.execute(
-      makeRequest({
-        instruction: { channel: 'prompt', content: 'Prepend me' },
-      }),
-      runtime,
-    );
-
-    expect(mockExecuteClaudeOneShot).toHaveBeenCalledWith(
-      'Prepend me\n\n---\n\nRun checks',
-      expect.objectContaining({
-        systemPrompt: OUTPUT_STYLE_OVERRIDE,
-        runCli,
-      }),
-    );
-  });
-});
-
-describe('claude adapter: usage.costUsd mapping', () => {
-  it('null costUsd from executor produces no usage field in ProviderResult', async () => {
-    mockExecuteClaudeOneShot.mockResolvedValueOnce(baseClaudeResult({ costUsd: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(makeRequest(), runtime);
-
-    expect(result.usage).toBeUndefined();
-  });
-
-  it('zero costUsd produces usage.costUsd: 0', async () => {
-    mockExecuteClaudeOneShot.mockResolvedValueOnce(baseClaudeResult({ costUsd: 0 }));
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(makeRequest(), runtime);
-
-    expect(result.usage).toEqual({ costUsd: 0 });
-  });
-});
-
-describe('claude adapter: nonResumable when sessionId is null', () => {
-  it('exec with null sessionId sets nonResumable:true', async () => {
-    mockExecuteClaudeOneShot.mockResolvedValueOnce(baseClaudeResult({ sessionId: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(makeRequest(), runtime);
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.conversationRef).toBeUndefined();
-  });
-
-  it('fork with null sessionId sets nonResumable:true', async () => {
-    mockExecuteClaudeFork.mockResolvedValueOnce(baseClaudeResult({ sessionId: null }));
-    const { runtime } = makeRuntime();
-
-    const result = await claudeProvider.execute(
-      makeRequest({
-        action: 'fork',
-        conversationRef: 'ref-src',
-      }),
-      runtime,
-    );
-
-    expect(result.nonResumable).toBe(true);
-    expect(result.conversationRef).toBeUndefined();
   });
 });

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
 import type { BidResult, SpeechResult } from '../../discuss/types.js';
-import type { McpResult } from '../../shared/mcp-utils.js';
 import * as discussLoop from '../discuss/loop.js';
 import {
   createDiscussContextRegistry,
@@ -10,9 +9,11 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
+import type { DiscussContext } from '../discuss/context.js';
 import { getSession } from '../discuss/registry.js';
 import { routeToolCall } from '../tool-router.js';
 import type { CallerContext, ExecutionService } from '../service.js';
+import type { ToolDomainResult } from '../tool-response.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,
@@ -41,18 +42,24 @@ function createHelpers(
   };
 }
 
-function parseMcpBody<T>(result: { statusCode: number; body: unknown }): T {
-  expect(result.statusCode).toBe(200);
-  const body = result.body as McpResult;
-  expect(body.isError).toBe(false);
-  return JSON.parse(body.content[0].text) as T;
+function parseToolBody<T>(result: ToolDomainResult): T {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error(`Unexpected tool error: ${result.code}`);
+  }
+  return result.data as T;
 }
 
-function parseMcpError(result: { statusCode: number; body: unknown }): Record<string, unknown> {
-  expect(result.statusCode).toBe(200);
-  const body = result.body as McpResult;
-  expect(body.isError).toBe(true);
-  return JSON.parse(body.content[0].text) as Record<string, unknown>;
+function parseToolError(result: ToolDomainResult): Record<string, unknown> {
+  expect(result.ok).toBe(false);
+  if (result.ok) {
+    throw new Error('Expected tool error');
+  }
+  const detail = result.detail;
+  if (detail && typeof detail === 'object') {
+    return { error: result.code, message: result.message, ...(detail as Record<string, unknown>) };
+  }
+  return { error: result.code, message: result.message };
 }
 
 async function createWatchToolFixture(sessionId = 'discuss-1') {
@@ -161,7 +168,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{ session: string }>(result);
+    const parsed = parseToolBody<{ session: string }>(result);
     expect(parsed.session).toMatch(/^[0-9a-f-]{36}$/i);
     expect(getSession(getDiscussContext(registry, harness.projectRoot)!, parsed.session)).toBeDefined();
 
@@ -184,7 +191,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    expect(parseMcpBody<{ ok: boolean; session: string }>(result)).toEqual({
+    expect(parseToolBody<{ ok: boolean; session: string }>(result)).toEqual({
       ok: true,
       session: 'discuss-1',
     });
@@ -206,7 +213,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{
+    const parsed = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -296,7 +303,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{
+    const parsed = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -341,7 +348,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{
+    const parsed = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -387,7 +394,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{
+    const parsed = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -428,7 +435,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    const parsed = parseMcpBody<{
+    const parsed = parseToolBody<{
       session: string;
       status: string;
       topic: string;
@@ -463,8 +470,9 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    expect(parseMcpError(result)).toEqual({
+    expect(parseToolError(result)).toEqual({
       error: 'invalid_cursor',
+      message: 'invalid cursor',
       cursor: 3,
       max: 2,
     });
@@ -483,7 +491,7 @@ describe('execution discuss tools', () => {
       },
       createHelpers(registry, stores, harness.service),
     );
-    const error = parseMcpError(result);
+    const error = parseToolError(result);
 
     expect(error).toMatchObject({ error: 'invalid_request' });
     expect(String(error.message)).toContain('cursor');
@@ -502,7 +510,7 @@ describe('execution discuss tools', () => {
       },
       createHelpers(registry, stores, harness.service),
     );
-    const error = parseMcpError(result);
+    const error = parseToolError(result);
 
     expect(error).toMatchObject({ error: 'invalid_request' });
     expect(String(error.message)).toContain('cursor');
@@ -558,7 +566,7 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    expect(parseMcpBody<BidResult>(result)).toEqual({
+    expect(parseToolBody<BidResult>(result)).toEqual({
       action: 'listen',
       speaker: null,
       content: 'Bid recorded.',
@@ -687,8 +695,8 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    expect(parseMcpBody<SpeechResult>(validResult)).toEqual({ action: 'speech_recorded' });
-    expect(parseMcpBody<SpeechResult>(invalidResult)).toEqual({
+    expect(parseToolBody<SpeechResult>(validResult)).toEqual({ action: 'speech_recorded' });
+    expect(parseToolBody<SpeechResult>(invalidResult)).toEqual({
       action: 'not_your_turn',
       current_speaker: 'alpha',
     });
@@ -710,11 +718,100 @@ describe('execution discuss tools', () => {
       createHelpers(registry, stores, harness.service),
     );
 
-    expect(parseMcpError(result)).toEqual({
+    expect(parseToolError(result)).toEqual({
       error: 'session_not_found',
+      message: 'session not found',
       session: 'missing',
     });
 
     harness.cleanup();
+  });
+
+  describe('unexpectedDiscussError path', () => {
+    it('discuss_abort returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const registry = createDiscussContextRegistry();
+      const stores = new Map([[harness.projectRoot, harness.store]]);
+      vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
+      const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+      await persistSession({ ...harness, context }, { sessionId: 'sess-err' });
+
+      // Make getSession throw a plain Error (simulates unexpected failure inside the operation)
+      const origGet = getSession;
+      vi.spyOn(await import('../discuss/registry.js'), 'getSession').mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_abort',
+          args: { session: 'sess-err' },
+          context: harness.ctx,
+        },
+        createHelpers(registry, stores, harness.service),
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('disk full');
+      }
+
+      harness.cleanup();
+    });
+
+    it('discuss_watch returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const throwingHelpers = {
+        getExecutionService: (_ctx: CallerContext) => harness.service,
+        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new TypeError('Cannot read property'); },
+        abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+      };
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_watch',
+          args: { session: 'sess-err2' },
+          context: harness.ctx,
+        },
+        throwingHelpers,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('Cannot read property');
+      }
+
+      harness.cleanup();
+    });
+
+    it('discuss_participate returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const throwingHelpers = {
+        getExecutionService: (_ctx: CallerContext) => harness.service,
+        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+      };
+
+      const result = await routeToolCall(
+        {
+          name: 'discuss_participate',
+          args: { session: 'sess-err3', agent_name: 'tester', content: 'test' },
+          context: harness.ctx,
+        },
+        throwingHelpers,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('out of bounds');
+      }
+
+      harness.cleanup();
+    });
   });
 });

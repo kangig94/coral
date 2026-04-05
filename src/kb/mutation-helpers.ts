@@ -2,83 +2,127 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { KbIndexState } from './runtime.js';
-import type { KbRuntime } from './runtime.js';
-import type { KbIndex } from './types.js';
+import type { KbIndexState, KbRuntime } from './contracts.js';
+import {
+  isCommunityEntry,
+  isNoteEntry,
+  isSourceEntry,
+  type CommunityEntry,
+  type EntryRecord,
+  type KbIndex,
+  type NoteEntry,
+  type SourceEntry,
+} from './types.js';
 
-type NoteIndexEntrySource = {
-  title: string;
-  tags: readonly string[];
-  principles: readonly string[];
-  source: readonly string[];
-  createdAt: string;
-  updatedAt: string;
-  mutationSeqAtPromote?: number;
-};
+type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
+type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
+type CommunityIndexEntrySource = Omit<CommunityEntry, 'kind'>;
 
-export function buildNoteIndexEntry(meta: NoteIndexEntrySource): KbIndex['notes'][string] {
-  const entry: KbIndex['notes'][string] = {
+export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
+  const entry: NoteEntry = {
+    kind: 'note',
+    slug: meta.slug,
     title: meta.title,
     tags: [...meta.tags],
     principles: [...meta.principles],
     source: [...meta.source],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
+    related: [...(meta.related ?? [])],
   };
 
-  if (meta.mutationSeqAtPromote !== undefined) {
-    entry.mutationSeqAtPromote = meta.mutationSeqAtPromote;
+  if (meta.entrySeq !== undefined) {
+    entry.entrySeq = meta.entrySeq;
   }
 
   return entry;
 }
 
-const ensuredDirs = new Set<string>();
+export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry {
+  const entry: SourceEntry = {
+    kind: 'source',
+    slug: meta.slug,
+    title: meta.title,
+    type: meta.type,
+    tags: [...meta.tags],
+    importedAt: meta.importedAt,
+    related: [...(meta.related ?? [])],
+  };
 
-function ensureDir(dir: string): void {
-  if (ensuredDirs.has(dir)) {
-    return;
+  if (meta.url !== undefined) {
+    entry.url = meta.url;
+  }
+  if (meta.entrySeq !== undefined) {
+    entry.entrySeq = meta.entrySeq;
   }
 
-  mkdirSync(dir, { recursive: true });
-  ensuredDirs.add(dir);
+  return entry;
+}
+
+export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): CommunityEntry {
+  const entry: CommunityEntry = {
+    kind: 'community',
+    slug: meta.slug,
+    title: meta.title,
+    level: meta.level,
+    members: [...meta.members],
+    generatedBy: 'curate',
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+  };
+
+  if (meta.parent !== undefined) {
+    entry.parent = meta.parent;
+  }
+  if (meta.summary !== undefined) {
+    entry.summary = meta.summary;
+  }
+
+  return entry;
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {
   const dir = dirname(filePath);
-  ensureDir(dir);
-  const tmpPath = `${filePath}.tmp`;
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      writeFileSync(tmpPath, payload, 'utf-8');
-      renameSync(tmpPath, filePath);
-      return;
-    } catch (error: unknown) {
-      rmSync(tmpPath, { force: true });
-      if (attempt === 0 && isNoEntryError(error)) {
-        ensuredDirs.delete(dir);
-        ensureDir(dir);
-        continue;
-      }
-
-      throw error;
-    }
+  try {
+    writeFileSync(tmpPath, payload, 'utf-8');
+    renameSync(tmpPath, filePath);
+  } catch (error: unknown) {
+    rmSync(tmpPath, { force: true });
+    throw error;
   }
 }
 
 export function cloneKbIndex(index: KbIndex | null): KbIndex {
   if (index === null) {
     return {
-      notes: {},
+      entries: {},
       principles: {},
     };
   }
 
   return {
-    notes: Object.fromEntries(Object.entries(index.notes).map(([note, meta]) => [note, buildNoteIndexEntry(meta)])),
+    entries: Object.fromEntries(Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)])),
     principles: { ...index.principles },
   };
+}
+
+function cloneEntryRecord(entry: EntryRecord): EntryRecord {
+  if (isNoteEntry(entry)) {
+    return buildNoteIndexEntry(entry);
+  }
+
+  if (isSourceEntry(entry)) {
+    return buildSourceIndexEntry(entry);
+  }
+
+  if (isCommunityEntry(entry)) {
+    return buildCommunityIndexEntry(entry);
+  }
+
+  throw new Error(`Unsupported KB entry kind: ${(entry as EntryRecord).kind}`);
 }
 
 /**

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import { noteEntryId } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -108,19 +109,23 @@ memo body
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
-      mutationSeqAtPromote: 1,
+      related: [],
+      entrySeq: 1,
     });
     expect(frontmatter.extractTitle(note)).toBe('KB Promotion');
     expect(note).toContain('## Rule\nPromote through the tool.\n');
 
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toEqual({
+      kind: 'note',
+      slug: 'coral-kb-promotion',
       title: 'KB Promotion',
       tags: ['coral'],
       principles: [],
       source: ['kangig94/coral'],
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
-      mutationSeqAtPromote: 1,
+      related: [],
+      entrySeq: 1,
     });
   });
 
@@ -255,7 +260,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-20T00:00:00.000Z
-mutationSeqAtPromote: 7
+entrySeq: 7
 ---
 # Original Title
 
@@ -265,15 +270,17 @@ Original body.
     );
 
     kb.writeIndex({
-      notes: {
-        'coral-kb-promotion': {
+      entries: {
+        [noteEntryId('coral-kb-promotion')]: {
+          kind: 'note',
+          slug: 'coral-kb-promotion',
           title: 'Original Title',
           tags: ['coral'],
           principles: ['contract-first-design'],
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-20T00:00:00.000Z',
-          mutationSeqAtPromote: 7,
+          entrySeq: 7,
         },
       },
       principles: {},
@@ -296,19 +303,23 @@ Original body.
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
-      mutationSeqAtPromote: 7,
+      related: [],
+      entrySeq: 7,
     });
     expect(frontmatter.extractTitle(note)).toBe('Updated Title');
     expect(note).toContain('Updated body.\n');
 
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toEqual({
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toEqual({
+      kind: 'note',
+      slug: 'coral-kb-promotion',
       title: 'Updated Title',
       tags: ['coral'],
       principles: ['contract-first-design'],
       source: ['kangig94/coral'],
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
-      mutationSeqAtPromote: 7,
+      related: [],
+      entrySeq: 7,
     });
   });
 
@@ -319,14 +330,18 @@ Original body.
     const notePath = join(paths.notesDir(), 'coral-kb-promotion.md');
     writeFileSync(notePath, 'note body', 'utf-8');
     kb.writeIndex({
-      notes: {
-        'coral-kb-promotion': {
+      entries: {
+        [noteEntryId('coral-kb-promotion')]: {
+          kind: 'note',
+          slug: 'coral-kb-promotion',
           title: 'Updated Title',
           tags: ['coral'],
           principles: ['lenient-read-strict-write'],
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-24T05:06:07.000Z',
+          related: [],
+          entrySeq: 7,
         },
       },
       principles: {},
@@ -335,7 +350,7 @@ Original body.
     const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });
     expect(existsSync(notePath)).toBe(false);
-    expect(kb.readIndex()?.notes['coral-kb-promotion']).toBeUndefined();
+    expect(kb.readIndex()?.entries[noteEntryId('coral-kb-promotion')]).toBeUndefined();
   });
 
   it('reads a note by slug and returns structured content without timestamps', async () => {

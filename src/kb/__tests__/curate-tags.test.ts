@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KbIndex } from '../types.js';
+import { noteEntryId, type KbIndex } from '../types.js';
 import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({
@@ -19,10 +19,12 @@ vi.mock('node:os', async () => {
 
 function createIndex(noteTags: Record<string, string[]>): KbIndex {
   return {
-    notes: Object.fromEntries(
+    entries: Object.fromEntries(
       Object.entries(noteTags).map(([note, tags], index) => [
-        note,
+        noteEntryId(note),
         {
+          kind: 'note',
+          slug: note,
           title: `Note ${index + 1}`,
           tags,
           principles: [],

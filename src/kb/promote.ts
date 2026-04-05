@@ -2,10 +2,11 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
-import type { KbPromoteInput } from './types.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { noteEntryId, setEntry, type KbPromoteInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -33,13 +34,14 @@ export async function promote(
   }
 
   const result = await rt.withMutationLock(async () => {
+    runEntrySeqUpgradeGuard(rt);
     if (existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
 
     const memoContent = readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
-    const mutationSeqAtPromote = rt.recordMutationCommitted().mutationSeq;
+    const entrySeq = rt.recordMutationCommitted().mutationSeq;
     const createdAt = nowIsoString();
     const noteMeta = {
       tags: [domain],
@@ -47,7 +49,8 @@ export async function promote(
       source,
       createdAt,
       updatedAt: createdAt,
-      mutationSeqAtPromote,
+      related: [],
+      entrySeq,
     };
     const noteContent = serializeNote(noteMeta, title, content);
 
@@ -56,10 +59,11 @@ export async function promote(
     commitIndexUpdate(
       rt,
       (index) => {
-        index.notes[note] = buildNoteIndexEntry({
-          ...noteMeta,
+        setEntry(index, noteEntryId(note), buildNoteIndexEntry({
+          slug: note,
           title,
-        });
+          ...noteMeta,
+        }));
       },
       'KB text snapshot is stale after kb_promote.',
     );

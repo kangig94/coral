@@ -8,6 +8,7 @@ import type * as ServerMod from '../server.js';
 import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
+import type { ProviderServerHandle } from '../engine.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
@@ -15,6 +16,7 @@ import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
+import { SessionIndex } from '../session-index.js';
 import { SessionManager } from '../session-manager.js';
 import {
   discussEventLogPath,
@@ -24,16 +26,21 @@ import {
   resolveProjectSource,
 } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { LifecycleState } from '../server.js';
+import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../backend-contracts.js';
+import type { LifecycleState } from '../server-types.js';
 import type { PersistedLaunchRecord } from '../../shared/types.js';
+import { domainSuccess, type ToolDomainResult } from '../tool-response.js';
+import { LaunchCoordinator } from '../engine.js';
+import { TypedEventBus } from '../event-bus.js';
+import { createProviderHostManager } from '../host-manager.js';
+import { ProviderRegistry } from '../../providers/registry.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp-${process.pid}-${Date.now()}`,
 }));
 
 const createdJobIds = new Set<string>();
@@ -52,9 +59,9 @@ type BackendInfoModule = typeof BackendInfoMod;
 type BackendLockModule = typeof BackendLockMod;
 type LifecycleModule = typeof LifecycleMod;
 
-function createDeferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
     resolve = done;
   });
   return { promise, resolve };
@@ -118,6 +125,73 @@ function createFakeIdleTimer() {
     requestDrain: vi.fn(),
     isDraining: false,
   };
+}
+
+function createFakeProviderHostManager(overrides: Record<string, unknown> = {}) {
+  return {
+    acquireServer: vi.fn(),
+    borrowLiveServer: vi.fn(),
+    drainForHandoff: vi.fn(async () => {}),
+    shutdown: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+function createFakeProviderServerHandle(options?: {
+  generation?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+  const closed = createDeferred<Error | void>();
+  const request =
+    options?.request ??
+    (async (_method: string, _params: Record<string, unknown>) => {
+      return {};
+    });
+  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
+  const notifyMock = vi.fn();
+  const onNotificationMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+    handlers.add(handler);
+    return () => {
+      handlers.delete(handler);
+    };
+  });
+  const markExpectedCloseMock = vi.fn();
+  const closeMock = vi.fn(async () => {
+    closed.resolve();
+  });
+
+  return {
+    handle: {
+      pid: options?.generation ?? 1,
+      child: {} as never,
+      generation: options?.generation ?? 1,
+      rpc: {
+        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
+        notify: notifyMock,
+      },
+      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      closePromise: closed.promise,
+      markExpectedClose: markExpectedCloseMock,
+      close: closeMock,
+    } satisfies ProviderServerHandle,
+    requestMock,
+    markExpectedCloseMock,
+    closeMock,
+    resolveClosed: () => {
+      closed.resolve();
+    },
+  };
+}
+
+function createProviderServerScript(): string {
+  return [
+    "const interval = setInterval(() => {}, 1_000);",
+    "process.on('SIGTERM', () => {",
+    '  clearInterval(interval);',
+    '  process.exit(0);',
+    '});',
+  ].join('');
 }
 
 async function _closeHttpServer(server: HttpServer): Promise<void> {
@@ -274,20 +348,27 @@ function stubRuntimeRecord(
   });
 }
 
-function parseToolText(body: unknown): unknown {
-  const text = (body as { content: Array<{ text: string }> }).content[0]?.text;
-  if (typeof text !== 'string') {
-    throw new Error('Missing tool text payload');
+function parseToolData(result: ToolDomainResult): unknown {
+  if (!result.ok) {
+    throw new Error(`Unexpected tool error: ${result.code}`);
   }
-  return JSON.parse(text);
+  return result.data;
+}
+
+function parseToolError(result: ToolDomainResult): Exclude<ToolDomainResult, { ok: true }> {
+  if (result.ok) {
+    throw new Error('Unexpected tool success');
+  }
+  return result;
 }
 
 describe('execution backend server', () => {
   let controller: BackendServerController | null = null;
+  const createdDiscussStores: DiscussSessionStore[] = [];
 
   beforeEach(() => {
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
+    rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
   });
 
@@ -300,19 +381,29 @@ describe('execution backend server', () => {
       }
     }
     controller = null;
+    for (const store of createdDiscussStores.splice(0)) {
+      store.dispose();
+    }
     for (const jobId of createdJobIds) {
       rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
     }
     createdJobIds.clear();
     vi.restoreAllMocks();
     vi.resetModules();
-    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    try {
+      rmSync(mockState.tmpHome, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = '';
   });
 
   function createMockKbSubsystem() {
     return {
-      kb: {} as never,
+      kb: {
+        closeVectorStores: vi.fn(async () => {}),
+      } as never,
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
@@ -386,6 +477,12 @@ describe('execution backend server', () => {
     return projectRoot;
   }
 
+  function createDiscussStore(source: string): DiscussSessionStore {
+    const store = new DiscussSessionStore(source);
+    createdDiscussStores.push(store);
+    return store;
+  }
+
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
@@ -407,6 +504,161 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
+  });
+
+  it('includes durable pids in activeChildren count', async () => {
+    const launchCoordinator = new LaunchCoordinator();
+    const backend = await startBackendServer({ launchCoordinator });
+
+    // Simulate two durable processes via internal state (test-only bypass of ReadonlySet)
+    const durablePids = launchCoordinator.activeDurablePids as Set<number>;
+    durablePids.add(99901);
+    durablePids.add(99902);
+
+    try {
+      const response = await fetch(`${backend.baseUrl}/health`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+      const body = (await response.json()) as Record<string, unknown>;
+
+      expect(body.activeChildren).toBe(2);
+    } finally {
+      durablePids.delete(99901);
+      durablePids.delete(99902);
+    }
+  });
+
+  it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
+    const { serverModule } = await loadExecutionModules();
+    const [{ ExecutionService }, claudeRequestMapping, codexRequestMapping] = await Promise.all([
+      import('../service.js'),
+      import('../../providers/claude/request-mapping.js'),
+      import('../../providers/codex/request-mapping.js'),
+    ]);
+    const progressStore = new ProgressStore();
+    const projectRootA = createProjectRoot('provider-host-project-a');
+    const projectRootB = createProjectRoot('provider-host-project-b');
+    const jobIdA = 'provider-host-job-a';
+    const jobIdB = 'provider-host-job-b';
+    createdJobIds.add(jobIdA);
+    createdJobIds.add(jobIdB);
+
+    progressStore.initJob({
+      jobId: jobIdA,
+      sessionId: 'session-a',
+      provider: 'codex',
+      projectRoot: projectRootA,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    progressStore.markTerminalStatus(jobIdA, { content: 'done-a' }, 'completed');
+
+    progressStore.initJob({
+      jobId: jobIdB,
+      sessionId: 'session-b',
+      provider: 'codex',
+      projectRoot: projectRootB,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    progressStore.markTerminalStatus(jobIdB, { content: 'done-b' }, 'completed');
+
+    const services = new Map<string, InstanceType<typeof ExecutionService>>();
+    const capturedManagers: unknown[] = [];
+    const sharedClaudeHandle = createFakeProviderServerHandle({
+      generation: 11,
+      request: async (method) => {
+        if (method === 'broker/shutdown') {
+          sharedClaudeHandle.resolveClosed();
+        }
+        return {};
+      },
+    });
+    const codexHandleA = createFakeProviderServerHandle({ generation: 22 });
+    const codexHandleB = createFakeProviderServerHandle({ generation: 33 });
+    const spawnProviderServer = vi
+      .fn()
+      .mockResolvedValueOnce(sharedClaudeHandle.handle)
+      .mockResolvedValueOnce(codexHandleA.handle)
+      .mockResolvedValueOnce(codexHandleB.handle);
+    const providerHostManager = createProviderHostManager({
+      spawnProviderServer,
+    });
+    controller = serverModule.createBackendServer({
+      instanceId: 'execution-backend-instance-1',
+      token: 'test-token',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      log: () => {},
+      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      cleanupStaleJobsFn: () => {},
+      progressStore,
+      providerHostManager,
+      createExecutionService: (ctx, deps) => {
+        capturedManagers.push(deps.providerHostManager);
+        const service = new ExecutionService(ctx, deps);
+        services.set(ctx.projectRoot, service);
+        return service;
+      },
+    });
+    const started = await controller.start();
+    const backend = {
+      baseUrl: `http://127.0.0.1:${started.port}`,
+      token: started.token,
+    };
+
+    const waitForService = async (projectRoot: string, jobId: string): Promise<void> => {
+      const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          jobIds: [jobId],
+          timeoutSeconds: 1,
+          projectRoot,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await waitForService(projectRootA, jobIdA);
+    await waitForService(projectRootB, jobIdB);
+
+    expect(capturedManagers).toHaveLength(2);
+    expect(capturedManagers[0]).toBe(capturedManagers[1]);
+
+    const serviceA = services.get(projectRootA);
+    const serviceB = services.get(projectRootB);
+    expect(serviceA).toBeInstanceOf(ExecutionService);
+    expect(serviceB).toBeInstanceOf(ExecutionService);
+
+    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec();
+    const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
+      PROJECT_ROOT: 'a',
+    });
+    const codexSpecB = codexRequestMapping.buildCodexProviderServerSpec(projectRootB, {
+      PROJECT_ROOT: 'b',
+    });
+
+    const claudeLeaseA = await serviceA!.acquireServer(claudeSpec);
+    const claudeLeaseB = await serviceB!.acquireServer(claudeSpec);
+    const codexLeaseA = await serviceA!.acquireServer(codexSpecA);
+    const codexLeaseB = await serviceB!.acquireServer(codexSpecB);
+
+    expect(claudeLeaseA.generation).toBe(11);
+    expect(claudeLeaseB.generation).toBe(11);
+    expect(codexLeaseA.generation).toBe(22);
+    expect(codexLeaseB.generation).toBe(33);
+    expect(spawnProviderServer).toHaveBeenCalledTimes(3);
+
+    claudeLeaseA.release();
+    claudeLeaseB.release();
+    codexLeaseA.release();
+    codexLeaseB.release();
   });
 
   it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
@@ -467,7 +719,9 @@ describe('execution backend server', () => {
   it('runs KB initialization during startup before idle watching begins', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const createKbSubsystemFn = vi.fn(async () => ({
-      kb: {} as never,
+      kb: {
+        closeVectorStores: vi.fn(async () => {}),
+      } as never,
       curateScheduler: {
         start: vi.fn(async () => {}),
         schedule: vi.fn(),
@@ -523,7 +777,7 @@ describe('execution backend server', () => {
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('discuss-only-project');
-    const store = new DiscussSessionStore(resolveProjectSource(projectRoot));
+    const store = createDiscussStore(resolveProjectSource(projectRoot));
     const created = decideSessionCreate(
       {
         topic: 'Should the city pedestrianize the downtown core?',
@@ -583,7 +837,35 @@ describe('execution backend server', () => {
     expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 404 for unknown /tool requests', async () => {
+  it('treats warm provider servers as idle in the backend idle predicate', async () => {
+    const fakeIdleTimer = createFakeIdleTimer();
+    const backend = await startBackendServer({
+      createIdleTimer: () => fakeIdleTimer as never,
+    });
+    expect(fakeIdleTimer.startWatching).toHaveBeenCalledTimes(1);
+
+    const [checkIdle] = fakeIdleTimer.startWatching.mock.calls[0] ?? [];
+    if (typeof checkIdle !== 'function') {
+      throw new Error('Expected idle watcher callback');
+    }
+
+    const launchCoordinator = new LaunchCoordinator();
+    const handle = await launchCoordinator.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', createProviderServerScript()],
+    });
+
+    try {
+      expect(checkIdle()).toBe(true);
+    } finally {
+      await handle.close();
+      await backend.controller.shutdown('test');
+      await backend.controller.waitForShutdown();
+    }
+  });
+
+  it('returns 200 domain errors for unknown /tool requests', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/tool`, {
@@ -599,9 +881,10 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'not_found',
+      ok: false,
+      code: 'not_found',
       message: 'Unknown tool: missing-provider',
     });
   });
@@ -623,9 +906,11 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = (await response.json()) as { isError?: boolean };
+    const body = (await response.json()) as ToolDomainResult;
     // Mock KB subsystem has no real runtime, so the handler catches the error
-    expect(body.isError).toBe(true);
+    expect(parseToolError(body)).toMatchObject({
+      code: 'kb_error',
+    });
   });
 
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
@@ -646,8 +931,10 @@ describe('execution backend server', () => {
       {
         kb: {
           ensureIndex: vi.fn(async () => ({
-            notes: {
-              'b-note': {
+            entries: {
+              'note:b-note': {
+                kind: 'note',
+                slug: 'b-note',
                 title: 'B',
                 tags: ['coral'],
                 principles: ['contract-first-design'],
@@ -655,7 +942,9 @@ describe('execution backend server', () => {
                 createdAt: '2026-03-20T00:00:00.000Z',
                 updatedAt: '2026-03-20T00:00:00.000Z',
               },
-              'a-note': {
+              'note:a-note': {
+                kind: 'note',
+                slug: 'a-note',
                 title: 'A',
                 tags: ['coral'],
                 principles: ['missing-principle', 'contract-first-design'],
@@ -663,7 +952,9 @@ describe('execution backend server', () => {
                 createdAt: '2026-03-20T00:00:00.000Z',
                 updatedAt: '2026-03-20T00:00:00.000Z',
               },
-              'z-note': {
+              'note:z-note': {
+                kind: 'note',
+                slug: 'z-note',
                 title: 'Z',
                 tags: ['coral'],
                 principles: ['single-source-of-truth'],
@@ -687,8 +978,8 @@ describe('execution backend server', () => {
       } as never,
     );
 
-    expect(response.statusCode).toBe(200);
-    expect(parseToolText(response.body)).toEqual({
+    expect(response.ok).toBe(true);
+    expect(parseToolData(response)).toEqual({
       principles: [
         {
           name: 'contract-first-design',
@@ -728,8 +1019,8 @@ describe('execution backend server', () => {
     });
 
     expect(listResponse.status).toBe(200);
-    const listBody = (await listResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(listBody.content[0].text)).toEqual({
+    const listBody = (await listResponse.json()) as ToolDomainResult;
+    expect(parseToolData(listBody)).toEqual({
       memos: [
         { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
         { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
@@ -750,8 +1041,8 @@ describe('execution backend server', () => {
     });
 
     expect(deleteResponse.status).toBe(200);
-    const deleteBody = (await deleteResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(deleteBody.content[0].text)).toEqual({
+    const deleteBody = (await deleteResponse.json()) as ToolDomainResult;
+    expect(parseToolData(deleteBody)).toEqual({
       deleted: ['a.md'],
       count: 1,
     });
@@ -770,11 +1061,11 @@ describe('execution backend server', () => {
     });
 
     expect(purgeResponse.status).toBe(200);
-    const purgeBody = (await purgeResponse.json()) as { content: Array<{ text: string }> };
-    expect(JSON.parse(purgeBody.content[0].text)).toEqual({ deleted: 1 });
+    const purgeBody = (await purgeResponse.json()) as ToolDomainResult;
+    expect(parseToolData(purgeBody)).toEqual({ deleted: 1 });
   });
 
-  it('returns 400 use_sse for wait tool calls sent to /tool', async () => {
+  it('returns 200 use_sse domain errors for wait tool calls sent to /tool', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/tool`, {
@@ -790,9 +1081,10 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'use_sse',
+      ok: false,
+      code: 'use_sse',
       message: 'Use POST /wait/stream for wait operations',
     });
   });
@@ -814,10 +1106,10 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ aborted: [], notFound: ['job-1'] });
+    expect(await response.json()).toEqual({ ok: true, data: { aborted: [], notFound: ['job-1'] } });
   });
 
-  it('returns 403 for abort tool calls that include cross-project jobs', async () => {
+  it('returns 200 scope_mismatch domain errors for abort tool calls that include cross-project jobs', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();
     createdJobIds.add('job-1');
@@ -868,10 +1160,12 @@ describe('execution backend server', () => {
       }),
     });
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: 'scope_mismatch',
-      jobs: ['job-foreign'],
+      ok: false,
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.abort).not.toHaveBeenCalled();
   });
@@ -897,9 +1191,12 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      status: 'running',
-      job: 'workflow-job',
-      session: 'workflow-session',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'workflow-job',
+        session: 'workflow-session',
+      },
     });
     expect(fakeService.executeWorkflow).toHaveBeenCalledTimes(1);
   });
@@ -927,9 +1224,12 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      status: 'running',
-      job: 'bypass-job',
-      session: 'bypass-session',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'bypass-job',
+        session: 'bypass-session',
+      },
     });
     expect(fakeService.start).toHaveBeenCalledWith(
       'codex',
@@ -1022,10 +1322,11 @@ describe('execution backend server', () => {
 
   it('streams passive dashboard SSE events and applies the optional job filter', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
+    const eventBus = new TypedEventBus();
     const backend = await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
+      eventBus,
     });
-    const { eventBus } = await import('../event-bus.js');
 
     const stream = await openHttpStream(`${backend.baseUrl}/events/stream?filter=job:job-1`, {
       'X-Coral-Backend-Token': backend.token,
@@ -1674,13 +1975,130 @@ describe('execution backend server', () => {
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
     });
 
+    it('handoff finalizes live app-server jobs before draining provider servers', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('handoff-app-server-finalization');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'handoff-app-server-job';
+      createdJobIds.add(jobId);
+
+      progressStore.initJob({
+        jobId,
+        sessionId: 'handoff-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'handoff-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          providerContinuity: {
+            provider: 'codex',
+            threadId: 'thread-1',
+          },
+          recoveryPolicy: 'session_continuity_only',
+        },
+      });
+
+      const fakeService = {
+        finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+      };
+      const providerHostManager = createFakeProviderHostManager();
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState } = createRuntimeStateMock();
+      runtimeState.setLifecycle('running');
+
+      const controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'handoff-instance-1',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: {
+          hydrate: vi.fn(),
+          hasShard: vi.fn(() => true),
+          discoverShard: vi.fn(),
+          invalidate: vi.fn(),
+        } as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn: vi.fn(),
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: vi.fn(),
+        killAllChildrenFn: vi.fn(),
+        providerHostManager: providerHostManager as never,
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
+      });
+
+      await controller.shutdown('replaced');
+      await controller.waitForShutdown();
+
+      expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        expect.objectContaining({
+          transport: 'app-server',
+          providerMeta: expect.objectContaining({
+            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
+          }),
+        }),
+        { reason: 'handoff' },
+      );
+      expect(providerHostManager.drainForHandoff).toHaveBeenCalledTimes(1);
+      const finalizeOrder = fakeService.finalizeInterruptedAppServerJob.mock.invocationCallOrder.at(0);
+      const drainOrder = providerHostManager.drainForHandoff.mock.invocationCallOrder.at(0);
+      expect(finalizeOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(drainOrder ?? Number.POSITIVE_INFINITY);
+    });
+
     it('hard shutdown kills children and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
       const killAllChildrenFn = vi.fn();
+      const providerHostManager = createFakeProviderHostManager();
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
         killAllChildrenFn,
+        providerHostManager: providerHostManager as never,
       });
 
       await backend.controller.shutdown('sigint');
@@ -1688,6 +2106,10 @@ describe('execution backend server', () => {
 
       expect(killAllChildrenFn).toHaveBeenCalledTimes(1);
       expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
+      expect(providerHostManager.shutdown).toHaveBeenCalledTimes(1);
+      const hostShutdownOrder = providerHostManager.shutdown.mock.invocationCallOrder.at(0);
+      const childKillOrder = killAllChildrenFn.mock.invocationCallOrder.at(0);
+      expect(hostShutdownOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(childKillOrder ?? Number.POSITIVE_INFINITY);
     });
 
     it('hard shutdown during blocked startup persists abort markers for persisted-only recovery candidates before restart and skips terminal history', async () => {
@@ -1695,7 +2117,7 @@ describe('execution backend server', () => {
       const topic = 'Should the city pedestrianize the downtown core?';
       const projectRoot = createProjectRoot('startup-shutdown-discuss');
       const source = resolveProjectSource(projectRoot);
-      const store = new DiscussSessionStore(source);
+      const store = createDiscussStore(source);
 
       const startupCandidateCreated = decideSessionCreate(
         {
@@ -1862,6 +2284,7 @@ describe('execution backend server', () => {
         discoverShard: vi.fn(),
         invalidate: vi.fn(),
       };
+      const providerHostManager = createFakeProviderHostManager();
       // eslint-disable-next-line prefer-const -- circular: writeBackendInfoFn closure reads controller, but controller assignment needs writeBackendInfoFn
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const writeBackendInfoFn = vi.fn((root: string, info: Parameters<typeof backendInfo.writeBackendInfo>[1]) => {
@@ -1888,8 +2311,13 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: () => {
           throw new Error('Unexpected discuss store lookup');
         },
@@ -1905,6 +2333,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
@@ -1922,6 +2351,124 @@ describe('execution backend server', () => {
         expect(publishOrder).toBeDefined();
         expect(recoverOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(publishOrder ?? Number.POSITIVE_INFINITY);
         expect(controller.getRecoveryRegistry()).toBeNull();
+      } finally {
+        await controller.shutdown('test');
+        await controller.waitForShutdown();
+      }
+    });
+
+    it('routes recovered app-server jobs through continuity finalization instead of PID adoption', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('startup-app-server-recovery');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const progressStore = new ProgressStore();
+      const jobId = 'startup-app-server-job';
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'startup-app-server-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'startup-app-server-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          providerContinuity: {
+            provider: 'codex',
+            threadId: 'thread-1',
+          },
+          recoveryPolicy: 'session_continuity_only',
+        },
+      });
+
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
+        finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+        recoverQueuedJob: vi.fn(),
+        completeRecoveredJob: vi.fn(),
+      };
+      const providerHostManager = createFakeProviderHostManager();
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState } = createRuntimeStateMock();
+      const sessionIndex = {
+        hydrate: vi.fn(),
+        hasShard: vi.fn(() => true),
+        discoverShard: vi.fn(),
+        invalidate: vi.fn(),
+      };
+
+      const controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'lifecycle-instance-app-server',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: sessionIndex as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn: vi.fn(),
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        recoverOrphanedJobsFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4103, host: '127.0.0.1' }),
+      });
+
+      try {
+        await controller.start();
+
+        expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+          expect.objectContaining({ jobId }),
+          expect.objectContaining({
+            transport: 'app-server',
+            providerMeta: expect.objectContaining({
+              providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
+            }),
+          }),
+          { reason: 'restart' },
+        );
+        expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
       } finally {
         await controller.shutdown('test');
         await controller.waitForShutdown();
@@ -1960,7 +2507,7 @@ describe('execution backend server', () => {
 
       const topic = 'Should the city pedestrianize the downtown core?';
       const source = resolveProjectSource(pluginRoot);
-      const store = new DiscussSessionStore(source);
+      const store = createDiscussStore(source);
       const created = decideSessionCreate(
         {
           topic,
@@ -1994,6 +2541,7 @@ describe('execution backend server', () => {
       const writeBackendInfoFn = vi.fn();
       // eslint-disable-next-line prefer-const -- circular: fakeService closure reads controller, but controller assignment needs fakeService
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const providerHostManager = createFakeProviderHostManager();
       const fakeService = {
         adoptRunningJob: vi.fn(() => {
           void controller.shutdown('sigint');
@@ -2021,8 +2569,13 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map([[source, store]]),
         discussRegistry,
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
         getDiscussStoreForSource: (requestedSource: string) => {
           if (requestedSource !== source) {
             throw new Error(`Unexpected discuss source: ${requestedSource}`);
@@ -2040,6 +2593,7 @@ describe('execution backend server', () => {
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         killAllChildrenFn: () => {},
+        providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4101, host: '127.0.0.1' }),
@@ -2061,6 +2615,63 @@ describe('execution backend server', () => {
   });
 
   describe('launch fence', () => {
+    async function startFencedToolServer(routeToolCall = vi.fn(async () => domainSuccess({ allowed: true }))) {
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { runtimeState } = createRuntimeStateMock();
+      runtimeState.setLifecycle('running');
+      runtimeState.setLaunchFenceActive(true);
+
+      const deps: HttpHandlerDeps = {
+        identity: {
+          pluginRoot: '/tmp/plugin',
+          namespace: testBackendNamespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          instanceId: 'execution-backend-instance-1',
+          token: 'test-token',
+          now: () => Date.now(),
+          log: () => {},
+        },
+        runtimeState,
+        idleTimer: createFakeIdleTimer() as never,
+        progressStore: new ProgressStore(),
+        sessionIndex: new SessionIndex(),
+        activeChildren: new Set(),
+        activeDurablePids: new Set(),
+        queueDepth: () => 0,
+        streamResponses: new Set(),
+        isDrainRequested: () => false,
+        requestDrain: () => {},
+        getExecutionService: () => createFakeExecutionService() as never,
+        getDiscussContext: () => ({}) as never,
+        abortJobs: () => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
+        routeToolCall,
+        getToolDescriptors: () => [],
+        subscribeBackendEvents: () => {},
+        unsubscribeBackendEvents: () => {},
+        liveDiscussCount: () => 0,
+        listDiscussSessions: () => [],
+        loadDiscussDetail: () => null,
+      };
+
+      const server = createServer((req, res) => {
+        void createHttpHandler(deps)(req, res);
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Expected listening address');
+      }
+
+      return {
+        server,
+        routeToolCall,
+        baseUrl: `http://127.0.0.1:${address.port}`,
+      };
+    }
+
     it('allows launch ops after fence lifts on startup completion', async () => {
       // Seed a recoverable queued job so the recovery scan activates the fence
       const progressStore = new ProgressStore();
@@ -2107,9 +2718,79 @@ describe('execution backend server', () => {
       });
 
       expect(response.status).toBe(200);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body).toMatchObject({ status: 'running' });
+      const body = (await response.json()) as ToolDomainResult;
+      expect(parseToolData(body)).toMatchObject({ status: 'running' });
       expect(fakeService.start).toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: 'direct provider exec',
+        request: { name: 'codex', args: { op: 'exec', prompt: 'hello' } },
+      },
+      {
+        name: 'coral dispatch',
+        request: { name: 'codex', args: { op: 'coral:architect', prompt: 'hello' } },
+      },
+      {
+        name: 'workflow',
+        request: { name: 'workflow', args: { expression: 'architect', init_prompt: 'hello' } },
+      },
+    ])('returns a domain error while the launch fence is active for $name', async ({ request }) => {
+      const fenced = await startFencedToolServer();
+
+      try {
+        const response = await fetch(`${fenced.baseUrl}/tool`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            ...request,
+            context: { projectRoot: '/tmp/project', coralEnv: {} },
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          ok: false,
+          code: 'backend_recovering',
+          message: 'recovering — retry after 500ms',
+        });
+        expect(fenced.routeToolCall).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve, reject) => fenced.server.close((error) => (error ? reject(error) : resolve())));
+      }
+    });
+
+    it('allows non-work-admitting tool calls to pass through while the launch fence is active', async () => {
+      const routeToolCall = vi.fn(async () => domainSuccess({ sessions: [] }));
+      const fenced = await startFencedToolServer(routeToolCall);
+
+      try {
+        const response = await fetch(`${fenced.baseUrl}/tool`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            name: 'codex',
+            args: { op: 'list' },
+            context: { projectRoot: '/tmp/project', coralEnv: {} },
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          ok: true,
+          data: { sessions: [] },
+        });
+        expect(routeToolCall).toHaveBeenCalledTimes(1);
+      } finally {
+        await new Promise<void>((resolve, reject) => fenced.server.close((error) => (error ? reject(error) : resolve())));
+      }
     });
   });
 

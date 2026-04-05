@@ -13,7 +13,7 @@ import type {
   TerminalResult,
   WorkflowCheckpoint,
 } from '../../shared/types.js';
-import { eventBus } from '../event-bus.js';
+import { TypedEventBus } from '../event-bus.js';
 import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 
 const jobIdsToClean = new Set<string>();
@@ -23,6 +23,7 @@ const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
 const mockState = vi.hoisted(() => ({
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-progress-store-test-tmp`,
 }));
+let eventBus: TypedEventBus;
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -46,6 +47,7 @@ vi.mock('node:fs', async () => {
 beforeEach(() => {
   rmSync(mockState.tmpRoot, { recursive: true, force: true });
   mkdirSync(mockState.tmpRoot, { recursive: true });
+  eventBus = new TypedEventBus();
 });
 
 afterEach(() => {
@@ -55,13 +57,13 @@ afterEach(() => {
   jobIdsToClean.clear();
   rmSync(mockState.tmpRoot, { recursive: true, force: true });
   renameCalls.length = 0;
-  eventBus.removeAllListeners();
+  eventBus.reset();
   vi.restoreAllMocks();
 });
 
 describe('execution ProgressStore', () => {
   it('initJob creates directory and status.json with phase launching', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-init-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -79,7 +81,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendProgress returns incrementing eventId starting at 1', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-events-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -92,7 +94,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('emits event bus job lifecycle events', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-bus-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const created = vi.fn();
@@ -282,7 +284,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('markTerminalStatus emits job:completed', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-terminal-event-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const completed = vi.fn();
@@ -490,6 +492,36 @@ describe('durable snapshot artifacts', () => {
 
     const read = store.readRuntimeRecord(jobId);
     expect(read).toEqual(record);
+  });
+
+  it('caches runtime.json reads until cleanup clears the cache', () => {
+    const store = new ProgressStore();
+    const jobId = `test-runtime-cache-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
+
+    const runtimePath = join(store.jobDir(jobId), 'runtime.json');
+    const firstRecord: PersistedRuntimeRecord = {
+      pid: 111,
+      stdoutPath: join(store.jobDir(jobId), 'stdout-1'),
+      stderrPath: join(store.jobDir(jobId), 'stderr-1'),
+      startTime: '2026-04-03T00:00:00.000Z',
+    };
+    const secondRecord: PersistedRuntimeRecord = {
+      pid: 222,
+      stdoutPath: join(store.jobDir(jobId), 'stdout-2'),
+      stderrPath: join(store.jobDir(jobId), 'stderr-2'),
+      startTime: '2026-04-03T00:01:00.000Z',
+    };
+
+    writeFileSync(runtimePath, JSON.stringify(firstRecord, null, 2), 'utf8');
+    expect(store.readRuntimeRecord(jobId)).toEqual(firstRecord);
+
+    writeFileSync(runtimePath, JSON.stringify(secondRecord, null, 2), 'utf8');
+    expect(store.readRuntimeRecord(jobId)).toEqual(firstRecord);
+
+    store.purgeFromCache(jobId);
+    expect(store.readRuntimeRecord(jobId)).toEqual(secondRecord);
   });
 
   it('writes and reads exit.json', () => {

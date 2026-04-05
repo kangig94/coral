@@ -26,6 +26,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | `/coral:ralph` | Persistent execution loop with verification (sonnet). Flags: `--codex` (Codex delegation), `--team` (parallel AC execution via Agent Teams), `--red` (adversarial tests). All flags are combinable. |
 | `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
 | `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
+| `/coral:equip` | Install MCP tools and native addons. `equip kb` installs the vector search addon and guides embedding provider setup |
 | `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
 | `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
 | `/coral:bid` | Submit a bid or speech in an active `--user` discuss session |

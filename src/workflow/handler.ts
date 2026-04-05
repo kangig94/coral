@@ -1,13 +1,21 @@
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { getNewProvider } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
-import type { CallerContext, ExecutionService } from '../execution/service.js';
+import type { CallerContext } from '../execution/request-context.js';
 import { parseExpression } from './pipe-parser.js';
-import { workflowInputSchema } from './schemas.js';
+import { workflowInputSchema, type WorkflowInput } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
-type WorkflowService = Pick<ExecutionService, 'executeWorkflow'>;
+interface WorkflowService {
+  executeWorkflow(
+    providerName: string,
+    ast: PipelineAST,
+    input: WorkflowInput,
+    ctx: CallerContext,
+    workDir?: string,
+  ): Promise<LaunchDecision>;
+}
 
 function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
   const atomNames = new Set<string>();
@@ -74,18 +82,16 @@ function unknownProviderDecision(providers: string[]): LaunchDecision {
   };
 }
 
-function findUnknownProviders(ast: PipelineAST, defaultProviderName: string): string[] {
-  registerBuiltInProviders();
-
+function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderRegistry): string[] {
   const unknownProviders = new Set<string>();
-  if (!getNewProvider(defaultProviderName)) {
+  if (!providerRegistry.get(defaultProviderName)) {
     unknownProviders.add(defaultProviderName);
   }
 
   for (const step of ast) {
     for (const atom of step) {
       const providerName = atom.provider ?? defaultProviderName;
-      if (!getNewProvider(providerName)) {
+      if (!providerRegistry.get(providerName)) {
         unknownProviders.add(providerName);
       }
     }
@@ -98,20 +104,21 @@ export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
   executionSvc: WorkflowService,
   ctx: CallerContext,
+  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const normalizedAst = normalizeAst(parseExpression(input.expression), input.provider);
+  const ast = normalizeAst(parseExpression(input.expression), input.provider);
 
-  if (input.atoms) validateAtomConfigKeys(input.atoms, normalizedAst);
-  validateNamespaces(normalizedAst);
-  validateParallelDuplicates(normalizedAst);
+  if (input.atoms) validateAtomConfigKeys(input.atoms, ast);
+  validateNamespaces(ast);
+  validateParallelDuplicates(ast);
 
-  const unknownProviders = findUnknownProviders(normalizedAst, input.provider);
+  const unknownProviders = findUnknownProviders(ast, input.provider, providerRegistry);
   if (unknownProviders.length > 0) {
     return unknownProviderDecision(unknownProviders);
   }
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
   const effectiveContext = owner ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } } : ctx;
-  return executionSvc.executeWorkflow(input.provider, normalizedAst, input, effectiveContext, input.work_dir);
+  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.work_dir);
 }

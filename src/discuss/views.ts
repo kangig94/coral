@@ -7,7 +7,18 @@
 
 import { buildAuditView, buildControlView } from './projections.js';
 import type { PersistedDiscussSnapshot } from './events.js';
-import type { DiscussState, TranscriptEntry } from './types.js';
+import type { DiscussState } from './types.js';
+export type {
+  DiscussControlBidsTranscriptEntryDto,
+  DiscussControlTranscriptEntryDto,
+  DiscussAuditTranscriptEntryDto,
+  DiscussControlView,
+  DiscussAuditView,
+} from './view-types.js';
+import type {
+  DiscussAuditTranscriptEntryDto,
+  DiscussControlTranscriptEntryDto,
+} from './view-types.js';
 
 // ---------------------------------------------------------------------------
 // Authority and view discriminators
@@ -15,22 +26,6 @@ import type { DiscussState, TranscriptEntry } from './types.js';
 
 export type DiscussAuthority = 'live' | 'persisted';
 export type DiscussView = 'control' | 'audit';
-
-// ---------------------------------------------------------------------------
-// Transcript entry DTOs (view-specific projections of TranscriptEntry)
-// ---------------------------------------------------------------------------
-
-type DiscussBidTranscriptEntry = Extract<TranscriptEntry, { type: 'bids' }>;
-type DiscussNonBidTranscriptEntry = Exclude<TranscriptEntry, { type: 'bids' }>;
-
-export type DiscussControlBidsTranscriptEntryDto = Omit<
-  DiscussBidTranscriptEntry,
-  'bids' | 'effective_bids' | 'thoughts'
->;
-
-export type DiscussControlTranscriptEntryDto = DiscussControlBidsTranscriptEntryDto | DiscussNonBidTranscriptEntry;
-
-export type DiscussAuditTranscriptEntryDto = TranscriptEntry;
 
 // ---------------------------------------------------------------------------
 // Session DTOs
@@ -69,20 +64,6 @@ type DiscussSessionDto = {
 
 export type DiscussControlSessionDto = DiscussSessionDto;
 export type DiscussAuditSessionDto = DiscussSessionDto;
-
-// ---------------------------------------------------------------------------
-// View types (returned by projections.ts buildControlView / buildAuditView)
-// ---------------------------------------------------------------------------
-
-export type DiscussControlView = {
-  transcript: DiscussControlTranscriptEntryDto[];
-  lastSeq: number;
-};
-
-export type DiscussAuditView = {
-  transcript: DiscussAuditTranscriptEntryDto[];
-  lastSeq: number;
-};
 
 // ---------------------------------------------------------------------------
 // Summary and detail response DTOs
@@ -188,22 +169,22 @@ export function buildDiscussDetail(
 ): DiscussDetailResponse {
   const session = buildDiscussSession(snapshot);
   if (view === 'audit') {
-    const auditView: DiscussAuditView = buildAuditView(snapshot);
+    const { transcript, lastSeq } = buildAuditView(snapshot);
     return {
       authority,
       view,
       session,
-      transcript: auditView.transcript,
-      lastSeq: auditView.lastSeq,
+      transcript,
+      lastSeq,
     };
   }
 
-  const controlView: DiscussControlView = buildControlView(snapshot);
+  const { transcript, lastSeq } = buildControlView(snapshot);
   return {
     authority,
     view,
     session,
-    transcript: controlView.transcript,
-    lastSeq: controlView.lastSeq,
+    transcript,
+    lastSeq,
   };
 }

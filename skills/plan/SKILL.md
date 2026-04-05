@@ -154,6 +154,8 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
 
     **4c. Round Summary** (AFTER 4b)
 
+    Output the following to the user as conversation text. Do NOT write it to the plan file.
+
       ## Round N ({Round Label})
 
       | # | Source | Finding | Severity | Level | Classification |

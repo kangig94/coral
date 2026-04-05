@@ -5,8 +5,7 @@
  */
 
 import { z } from 'zod';
-import { providerOpSchema, coralOpSchema, promptSchema, sessionRefSchema, cwdSchema } from '../../shared/schemas.js';
-import { identPattern } from '../../shared/mcp-utils.js';
+import { providerOpSchema, coralAgentOpSchema } from '../../shared/schemas.js';
 
 export const codexOpSchema = providerOpSchema;
 
@@ -15,12 +14,5 @@ export type CodexSessionCreateInput = Omit<Extract<CodexOpInput, { op: 'exec' }>
 export type CodexSessionSendInput = Omit<Extract<CodexOpInput, { op: 'exec' }>, 'op'> & { session: string };
 export type CodexSessionForkInput = Omit<Extract<CodexOpInput, { op: 'fork' }>, 'op'>;
 
-export const coralAgentSchema = z.object({
-  op: coralOpSchema,
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  work_dir: cwdSchema,
-  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
-});
-
+export const coralAgentSchema = coralAgentOpSchema;
 export type CoralAgentInput = z.infer<typeof coralAgentSchema>;

@@ -55,7 +55,7 @@ describe('kb detection and paths', () => {
     expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
   });
 
-  it('falls back to basic mode when lancedb is not installed in the runtime dir', async () => {
+  it('falls back to text-only startup when the vector store is unavailable', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
@@ -66,9 +66,9 @@ describe('kb detection and paths', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(join(pluginRoot, 'bridge', 'coral-backend.cjs'), '', 'utf-8');
 
-    await kb.initAdapter(pluginRoot);
+    await kb.initVectorStore(pluginRoot);
 
-    expect(kb.adapter).toBeNull();
+    expect(kb.vectorStore).toBeNull();
   });
 
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {

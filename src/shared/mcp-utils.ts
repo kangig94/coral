@@ -29,6 +29,14 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+export function buildJsonRpcError(code: number, message: string, data?: unknown): {
+  code: number;
+  message: string;
+  data?: unknown;
+} {
+  return data === undefined ? { code, message } : { code, message, data };
+}
+
 export const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 /** Check whether a value is a valid token-safe owner identifier. */
@@ -47,6 +55,11 @@ export function assertOwnerId(value: unknown, label = 'owner'): string {
 }
 
 export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
+
+/** Parse an optional non-empty string from an unknown value. */
+export function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
 
 export function textResult(text: string, isError = false): McpResult {
   return { content: [{ type: 'text' as const, text }], isError };
@@ -107,12 +120,23 @@ export function readBundleHash(pluginRoot: string): string {
   return 'unknown';
 }
 
+export const nowIsoString = (): string => new Date().toISOString();
+
+/** Race a promise against a timeout. Returns true if the promise settles first, false on timeout. */
+export function raceTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+}
+
 /**
  * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
  * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
  */
-export const nowIsoString = (): string => new Date().toISOString();
-
 export function tryExclusiveWrite(filePath: string, payload: string): boolean {
   mkdirSync(dirname(filePath), { recursive: true });
   try {

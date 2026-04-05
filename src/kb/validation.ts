@@ -43,3 +43,43 @@ export function assertNoteSlug(value: unknown, label: string): string {
   }
   return normalized;
 }
+
+export function assertSourceSlug(value: unknown, label: string): string {
+  return assertNoteSlug(value, label);
+}
+
+/** Strip markdown code fences (```json, ```markdown, etc.) wrapping raw LLM output. */
+export function stripMarkdownCodeFences(raw: string): string {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^```(?:\w+)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : trimmed;
+}
+
+export function parsePositiveInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+export function parseNonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+export function parseOptionalTrimmedString(value: unknown, label: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+  const normalized = value.trim();
+  return normalized ? normalized : undefined;
+}
+
+export function assertCommunitySlug(value: unknown, label: string): string {
+  return assertNoteSlug(value, label);
+}

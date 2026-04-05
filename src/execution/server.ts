@@ -8,13 +8,13 @@ import { join } from 'node:path';
 import { formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
-import type { ExecutionService } from './service.js';
-import { activeChildren, killAllChildren, queueDepth } from './engine.js';
+import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
+import { LaunchCoordinator } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
 
-import { eventBus } from './event-bus.js';
+import { TypedEventBus } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
@@ -49,6 +49,8 @@ import {
 } from './tool-router.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
 import type { EventStreamHandlers, HttpHandlerDeps, MutableBackendRuntimeState } from './backend-contracts.js';
+import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import {
   closeServer as defaultCloseServer,
   createKbSubsystem as defaultCreateKbSubsystem,
@@ -61,10 +63,9 @@ import {
   type LifecycleDeps,
   type LifecycleController,
 } from './lifecycle.js';
+import type { BackendServerInfo, LifecycleState } from './server-types.js';
 
 export { routeToolCall, getToolDescriptors };
-
-export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -76,7 +77,10 @@ type BackendServerOptions = {
   now?: () => number;
   log?: (message: string) => void;
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (ctx: CallerContext) => ExecutionServiceLike;
+  createExecutionService?: (
+    ctx: CallerContext,
+    deps: ExecutionServiceDeps,
+  ) => ExecutionServiceLike;
   acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
@@ -88,20 +92,13 @@ type BackendServerOptions = {
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   killAllChildrenFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
+  providerHostManager?: ProviderHostManager;
+  launchCoordinator?: LaunchCoordinator;
+  eventBus?: TypedEventBus;
+  providerRegistry?: ProviderRegistry;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
-};
-
-export type BackendServerInfo = {
-  port: number;
-  host: string;
-  token: string;
-  version: string;
-  bundleHash: string;
-  namespace: string;
-  instanceId: string;
-  startedAt: number;
 };
 
 export type BackendServerController = {
@@ -112,9 +109,13 @@ export type BackendServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => IdleTimer;
 };
-
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
-const globalDiscussRegistry = createDiscussContextRegistry();
+
+export function listInstantiatedExecutionServices(
+  services: ReadonlyMap<string, ExecutionServiceLike>,
+): ExecutionServiceLike[] {
+  return [...services.values()];
+}
 
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const resolvedPluginRoot = options.pluginRoot ?? defaultPluginRoot;
@@ -124,8 +125,16 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
-  const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
-  const progressStore = options.progressStore ?? new ProgressStore();
+  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator();
+  const eventBus = options.eventBus ?? options.progressStore?.getEventBus() ?? new TypedEventBus();
+  const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
+  const progressStore = options.progressStore ?? new ProgressStore(eventBus);
+  const providerHostManager =
+    options.providerHostManager ??
+    createProviderHostManager({
+      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    });
   const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   backendLog.init({ version, bundleHash });
@@ -136,17 +145,19 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     });
   const createExecutionService =
     options.createExecutionService ??
-    ((ctx: CallerContext) => new DefaultExecutionService(ctx, progressStore, bundleHash));
+    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
-  const routeToolCallFn = options.routeToolCallFn ?? routeToolCall;
+  const routeToolCallFn =
+    options.routeToolCallFn ??
+    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem, providerRegistry));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const recoverOrphanedJobsFn =
     options.recoverOrphanedJobsFn ??
     ((currentNamespace: string) => {
-      recoverOrphanedJobs(progressStore, currentNamespace, log);
+      recoverOrphanedJobs(progressStore, currentNamespace, log, eventBus);
     });
   const cleanupStaleJobsFn =
     options.cleanupStaleJobsFn ??
@@ -158,7 +169,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     ((currentNamespace: string, message: string) => {
       markJobsAsError(progressStore, currentNamespace, message);
     });
-  const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
+  const killAllChildrenFn = options.killAllChildrenFn ?? (() => launchCoordinator.killAllChildren());
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
@@ -198,9 +209,26 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const key = ctx.projectRoot;
     const existing = services.get(key);
     if (existing) return existing;
-    const created = createExecutionService(ctx);
+    const created = createExecutionService(ctx, {
+      progressStore,
+      bundleHash,
+      providerHostManager,
+      launchCoordinator,
+      eventBus,
+      providerRegistry,
+    });
     services.set(key, created);
     return created;
+  }
+
+  function getRecoveryService(ctx: CallerContext): RecoveryCapableService {
+    // getExecutionService creates ExecutionService which implements RecoveryCapableService.
+    // The cast is safe because createExecutionService always returns ExecutionService.
+    return getExecutionService(ctx) as unknown as RecoveryCapableService;
+  }
+
+  function listExecutionServices(): ExecutionServiceLike[] {
+    return listInstantiatedExecutionServices(services);
   }
 
   function getDiscussStoreForSource(source: string): DiscussSessionStore {
@@ -358,9 +386,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     }
 
     const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId) ? 'live' : 'persisted';
-    return view === 'audit'
-      ? buildDiscussDetail(snapshot, 'audit', authority)
-      : buildDiscussDetail(snapshot, 'control', authority);
+    if (view === 'audit') {
+      return buildDiscussDetail(snapshot, 'audit', authority);
+    }
+    return buildDiscussDetail(snapshot, 'control', authority);
   }
 
   // -- Drain admission fence -------------------------------------------------
@@ -384,8 +413,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     idleTimer,
     progressStore,
     sessionIndex,
-    activeChildren,
-    queueDepth,
+    activeChildren: launchCoordinator.activeChildren,
+    activeDurablePids: launchCoordinator.activeDurablePids,
+    queueDepth: () => launchCoordinator.queueDepth(),
     streamResponses,
     isDrainRequested: () => drainRequested,
     requestDrain: (reason: string) => {
@@ -397,7 +427,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     abortJobs,
     scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
     routeToolCall: routeToolCallFn,
-    getToolDescriptors,
+    getToolDescriptors: () => getToolDescriptors(providerRegistry),
     subscribeBackendEvents: (handlers: EventStreamHandlers) => {
       eventBus.on('job:created', handlers.onJobCreated);
       eventBus.on('job:phase_changed', handlers.onPhaseChanged);
@@ -442,8 +472,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     streamResponses,
     discussStores,
     discussRegistry,
+    eventBus,
+    launchCoordinator,
+    providerRegistry,
     server,
     getExecutionService,
+    getRecoveryService,
+    listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -455,6 +490,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     killAllChildrenFn,
+    providerHostManager,
     createKbSubsystemFn,
     closeServerFn,
     listenFn: defaultListen,

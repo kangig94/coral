@@ -1,32 +1,18 @@
-import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { SessionState } from '../shared/types.js';
+import { acquireDirectoryLock } from '../shared/fs-lock.js';
+import { isValidSessionEntry } from '../shared/session-entry.js';
+import type { ProviderContinuityBlob, SessionEntry } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
-import { isValidSessionEntry } from '../client/readers.js';
-import { eventBus } from './event-bus.js';
+import { TypedEventBus } from './event-bus.js';
 
-export interface SessionEntry {
-  sessionId: string;
-  provider: string;
-  name: string;
-  state: SessionState;
-  activeJobId?: string;
-  lastJobId?: string;
-  conversationRef?: string;
-  model: string;
-  cwd: string;
-  projectRoot?: string;
-  createdAt: string;
-  lastUsedAt: string;
-  version: number;
-}
-
-type CachedSession = {
-  entry: SessionEntry;
-};
+export type SessionContinuityMutation =
+  | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+  | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+  | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
 
 function toSessionNamespace(dir: string): string {
   try {
@@ -49,25 +35,24 @@ function isValidEntry(value: unknown): value is SessionEntry {
 export class SessionManager {
   private static readonly shardStamps = new Map<string, number>();
   private readonly sessionDir: string;
-  private readonly cache = new Map<string, CachedSession>();
+  private readonly eventBus: TypedEventBus;
+  private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string) {
-    this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory));
-    mkdirSync(this.sessionDir, { recursive: true });
+  constructor(workingDirectory: string, eventBus: TypedEventBus = new TypedEventBus(), isRawShardPath = false) {
+    this.sessionDir = isRawShardPath ? workingDirectory : join(sessionBase(), toSessionNamespace(workingDirectory));
+    this.eventBus = eventBus;
+    if (!isRawShardPath) {
+      mkdirSync(this.sessionDir, { recursive: true });
+    }
     this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
   }
 
-  static openShard(shardDir: string): SessionManager {
-    const manager = Object.create(SessionManager.prototype) as SessionManager;
-    (manager as unknown as { sessionDir: string }).sessionDir = shardDir;
-    (manager as unknown as { cache: Map<string, CachedSession> }).cache = new Map();
-    (manager as unknown as { knownSessionIds: Set<string> }).knownSessionIds = new Set();
-    (manager as unknown as { shardStamp: number }).shardStamp = SessionManager.ensureShardStamp(shardDir);
-    (manager as unknown as { cacheHydrated: boolean }).cacheHydrated = false;
-    return manager;
+  /** Open an existing shard directory without creating it (recovery path). */
+  static openShard(shardDir: string, eventBus: TypedEventBus = new TypedEventBus()): SessionManager {
+    return new SessionManager(shardDir, eventBus, true);
   }
 
   static listShards(): string[] {
@@ -103,33 +88,7 @@ export class SessionManager {
   }
 
   private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
-    const lockDir = this.lockPath(sessionId);
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      try {
-        mkdirSync(lockDir);
-        return () => {
-          try {
-            rmdirSync(lockDir);
-          } catch { /* empty */ }
-        };
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        try {
-          const stats = statSync(lockDir);
-          if (Date.now() - stats.mtimeMs > 30000) {
-            try {
-              rmdirSync(lockDir);
-            } catch { /* empty */ }
-            continue;
-          }
-        } catch { /* empty */ }
-        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 50));
-      }
-    }
-
-    throw new Error(`Session lock timeout: ${sessionId}`);
+    return acquireDirectoryLock(this.lockPath(sessionId), timeoutMs);
   }
 
   private syncCacheWithShardStamp(): void {
@@ -142,7 +101,7 @@ export class SessionManager {
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
-    this.cache.set(sessionId, { entry: { ...entry } });
+    this.cache.set(sessionId, { ...entry });
     this.knownSessionIds.add(sessionId);
   }
 
@@ -151,7 +110,7 @@ export class SessionManager {
 
     if (!options?.forceFresh) {
       const cached = this.cache.get(sessionId);
-      if (cached) return { ...cached.entry };
+      if (cached) return { ...cached };
     }
 
     try {
@@ -193,7 +152,7 @@ export class SessionManager {
     this.shardStamp = SessionManager.bumpShardStamp(this.sessionDir);
     this.populateCache(entry.sessionId, entry);
     const shardHash = basename(this.sessionDir);
-    eventBus.emit('session:updated', {
+    this.eventBus.emit('session:updated', {
       sessionId: entry.sessionId,
       shardHash,
       version: entry.version,
@@ -230,6 +189,21 @@ export class SessionManager {
     this.writeEntry(entry);
   }
 
+  checkpointProviderContinuity(
+    sessionId: string,
+    update: { providerContinuity: ProviderContinuityBlob; conversationRef?: string },
+  ): void {
+    const entry = this.readEntry(sessionId);
+    if (!entry) return;
+    entry.providerContinuity = update.providerContinuity;
+    if (update.conversationRef) {
+      entry.conversationRef = update.conversationRef;
+      entry.state = 'ready';
+    }
+    entry.lastUsedAt = nowIsoString();
+    this.writeEntry(entry);
+  }
+
   /** Transition session to non_resumable (provider completed without yielding a conversationRef). */
   setNonResumable(sessionId: string): void {
     const entry = this.readEntry(sessionId);
@@ -252,6 +226,55 @@ export class SessionManager {
     } finally {
       release();
     }
+  }
+
+  async finalizeJobContinuityAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+      mutation: SessionContinuityMutation;
+    },
+  ): Promise<boolean> {
+    const release = await this.acquireSessionLock(sessionId);
+    try {
+      const entry = this.readEntry(sessionId, { forceFresh: true });
+      if (!entry) return false;
+      if (entry.activeJobId !== options.expectedActiveJobId) return false;
+      if (entry.version !== options.expectedVersion) return false;
+
+      entry.activeJobId = undefined;
+      entry.lastJobId = options.expectedActiveJobId;
+      entry.lastUsedAt = nowIsoString();
+      if (options.mutation.providerContinuity) {
+        entry.providerContinuity = options.mutation.providerContinuity;
+      }
+
+      if (options.mutation.type === 'set_resumable') {
+        entry.conversationRef = options.mutation.conversationRef;
+        entry.state = 'ready';
+      } else if (options.mutation.type === 'clear_non_resumable') {
+        entry.conversationRef = undefined;
+        entry.state = 'non_resumable';
+      }
+
+      this.writeEntry(entry);
+      return true;
+    } finally {
+      release();
+    }
+  }
+
+  async clearConversationRefAndMarkNonResumableAtomic(
+    sessionId: string,
+    expectedActiveJobId: string,
+    expectedVersion: number,
+  ): Promise<boolean> {
+    return this.finalizeJobContinuityAtomic(sessionId, {
+      expectedActiveJobId,
+      expectedVersion,
+      mutation: { type: 'clear_non_resumable' },
+    });
   }
 
   /**

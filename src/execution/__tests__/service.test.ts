@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as ResolverMod from '../resolver.js';
 import type {
+  AppServerRuntimeRecord,
+  DurableCliRuntimeRecord,
+  JobPhase,
   PersistedLaunchRecord,
   PersistedProgressRecord,
-  PersistedRuntimeRecord,
   PersistedStatusRecord,
   ProviderRequest,
   ProviderResult,
@@ -16,18 +18,18 @@ import type {
 } from '../../shared/types.js';
 
 import type { Provider } from '../../providers/types.js';
+import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
+  LaunchCoordinator,
   MAX_ACTIVE_SESSIONS,
-  cancelQueued,
-  getActiveJobIds,
-  killAllChildren,
-  queueDepth,
-  releaseLaunch,
-  restoreActiveLaunch,
+  type ProviderServerHandle,
+  type SpawnProviderServerFn,
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-registry.js';
+import { TypedEventBus } from '../event-bus.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
+import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
 import { ExecutionService, type CallerContext } from '../service.js';
 
@@ -68,9 +70,73 @@ type ServiceInternals = {
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
+let eventBus: TypedEventBus;
+let launchCoordinator: LaunchCoordinator;
+let spawnProviderServer: SpawnProviderServerFn;
+
+function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
+  return launchCoordinator.cancelQueued(jobId, pool);
+}
+
+function getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
+  return launchCoordinator.getActiveJobIds(pool);
+}
+
+function killAllChildren(): void {
+  launchCoordinator.killAllChildren();
+}
+
+function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
+  return launchCoordinator.queueDepth(pool);
+}
+
+function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.releaseLaunch(jobId, pool);
+}
+
+function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
+}
 
 function getInternals(service: ExecutionService): ServiceInternals {
   return service as unknown as ServiceInternals;
+}
+
+function createService(
+  ctx: CallerContext,
+  options: {
+    progressStore?: ProgressStore;
+    bundleHash?: string;
+    providerHostManager?: ProviderHostManager;
+  } = {},
+): ExecutionService {
+  return new ExecutionService(ctx, {
+    progressStore: options.progressStore,
+    bundleHash: options.bundleHash,
+    providerHostManager: options.providerHostManager ?? createProviderHostManager({ spawnProviderServer }),
+    launchCoordinator,
+    eventBus,
+    providerRegistry: {
+      get: mockState.getNewProvider,
+      getAll: () => [],
+      registerBuiltIns: () => {},
+    } as never,
+  });
+}
+
+function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
+  const fallback = handles.at(-1);
+  const mock = vi.fn(async () => {
+    if (!fallback) {
+      throw new Error('No provider server handle configured');
+    }
+    return fallback;
+  });
+  for (const handle of handles) {
+    mock.mockResolvedValueOnce(handle);
+  }
+  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
+  return mock;
 }
 
 function trackJob(jobId: string): void {
@@ -114,6 +180,57 @@ function createDeferred<T = void>(): {
   return { promise, resolve, reject };
 }
 
+function createFakeProviderServerHandle(options?: {
+  generation?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+  const request =
+    options?.request ??
+    (async (_method: string, _params: Record<string, unknown>) => {
+      return {};
+    });
+  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
+  const notifyMock = vi.fn();
+  const onNotificationMock = vi.fn(
+    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+      handlers.add(handler);
+      return () => {
+        handlers.delete(handler);
+      };
+    },
+  );
+  const markExpectedCloseMock = vi.fn();
+  const closeMock = vi.fn(async () => {});
+  const closePromise = new Promise<Error | void>(() => {});
+
+  return {
+    handle: {
+      pid: 43210,
+      child: {} as never,
+      generation: options?.generation ?? 7,
+      rpc: {
+        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
+        notify: notifyMock,
+      },
+      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      closePromise,
+      markExpectedClose: markExpectedCloseMock,
+      close: closeMock,
+    } satisfies ProviderServerHandle,
+    requestMock,
+    notifyMock,
+    onNotificationMock,
+    markExpectedCloseMock,
+    closeMock,
+    emit(message: { method: string; params?: Record<string, unknown> }) {
+      for (const handler of handlers) {
+        handler(message);
+      }
+    },
+  };
+}
+
 function makeProvider(options?: { execute?: Provider['execute']; preflight?: Provider['preflight'] }): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
@@ -132,6 +249,98 @@ function makeProvider(options?: { execute?: Provider['execute']; preflight?: Pro
     ...(preflight ? { preflight } : {}),
   };
   return { provider, execute, preflight };
+}
+
+function makeCodexAppServerProvider(): Provider {
+  return {
+    name: 'codex',
+    execute: vi.fn(async () => ({ content: 'ok' })),
+    appServer: {
+      buildServerSpec: (_continuity, request) =>
+        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      interrupt: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        const turnId = continuity.turnId;
+        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
+          return;
+        }
+        await lease.rpc('turn/interrupt', { threadId, turnId });
+      },
+      probe: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        if (typeof threadId !== 'string') {
+          return { resumable: false, updatedContinuity: continuity };
+        }
+        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
+        try {
+          await lease.rpc('thread/resume', {
+            threadId,
+            cwd,
+            model: null,
+            approvalPolicy: 'never',
+            sandbox: 'workspace-write',
+          });
+          return { resumable: true, updatedContinuity: continuity };
+        } catch (error) {
+          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+          if (
+            message.includes('not found') ||
+            message.includes('missing thread') ||
+            message.includes('unknown thread') ||
+            message.includes('does not exist') ||
+            message.includes('no such thread')
+          ) {
+            return { resumable: false, updatedContinuity: continuity };
+          }
+          throw error;
+        }
+      },
+      finalizeInterrupted: (probeResult, continuity) =>
+        probeResult.resumable
+          ? {
+              conversationRef: typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
+              continuityMutation: continuity,
+            }
+          : {
+              nonResumable: true,
+              continuityMutation: continuity,
+            },
+    },
+  };
+}
+
+function makeSharedClaudeAppServerProvider(spec: {
+  provider: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  shared: true;
+}): Provider {
+  return {
+    name: 'claude',
+    execute: vi.fn(async () => ({ content: 'ok' })),
+    appServer: {
+      buildServerSpec: () => spec,
+      interrupt: async (lease, continuity) => {
+        const brokerSessionKey =
+          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
+        if (!brokerSessionKey) {
+          return;
+        }
+        await lease.rpc('turn/interrupt', {
+          brokerSessionKey,
+          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
+        });
+      },
+      probe: async (_lease, continuity) => ({
+        resumable: true,
+        updatedContinuity: continuity,
+      }),
+      finalizeInterrupted: (probeResult) => ({
+        continuityMutation: probeResult.updatedContinuity,
+      }),
+    },
+  };
 }
 
 async function occupyProviderSlots(
@@ -171,6 +380,37 @@ async function waitForTerminalEvent(
   throw new Error(`Expected terminal event for ${jobId}`);
 }
 
+function createClaimedJob(
+  service: ExecutionService,
+  ctx: CallerContext,
+  options: { initialPhase?: JobPhase } = {},
+): {
+  jobId: string;
+  sessionId: string;
+  progressStore: ProgressStore;
+  sessionManager: SessionManager;
+} {
+  const { progressStore, sessionManager } = getInternals(service);
+  const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
+  const jobId = `wait-job-${randomUUID()}`;
+  trackJob(jobId);
+  progressStore.initJob({
+    jobId,
+    sessionId: session.sessionId,
+    provider: 'codex',
+    projectRoot: ctx.projectRoot,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
+    initialPhase: options.initialPhase ?? 'running',
+  });
+  expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+  return {
+    jobId,
+    sessionId: session.sessionId,
+    progressStore,
+    sessionManager,
+  };
+}
+
 describe('ExecutionService', () => {
   let ctx: CallerContext;
 
@@ -182,6 +422,9 @@ describe('ExecutionService', () => {
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
+    eventBus = new TypedEventBus();
+    launchCoordinator = new LaunchCoordinator();
+    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
   });
@@ -209,7 +452,7 @@ describe('ExecutionService', () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -255,7 +498,7 @@ describe('ExecutionService', () => {
       },
     };
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -281,9 +524,430 @@ describe('ExecutionService', () => {
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
   });
 
+  it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle({ generation: 41 });
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId1 = `app-server-runtime-${randomUUID()}`;
+    const jobId2 = `app-server-runtime-${randomUUID()}`;
+    trackJob(jobId1);
+    trackJob(jobId2);
+
+    progressStore.initJob({
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.initJob({
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+
+    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+    const firstRuntime = progressStore.readRuntimeRecord(jobId1) as AppServerRuntimeRecord;
+    expect(firstRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(firstRuntime.startTime).toEqual(expect.any(String));
+    expect(firstRuntime.providerMeta.providerContinuity).toBeUndefined();
+
+    let secondSettled = false;
+    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+
+    await Promise.resolve();
+
+    const waitingRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(waitingRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        leaseState: 'waiting',
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(waitingRuntime.startTime).toEqual(expect.any(String));
+    expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
+    expect(waitingRuntime.providerMeta.providerContinuity).toBeUndefined();
+    expect(secondSettled).toBe(false);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+
+    firstLease.release();
+    const secondLease = await secondLeasePromise;
+
+    const acquiredRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(acquiredRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    expect(acquiredRuntime.startTime).toEqual(expect.any(String));
+    expect(acquiredRuntime.providerMeta.providerContinuity).toBeUndefined();
+
+    secondLease.release();
+  });
+
+  it('allows shared app-server leases to overlap on the same handle', async () => {
+    const spec = {
+      provider: 'claude',
+      command: process.execPath,
+      args: ['broker.js'],
+      cwd: process.cwd(),
+      shared: true as const,
+    };
+    const requestGate = createDeferred<void>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const server = createFakeProviderServerHandle({
+      generation: 41,
+      request: async (_method, params) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await requestGate.promise;
+        inFlight -= 1;
+        return params;
+      },
+    });
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId1 = `shared-app-server-${randomUUID()}`;
+    const jobId2 = `shared-app-server-${randomUUID()}`;
+    trackJob(jobId1);
+    trackJob(jobId2);
+
+    progressStore.initJob({
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.initJob({
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+
+    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+
+    let secondSettled = false;
+    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
+      secondSettled = true;
+      return lease;
+    });
+    await vi.waitFor(() => {
+      expect(secondSettled).toBe(true);
+    });
+    const secondLease = await secondLeasePromise;
+
+    const secondRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    expect(secondRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        provider: 'claude',
+        leaseState: 'acquired',
+        serverGeneration: 41,
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+
+    const firstRpc = firstLease.rpc('turn/start', { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
+    const secondRpc = secondLease.rpc('turn/start', { brokerSessionKey: 'broker-2', brokerTurnId: 'turn-2' });
+    await Promise.resolve();
+
+    expect(maxInFlight).toBe(2);
+    requestGate.resolve();
+    await Promise.all([firstRpc, secondRpc]);
+
+    firstLease.release();
+    secondLease.release();
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
+    const jobId = `app-server-abort-${randomUUID()}`;
+    const server = createFakeProviderServerHandle({
+      request: async (method, params) => {
+        if (method === 'turn/interrupt') {
+          return {
+            threadId: params.threadId,
+            turnId: params.turnId,
+          };
+        }
+        return {};
+      },
+    });
+    setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore, abortRegistry } = getInternals(service);
+    trackJob(jobId);
+    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+
+    progressStore.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'running',
+    });
+    progressStore.writeRuntimeRecord(jobId, {
+      transport: 'app-server',
+      startTime: new Date().toISOString(),
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        serverGeneration: 7,
+        providerContinuity: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+        },
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
+    progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'abort me',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    });
+    abortRegistry.register(jobId);
+
+    expect(service.abort([jobId])).toEqual({
+      aborted: [jobId],
+      notFound: [],
+    });
+
+    await vi.waitFor(() => {
+      expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+      });
+    });
+  });
+
+  it('routes shared app-server interrupts through acquireServer while a live lease is active', async () => {
+    const spec = {
+      provider: 'claude',
+      command: process.execPath,
+      args: ['broker.js'],
+      cwd: process.cwd(),
+      shared: true as const,
+    };
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
+
+    const firstLease = await service.acquireServer(spec);
+    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
+
+    const launchRecord: PersistedLaunchRecord = {
+      jobId: `shared-interrupt-${randomUUID()}`,
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'interrupt me',
+        cwd: ctx.projectRoot,
+        bypassPermissions: true,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const runtimeRecord: AppServerRuntimeRecord = {
+      transport: 'app-server',
+      startTime: new Date().toISOString(),
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        serverGeneration: 7,
+        providerContinuity: {
+          brokerSessionKey: 'broker-session-1',
+          brokerTurnId: 'broker-turn-1',
+          bootstrapSignature: {
+            cwd: '/workspace',
+            systemPromptHash: 'sha256:bootstrap',
+            permissionMode: 'bypassPermissions',
+          },
+          envHash: 'sha256:env',
+        },
+        recoveryPolicy: 'session_continuity_only',
+      },
+    };
+
+    await service.interruptAppServerJob(launchRecord, runtimeRecord);
+
+    expect(acquireServerSpy).toHaveBeenCalledTimes(1);
+    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+      brokerSessionKey: 'broker-session-1',
+      brokerTurnId: 'broker-turn-1',
+    });
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+
+    acquireServerSpy.mockRestore();
+    firstLease.release();
+  });
+
+  it('borrows the live exclusive app-server host for interrupts instead of queueing a second lease', async () => {
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+
+    const firstLease = await service.acquireServer(spec);
+    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
+
+    await service.interruptAppServerJob(
+      {
+        jobId: `exclusive-interrupt-${randomUUID()}`,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot: ctx.projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        pool: 'default',
+        enqueueSequence: 0,
+        providerAction: 'exec',
+        request: {
+          prompt: 'interrupt me',
+          cwd: ctx.projectRoot,
+          bypassPermissions: true,
+          coralEnv: {},
+        },
+        createdAt: new Date().toISOString(),
+      },
+      {
+        transport: 'app-server',
+        startTime: new Date().toISOString(),
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          serverGeneration: firstLease.generation,
+          providerContinuity: {
+            threadId: 'thread-live',
+            turnId: 'turn-live',
+          },
+          recoveryPolicy: 'session_continuity_only',
+        },
+      },
+    );
+
+    expect(acquireServerSpy).not.toHaveBeenCalled();
+    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'thread-live',
+      turnId: 'turn-live',
+    });
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+
+    acquireServerSpy.mockRestore();
+    firstLease.release();
+  });
+
+  it('persists app-server lease-wait aborts as aborted instead of error', async () => {
+    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const server = createFakeProviderServerHandle();
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const firstLeaseHeld = createDeferred<void>();
+    const { provider } = makeProvider({
+      execute: async (_request, runtime): Promise<ProviderResult> => {
+        const lease = await runtime.acquireServer!(spec);
+        await firstLeaseHeld.promise;
+        lease.release();
+        return { content: 'done' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const first = await service.start('codex', { prompt: 'hold lease' }, ctx);
+    const second = await service.start('codex', { prompt: 'wait for lease' }, ctx);
+
+    expect(first.status).toBe('running');
+    expect(second.status).toBe('running');
+    if (first.status !== 'running' || second.status !== 'running') {
+      throw new Error('expected running launches');
+    }
+    trackJob(first.job);
+    trackJob(second.job);
+
+    await Promise.resolve();
+
+    const { progressStore } = getInternals(service);
+    const waitingRuntime = progressStore.readRuntimeRecord(second.job) as AppServerRuntimeRecord;
+    expect(waitingRuntime).toMatchObject({
+      transport: 'app-server',
+      providerMeta: {
+        leaseState: 'waiting',
+      },
+    });
+
+    expect(service.abort([second.job])).toEqual({
+      aborted: [second.job],
+      notFound: [],
+    });
+
+    const terminal = await waitForTerminalEvent(service, second.job);
+    expect(terminal.result).toMatchObject({
+      aborted: true,
+      notice: 'Aborted while waiting for a provider server lease',
+    });
+    expect(progressStore.readStatus(second.job)).toMatchObject({
+      phase: 'aborted',
+      result: {
+        aborted: true,
+        notice: 'Aborted while waiting for a provider server lease',
+      },
+    });
+
+    firstLeaseHeld.resolve();
+    await waitForTerminalEvent(service, first.job);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+  });
+
   it('start rejects unknown providers', async () => {
     mockState.getNewProvider.mockReturnValue(undefined);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('missing', { prompt: 'hello' }, ctx);
 
@@ -302,7 +966,7 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
@@ -321,7 +985,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
@@ -345,7 +1009,7 @@ describe('ExecutionService', () => {
     it('resume rejects when the session is missing', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: 'missing', prompt: 'hello' }, ctx);
 
@@ -365,7 +1029,7 @@ describe('ExecutionService', () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.claimForJobSync(entry.sessionId, 'job-1');
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
@@ -383,7 +1047,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const blockingProvider = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const gate = createDeferred<void>();
@@ -413,13 +1077,51 @@ describe('ExecutionService', () => {
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
     });
 
+    it('resume clears conversationRef and marks the session non_resumable on invalid-thread results', async () => {
+      const { provider } = makeProvider({
+        execute: async () => ({
+          content: '',
+          nonResumable: true,
+          notice: 'Conversation thread-stale is no longer resumable.',
+          errors: ['No such thread'],
+        }),
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      mgr.setConversationRef(entry.sessionId, 'thread-stale');
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const terminal = await waitForTerminalEvent(service, decision.job);
+      const updatedSession = mgr.get('codex', entry.sessionId);
+
+      expect(terminal.result).toMatchObject({
+        content: '',
+        nonResumable: true,
+        notice: 'Conversation thread-stale is no longer resumable.',
+        errors: ['No such thread'],
+      });
+      expect(updatedSession?.activeJobId).toBeUndefined();
+      expect(updatedSession?.lastJobId).toBe(decision.job);
+      expect(updatedSession?.state).toBe('non_resumable');
+      expect(updatedSession?.conversationRef).toBeUndefined();
+    });
+
     it('fork allocates a new session id', async () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = new SessionManager(ctx.projectRoot);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
@@ -435,7 +1137,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const first = await service.start('codex', { prompt: 'first' }, ctx);
       const second = await service.start('codex', { prompt: 'second' }, ctx);
@@ -463,7 +1165,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       await occupyProviderSlots(service, ctx, 'codex');
 
       const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
@@ -490,7 +1192,7 @@ describe('ExecutionService', () => {
   }); // end queue admission
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
     progressStore.initJob({
@@ -508,6 +1210,112 @@ describe('ExecutionService', () => {
     await expect(service.awaitLaunch(jobId, 1000)).resolves.toBe('ready');
   });
 
+  describe('waitForJobTerminal', () => {
+    it('rejects immediately when the job status is missing', async () => {
+      const service = createService(ctx);
+
+      await expect(service.waitForJobTerminal('missing-job', 100)).rejects.toThrow('Job not found: missing-job');
+    });
+
+    it('waits for both terminal status and session claim release', async () => {
+      const service = createService(ctx);
+      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+
+      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+      const waiter = service.waitForJobTerminal(jobId, 250);
+      void waiter.then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'rejected';
+        },
+      );
+
+      await Promise.resolve();
+      progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+      await Promise.resolve();
+      expect(outcome).toBe('pending');
+
+      sessionManager.setConversationRef(sessionId, 'thread-1');
+      await Promise.resolve();
+      expect(outcome).toBe('pending');
+
+      sessionManager.releaseJob(sessionId, jobId);
+      await expect(waiter).resolves.toBeUndefined();
+      expect(outcome).toBe('resolved');
+    });
+
+    it('rechecks persisted state after subscribing so listener-install races cannot miss completion', async () => {
+      const service = createService(ctx);
+      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+      const originalOn = eventBus.on.bind(eventBus);
+      const originalEmit = eventBus.emit.bind(eventBus);
+      let injected = false;
+      let suppressWakeups = false;
+
+      vi.spyOn(eventBus, 'emit').mockImplementation(((
+        event: Parameters<TypedEventBus['emit']>[0],
+        payload: Parameters<TypedEventBus['emit']>[1],
+      ) => {
+        if (
+          suppressWakeups &&
+          (event === 'job:completed' || event === 'job:phase_changed' || event === 'session:updated')
+        ) {
+          return false;
+        }
+        return originalEmit(event, payload);
+      }) as typeof eventBus.emit);
+
+      vi.spyOn(eventBus, 'on').mockImplementation(((
+        event: Parameters<TypedEventBus['on']>[0],
+        listener: Parameters<TypedEventBus['on']>[1],
+      ) => {
+        if (!injected) {
+          injected = true;
+          suppressWakeups = true;
+          progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+          sessionManager.releaseJob(sessionId, jobId);
+          suppressWakeups = false;
+        }
+        return originalOn(event, listener);
+      }) as typeof eventBus.on);
+
+      await expect(service.waitForJobTerminal(jobId, 200)).resolves.toBeUndefined();
+      expect(injected).toBe(true);
+    });
+
+    it('uses the default 30 second timeout when none is provided', async () => {
+      vi.useFakeTimers();
+      try {
+        const service = createService(ctx);
+        const { jobId } = createClaimedJob(service, ctx);
+        let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+        const waiter = service.waitForJobTerminal(jobId);
+        void waiter.then(
+          () => {
+            outcome = 'resolved';
+          },
+          () => {
+            outcome = 'rejected';
+          },
+        );
+
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(29_999);
+        expect(outcome).toBe('pending');
+
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(waiter).rejects.toThrow(
+          `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
+        );
+        expect(outcome).toBe('rejected');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('coralDispatch resolves coral content and injects a system instruction', async () => {
     const { provider, execute } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
@@ -516,7 +1324,7 @@ describe('ExecutionService', () => {
       content: '---\nname: sample\n---\nInjected coral content',
       path: '/tmp/sample.md',
     });
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
 
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello' }, ctx);
 
@@ -539,7 +1347,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream yields progress and terminal events in order', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const status: PersistedStatusRecord = {
       jobId: 'job-1',
@@ -600,7 +1408,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream yields terminal from status when no terminal event is replayed', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     vi.spyOn(progressStore, 'readStatus').mockReturnValue({
       jobId: 'job-1',
@@ -635,7 +1443,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const runningStatus: PersistedStatusRecord = {
       jobId: 'job-1',
@@ -685,7 +1493,7 @@ describe('ExecutionService', () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const runningJobIds = await occupyProviderSlots(service, ctx, 'codex');
     const decision = await service.start('codex', { prompt: 'queued job' }, ctx);
 
@@ -737,7 +1545,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -814,7 +1622,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const workDir = join(mockState.tmpHome, 'child-workdir');
     mkdirSync(workDir, { recursive: true });
 
@@ -855,7 +1663,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     for (const jobId of getActiveJobIds()) {
       releaseLaunch(jobId);
     }
@@ -906,7 +1714,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -972,7 +1780,7 @@ describe('ExecutionService', () => {
       path: `/tmp/${name}.md`,
     }));
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const decision = await service.executeWorkflow(
       'codex',
       parseExpression('architect -> resolver'),
@@ -1024,7 +1832,7 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
 
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
@@ -1054,7 +1862,7 @@ describe('ExecutionService', () => {
   });
 
   it('finishQueuedAbort falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
@@ -1085,7 +1893,7 @@ describe('ExecutionService', () => {
   });
 
   it('failJob falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
@@ -1112,7 +1920,7 @@ describe('ExecutionService', () => {
   });
 
   it('finishWorkflowJob falls back to status-only terminal persistence when appendTerminal throws', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
@@ -1168,7 +1976,7 @@ describe('ExecutionService', () => {
   ])(
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
     ({ phase, result, markdown }) => {
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore, sessionManager } = getInternals(service);
       const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
@@ -1229,7 +2037,7 @@ describe('ExecutionService', () => {
   );
 
   it('finishWorkflowJob writes result.md before status-only terminal fallback and marks the session non_resumable afterward', () => {
-    const service = new ExecutionService(ctx);
+    const service = createService(ctx);
     const { progressStore, sessionManager } = getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
     const jobId = `workflow-fallback-order-${randomUUID()}`;
@@ -1313,7 +2121,7 @@ describe('ExecutionService', () => {
       };
     }
 
-    function makeRuntimeRecord(overrides?: Partial<PersistedRuntimeRecord>): PersistedRuntimeRecord {
+    function makeRuntimeRecord(overrides?: Partial<DurableCliRuntimeRecord>): DurableCliRuntimeRecord {
       return {
         pid: process.pid,
         stdoutPath: '/dev/null',
@@ -1323,11 +2131,34 @@ describe('ExecutionService', () => {
       };
     }
 
+    function makeAppServerRuntimeRecord(
+      overrides?: Partial<AppServerRuntimeRecord['providerMeta']>,
+    ): AppServerRuntimeRecord {
+      return {
+        transport: 'app-server',
+        startTime: new Date().toISOString(),
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          recoveryPolicy: 'session_continuity_only',
+          ...overrides,
+        },
+      };
+    }
+
+    function buildExpectedInterruptedReport(reason: 'restart' | 'handoff', ...detailLines: string[]): string {
+      const baseNotice =
+        reason === 'restart'
+          ? 'Backend restarted during the app-server turn. The interrupted turn was not replayed.'
+          : 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+      return [baseNotice, '', ...detailLines].join('\n');
+    }
+
     describe('recoverQueuedJob', () => {
       it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-queued-${randomUUID()}`;
@@ -1355,7 +2186,7 @@ describe('ExecutionService', () => {
       it('rebinds namespace to current backend', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-rebind-${randomUUID()}`;
@@ -1383,7 +2214,7 @@ describe('ExecutionService', () => {
       it('hydrates event counter before new appends', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `recover-hydrate-${randomUUID()}`;
@@ -1415,7 +2246,7 @@ describe('ExecutionService', () => {
         const never = new Promise<ProviderResult>(() => {});
         const { provider } = makeProvider({ execute: () => never });
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
         const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
 
@@ -1454,7 +2285,7 @@ describe('ExecutionService', () => {
 
     describe('adoptRunningJob', () => {
       it('adopts a running job with a live PID and returns a cleanup handle', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-running-${randomUUID()}`;
@@ -1487,7 +2318,7 @@ describe('ExecutionService', () => {
       });
 
       it('restores pool mapping and active permit', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-pool-${randomUUID()}`;
@@ -1519,7 +2350,7 @@ describe('ExecutionService', () => {
       });
 
       it('rebinds namespace', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore } = getInternals(service);
 
         const jobId = `adopt-rebind-${randomUUID()}`;
@@ -1551,7 +2382,7 @@ describe('ExecutionService', () => {
 
     describe('completeRecoveredJob', () => {
       it('writes terminal result and releases session', () => {
-        const service = new ExecutionService(ctx);
+        const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
 
         const jobId = `complete-recovered-${randomUUID()}`;
@@ -1584,6 +2415,289 @@ describe('ExecutionService', () => {
         const updatedSession = sessionManager.get('codex', session.sessionId);
         expect(updatedSession?.activeJobId).toBeUndefined();
         expect(updatedSession?.lastJobId).toBe(jobId);
+      });
+    });
+
+    describe('finalizeInterruptedAppServerJob', () => {
+      it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
+        const spawnProviderServerMock = vi.fn();
+        spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-waiting-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-existing',
+          },
+          conversationRef: 'thread-existing',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+          request: {
+            prompt: 'recover me',
+            bypassPermissions: false,
+            conversationRef: 'thread-existing',
+            coralEnv: {},
+          },
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session was interrupted before completion. State unknown.',
+        );
+
+        expect(spawnProviderServerMock).not.toHaveBeenCalled();
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            notice: expect.stringContaining('The existing conversation reference was preserved.'),
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-existing',
+        });
+      });
+
+      it('stores the recovered threadId when continuity is verified', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                return { thread: { id: 'thread-recovered' } };
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-verified-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-recovered',
+            },
+          }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session is resumable. Use resume to continue.',
+          'Conversation reference preserved: thread-recovered',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-recovered',
+        });
+      });
+
+      it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('No such thread');
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-missing-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-stale',
+          },
+          conversationRef: 'thread-stale',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              bypassPermissions: false,
+              conversationRef: 'thread-stale',
+              coralEnv: {},
+            },
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-stale',
+            },
+          }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'Session thread is no longer available. Marked as non-resumable.',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            nonResumable: true,
+            notice: expect.stringContaining('session is non-resumable'),
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'non_resumable',
+        });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+      });
+
+      it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('transport unavailable');
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-unavailable-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-unverified',
+          },
+          conversationRef: 'thread-unverified',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              bypassPermissions: false,
+              conversationRef: 'thread-unverified',
+              coralEnv: {},
+            },
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-unverified',
+            },
+          }),
+          { reason: 'handoff' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'handoff',
+          'Could not reach provider server to verify session. Marked as non-resumable.',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            nonResumable: true,
+            notice: expect.stringContaining('could not be verified'),
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'non_resumable',
+        });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
       });
     });
   });
@@ -1627,7 +2741,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setNonResumable(entry.sessionId);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -1641,7 +2755,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
       expect(firstDecision.status).toBe('running');
       if (firstDecision.status !== 'running') throw new Error('expected running');
@@ -1660,7 +2774,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hi' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -1683,7 +2797,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const mgr = new SessionManager(ctx.projectRoot);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const firstResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'one' }, ctx);
       const secondResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'two' }, ctx);
@@ -1715,7 +2829,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
       expect(firstDecision.status).toBe('running');
       if (firstDecision.status !== 'running') throw new Error('expected running');
@@ -1735,7 +2849,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -1758,7 +2872,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const sessionsBefore = mgr.list('codex').length;
       const jobDirsBefore = listJobDirs();
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decisionPromise = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
       expect(mgr.claimForJobSync(source.sessionId, 'job-race')).toBe(true);
       gate.resolve();
@@ -1789,7 +2903,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const sessionsBefore = mgr.list('codex').length;
       const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;
       const jobDirsBefore = listJobDirs();
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const firstFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-one' }, ctx);
       const secondFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-two' }, ctx);
@@ -1820,7 +2934,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const decision = await service.fork('codex', { sessionId: 'ghost-session', prompt: 'branch' }, ctx);
 
       expect(decision.status).toBe('rejected');
@@ -1833,7 +2947,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
   describe('rejected LaunchDecision does not allocate job or session resources', () => {
     it('start() rejected decision has no job or session property', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       const decision = await service.start('missing', { prompt: 'test' }, ctx);
 
@@ -1844,7 +2958,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('abort() reports all jobIds as notFound after a series of preflight rejections', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
 
       await service.start('missing', { prompt: 'a' }, ctx);
       await service.start('missing', { prompt: 'b' }, ctx);
@@ -1862,7 +2976,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       createdJobIds.add(jobIdA);
       createdJobIds.add(jobIdB);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore } = getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
@@ -1913,7 +3027,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const jobId = `red-ws-cursor-${randomUUID()}`;
       createdJobIds.add(jobId);
 
-      const service = new ExecutionService(ctx);
+      const service = createService(ctx);
       const { progressStore } = getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {

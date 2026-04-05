@@ -1,5 +1,5 @@
 import { deriveNoteIdentity } from './frontmatter.js';
-import type { KbIndex } from './types.js';
+import { getEntry, isNoteEntry, isSourceEntry, noteEntryId, sourceEntryId, type KbIndex } from './types.js';
 import { compareLocale } from './validation.js';
 
 const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);
@@ -12,9 +12,11 @@ export type TagCleanupResult = {
 export function countTagSupport(index: KbIndex): Map<string, number> {
   const counts = new Map<string, number>();
 
-  for (const note of Object.values(index.notes)) {
-    for (const tag of note.tags) {
-      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  for (const entry of Object.values(index.entries)) {
+    if (isNoteEntry(entry) || isSourceEntry(entry)) {
+      for (const tag of entry.tags) {
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
     }
   }
 
@@ -26,19 +28,25 @@ function matchesPatternSuffix(tag: string): boolean {
   return PATTERN_SUFFIXES.has(suffix);
 }
 
-export function cleanupTags(index: KbIndex, cohortNotes: string[]): TagCleanupResult {
+export function cleanupTags(index: KbIndex, cohortSlugs: string[]): TagCleanupResult {
   const tagSupport = countTagSupport(index);
   const cohortTags = new Set<string>();
 
-  for (const note of cohortNotes) {
-    const noteMeta = index.notes[note];
-    if (noteMeta === undefined) {
+  for (const slug of cohortSlugs) {
+    const noteEntry = getEntry(index, noteEntryId(slug));
+    if (noteEntry !== undefined && isNoteEntry(noteEntry)) {
+      const domain = deriveNoteIdentity(slug).domain;
+      for (const tag of noteEntry.tags) {
+        if (tag !== domain) {
+          cohortTags.add(tag);
+        }
+      }
       continue;
     }
 
-    const domain = deriveNoteIdentity(note).domain;
-    for (const tag of noteMeta.tags) {
-      if (tag !== domain) {
+    const sourceEntry = getEntry(index, sourceEntryId(slug));
+    if (sourceEntry !== undefined && isSourceEntry(sourceEntry)) {
+      for (const tag of sourceEntry.tags) {
         cohortTags.add(tag);
       }
     }

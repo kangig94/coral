@@ -1,15 +1,17 @@
 import { nowIsoString } from '../shared/mcp-utils.js';
 import { serializeNote } from './frontmatter.js';
 import { loadKbNote } from './read.js';
-import type { KbUpdateInput } from './types.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { noteEntryId, setEntry, type KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 
 export async function applyNoteUpdateLocked(
   rt: KbRuntime,
   input: { note: string; title?: string; content?: string },
 ): Promise<{ path: string }> {
+  runEntrySeqUpgradeGuard(rt);
   const notePath = rt.notePath(input.note);
   const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(notePath);
   const nextTitle = input.title ?? existingTitle;
@@ -28,10 +30,11 @@ export async function applyNoteUpdateLocked(
   commitIndexUpdate(
     rt,
     (index) => {
-      index.notes[input.note] = buildNoteIndexEntry({
-        ...nextFrontmatter,
+      setEntry(index, noteEntryId(input.note), buildNoteIndexEntry({
+        slug: input.note,
         title: nextTitle,
-      });
+        ...nextFrontmatter,
+      }));
     },
     'KB text snapshot is stale after kb_update.',
   );
@@ -50,8 +53,8 @@ export async function update(rt: KbRuntime, input: KbUpdateInput): Promise<{ pat
   return rt.withMutationLock(async () =>
     applyNoteUpdateLocked(rt, {
       note,
-      ...(requestedTitle === undefined ? {} : { title: requestedTitle }),
-      ...(requestedContent === undefined ? {} : { content: requestedContent }),
+      title: requestedTitle,
+      content: requestedContent,
     }),
   );
 }

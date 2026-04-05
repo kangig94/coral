@@ -46,6 +46,26 @@ export interface ProviderProgressEvent {
   ts: string;
 }
 
+/** Opaque provider-owned continuity data persisted by the execution layer. */
+export type ProviderContinuityBlob = Record<string, unknown>;
+
+export interface SessionEntry {
+  sessionId: string;
+  provider: string;
+  name: string;
+  state: SessionState;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: ProviderContinuityBlob;
+  model: string;
+  cwd: string;
+  projectRoot?: string;
+  createdAt: string;
+  lastUsedAt: string;
+  version: number;
+}
+
 /** Provider action type — the three launch operations a provider handles. */
 export type ProviderAction = 'exec' | 'resume' | 'fork';
 
@@ -193,7 +213,10 @@ export interface PersistedLaunchRecord {
 }
 
 /** Durable runtime record written by the wrapper after spawn succeeds. */
-export interface PersistedRuntimeRecord {
+export type PersistedRuntimeRecord = DurableCliRuntimeRecord | AppServerRuntimeRecord;
+
+export interface DurableCliRuntimeRecord {
+  transport?: 'durable-cli';
   pid: number;
   stdoutPath: string;
   stderrPath: string;
@@ -202,6 +225,31 @@ export interface PersistedRuntimeRecord {
   providerMeta?: Record<string, unknown>;
   /** Byte offset watermark for stable tail replay without duplicated progress. */
   tailWatermark?: number;
+}
+
+/** Durable runtime record written before an app-server lease is granted. */
+export interface AppServerRuntimeRecord {
+  transport: 'app-server';
+  startTime: string;
+  providerMeta: {
+    provider: string;
+    leaseState: 'waiting' | 'acquired';
+    serverGeneration?: number;
+    providerContinuity?: ProviderContinuityBlob;
+    recoveryPolicy: 'session_continuity_only';
+  };
+}
+
+export function isDurableCliRuntime(
+  record: PersistedRuntimeRecord | null | undefined,
+): record is DurableCliRuntimeRecord {
+  return record !== null && record !== undefined && record.transport !== 'app-server';
+}
+
+export function isAppServerRuntime(
+  record: PersistedRuntimeRecord | null | undefined,
+): record is AppServerRuntimeRecord {
+  return record?.transport === 'app-server';
 }
 
 /** Durable completion sentinel written after output flush and exit. */

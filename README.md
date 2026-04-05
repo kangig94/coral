@@ -205,13 +205,13 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:init-project` | Project initialization orchestrator | - |
 | `/coral:discuss` | Moderated multi-agent discussion | - |
 | `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |
-| `/coral:equip` | One-touch install of MCP tools | - |
 | `/coral:statusline` | Install or remove HUD statusline | - |
-| `/coral:reef` | Real-time dashboard for session activity and KB state | - |
 
 ## Knowledge Base
 
 Coral learns from every session. Root causes, gotchas, patterns — captured as memos, reviewed, and promoted to permanent knowledge at `~/.coral/kb/`. The next session checks the KB before debugging from scratch. Mistakes aren't repeated.
+
+- **Semantic search**: `/coral:equip kb` activates vector search with hybrid BM25 + embedding retrieval (Gemini, OpenAI, or local ONNX models)
 
 ## Configuration
 

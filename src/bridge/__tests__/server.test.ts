@@ -618,9 +618,12 @@ describe('bridge wait handler', { retry: 2 }, () => {
 
   it('passes process.cwd() into proxyToolCall as projectRoot', async () => {
     mockState.proxyToolCall.mockResolvedValueOnce({
-      status: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-1',
+        session: 'session-1',
+      },
     });
 
     await invokeToolRaw('codex', { op: 'exec', prompt: 'hello' });
@@ -849,10 +852,10 @@ describe('bridge wait handler', { retry: 2 }, () => {
     expect(mockState.streamWait).not.toHaveBeenCalled();
   });
 
-  it('passes through backend MCP-shaped tool results unchanged', async () => {
+  it('converts successful tool domain results into MCP responses', async () => {
     mockState.proxyToolCall.mockResolvedValueOnce({
-      content: [{ type: 'text', text: JSON.stringify({ session: 'discuss-1' }) }],
-      isError: false,
+      ok: true,
+      data: { session: 'discuss-1' },
     });
 
     const result = await invokeToolRaw('discuss_start', {
@@ -866,6 +869,30 @@ describe('bridge wait handler', { retry: 2 }, () => {
     expect(result).toEqual({
       content: [{ type: 'text', text: JSON.stringify({ session: 'discuss-1' }) }],
       isError: false,
+    });
+  });
+
+  it('converts tool domain failures into MCP errors', async () => {
+    mockState.proxyToolCall.mockResolvedValueOnce({
+      ok: false,
+      code: 'invalid_request',
+      message: 'Prompt is required',
+      detail: { field: 'prompt' },
+    });
+
+    const result = await invokeToolRaw('codex', { op: 'exec', prompt: '' });
+
+    expect(result).toEqual({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: false,
+          code: 'invalid_request',
+          message: 'Prompt is required',
+          detail: { field: 'prompt' },
+        }),
+      }],
+      isError: true,
     });
   });
 });

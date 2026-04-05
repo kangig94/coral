@@ -1,18 +1,20 @@
 import { homedir } from 'node:os';
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { CallerContext, ExecutionService } from '../execution/service.js';
-import type { TerminalResult, WaitCursor, WorkflowCheckpoint } from '../shared/types.js';
+import type { CallerContext } from '../execution/request-context.js';
+import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } from '../shared/types.js';
 import type { ProgressStore } from '../execution/progress-store.js';
-import type { PipeAtom, PipelineAST } from './types.js';
+import type { PipeAtom, PipelineAST, WorkflowExecutionPort } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
 const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
 const MAX_STALE_RECOVERY_RETRIES = 2;
+const STALE_ABORT_TIMEOUT_MS = 30_000;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type WorkflowAtoms = Record<string, { instruction?: string }>;
@@ -40,7 +42,7 @@ type LaunchContext = {
   context?: string;
   workDir?: string;
   defaultProviderName: string;
-  executionSvc: WorkflowExecutionService;
+  executionSvc: WorkflowExecutionPort;
   ctx: CallerContext;
   atoms?: WorkflowAtoms;
   signal?: AbortSignal;
@@ -48,11 +50,6 @@ type LaunchContext = {
   /** Parent workflow job ID — persisted in atom launch records for restart recovery. */
   workflowJobId?: string;
 };
-
-export type WorkflowExecutionService = Pick<
-  ExecutionService,
-  'coralDispatch' | 'resume' | 'abort' | 'awaitLaunch' | 'waitStream' | 'getConversationRef'
->;
 
 export type LaunchedAtom = {
   jobId: string;
@@ -97,7 +94,7 @@ function cleanupClaudeSessions(sessionIds: string[]): void {
         if (targets.has(file)) await unlink(join(projectsDir, dir.name, file)).catch(() => {});
       }
     }
-  })().catch(() => {});
+  })().catch((e: unknown) => { backendLog.warn(`cleanupClaudeSessions failed: ${errorMessage(e)}`); });
 }
 
 /** Simple async mutex — serializes access via a single Promise chain. */
@@ -135,6 +132,18 @@ type CheckpointState = {
     drainDeadline: number;
   };
 };
+
+type PersistCheckpoint = (
+  stepIndex: number,
+  stepPrompt: string,
+  launchedAtoms: LaunchedAtom[],
+  completedOutputs: Map<string, string>,
+  cursor: WaitCursor,
+  lastActivityAt: Map<string, number>,
+  staleRetries: Map<string, number>,
+  expectedStaleAborts: Set<string>,
+  failureDrain?: CheckpointState['failureDrain'],
+) => void;
 
 /** Fire-and-forget checkpoint write, serialized through the mutex. */
 function writeCheckpoint(
@@ -179,7 +188,47 @@ function writeCheckpoint(
         release();
       }
     })
-    .catch(() => {}); // best-effort: checkpoint writes must not crash the process
+    .catch((e: unknown) => { backendLog.warn(`Checkpoint write failed for ${workflowJobId}: ${errorMessage(e)}`); });
+}
+
+function createCheckpointPersister(
+  workflowJobId: string | undefined,
+  progressStore: ProgressStore | undefined,
+  provider: string,
+  sessionId: string,
+  completedStepDetails: StepDetail[],
+): PersistCheckpoint {
+  if (workflowJobId === undefined || progressStore === undefined) {
+    return () => {};
+  }
+
+  const checkpointMutex = createAsyncMutex();
+  return (
+    stepIndex,
+    stepPrompt,
+    launchedAtoms,
+    completedOutputs,
+    cursor,
+    lastActivityAt,
+    staleRetries,
+    expectedStaleAborts,
+    failureDrain,
+  ) => {
+    writeCheckpoint(progressStore, workflowJobId, checkpointMutex, {
+      sessionId,
+      provider,
+      stepIndex,
+      stepPrompt,
+      launchedAtoms,
+      completedOutputs,
+      completedStepDetails,
+      cursor,
+      lastActivityAt,
+      staleRetries,
+      expectedStaleAborts,
+      failureDrain,
+    });
+  };
 }
 
 function stripElapsedPrefix(message: string): string {
@@ -205,6 +254,10 @@ function atomDiagnosticLabel(atom: PipeAtom, atomIndex: number): string {
   if (atom.kind === 'agent') return atom.agent;
   const truncated = truncate(atom.text, 20);
   return `prompt#${atomIndex}(${truncated})`;
+}
+
+function formatAtomProgress(atom: LaunchedAtom, message: string): string {
+  return `${atom.stepIndex}-${atom.agent.slice(0, 3)} ${message}`;
 }
 
 function describeTerminalFailure(result: TerminalResult): string {
@@ -252,7 +305,7 @@ function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): num
 
 async function readLaunchFailureMessage(
   jobId: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,
 ): Promise<string | null> {
   if (signal?.aborted) return 'aborted during bootstrap';
@@ -302,12 +355,11 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     // First-step prompt literals use the literal as the instruction body; shared
     // context still prepends when present. Later prompt literals prepend the
     // literal before the previous step output so instruction comes first.
-    atomPrompt =
-      stepIndex === 0
-        ? sharedContext
-          ? `${sharedContext}\n\n${atom.text}`
-          : atom.text
-        : [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
+    if (stepIndex === 0) {
+      atomPrompt = sharedContext ? `${sharedContext}\n\n${atom.text}` : atom.text;
+    } else {
+      atomPrompt = [sharedContext, atom.text, stepPrompt].filter(Boolean).join('\n\n');
+    }
   }
 
   if (signal?.aborted) {
@@ -364,13 +416,97 @@ export type WaitInternalState = {
   };
 };
 
+export type WaitForAtomsOptions = {
+  signal?: AbortSignal;
+  staleTimeoutMs: number;
+  pollIntervalMs: number;
+  workDir?: string;
+  onProgress: (message: string) => void;
+  completedStepDetails?: StepDetail[];
+  onAtomTerminal?: (state: WaitInternalState) => void;
+  onStaleSwap?: (state: WaitInternalState) => void;
+};
+
+type AwaitStepState = {
+  pending: Map<string, LaunchedAtom>;
+  results: Map<string, string>;
+  cursor: WaitCursor;
+  lastActivityAt: Map<string, number>;
+  staleRetries: Map<string, number>;
+  expectedStaleAborts: Set<string>;
+  failureDrain: {
+    firstFailure: WaitFailure;
+    drainDeadline: number;
+  } | null;
+};
+
+function createAwaitStepState(atoms: LaunchedAtom[]): AwaitStepState {
+  const pending = new Map<string, LaunchedAtom>();
+  const lastActivityAt = new Map<string, number>();
+  const staleRetries = new Map<string, number>();
+  const startedAt = Date.now();
+
+  for (const atom of atoms) {
+    pending.set(atom.jobId, atom);
+    lastActivityAt.set(atom.atomKey, startedAt);
+    staleRetries.set(atom.atomKey, 0);
+  }
+
+  return {
+    pending,
+    results: new Map(),
+    cursor: { jobs: {} },
+    lastActivityAt,
+    staleRetries,
+    expectedStaleAborts: new Set(),
+    failureDrain: null,
+  };
+}
+
+function snapshotWaitState(state: AwaitStepState): WaitInternalState {
+  return {
+    atoms: [...state.pending.values()],
+    completedOutputs: state.results,
+    cursor: state.cursor,
+    lastActivityAt: state.lastActivityAt,
+    staleRetries: state.staleRetries,
+    expectedStaleAborts: state.expectedStaleAborts,
+    failureDrain:
+      state.failureDrain === null
+        ? undefined
+        : {
+            firstFailureMessage: state.failureDrain.firstFailure.message,
+            aborted: state.failureDrain.firstFailure.aborted,
+            abortRequested: true,
+            drainDeadline: state.failureDrain.drainDeadline,
+          },
+  };
+}
+
+function buildPartialStepDetails(
+  atoms: LaunchedAtom[],
+  completedStepDetails: StepDetail[],
+  results: Map<string, string>,
+): StepDetail[] {
+  return [...completedStepDetails, ...buildStepDetailsForAtoms(atoms, results)];
+}
+
+function enterFailureDrain(
+  state: AwaitStepState,
+  executionSvc: WorkflowExecutionPort,
+  failure: WaitFailure,
+): void {
+  if (state.failureDrain !== null) return;
+  state.failureDrain = {
+    firstFailure: failure,
+    drainDeadline: Date.now() + SIBLING_DRAIN_TIMEOUT_MS,
+  };
+  executionSvc.abort([...state.pending.keys()]);
+}
+
 async function recoverStaleAtom(
-  pending: Map<string, LaunchedAtom>,
-  staleRetries: Map<string, number>,
-  expectedStaleAborts: Set<string>,
-  lastActivityAt: Map<string, number>,
-  cursor: WaitCursor,
-  executionSvc: WorkflowExecutionService,
+  state: AwaitStepState,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     signal?: AbortSignal;
@@ -378,16 +514,15 @@ async function recoverStaleAtom(
     workDir?: string;
     onProgress: (message: string) => void;
     buildPartialStepDetails: () => StepDetail[];
-    onStaleSwap?: () => void;
   },
 ): Promise<boolean> {
   const now = Date.now();
 
-  for (const atom of pending.values()) {
-    const lastActive = lastActivityAt.get(atom.atomKey) ?? now;
+  for (const atom of state.pending.values()) {
+    const lastActive = state.lastActivityAt.get(atom.atomKey) ?? now;
     if (now - lastActive < options.staleTimeoutMs) continue;
 
-    const retries = staleRetries.get(atom.atomKey) ?? 0;
+    const retries = state.staleRetries.get(atom.atomKey) ?? 0;
     if (retries >= MAX_STALE_RECOVERY_RETRIES) {
       throw createWorkflowExecutionError(
         `Step ${atom.stepIndex}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
@@ -396,9 +531,19 @@ async function recoverStaleAtom(
       );
     }
 
-    expectedStaleAborts.add(atom.jobId);
-    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} stale, aborting`);
+    state.expectedStaleAborts.add(atom.jobId);
+    options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
     executionSvc.abort([atom.jobId]);
+
+    try {
+      await executionSvc.waitForJobTerminal(atom.jobId, STALE_ABORT_TIMEOUT_MS);
+    } catch (error: unknown) {
+      throw createWorkflowExecutionError(
+        `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
+        false,
+        options.buildPartialStepDetails(),
+      );
+    }
 
     if (options.signal?.aborted) {
       throw createWorkflowExecutionError(
@@ -436,183 +581,165 @@ async function recoverStaleAtom(
       );
     }
 
-    pending.delete(atom.jobId);
-    delete cursor.jobs[atom.jobId];
-    pending.set(resumed.job, {
+    state.pending.delete(atom.jobId);
+    delete state.cursor.jobs[atom.jobId];
+    state.pending.set(resumed.job, {
       ...atom,
       jobId: resumed.job,
       sessionId: resumed.session,
     });
-    staleRetries.set(atom.atomKey, retries + 1);
+    state.staleRetries.set(atom.atomKey, retries + 1);
 
     const resumedAt = Date.now();
-    for (const sibling of pending.values()) {
-      lastActivityAt.set(sibling.atomKey, resumedAt);
+    for (const sibling of state.pending.values()) {
+      state.lastActivityAt.set(sibling.atomKey, resumedAt);
     }
 
-    options.onStaleSwap?.();
-    options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} resumed`);
+    options.onProgress(formatAtomProgress(atom, 'resumed'));
     return true;
   }
 
   return false;
 }
 
+function handleWaitEvent(
+  event: WaitStreamEvent,
+  state: AwaitStepState,
+  executionSvc: WorkflowExecutionPort,
+  options: Pick<WaitForAtomsOptions, 'onProgress' | 'onAtomTerminal'>,
+): 'handled' | 'check-stale' {
+  switch (event.type) {
+    case 'queued': {
+      const atom = state.pending.get(event.jobId);
+      if (!atom) return 'handled';
+      state.lastActivityAt.set(atom.atomKey, Date.now());
+      options.onProgress(formatAtomProgress(atom, `queued (position ${event.queuePosition})`));
+      return 'handled';
+    }
+
+    case 'progress': {
+      state.cursor.jobs[event.jobId] = event.eventId;
+      const atom = state.pending.get(event.jobId);
+      if (!atom) return 'handled';
+      state.lastActivityAt.set(atom.atomKey, Date.now());
+      options.onProgress(formatAtomProgress(atom, stripElapsedPrefix(event.message)));
+      return 'handled';
+    }
+
+    case 'terminal': {
+      const atom = state.pending.get(event.completedJobId);
+      if (!atom) return 'handled';
+
+      state.pending.delete(event.completedJobId);
+      delete state.cursor.jobs[event.completedJobId];
+
+      const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
+      options.onProgress(formatAtomProgress(atom, terminalState));
+
+      if (state.expectedStaleAborts.has(event.completedJobId)) {
+        state.expectedStaleAborts.delete(event.completedJobId);
+        return 'handled';
+      }
+
+      if (event.result.aborted || event.result.notice) {
+        enterFailureDrain(state, executionSvc, {
+          aborted: Boolean(event.result.aborted),
+          message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
+        });
+        return 'handled';
+      }
+
+      state.results.set(atom.atomKey, event.result.content);
+      options.onAtomTerminal?.(snapshotWaitState(state));
+      return 'handled';
+    }
+
+    case 'timeout':
+      return 'check-stale';
+  }
+}
+
+async function awaitWaitCycle(
+  state: AwaitStepState,
+  executionSvc: WorkflowExecutionPort,
+  ctx: CallerContext,
+  options: WaitForAtomsOptions,
+  buildPartialStepDetailsForCycle: () => StepDetail[],
+): Promise<'stream-ended' | 'stale-recovered'> {
+  const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.pollIntervalMs);
+
+  for await (const event of executionSvc.waitStream({
+    jobIds: [...state.pending.keys()],
+    timeoutSeconds,
+    cursor: state.cursor,
+  })) {
+    const eventOutcome = handleWaitEvent(event, state, executionSvc, options);
+    if (eventOutcome !== 'check-stale') continue;
+    if (state.failureDrain !== null || options.staleTimeoutMs <= 0) continue;
+
+    const recovered = await recoverStaleAtom(state, executionSvc, ctx, {
+      signal: options.signal,
+      staleTimeoutMs: options.staleTimeoutMs,
+      workDir: options.workDir,
+      onProgress: options.onProgress,
+      buildPartialStepDetails: buildPartialStepDetailsForCycle,
+    });
+    if (!recovered) continue;
+
+    options.onStaleSwap?.(snapshotWaitState(state));
+    return 'stale-recovered';
+  }
+
+  return 'stream-ended';
+}
+
+async function awaitStepCompletion(
+  atoms: LaunchedAtom[],
+  state: AwaitStepState,
+  executionSvc: WorkflowExecutionPort,
+  ctx: CallerContext,
+  options: WaitForAtomsOptions,
+): Promise<void> {
+  const completedStepDetails = options.completedStepDetails ?? [];
+  const buildPartialStepDetailsForCycle = (): StepDetail[] =>
+    buildPartialStepDetails(atoms, completedStepDetails, state.results);
+
+  while (state.pending.size > 0) {
+    if (options.signal?.aborted && state.failureDrain === null) {
+      enterFailureDrain(state, executionSvc, {
+        aborted: true,
+        message: 'Pipeline aborted (launched atoms may continue)',
+      });
+    }
+
+    const cycleOutcome = await awaitWaitCycle(state, executionSvc, ctx, options, buildPartialStepDetailsForCycle);
+
+    if (state.failureDrain !== null && (state.pending.size === 0 || Date.now() >= state.failureDrain.drainDeadline)) {
+      throw createWorkflowExecutionError(
+        state.failureDrain.firstFailure.message,
+        state.failureDrain.firstFailure.aborted,
+        buildPartialStepDetailsForCycle(),
+      );
+    }
+
+    if (cycleOutcome === 'stale-recovered') continue;
+  }
+}
+
 export async function waitForAtoms(
   atoms: LaunchedAtom[],
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
-  options: {
-    signal?: AbortSignal;
-    staleTimeoutMs: number;
-    pollIntervalMs: number;
-    workDir?: string;
-    onProgress: (message: string) => void;
-    completedStepDetails?: StepDetail[];
-    onAtomTerminal?: (state: WaitInternalState) => void;
-    onStaleSwap?: (state: WaitInternalState) => void;
-  },
+  options: WaitForAtomsOptions,
 ): Promise<Map<string, string>> {
-  const pending = new Map<string, LaunchedAtom>();
-  const results = new Map<string, string>();
-  const lastActivityAt = new Map<string, number>();
-  const staleRetries = new Map<string, number>();
-  const expectedStaleAborts = new Set<string>();
-  const cursor: WaitCursor = { jobs: {} };
-  const startedAt = Date.now();
-  const completedStepDetails = options.completedStepDetails ?? [];
-
-  for (const atom of atoms) {
-    pending.set(atom.jobId, atom);
-    lastActivityAt.set(atom.atomKey, startedAt);
-    staleRetries.set(atom.atomKey, 0);
-  }
-
-  let firstFailure: WaitFailure | null = null;
-  let abortRequested = false;
-  let drainDeadline = 0;
-
-  const snapshotWaitState = (): WaitInternalState => ({
-    atoms: [...pending.values()],
-    completedOutputs: results,
-    cursor,
-    lastActivityAt,
-    staleRetries,
-    expectedStaleAborts,
-    failureDrain:
-      firstFailure !== null
-        ? { firstFailureMessage: firstFailure.message, aborted: firstFailure.aborted, abortRequested, drainDeadline }
-        : undefined,
-  });
-
-  const buildPartialStepDetails = (): StepDetail[] => [
-    ...completedStepDetails,
-    ...buildStepDetailsForAtoms(atoms, results),
-  ];
-
-  while (pending.size > 0) {
-    if (options.signal?.aborted && firstFailure === null) {
-      firstFailure = { aborted: true, message: 'Pipeline aborted (launched atoms may continue)' };
-      abortRequested = true;
-      drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
-      executionSvc.abort([...pending.keys()]);
-    }
-
-    let recoveredThisCycle = false;
-    const timeoutSeconds = waitTimeoutSeconds(options.staleTimeoutMs, options.pollIntervalMs);
-
-    for await (const event of executionSvc.waitStream({
-      jobIds: [...pending.keys()],
-      timeoutSeconds,
-      cursor,
-    })) {
-      if (event.type === 'queued') {
-        const atom = pending.get(event.jobId);
-        if (!atom) continue;
-        lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} queued (position ${event.queuePosition})`);
-        continue;
-      }
-
-      if (event.type === 'progress') {
-        cursor.jobs[event.jobId] = event.eventId;
-        const atom = pending.get(event.jobId);
-        if (!atom) continue;
-        lastActivityAt.set(atom.atomKey, Date.now());
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${stripElapsedPrefix(event.message)}`);
-        continue;
-      }
-
-      if (event.type === 'terminal') {
-        const atom = pending.get(event.completedJobId);
-        if (!atom) continue;
-
-        pending.delete(event.completedJobId);
-        delete cursor.jobs[event.completedJobId];
-
-        const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
-        options.onProgress(`${atom.stepIndex}-${atom.agent.slice(0, 3)} ${terminalState}`);
-
-        if (expectedStaleAborts.has(event.completedJobId)) {
-          expectedStaleAborts.delete(event.completedJobId);
-          continue;
-        }
-
-        if (event.result.aborted || event.result.notice) {
-          firstFailure ??= {
-            aborted: Boolean(event.result.aborted),
-            message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
-          };
-          if (!abortRequested) {
-            abortRequested = true;
-            drainDeadline = Date.now() + SIBLING_DRAIN_TIMEOUT_MS;
-            executionSvc.abort([...pending.keys()]);
-          }
-          continue;
-        }
-
-        results.set(atom.atomKey, event.result.content);
-        options.onAtomTerminal?.(snapshotWaitState());
-        continue;
-      }
-
-      if (firstFailure !== null || options.staleTimeoutMs <= 0) continue;
-
-      recoveredThisCycle = await recoverStaleAtom(
-        pending,
-        staleRetries,
-        expectedStaleAborts,
-        lastActivityAt,
-        cursor,
-        executionSvc,
-        ctx,
-        {
-          signal: options.signal,
-          staleTimeoutMs: options.staleTimeoutMs,
-          workDir: options.workDir,
-          onProgress: options.onProgress,
-          buildPartialStepDetails,
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by ternary check
-          onStaleSwap: options.onStaleSwap ? () => options.onStaleSwap!(snapshotWaitState()) : undefined,
-        },
-      );
-
-      if (recoveredThisCycle) break;
-    }
-
-    if (firstFailure !== null && (pending.size === 0 || Date.now() >= drainDeadline)) {
-      throw createWorkflowExecutionError(firstFailure.message, firstFailure.aborted, buildPartialStepDetails());
-    }
-
-    if (recoveredThisCycle) continue;
-  }
-
-  return results;
+  const state = createAwaitStepState(atoms);
+  await awaitStepCompletion(atoms, state, executionSvc, ctx, options);
+  return state.results;
 }
 
 async function drainLaunchedAtoms(
   launchedAtoms: LaunchedAtom[],
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     signal?: AbortSignal;
@@ -656,6 +783,205 @@ function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<s
   throw new Error(`Step ${stepIndex}, atom '${atom.agent}' completed without a result`);
 }
 
+function collectClaudeConversationRefs(
+  launchedAtoms: LaunchedAtom[],
+  executionSvc: WorkflowExecutionPort,
+): string[] {
+  const seen = new Set<string>();
+  const refs: string[] = [];
+
+  for (const atom of launchedAtoms) {
+    if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
+    seen.add(atom.sessionId);
+    const ref = executionSvc.getConversationRef('claude', atom.sessionId);
+    if (ref) refs.push(ref);
+  }
+
+  return refs;
+}
+
+type StepLaunchResult = {
+  launchedAtoms: LaunchedAtom[];
+  launchError: unknown | null;
+};
+
+type FinalizedStep = {
+  stepDetails: StepDetail[];
+  stepPrompt: string;
+};
+
+async function launchStepAtoms(
+  step: PipelineAST[number],
+  stepIndex: number,
+  stepPrompt: string,
+  defaultProviderName: string,
+  executionSvc: WorkflowExecutionPort,
+  ctx: CallerContext,
+  options: {
+    atoms?: WorkflowAtoms;
+    context?: string;
+    workDir?: string;
+    signal?: AbortSignal;
+    workflowJobId?: string;
+    completedStepDetails: StepDetail[];
+  },
+): Promise<StepLaunchResult> {
+  const launchedAtoms: LaunchedAtom[] = [];
+  let launchError: unknown = null;
+
+  await Promise.all(
+    step.map(async (atom, atomIndex) => {
+      try {
+        const launched = await launchAtomWithRetry({
+          atom,
+          atomIndex,
+          stepIndex,
+          stepPrompt,
+          context: options.context,
+          workDir: options.workDir,
+          defaultProviderName,
+          executionSvc,
+          ctx,
+          atoms: options.atoms,
+          signal: options.signal,
+          completedStepDetails: options.completedStepDetails,
+          workflowJobId: options.workflowJobId,
+        });
+        launchedAtoms.push(launched);
+      } catch (error) {
+        launchError ??= error;
+      }
+    }),
+  );
+
+  launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
+  return { launchedAtoms, launchError };
+}
+
+async function handleStepLaunchFailure(
+  launchError: unknown,
+  launchedAtoms: LaunchedAtom[],
+  executionSvc: WorkflowExecutionPort,
+  ctx: CallerContext,
+  options: {
+    signal?: AbortSignal;
+    staleTimeoutMs: number;
+    pollIntervalMs: number;
+    workDir?: string;
+    onProgress: (message: string) => void;
+    completedStepDetails: StepDetail[];
+  },
+): Promise<never> {
+  const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
+    signal: options.signal,
+    staleTimeoutMs: options.staleTimeoutMs,
+    pollIntervalMs: options.pollIntervalMs,
+    workDir: options.workDir,
+    onProgress: options.onProgress,
+  });
+  const baseStepDetails =
+    launchError instanceof WorkflowExecutionError ? launchError.stepDetails : options.completedStepDetails;
+  const message =
+    launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
+  const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
+  throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
+}
+
+function checkpointStepLaunch(
+  persistCheckpoint: PersistCheckpoint,
+  stepIndex: number,
+  stepPrompt: string,
+  launchedAtoms: LaunchedAtom[],
+): void {
+  persistCheckpoint(stepIndex, stepPrompt, launchedAtoms, new Map(), { jobs: {} }, new Map(), new Map(), new Set());
+}
+
+function checkpointStepCompletion(
+  persistCheckpoint: PersistCheckpoint,
+  stepIndex: number,
+  stepPrompt: string,
+  launchedAtoms: LaunchedAtom[],
+  completedOutputs: Map<string, string>,
+): void {
+  persistCheckpoint(
+    stepIndex,
+    stepPrompt,
+    launchedAtoms,
+    completedOutputs,
+    { jobs: {} },
+    new Map(),
+    new Map(),
+    new Set(),
+  );
+}
+
+async function awaitLaunchedStepResults(
+  launchedAtoms: LaunchedAtom[],
+  stepIndex: number,
+  stepPrompt: string,
+  executionSvc: WorkflowExecutionPort,
+  ctx: CallerContext,
+  options: {
+    signal?: AbortSignal;
+    staleTimeoutMs: number;
+    pollIntervalMs: number;
+    workDir?: string;
+    onProgress: (message: string) => void;
+    completedStepDetails: StepDetail[];
+    persistCheckpoint: PersistCheckpoint;
+  },
+): Promise<Map<string, string>> {
+  try {
+    const checkpointFromWaitState = (waitState: WaitInternalState): void => {
+      options.persistCheckpoint(
+        stepIndex,
+        stepPrompt,
+        launchedAtoms,
+        waitState.completedOutputs,
+        waitState.cursor,
+        waitState.lastActivityAt,
+        waitState.staleRetries,
+        waitState.expectedStaleAborts,
+        waitState.failureDrain,
+      );
+    };
+
+    return await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+      signal: options.signal,
+      staleTimeoutMs: options.staleTimeoutMs,
+      pollIntervalMs: options.pollIntervalMs,
+      workDir: options.workDir,
+      onProgress: options.onProgress,
+      completedStepDetails: options.completedStepDetails,
+      onAtomTerminal: checkpointFromWaitState,
+      onStaleSwap: checkpointFromWaitState,
+    });
+  } catch (error) {
+    if (error instanceof WorkflowExecutionError) {
+      throw error;
+    }
+
+    const message = errorMessage(error);
+    throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...options.completedStepDetails]);
+  }
+}
+
+function finalizeStep(
+  stepIndex: number,
+  launchedAtoms: LaunchedAtom[],
+  stepResults: Map<string, string>,
+): FinalizedStep {
+  return {
+    stepDetails: buildStepDetailsForAtoms(launchedAtoms, stepResults),
+    stepPrompt: formatStepOutput(
+      launchedAtoms.map((atom) => ({
+        tagName: atom.tagName,
+        output: requireStepResult(stepIndex, atom, stepResults),
+      })),
+    ),
+  };
+}
+
 /**
  * Resume a workflow pipeline from a persisted checkpoint.
  * Reconstructs the active step's wait state and re-enters the wait loop,
@@ -668,7 +994,7 @@ export async function resumePipeline(
   checkpoint: WorkflowCheckpoint,
   ast: PipelineAST,
   defaultProviderName: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;
@@ -716,38 +1042,13 @@ export async function resumePipeline(
 
   allLaunchedAtoms.push(...activeAtoms);
 
-  // ── Checkpoint support ──────────────────────────────────────────────────
-  const checkpointMutex = createAsyncMutex();
-  const canCheckpoint = options.workflowJobId !== undefined && options.progressStore !== undefined;
-
-  const persistCheckpoint = (
-    stepIndex: number,
-    stepPromptSnap: string,
-    launchedAtoms: LaunchedAtom[],
-    completedOutputs: Map<string, string>,
-    cursor: WaitCursor,
-    lastActivityAt: Map<string, number>,
-    staleRetries: Map<string, number>,
-    expectedStaleAborts: Set<string>,
-    failureDrain?: CheckpointState['failureDrain'],
-  ): void => {
-    if (!canCheckpoint) return;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
-    writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
-      sessionId: checkpoint.sessionId,
-      provider: defaultProviderName,
-      stepIndex,
-      stepPrompt: stepPromptSnap,
-      launchedAtoms,
-      completedOutputs,
-      completedStepDetails: stepDetails,
-      cursor,
-      lastActivityAt,
-      staleRetries,
-      expectedStaleAborts,
-      failureDrain,
-    });
-  };
+  const persistCheckpoint = createCheckpointPersister(
+    options.workflowJobId,
+    options.progressStore,
+    defaultProviderName,
+    checkpoint.sessionId,
+    stepDetails,
+  );
 
   try {
     // Resume waiting on the active step if there are pending atoms
@@ -794,17 +1095,7 @@ export async function resumePipeline(
         })),
       );
 
-      // Checkpoint: active step completed
-      persistCheckpoint(
-        activeStepIndex,
-        stepPrompt,
-        activeAtoms,
-        alreadyCompleted,
-        { jobs: {} },
-        new Map(),
-        new Map(),
-        new Set(),
-      );
+      checkpointStepCompletion(persistCheckpoint, activeStepIndex, stepPrompt, activeAtoms, alreadyCompleted);
       onProgress(`step ${activeStepIndex} completed (resumed)`);
     } else if (activeAtoms.length > 0) {
       // All atoms were already completed before restart — just rebuild the step output
@@ -824,105 +1115,52 @@ export async function resumePipeline(
       const step = ast[stepIndex];
       onProgress(`step ${stepIndex} started`);
 
-      const launchedAtoms: LaunchedAtom[] = [];
-      let launchError: unknown = null;
-
-      await Promise.all(
-        step.map(async (atom, atomIndex) => {
-          try {
-            const launched = await launchAtomWithRetry({
-              atom,
-              atomIndex,
-              stepIndex,
-              stepPrompt,
-              context: options.context,
-              workDir: options.workDir,
-              defaultProviderName,
-              executionSvc,
-              ctx,
-              atoms: options.atoms,
-              signal: options.signal,
-              completedStepDetails: stepDetails,
-              workflowJobId: options.workflowJobId,
-            });
-            launchedAtoms.push(launched);
-          } catch (error) {
-            launchError ??= error;
-          }
-        }),
+      const { launchedAtoms, launchError } = await launchStepAtoms(
+        step,
+        stepIndex,
+        stepPrompt,
+        defaultProviderName,
+        executionSvc,
+        ctx,
+        {
+          atoms: options.atoms,
+          context: options.context,
+          workDir: options.workDir,
+          signal: options.signal,
+          workflowJobId: options.workflowJobId,
+          completedStepDetails: stepDetails,
+        },
       );
-
-      launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
       allLaunchedAtoms.push(...launchedAtoms);
 
-      persistCheckpoint(stepIndex, stepPrompt, launchedAtoms, new Map(), { jobs: {} }, new Map(), new Map(), new Set());
+      checkpointStepLaunch(persistCheckpoint, stepIndex, stepPrompt, launchedAtoms);
 
       if (launchError !== null) {
-        const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
-          signal: options.signal,
-          staleTimeoutMs,
-          pollIntervalMs,
-          workDir: options.workDir,
-          onProgress,
-        });
-        const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
-        const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
-        throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
-      }
-
-      try {
-        const checkpointFromWaitState = (waitState: WaitInternalState): void => {
-          persistCheckpoint(
-            stepIndex,
-            stepPrompt,
-            launchedAtoms,
-            waitState.completedOutputs,
-            waitState.cursor,
-            waitState.lastActivityAt,
-            waitState.staleRetries,
-            waitState.expectedStaleAborts,
-            waitState.failureDrain,
-          );
-        };
-        const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+        await handleStepLaunchFailure(launchError, launchedAtoms, executionSvc, ctx, {
           signal: options.signal,
           staleTimeoutMs,
           pollIntervalMs,
           workDir: options.workDir,
           onProgress,
           completedStepDetails: stepDetails,
-          onAtomTerminal: checkpointFromWaitState,
-          onStaleSwap: checkpointFromWaitState,
         });
-
-        const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
-        stepDetails.push(...orderedStepDetails);
-        stepPrompt = formatStepOutput(
-          launchedAtoms.map((atom) => ({
-            tagName: atom.tagName,
-            output: requireStepResult(stepIndex, atom, stepResults),
-          })),
-        );
-
-        persistCheckpoint(
-          stepIndex,
-          stepPrompt,
-          launchedAtoms,
-          stepResults,
-          { jobs: {} },
-          new Map(),
-          new Map(),
-          new Set(),
-        );
-        onProgress(`step ${stepIndex} completed`);
-      } catch (error) {
-        if (error instanceof WorkflowExecutionError) {
-          throw error;
-        }
-        const message = errorMessage(error);
-        throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
       }
+
+      const stepResults = await awaitLaunchedStepResults(launchedAtoms, stepIndex, stepPrompt, executionSvc, ctx, {
+        signal: options.signal,
+        staleTimeoutMs,
+        pollIntervalMs,
+        workDir: options.workDir,
+        onProgress,
+        completedStepDetails: stepDetails,
+        persistCheckpoint,
+      });
+      const completedStep = finalizeStep(stepIndex, launchedAtoms, stepResults);
+      stepDetails.push(...completedStep.stepDetails);
+      stepPrompt = completedStep.stepPrompt;
+
+      checkpointStepCompletion(persistCheckpoint, stepIndex, stepPrompt, launchedAtoms, stepResults);
+      onProgress(`step ${stepIndex} completed`);
     }
 
     return {
@@ -930,15 +1168,7 @@ export async function resumePipeline(
       stepDetails,
     };
   } finally {
-    const seen = new Set<string>();
-    const refs: string[] = [];
-    for (const atom of allLaunchedAtoms) {
-      if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
-      seen.add(atom.sessionId);
-      const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-      if (ref) refs.push(ref);
-    }
-    cleanupClaudeSessions(refs);
+    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
   }
 }
 
@@ -946,7 +1176,7 @@ export async function executePipeline(
   ast: PipelineAST,
   initialPrompt: string,
   defaultProviderName: string,
-  executionSvc: WorkflowExecutionService,
+  executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
     atoms?: WorkflowAtoms;
@@ -967,39 +1197,13 @@ export async function executePipeline(
   let stepPrompt = initialPrompt;
   const allLaunchedAtoms: LaunchedAtom[] = [];
 
-  // ── Checkpoint support ──────────────────────────────────────────────────
-  const checkpointMutex = createAsyncMutex();
-  const canCheckpoint = options.workflowJobId !== undefined && options.progressStore !== undefined;
-
-  /** Snapshot current coordinator state to durable storage (fire-and-forget). */
-  const persistCheckpoint = (
-    stepIndex: number,
-    stepPromptSnap: string,
-    launchedAtoms: LaunchedAtom[],
-    completedOutputs: Map<string, string>,
-    cursor: WaitCursor,
-    lastActivityAt: Map<string, number>,
-    staleRetries: Map<string, number>,
-    expectedStaleAborts: Set<string>,
-    failureDrain?: CheckpointState['failureDrain'],
-  ): void => {
-    if (!canCheckpoint) return;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by canCheckpoint (both defined)
-    writeCheckpoint(options.progressStore!, options.workflowJobId!, checkpointMutex, {
-      sessionId: '',
-      provider: defaultProviderName,
-      stepIndex,
-      stepPrompt: stepPromptSnap,
-      launchedAtoms,
-      completedOutputs,
-      completedStepDetails: stepDetails,
-      cursor,
-      lastActivityAt,
-      staleRetries,
-      expectedStaleAborts,
-      failureDrain,
-    });
-  };
+  const persistCheckpoint = createCheckpointPersister(
+    options.workflowJobId,
+    options.progressStore,
+    defaultProviderName,
+    '',
+    stepDetails,
+  );
 
   // Initial checkpoint — coordinator start (empty state)
   const emptyCursor: WaitCursor = { jobs: {} };
@@ -1010,108 +1214,52 @@ export async function executePipeline(
       const step = ast[stepIndex];
       onProgress(`step ${stepIndex} started`);
 
-      const launchedAtoms: LaunchedAtom[] = [];
-      let launchError: unknown = null;
-
-      await Promise.all(
-        step.map(async (atom, atomIndex) => {
-          try {
-            const launched = await launchAtomWithRetry({
-              atom,
-              atomIndex,
-              stepIndex,
-              stepPrompt,
-              context: options.context,
-              workDir: options.workDir,
-              defaultProviderName,
-              executionSvc,
-              ctx,
-              atoms: options.atoms,
-              signal: options.signal,
-              completedStepDetails: stepDetails,
-              workflowJobId: options.workflowJobId,
-            });
-            launchedAtoms.push(launched);
-          } catch (error) {
-            launchError ??= error;
-          }
-        }),
+      const { launchedAtoms, launchError } = await launchStepAtoms(
+        step,
+        stepIndex,
+        stepPrompt,
+        defaultProviderName,
+        executionSvc,
+        ctx,
+        {
+          atoms: options.atoms,
+          context: options.context,
+          workDir: options.workDir,
+          signal: options.signal,
+          completedStepDetails: stepDetails,
+          workflowJobId: options.workflowJobId,
+        },
       );
-
-      launchedAtoms.sort((left, right) => left.atomIndex - right.atomIndex);
       allLaunchedAtoms.push(...launchedAtoms);
 
-      // Checkpoint: after atom launch
-      persistCheckpoint(stepIndex, stepPrompt, launchedAtoms, new Map(), { jobs: {} }, new Map(), new Map(), new Set());
+      checkpointStepLaunch(persistCheckpoint, stepIndex, stepPrompt, launchedAtoms);
 
       if (launchError !== null) {
-        const drainedStepDetails = await drainLaunchedAtoms(launchedAtoms, executionSvc, ctx, {
-          signal: options.signal,
-          staleTimeoutMs,
-          pollIntervalMs,
-          workDir: options.workDir,
-          onProgress,
-        });
-        const baseStepDetails = launchError instanceof WorkflowExecutionError ? launchError.stepDetails : stepDetails;
-        const message = launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
-        const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
-        throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
-      }
-
-      try {
-        const checkpointFromWaitState = (waitState: WaitInternalState): void => {
-          persistCheckpoint(
-            stepIndex,
-            stepPrompt,
-            launchedAtoms,
-            waitState.completedOutputs,
-            waitState.cursor,
-            waitState.lastActivityAt,
-            waitState.staleRetries,
-            waitState.expectedStaleAborts,
-            waitState.failureDrain,
-          );
-        };
-        const stepResults = await waitForAtoms(launchedAtoms, executionSvc, ctx, {
+        await handleStepLaunchFailure(launchError, launchedAtoms, executionSvc, ctx, {
           signal: options.signal,
           staleTimeoutMs,
           pollIntervalMs,
           workDir: options.workDir,
           onProgress,
           completedStepDetails: stepDetails,
-          onAtomTerminal: checkpointFromWaitState,
-          onStaleSwap: checkpointFromWaitState,
         });
-
-        const orderedStepDetails = buildStepDetailsForAtoms(launchedAtoms, stepResults);
-        stepDetails.push(...orderedStepDetails);
-        stepPrompt = formatStepOutput(
-          launchedAtoms.map((atom) => ({
-            tagName: atom.tagName,
-            output: requireStepResult(stepIndex, atom, stepResults),
-          })),
-        );
-
-        // Checkpoint: after step completion
-        persistCheckpoint(
-          stepIndex,
-          stepPrompt,
-          launchedAtoms,
-          stepResults,
-          { jobs: {} },
-          new Map(),
-          new Map(),
-          new Set(),
-        );
-        onProgress(`step ${stepIndex} completed`);
-      } catch (error) {
-        if (error instanceof WorkflowExecutionError) {
-          throw error;
-        }
-
-        const message = errorMessage(error);
-        throw createWorkflowExecutionError(message, Boolean(options.signal?.aborted), [...stepDetails]);
       }
+
+      const stepResults = await awaitLaunchedStepResults(launchedAtoms, stepIndex, stepPrompt, executionSvc, ctx, {
+        signal: options.signal,
+        staleTimeoutMs,
+        pollIntervalMs,
+        workDir: options.workDir,
+        onProgress,
+        completedStepDetails: stepDetails,
+        persistCheckpoint,
+      });
+      const completedStep = finalizeStep(stepIndex, launchedAtoms, stepResults);
+      stepDetails.push(...completedStep.stepDetails);
+      stepPrompt = completedStep.stepPrompt;
+
+      checkpointStepCompletion(persistCheckpoint, stepIndex, stepPrompt, launchedAtoms, stepResults);
+      onProgress(`step ${stepIndex} completed`);
     }
 
     return {
@@ -1119,17 +1267,6 @@ export async function executePipeline(
       stepDetails,
     };
   } finally {
-    // Resolve conversationRefs at exit time — dedup by sessionId since stale
-    // recovery preserves sessionId (service.ts:389). If this assumption breaks,
-    // only consequence is leaked session files (no crash).
-    const seen = new Set<string>();
-    const refs: string[] = [];
-    for (const atom of allLaunchedAtoms) {
-      if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
-      seen.add(atom.sessionId);
-      const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-      if (ref) refs.push(ref);
-    }
-    cleanupClaudeSessions(refs);
+    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
   }
 }

@@ -108,12 +108,8 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
     .flatMap((filename) => {
       try {
         const path = join(dir, filename);
-        const stat = statSync(path);
-        if (!stat.isFile()) {
-          return [];
-        }
-        const memo = parseTimestampPrefix(filename);
         const raw = readFileSync(path, 'utf-8');
+        const memo = parseTimestampPrefix(filename);
 
         let owner: string | undefined;
         try {
@@ -127,15 +123,10 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
           return [];
         }
 
-        return [
-          {
-            filename,
-            summary: extractSummary(raw),
-            createdAt: memo?.display ?? stat.mtime.toISOString(),
-            sortKey: memo?.sortKey ?? stat.mtimeMs,
-            owner,
-          },
-        ];
+        const createdAt = memo?.display ?? statSync(path).mtime.toISOString();
+        const sortKey = memo?.sortKey ?? (Date.parse(createdAt) || 0);
+
+        return [{ filename, summary: extractSummary(raw), createdAt, sortKey, owner }];
       } catch {
         return [];
       }
@@ -153,13 +144,6 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
   const matcher = globToRegex(input.pattern);
   const deleted = readMemoDir(projectRoot)
     .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => {
-      try {
-        return statSync(join(dir, filename)).isFile();
-      } catch {
-        return false;
-      }
-    })
     .filter((filename) => matcher.test(filename))
     .filter((filename) => {
       if (input.owner === undefined) return true;
@@ -181,31 +165,6 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
 }
 
 export function purgeMemos(projectRoot: string, owner?: string): KbMemoPurgeResult {
-  const dir = memoDir(projectRoot);
-  const deleted = readMemoDir(projectRoot)
-    .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => {
-      try {
-        return statSync(join(dir, filename)).isFile();
-      } catch {
-        return false;
-      }
-    })
-    .filter((filename) => {
-      if (owner === undefined) return true;
-      try {
-        const raw = readFileSync(join(dir, filename), 'utf-8');
-        const parsed = parseMemoFrontmatter(raw);
-        return parsed.owner === owner;
-      } catch {
-        return false;
-      }
-    })
-    .sort(compareLocale);
-
-  for (const filename of deleted) {
-    unlinkIfExists(join(dir, filename));
-  }
-
-  return { deleted: deleted.length };
+  const { deleted, count } = deleteMemos(projectRoot, { pattern: '*', owner });
+  return { deleted: count };
 }

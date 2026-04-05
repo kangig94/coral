@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { z } from 'zod';
+import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import {
   discussSourcesPath,
   JOBS_DIR,
@@ -11,8 +12,13 @@ import {
   discussSummaryIndexPathForSource,
   resolveProjectSource,
 } from '../infra/paths.js';
-import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
-import type { SessionEntry } from '../execution/session-manager.js';
+import {
+  isValidSessionEntry as isSharedValidSessionEntry,
+  readSessionEntry as readSharedSessionEntry,
+  readSessionEntryLenient as readSharedSessionEntryLenient,
+  type LenientSessionEntry,
+} from '../shared/session-entry.js';
+import type { PersistedProgressRecord, PersistedStatusRecord, SessionEntry } from '../shared/types.js';
 import type { DiscussState } from '../discuss/types.js';
 import {
   discussStatuses,
@@ -28,7 +34,6 @@ import {
   controlPhases,
   discussEventKinds,
 } from '../discuss/events.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
 
 const discussEventKindSet = new Set<string>(discussEventKinds);
 const discussStatusSet = new Set<string>(discussStatuses);
@@ -38,6 +43,8 @@ const transcriptResolveTypeSet = new Set<string>(transcriptResolveTypes);
 const transcriptEventSet = new Set<string>(sessionEventKinds);
 const controlPhaseSet = new Set<string>(controlPhases);
 const resolveReasonSet = new Set<string>(resolveReasons);
+
+export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
 
 function readJsonFile(filePath: string): unknown | null {
   try {
@@ -71,6 +78,26 @@ function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null
   }
   return entries;
 }
+
+/** Structural schema for persisted status records — validates fields callers branch on. */
+const persistedStatusRecordSchema = z.object({
+  jobId: z.string(),
+  sessionId: z.string(),
+  provider: z.string(),
+  projectRoot: z.string(),
+  backendNamespace: z.string(),
+  phase: z.string(),
+  launch: z.object({ state: z.string(), updatedAt: z.string() }).passthrough(),
+}).passthrough();
+
+/** Structural schema for persisted progress records. */
+const persistedProgressRecordSchema = z.object({
+  jobId: z.string(),
+  sessionId: z.string(),
+  eventId: z.number(),
+  type: z.string(),
+  ts: z.string(),
+}).passthrough();
 
 function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
   try {
@@ -177,18 +204,7 @@ function isValidTranscriptEntry(value: unknown): boolean {
 }
 
 export function isValidSessionEntry(value: unknown): value is SessionEntry {
-  if (!value || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  return (
-    typeof v.sessionId === 'string' &&
-    typeof v.provider === 'string' &&
-    typeof v.name === 'string' &&
-    typeof v.state === 'string' &&
-    (v.state === 'pending' || v.state === 'ready' || v.state === 'non_resumable') &&
-    typeof v.model === 'string' &&
-    typeof v.cwd === 'string' &&
-    typeof v.version === 'number'
-  );
+  return isSharedValidSessionEntry(value);
 }
 
 function isValidDiscussState(value: unknown): value is DiscussState {
@@ -548,31 +564,6 @@ function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData
 }
 
 /**
- * Provenance marker for lenient session scans.
- */
-export type ProvenanceState = 'authoritative' | 'legacy_unresolved';
-
-/**
- * Backward-compatible session view for indexing and reporting surfaces.
- */
-export interface LenientSessionEntry {
-  sessionId: string;
-  provider?: string;
-  name?: string;
-  state?: string;
-  activeJobId?: string;
-  lastJobId?: string;
-  conversationRef?: string;
-  model?: string;
-  cwd?: string;
-  projectRoot?: string;
-  createdAt?: string;
-  lastUsedAt?: string;
-  version?: number;
-  provenanceState: ProvenanceState;
-}
-
-/**
  * Persisted discuss event log entry.
  */
 export type DiscussEventLogEntry = DiscussDomainEvent;
@@ -624,7 +615,9 @@ export interface DiscussSummaryIndexData {
  */
 export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
   const record = readJsonFile(join(JOBS_DIR, jobId, 'status.json'));
-  return record === null ? null : (record as PersistedStatusRecord);
+  if (record === null) return null;
+  const parsed = persistedStatusRecordSchema.safeParse(record);
+  return parsed.success ? (parsed.data as PersistedStatusRecord) : null;
 }
 
 /**
@@ -633,45 +626,24 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
 export function readProgressLog(jobId: string): PersistedProgressRecord[] {
   const log = readTextFile(join(JOBS_DIR, jobId, 'progress.jsonl'));
   if (log === null) return [];
-  return parseJsonLines(log, (lineValue) => lineValue as PersistedProgressRecord);
+  return parseJsonLines(log, (lineValue) => {
+    const parsed = persistedProgressRecordSchema.safeParse(lineValue);
+    return parsed.success ? (parsed.data as PersistedProgressRecord) : null;
+  });
 }
 
 /**
  * Reads and validates a strict execution session entry JSON file.
  */
 export function readSessionEntry(sessionPath: string): SessionEntry | null {
-  const entry = readJsonFile(sessionPath);
-  if (entry === null) return null;
-  return isValidSessionEntry(entry) ? entry : null;
+  return readSharedSessionEntry(sessionPath);
 }
 
 /**
  * Reads a session entry for reporting surfaces that must tolerate legacy or partial files.
  */
 export function readSessionEntryLenient(sessionPath: string): LenientSessionEntry | null {
-  const entry = readJsonFile(sessionPath);
-  if (!isRecord(entry) || typeof entry.sessionId !== 'string') return null;
-
-  const projectRoot = typeof entry.projectRoot === 'string' ? entry.projectRoot : undefined;
-  const lenientEntry: LenientSessionEntry = {
-    sessionId: entry.sessionId,
-    provenanceState: projectRoot === undefined ? 'legacy_unresolved' : 'authoritative',
-  };
-
-  if (typeof entry.provider === 'string') lenientEntry.provider = entry.provider;
-  if (typeof entry.name === 'string') lenientEntry.name = entry.name;
-  if (typeof entry.state === 'string') lenientEntry.state = entry.state;
-  if (typeof entry.activeJobId === 'string') lenientEntry.activeJobId = entry.activeJobId;
-  if (typeof entry.lastJobId === 'string') lenientEntry.lastJobId = entry.lastJobId;
-  if (typeof entry.conversationRef === 'string') lenientEntry.conversationRef = entry.conversationRef;
-  if (typeof entry.model === 'string') lenientEntry.model = entry.model;
-  if (typeof entry.cwd === 'string') lenientEntry.cwd = entry.cwd;
-  if (projectRoot !== undefined) lenientEntry.projectRoot = projectRoot;
-  if (typeof entry.createdAt === 'string') lenientEntry.createdAt = entry.createdAt;
-  if (typeof entry.lastUsedAt === 'string') lenientEntry.lastUsedAt = entry.lastUsedAt;
-  if (typeof entry.version === 'number') lenientEntry.version = entry.version;
-
-  return lenientEntry;
+  return readSharedSessionEntryLenient(sessionPath);
 }
 
 /**
@@ -734,12 +706,7 @@ export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryInde
 }
 
 export function readDiscussSources(): string[] {
-  const registry = readJsonFile(discussSourcesPath());
-  const parsed = parseDiscussSourcesRegistry(registry);
-  if (!parsed) {
-    return [];
-  }
-  return parsed.sources;
+  return parseDiscussSourcesRegistry(readJsonFile(discussSourcesPath()))?.sources ?? [];
 }
 
 export function readDiscussProjectRoots(): string[] {

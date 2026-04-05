@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.4.12",
+  "version": "0.5.0",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
   "exports": {
@@ -12,6 +12,7 @@
     "bridge/coral-backend.cjs",
     "bridge/coral-ax.cjs",
     "bridge/coral-cli.cjs",
+    "bridge/coral-claude-appserver.cjs",
     "bridge/manifest.json"
   ],
   "scripts": {
@@ -28,6 +29,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@orama/orama": "^3.1.18",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
+    "mammoth": "^1.12.0",
+    "turndown": "^7.2.2",
     "yaml": "^2.4.2",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.25.1"
@@ -35,6 +40,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.19.7",
+    "@types/turndown": "^5.0.6",
     "commander": "^14.0.3",
     "esbuild": "^0.27.2",
     "eslint": "^10.1.0",

@@ -10,7 +10,6 @@ TypeScript compilation and esbuild bundling pipeline.
 | `npm run build:server` | esbuild bundle only (skips tsc) |
 | `npm run dev` | TypeScript watch mode (`tsc --watch`) |
 | `npm test` | Run tests with vitest |
-
 ## Bundle Commit Policy
 
 All three bundles (`bridge/coral-ax.cjs`, `bridge/coral-backend.cjs`, and `bridge/coral-cli.cjs`) are committed to the repository. This means users can use the plugin by pointing to the plugin directory without running `npm install` + `npm run build`:
@@ -45,9 +44,17 @@ bridge/coral-cli.cjs       (src/cli/bootstrap.ts)
 
 The build script performs two tasks before bundling: version sync and manifest update.
 
+### C++ Native Addon (coral-needle)
+
+The vector search addon is a separate project: [kangig94/coral-needle](https://github.com/kangig94/coral-needle). See that repo for build instructions, CI, and platform support. `/coral:equip kb` downloads prebuilt binaries from coral-needle releases.
+
 ### Version Sync
 
 `package.json` is the single source of truth for the version. On each build, the script reads `package.json`, then writes the `version` field into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` automatically. No manual version updates needed in those files.
+
+### Manifest Update
+
+`bridge/manifest.json` contains `bundleHash` for version-independent change detection, generated from the backend bundle content hash.
 
 ### esbuild Settings
 
@@ -71,6 +78,8 @@ The build script performs two tasks before bundling: version sync and manifest u
 | `__VERSION__` | `package.json` version | MCP server initialization (`server.ts`) |
 | `__PLUGIN_ROOT__` | CJS `__dirname` + `..` | Runtime plugin-root resolution for shared resolver + Codex INJECT.md injection |
 | `__IS_CORAL_BACKEND_MAIN__` | `true` (backend bundle only) | Guards auto-start logic in `src/execution/server.ts` |
+| `CORAL_VEC_ADDON_VERSION` | `coral-needle repo (github.com/kangig94/coral-needle)VERSION` | Addon version reported by `getStats()` |
+| `CORAL_VEC_SCHEMA_VERSION` | `src/kb/vector-store-contract.ts` | DuckDB schema version for compatibility checks |
 
 `__PLUGIN_ROOT__` is a CJS banner variable (not a `define` replacement), set to `path.resolve(__dirname, '..')` at runtime. This allows the bundled server to locate `INJECT.md` regardless of where the plugin is installed.
 

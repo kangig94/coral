@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   deriveNoteIdentity,
   extractTitle,
+  parseCommunityFrontmatter,
   parseFrontmatter,
   parseMemoFrontmatter,
+  parseSourceFrontmatter,
   replaceFrontmatter,
+  serializeCommunityFrontmatter,
   serializeFrontmatter,
   serializeNote,
+  serializeSourceFrontmatter,
 } from '../frontmatter.js';
 
 describe('kb frontmatter', () => {
@@ -20,7 +24,7 @@ source:
   - kangig94/coral
 createdAt: 2026-03-23
 updatedAt: 2026-03-23
-mutationSeqAtPromote: 11
+entrySeq: 11
 ---
 # KB Contract
 `;
@@ -31,7 +35,8 @@ mutationSeqAtPromote: 11
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
-      mutationSeqAtPromote: 11,
+      related: [],
+      entrySeq: 11,
     });
   });
 
@@ -42,18 +47,18 @@ mutationSeqAtPromote: 11
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
-      mutationSeqAtPromote: 17,
+      entrySeq: 17,
     });
 
     expect(serialized).not.toContain('[[lenient-read-strict-write]]');
     expect(serialized).toContain('lenient-read-strict-write');
     expect(parseFrontmatter(`${serialized}# Title\n`)).toMatchObject({
       principles: ['lenient-read-strict-write', 'contract-first-design'],
-      mutationSeqAtPromote: 17,
+      entrySeq: 17,
     });
   });
 
-  it('accepts legacy note frontmatter with no mutation sequence', () => {
+  it('accepts note frontmatter with no entry sequence', () => {
     const content = `---
 tags: [coral]
 principles: []
@@ -71,6 +76,51 @@ updatedAt: 2026-03-23
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+      related: [],
+    });
+  });
+
+  it('parses and serializes source frontmatter separately from note frontmatter', () => {
+    const serialized = serializeSourceFrontmatter({
+      title: 'SQLite Query Planner Overview',
+      type: 'spec',
+      tags: ['database', 'query-planning'],
+      url: 'https://sqlite.org/queryplanner.html',
+      importedAt: '2026-03-23T00:00:00.000Z',
+      entrySeq: 29,
+      related: ['note:query-planner', 'source:sqlite-overview'],
+    });
+
+    expect(parseSourceFrontmatter(`${serialized}# SQLite Query Planner Overview\n\nBody.\n`)).toEqual({
+      title: 'SQLite Query Planner Overview',
+      type: 'spec',
+      tags: ['database', 'query-planning'],
+      url: 'https://sqlite.org/queryplanner.html',
+      importedAt: '2026-03-23T00:00:00.000Z',
+      entrySeq: 29,
+      related: ['note:query-planner', 'source:sqlite-overview'],
+    });
+  });
+
+  it('parses and serializes community frontmatter separately from note frontmatter', () => {
+    const serialized = serializeCommunityFrontmatter({
+      level: 1,
+      members: ['graph-rag', 'retrieval'],
+      parent: 'community:ai-systems',
+      summary: '  Shared retrieval patterns.  ',
+      generatedBy: 'curate',
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
+    });
+
+    expect(parseCommunityFrontmatter(`${serialized}# Graph RAG\n\nBody.\n`)).toEqual({
+      level: 1,
+      members: ['graph-rag', 'retrieval'],
+      parent: 'community:ai-systems',
+      summary: 'Shared retrieval patterns.',
+      generatedBy: 'curate',
+      createdAt: '2026-04-02',
+      updatedAt: '2026-04-03',
     });
   });
 
@@ -111,7 +161,7 @@ Keep the body stable.
       source: ['kangig94/coral'],
       createdAt: '2026-03-23',
       updatedAt: '2026-03-24',
-      mutationSeqAtPromote: 19,
+      entrySeq: 19,
     };
 
     expect(replaceFrontmatter(content, meta)).toBe(`${serializeFrontmatter(meta)}# KB Contract
@@ -129,7 +179,7 @@ Keep the body stable.
         source: ['kangig94/coral'],
         createdAt: '2026-03-23',
         updatedAt: '2026-03-23',
-        mutationSeqAtPromote: 23,
+        entrySeq: 23,
       },
       'KB Runtime Root',
       '## Rule\nUse the configured root.',
@@ -180,6 +230,7 @@ updatedAt: 2026-03-23
     });
     expect(
       buildNoteIndexEntry({
+        slug: 'coral-test',
         title: 'Test',
         tags: ['coral'],
         principles: [],

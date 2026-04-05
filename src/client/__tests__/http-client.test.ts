@@ -118,13 +118,13 @@ describe('client http-client', () => {
     });
 
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true }), {
+      new Response(JSON.stringify({ ok: true, data: { ok: true } }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
 
-    await expect(invoke(client)).resolves.toEqual({ ok: true });
+    await expect(invoke(client)).resolves.toEqual({ ok: true, data: { ok: true } });
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:4100/tool',
       expect.objectContaining({
@@ -142,32 +142,21 @@ describe('client http-client', () => {
     );
   });
 
-  it('preserves structured JSON error bodies from /tool failures', async () => {
+  it('returns structured domain errors from parsed /tool failures', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
-    const errorBody = { error: 'scope_mismatch', jobs: ['job-1'] };
+    const errorBody = { ok: false, code: 'scope_mismatch', message: 'Jobs do not belong to this project', detail: { jobs: ['job-1'] } };
 
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify(errorBody), {
-        status: 403,
-        statusText: 'Forbidden',
+        status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
 
-    let caught: unknown;
-    try {
-      await client.abortJobs(['job-1']);
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(BackendToolHttpError);
-    expect((caught as BackendToolHttpError).message).toBe('Backend request failed: 403 Forbidden');
-    expect((caught as BackendToolHttpError).statusCode).toBe(403);
-    expect((caught as BackendToolHttpError).body).toEqual(errorBody);
+    await expect(client.abortJobs(['job-1'])).resolves.toEqual(errorBody);
     expect(fetchMock).toHaveBeenCalledWith(
       'http://127.0.0.1:4100/tool',
       expect.objectContaining({
@@ -183,5 +172,33 @@ describe('client http-client', () => {
         }),
       }),
     );
+  });
+
+  it('reserves BackendToolHttpError for transport and server failures', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+    const errorBody = { error: 'backend_shutting_down' };
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(errorBody), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await client.abortJobs(['job-1']);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(BackendToolHttpError);
+    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down, retry');
+    expect((caught as BackendToolHttpError).statusCode).toBe(503);
+    expect((caught as BackendToolHttpError).body).toEqual(errorBody);
   });
 });

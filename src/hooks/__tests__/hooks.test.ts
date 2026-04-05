@@ -106,6 +106,7 @@ function runHook(
   envOverrides: Record<string, string | undefined> = {},
 ): HookRunResult {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.CORAL_CHILD;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {

@@ -29,6 +29,9 @@ import {
   formatKbRead,
   formatKbReindex,
   formatKbSearch,
+  formatKbSourceDelete,
+  formatKbSourceImport,
+  formatKbSourceList,
   formatKbUpdate,
   formatDiscussAbort,
   formatDiscussParticipate,
@@ -48,13 +51,18 @@ import {
 } from './format.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject, parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from './parse.js';
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { getAllNewProviders } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
+import type { ProviderRegistry } from '../providers/registry.js';
+import { prepareSourceImport } from '../kb/source-import.js';
+import { assertSourceSlug } from '../kb/validation.js';
+import type { ToolDomainResult } from '../execution/tool-response.js';
 
-/** Return registered provider names. Built-ins are registered on first call. */
-function getProviderNames(): string[] {
-  registerBuiltInProviders();
-  return getAllNewProviders().map((p) => p.name);
+function getProviderNames(providerRegistry: ProviderRegistry): string[] {
+  return providerRegistry.getAll().map((provider) => provider.name);
+}
+
+function createCliProviderRegistry(): ProviderRegistry {
+  return createBuiltInProviderRegistry();
 }
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
@@ -139,6 +147,7 @@ type DiscussAbortOptions = {
 
 type KbSearchOptions = {
   topK?: string;
+  scope?: 'notes' | 'communities' | 'sources' | 'all';
 };
 
 type KbPrinciplesOptions = {
@@ -160,6 +169,10 @@ type KbUpdateOptions = {
   contentFile?: string;
 };
 
+type KbSourceImportOptions = {
+  slug?: string;
+};
+
 function resolveFilePath(filePath: string): string {
   if (existsSync(filePath)) return filePath;
   if (!filePath.endsWith('.md')) {
@@ -177,7 +190,23 @@ function makeClient(projectRoot: string): BackendClient {
   });
 }
 
+function isToolDomainResult(value: unknown): value is ToolDomainResult {
+  if (!isJsonObject(value) || typeof value.ok !== 'boolean') {
+    return false;
+  }
+
+  if (value.ok) {
+    return 'data' in value;
+  }
+
+  return typeof value.code === 'string' && typeof value.message === 'string';
+}
+
 function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
+  if (isToolDomainResult(result)) {
+    return result.ok ? { output: result.data, isError: false } : { output: result, isError: true };
+  }
+
   if (
     isJsonObject(result) &&
     typeof result.isError === 'boolean' &&
@@ -194,11 +223,6 @@ function normalizeResult(result: unknown): { output: unknown; isError: boolean }
     }
   }
 
-  if (isJsonObject(result) && result.status === 'rejected') {
-    return { output: result, isError: true };
-  }
-
-  // Non-MCP response shape — treat as success and emit as-is
   return { output: result, isError: false };
 }
 
@@ -233,11 +257,23 @@ export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
 
   if (error instanceof BackendToolHttpError) {
     process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
-  } else if (error instanceof Error) {
-    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
-  } else {
-    process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
+    process.exitCode = 1;
+    return;
   }
+
+  if (isToolDomainResult(error) && !error.ok) {
+    process.stderr.write(JSON.stringify(error) + '\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (error instanceof Error) {
+    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
   process.exitCode = 1;
 }
 
@@ -282,15 +318,6 @@ export function emitLaunchDecision(decision: LaunchDecision, outputFormat: 'text
   process.stdout.write(text + '\n');
 }
 
-export function emitRejectedLaunchDecision(
-  decision: Extract<LaunchDecision, { status: 'rejected' }>,
-  outputFormat: 'text' | 'json',
-): void {
-  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
-  process.stderr.write(text + '\n');
-  process.exitCode = 1;
-}
-
 function getTerminalContext(): { isTTY: boolean; columns: number } {
   return {
     isTTY: process.stdout.isTTY === true,
@@ -307,11 +334,7 @@ async function handleLaunchResult(
   const normalized = normalizeResult(result);
 
   if (normalized.isError) {
-    if (isLaunchDecision(normalized.output) && normalized.output.status === 'rejected') {
-      emitRejectedLaunchDecision(normalized.output, outputFormat);
-    } else {
-      emitError(normalized.output, outputFormat);
-    }
+    emitError(normalized.output, outputFormat);
     return;
   }
 
@@ -393,14 +416,17 @@ function shapeWaitOutputRecord(event: WaitStreamEvent, cursor: string | null, em
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
-export function normalizeProviderArgv(argv: readonly string[]): string[] {
+export function normalizeProviderArgv(
+  argv: readonly string[],
+  providerRegistry: ProviderRegistry = createCliProviderRegistry(),
+): string[] {
   if (argv.length < 4) {
     return argv.slice();
   }
 
   const [nodePath, scriptPath, provider, dispatchToken] = argv;
 
-  if (!getProviderNames().includes(provider)) {
+  if (!getProviderNames(providerRegistry).includes(provider)) {
     return argv.slice();
   }
 
@@ -412,8 +438,8 @@ export function normalizeProviderArgv(argv: readonly string[]): string[] {
   return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
 }
 
-function registerProviderCommands(program: Command): void {
-  for (const providerName of getProviderNames()) {
+function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
+  for (const providerName of getProviderNames(providerRegistry)) {
     const provider = program.command(providerName).description(`${providerName} provider operations`);
 
     const execCommand = provider.command('exec');
@@ -503,7 +529,7 @@ function registerProviderCommands(program: Command): void {
   }
 }
 
-export function buildProgram(): Command {
+export function buildProgram(providerRegistry: ProviderRegistry = createCliProviderRegistry()): Command {
   const program = new Command();
 
   program
@@ -512,7 +538,7 @@ export function buildProgram(): Command {
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
   program.addOption(new Option('--output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
 
-  registerProviderCommands(program);
+  registerProviderCommands(program, providerRegistry);
 
   const waitCommand = program.command('wait');
   waitCommand
@@ -809,9 +835,17 @@ export function buildProgram(): Command {
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
-    .description('Search KB notes')
+    .description('Search KB entries')
     .argument('<query>', 'Search query')
     .option('--top-k <n>', 'Maximum results')
+    .addOption(
+      new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
+        'notes',
+        'communities',
+        'sources',
+        'all',
+      ]),
+    )
     .action(async (query: string, opts: KbSearchOptions) => {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
@@ -819,6 +853,7 @@ export function buildProgram(): Command {
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
+          ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbSearch(args);
@@ -846,6 +881,63 @@ export function buildProgram(): Command {
         const client = makeClient(process.cwd());
         const result = await client.kbPrinciples(args);
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbSourceCommand = kb.command('source').description('Manage KB sources');
+
+  const kbSourceImportCommand = kbSourceCommand.command('import');
+  kbSourceImportCommand
+    .description('Import a source file into the KB')
+    .argument('<file>', 'File to import')
+    .option('--slug <slug>', 'Override source slug')
+    .action(async (file: string, opts: KbSourceImportOptions) => {
+      const outputFormat = getOutputFormat(kbSourceImportCommand);
+
+      try {
+        const prepared = await prepareSourceImport(
+          resolveFilePath(file),
+          opts.slug,
+          (line) => process.stderr.write(`${line}\n`),
+        );
+        const client = makeClient(process.cwd());
+        const result = await client.kbSourceImport({
+          slug: prepared.slug,
+          stagedPath: prepared.stagedPath,
+          meta: prepared.meta,
+        });
+        emit(result, outputFormat, formatKbSourceImport);
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
+
+  const kbSourceListCommand = kbSourceCommand.command('list');
+  kbSourceListCommand.description('List KB sources').action(async () => {
+    const outputFormat = getOutputFormat(kbSourceListCommand);
+
+    try {
+      const client = makeClient(process.cwd());
+      const result = await client.kbSourceList();
+      emit(result, outputFormat, formatKbSourceList);
+    } catch (error) {
+      emitError(error, outputFormat);
+    }
+  });
+
+  const kbSourceDeleteCommand = kbSourceCommand.command('delete');
+  kbSourceDeleteCommand
+    .description('Delete a KB source')
+    .argument('<slug>', 'Source slug without extension')
+    .action(async (slug: string) => {
+      const outputFormat = getOutputFormat(kbSourceDeleteCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
+        emit(result, outputFormat, formatKbSourceDelete);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -933,8 +1025,11 @@ export function buildProgram(): Command {
 
   const kbReadCommand = kb.command('read');
   kbReadCommand
-    .description('Read a KB entry by slug')
-    .argument('<note>', 'Note or principle slug without extension (e.g. rendering-guiding-contracts)')
+    .description('Read a KB entry by slug or explicit selector')
+    .argument(
+      '<note>',
+      'Bare reads resolve memo -> note -> community -> source -> principle; use communities:<slug> or sources:<slug> to force a kind',
+    )
     .action(async (note: string) => {
       const outputFormat = getOutputFormat(kbReadCommand);
 

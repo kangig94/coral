@@ -1,8 +1,23 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
 import { identPattern, isRecord, isStringArray } from '../shared/mcp-utils.js';
-import type { KbNoteFrontmatter, KbNoteIdentity } from './types.js';
-import { NOTE_SLUG_PATTERN, assertNonEmptyText } from './validation.js';
+import {
+  entryIdToVaultLink,
+  parseKbEntryId,
+  vaultLinkToEntryId,
+  type CommunityFrontmatter,
+  type KbEntryId,
+  type KbNoteFrontmatter,
+  type KbNoteIdentity,
+  type KbSourceFrontmatter,
+} from './types.js';
+import {
+  NOTE_SLUG_PATTERN,
+  assertNonEmptyText,
+  parseNonNegativeInteger,
+  parseOptionalTrimmedString,
+  parsePositiveInteger,
+} from './validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
@@ -49,14 +64,29 @@ function normalizeStringList(value: unknown, field: string): string[] {
   return value.map((entry) => assertNonEmptyText(entry, field));
 }
 
-function normalizeOptionalMutationSeqAtPromote(value: unknown): number | undefined {
+function normalizeOptionalEntrySeq(value: unknown): number | undefined {
+  return value === undefined ? undefined : parsePositiveInteger(value, 'entrySeq');
+}
+
+function normalizeOptionalNonEmptyText(value: unknown, field: string): string | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error('mutationSeqAtPromote must be a positive integer');
+
+  return assertNonEmptyText(value, field);
+}
+
+export function normalizeCommunityParent(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
   }
-  return value;
+
+  const normalized = parseKbEntryId(assertNonEmptyText(value, 'parent'));
+  if (normalized === null || !normalized.startsWith('community:')) {
+    throw new Error('parent must be a community entry ID');
+  }
+
+  return normalized;
 }
 
 export function normalizePrincipleReference(value: string): string {
@@ -73,16 +103,97 @@ function normalizePrincipleList(value: unknown): string[] {
   return normalizeStringList(value, 'principles').map(normalizePrincipleReference);
 }
 
+function normalizeEntryIdList(value: unknown, field: string): KbEntryId[] {
+  return normalizeStringList(value, field).map((entry) => {
+    const normalized = parseKbEntryId(entry);
+    if (normalized === null) {
+      throw new Error(`${field} must contain KB entry IDs`);
+    }
+    return normalized;
+  });
+}
+
+function normalizeRelatedList(value: unknown): KbEntryId[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  return normalizeStringList(value, 'related').map((entry) => {
+    const normalized = vaultLinkToEntryId(entry);
+    if (normalized === null) {
+      throw new Error('related must contain vault-relative wikilinks');
+    }
+    return normalized;
+  });
+}
+
+function serializeFrontmatterRecord(record: Record<string, unknown>): string {
+  const serialized = yaml
+    .stringify(record, {
+      lineWidth: 0,
+    })
+    .trimEnd();
+
+  return `---\n${serialized}\n---\n`;
+}
+
+function replaceFrontmatterBlock(content: string, frontmatter: string): string {
+  const match = content.match(FRONTMATTER_PATTERN);
+  if (!match) {
+    throw new Error('Missing YAML frontmatter');
+  }
+  return `${frontmatter}${content.slice(match[0].length)}`;
+}
+
 export function parseFrontmatter(content: string): KbNoteFrontmatter {
   const record = parseFrontmatterRecord(content);
-  const mutationSeqAtPromote = normalizeOptionalMutationSeqAtPromote(record.mutationSeqAtPromote);
+  const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
+  const related = normalizeRelatedList(record.related);
   return {
     tags: normalizeStringList(record.tags, 'tags'),
     principles: normalizePrincipleList(record.principles),
     source: normalizeStringList(record.source, 'source'),
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
-    ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
+    related,
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+  };
+}
+
+export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  const url = normalizeOptionalNonEmptyText(record.url, 'url');
+  const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
+  const related = normalizeRelatedList(record.related);
+
+  return {
+    title: assertNonEmptyText(record.title, 'title'),
+    type: assertNonEmptyText(record.type, 'type'),
+    tags: normalizeStringList(record.tags, 'tags'),
+    ...(url === undefined ? {} : { url }),
+    importedAt: assertNonEmptyText(record.importedAt, 'importedAt'),
+    related,
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+  };
+}
+
+export function parseCommunityFrontmatter(content: string): CommunityFrontmatter {
+  const record = parseFrontmatterRecord(content);
+  const parent = normalizeCommunityParent(record.parent);
+  const summary = parseOptionalTrimmedString(record.summary, 'summary');
+
+  if (record.generatedBy !== 'curate') {
+    throw new Error("generatedBy must be 'curate'");
+  }
+
+  return {
+    level: parseNonNegativeInteger(record.level, 'level'),
+    members: normalizeStringList(record.members, 'members'),
+    ...(parent === undefined ? {} : { parent }),
+    ...(summary === undefined ? {} : { summary }),
+    generatedBy: 'curate',
+    createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
   };
 }
 
@@ -128,32 +239,71 @@ export function serializeMemoFrontmatter(fields: { source: string; owner: string
 }
 
 export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
-  const mutationSeqAtPromote = normalizeOptionalMutationSeqAtPromote(meta.mutationSeqAtPromote);
-  const serialized = yaml
-    .stringify(
-      {
-        tags: normalizeStringList(meta.tags, 'tags'),
-        principles: normalizePrincipleList(meta.principles),
-        source: normalizeStringList(meta.source, 'source'),
-        createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
-        updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
-        ...(mutationSeqAtPromote === undefined ? {} : { mutationSeqAtPromote }),
-      },
-      {
-        lineWidth: 0,
-      },
-    )
-    .trimEnd();
+  const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
+  const related = normalizeEntryIdList(meta.related ?? [], 'related');
+  return serializeFrontmatterRecord({
+    tags: normalizeStringList(meta.tags, 'tags'),
+    principles: normalizePrincipleList(meta.principles),
+    source: normalizeStringList(meta.source, 'source'),
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+    ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+  });
+}
 
-  return `---\n${serialized}\n---\n`;
+export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
+  const url = normalizeOptionalNonEmptyText(meta.url, 'url');
+  const entrySeq = normalizeOptionalEntrySeq(meta.entrySeq);
+  const related = normalizeEntryIdList(meta.related ?? [], 'related');
+  return serializeFrontmatterRecord({
+    title: assertNonEmptyText(meta.title, 'title'),
+    type: assertNonEmptyText(meta.type, 'type'),
+    tags: normalizeStringList(meta.tags, 'tags'),
+    ...(url === undefined ? {} : { url }),
+    importedAt: assertNonEmptyText(meta.importedAt, 'importedAt'),
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+    ...(related.length === 0 ? {} : { related: related.map((entry) => entryIdToVaultLink(entry)) }),
+  });
+}
+
+export function serializeCommunityFrontmatter(meta: CommunityFrontmatter): string {
+  const parent = normalizeCommunityParent(meta.parent);
+  const summary = parseOptionalTrimmedString(meta.summary, 'summary');
+
+  return serializeFrontmatterRecord({
+    level: parseNonNegativeInteger(meta.level, 'level'),
+    members: normalizeStringList(meta.members, 'members'),
+    ...(parent === undefined ? {} : { parent }),
+    ...(summary === undefined ? {} : { summary }),
+    generatedBy: 'curate',
+    createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
+    updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+  });
 }
 
 export function replaceFrontmatter(content: string, meta: KbNoteFrontmatter): string {
-  const match = content.match(FRONTMATTER_PATTERN);
-  if (!match) {
-    throw new Error('Missing YAML frontmatter');
+  return replaceFrontmatterBlock(content, serializeFrontmatter(meta));
+}
+
+export function replaceSourceFrontmatter(content: string, meta: KbSourceFrontmatter): string {
+  return replaceFrontmatterBlock(content, serializeSourceFrontmatter(meta));
+}
+
+export function rewriteLegacyNoteFrontmatter(content: string): string | null {
+  const record = parseFrontmatterRecord(content);
+  if (!Object.prototype.hasOwnProperty.call(record, 'mutationSeqAtPromote')) {
+    return null;
   }
-  return `${serializeFrontmatter(meta)}${content.slice(match[0].length)}`;
+
+  const nextRecord: Record<string, unknown> = { ...record };
+  const legacyEntrySeq = nextRecord.mutationSeqAtPromote;
+  delete nextRecord.mutationSeqAtPromote;
+  if (!Object.prototype.hasOwnProperty.call(nextRecord, 'entrySeq') && legacyEntrySeq !== undefined) {
+    nextRecord.entrySeq = legacyEntrySeq;
+  }
+
+  return replaceFrontmatterBlock(content, serializeFrontmatterRecord(nextRecord));
 }
 
 export function extractTitle(content: string): string {

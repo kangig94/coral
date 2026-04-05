@@ -19,6 +19,44 @@ export const cwdSchema = z.string().optional();
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
+const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
+const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+
+function parseEffortLevel(value: string, label: string): EffortLevel {
+  if (!VALID_EFFORT_LEVELS.has(value)) {
+    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, max`);
+  }
+  return value as EffortLevel;
+}
+
+/** Validate and resolve effort level from request + environment. */
+export function resolveEffort(
+  requestEffort: string | undefined,
+  env?: Record<string, string>,
+  defaultEffort: EffortLevel = 'high',
+): EffortLevel {
+  if (requestEffort !== undefined) {
+    return parseEffortLevel(requestEffort, 'effort');
+  }
+  const envEffort = env?.CORAL_EFFORT;
+  if (envEffort !== undefined) {
+    return parseEffortLevel(envEffort, 'CORAL_EFFORT');
+  }
+  return defaultEffort;
+}
+
+/** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */
+export function resolveModelTier(model: string | undefined, cap?: string): string | undefined {
+  if (model === undefined) return undefined;
+  const modelRank = ABSTRACT_MODEL_TIERS[model];
+  if (modelRank === undefined) return model;
+  if (cap !== undefined) {
+    const capRank = ABSTRACT_MODEL_TIERS[cap];
+    if (capRank !== undefined && modelRank > capRank) return cap;
+  }
+  return undefined;
+}
+
 export const coralOpSchema = z
   .string()
   .regex(/^coral:[a-z0-9][a-z0-9-]*$/, 'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)');
@@ -114,3 +152,13 @@ export type AbortInput = z.infer<typeof abortInputSchema>;
  * Each provider re-exports with its own type alias.
  */
 export const providerOpSchema = z.discriminatedUnion('op', [sharedExecSchema, sharedListSchema, sharedForkSchema]);
+
+/** Shared coral agent schema used by both codex and claude tools. */
+export const coralAgentOpSchema = z.object({
+  op: coralOpSchema,
+  prompt: promptSchema,
+  session: sessionRefSchema.optional(),
+  work_dir: cwdSchema,
+  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
+});
+export type CoralAgentOpInput = z.infer<typeof coralAgentOpSchema>;

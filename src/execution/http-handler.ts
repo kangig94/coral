@@ -17,6 +17,8 @@ import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
 import type { DiscussView } from '../discuss/views.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
+import { domainError, domainToHttp } from './tool-response.js';
+import { isWorkAdmittingToolRequest } from './tool-router.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -427,19 +429,17 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
     if (req.method === 'GET' && req.url === '/health') {
       const env = collectCoralEnv();
+      const lifecycleState = runtimeState.getLifecycle();
+      const status = idleTimer.isDraining ? 'draining' : lifecycleState === 'running' ? 'ok' : lifecycleState;
 
       sendJson(res, 200, {
-        status: idleTimer.isDraining
-          ? 'draining'
-          : runtimeState.getLifecycle() === 'running'
-            ? 'ok'
-            : runtimeState.getLifecycle(),
+        status,
         version: identity.version,
         bundleHash: identity.bundleHash,
         namespace: identity.namespace,
         instanceId: identity.instanceId,
         uptimeMs: identity.now() - runtimeState.getStartedAt(),
-        activeChildren: deps.activeChildren.size,
+        activeChildren: deps.activeChildren.size + deps.activeDurablePids.size,
         activeJobs: progressStore.liveJobCount(identity.bundleHash),
         liveDiscuss: deps.liveDiscussCount(),
         queueDepth: deps.queueDepth(),
@@ -503,16 +503,9 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
       // Launch fence: block new launches while recovery adoption is in progress
       if (runtimeState.getLaunchFenceActive()) {
-        const parsedOp = typeof request.args.op === 'string' ? request.args.op : null;
-        const isLaunchOp = parsedOp !== null && ['exec', 'resume', 'fork', 'bypass_exec'].includes(parsedOp);
-        const isProviderTool =
-          !request.name.startsWith('discuss') &&
-          !request.name.startsWith('kb_') &&
-          request.name !== 'abort' &&
-          request.name !== 'wait' &&
-          request.name !== 'workflow';
-        if (isLaunchOp && isProviderTool) {
-          sendJson(res, 200, { content: [{ type: 'text', text: 'recovering — retry after 500ms' }], isError: true });
+        if (isWorkAdmittingToolRequest(request)) {
+          const response = domainToHttp(domainError('backend_recovering', 'recovering — retry after 500ms'));
+          sendJson(res, response.statusCode, response.body);
           return;
         }
       }
@@ -527,7 +520,8 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         },
         runtimeState.getKbSubsystem(),
       );
-      sendJson(res, result.statusCode, result.body);
+      const response = domainToHttp(result);
+      sendJson(res, response.statusCode, response.body);
       return;
     }
 

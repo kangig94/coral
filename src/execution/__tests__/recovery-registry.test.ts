@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { RecoveryRegistry } from '../recovery-registry.js';
-import type { PersistedLaunchRecord, PersistedRuntimeRecord } from '../../shared/types.js';
+import type { AppServerRuntimeRecord, DurableCliRuntimeRecord, PersistedLaunchRecord } from '../../shared/types.js';
 
 function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> = {}): PersistedLaunchRecord {
   return {
@@ -18,13 +18,26 @@ function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> = {}): Persi
   };
 }
 
-function makeRuntimeRecord(overrides: Partial<PersistedRuntimeRecord> = {}): PersistedRuntimeRecord {
+function makeRuntimeRecord(overrides: Partial<DurableCliRuntimeRecord> = {}): DurableCliRuntimeRecord {
   return {
     pid: 12345,
     stdoutPath: '/tmp/stdout',
     stderrPath: '/tmp/stderr',
     startTime: new Date().toISOString(),
     ...overrides,
+  };
+}
+
+function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntimeRecord['providerMeta']> = {}): AppServerRuntimeRecord {
+  return {
+    transport: 'app-server',
+    startTime: new Date().toISOString(),
+    providerMeta: {
+      provider: 'codex',
+      leaseState: 'acquired',
+      recoveryPolicy: 'session_continuity_only',
+      ...overrides,
+    },
   };
 }
 
@@ -106,6 +119,19 @@ describe('RecoveryRegistry', () => {
     const result = reg.abort(['j1', 'missing', 'j2']);
     expect(result.aborted).toEqual(['j1', 'j2']);
     expect(result.notFound).toEqual(['missing']);
+  });
+
+  it('uses the registered app-server abort delegate instead of a PID handler', () => {
+    const reg = new RecoveryRegistry();
+    const abortDelegate = vi.fn();
+
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeAppServerRuntimeRecord(), abortDelegate);
+
+    expect(reg.abort(['j1'])).toEqual({
+      aborted: ['j1'],
+      notFound: [],
+    });
+    expect(abortDelegate).toHaveBeenCalledTimes(1);
   });
 
   it('groups entries by projectRoot', () => {

@@ -36,7 +36,7 @@ const sharedOpts = {
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
   define: {
-    '__VERSION__': JSON.stringify(version),
+    __VERSION__: JSON.stringify(version),
   },
 };
 
@@ -51,7 +51,7 @@ await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/execution/server.ts'],
   outfile: 'bridge/coral-backend.cjs',
-  define: { ...sharedOpts.define, '__IS_CORAL_BACKEND_MAIN__': 'true' },
+  define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
 console.log('Built bridge/coral-backend.cjs');
 
@@ -63,9 +63,20 @@ await esbuild.build({
 });
 console.log('Built bridge/coral-cli.cjs');
 
+await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/providers/claude-appserver/server.ts'],
+  outfile: 'bridge/coral-claude-appserver.cjs',
+  banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
+});
+console.log('Built bridge/coral-claude-appserver.cjs');
+
 // Write bundle manifest with content hash for version-independent change detection
-const backendHash = createHash('sha256')
-  .update(readFileSync('bridge/coral-backend.cjs'))
-  .digest('hex')
-  .slice(0, 16);
-writeFileSync('bridge/manifest.json', JSON.stringify({ bundleHash: backendHash }) + '\n');
+const backendHash = createHash('sha256').update(readFileSync('bridge/coral-backend.cjs')).digest('hex').slice(0, 16);
+
+writeFileSync(
+  'bridge/manifest.json',
+  JSON.stringify({
+    bundleHash: backendHash,
+  }) + '\n',
+);

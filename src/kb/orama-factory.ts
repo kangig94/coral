@@ -1,10 +1,19 @@
 import { components, create, type AnyOrama, type DefaultTokenizer } from '@orama/orama';
-import type { KbReindexNoteRecord } from './types.js';
+import {
+  communityEntryId,
+  noteEntryId,
+  sourceEntryId,
+  type KbReindexCommunityRecord,
+  type KbReindexNoteRecord,
+  type KbReindexSourceRecord,
+} from './types.js';
 
 const ORAMA_LANGUAGE = 'english';
 
 export const ORAMA_SCHEMA = {
+  entryId: 'string',
   slug: 'string',
+  kind: 'string',
   title: 'string',
   body: 'string',
   tags: 'string[]',
@@ -12,7 +21,9 @@ export const ORAMA_SCHEMA = {
 } as const;
 
 export type KbOramaDocument = {
+  entryId: string;
   slug: string;
+  kind: 'note' | 'source' | 'community';
   title: string;
   body: string;
   tags: string[];
@@ -55,13 +66,41 @@ export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): strin
   return uniqueTokens(tokenizer.tokenize(normalized, ORAMA_LANGUAGE));
 }
 
-export function toOramaDocument(note: KbReindexNoteRecord): KbOramaDocument {
+export function toOramaDocument(
+  record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord,
+): KbOramaDocument {
+  if ('note' in record) {
+    return {
+      entryId: noteEntryId(record.note),
+      slug: normalizeHyphens(record.note),
+      kind: 'note',
+      title: record.title,
+      body: record.body,
+      tags: record.tags.map(normalizeHyphens),
+      principles: record.principles.map(normalizeHyphens),
+    };
+  }
+
+  if ('type' in record) {
+    return {
+      entryId: sourceEntryId(record.slug),
+      slug: normalizeHyphens(record.slug),
+      kind: 'source',
+      title: record.title,
+      body: record.body,
+      tags: record.tags.map(normalizeHyphens),
+      principles: [],
+    };
+  }
+
   return {
-    slug: normalizeHyphens(note.note),
-    title: note.title,
-    body: note.body,
-    tags: note.tags.map(normalizeHyphens),
-    principles: note.principles.map(normalizeHyphens),
+    entryId: communityEntryId(record.slug),
+    slug: normalizeHyphens(record.slug),
+    kind: 'community',
+    title: record.title,
+    body: record.body,
+    tags: record.members.map(normalizeHyphens),
+    principles: [],
   };
 }
 

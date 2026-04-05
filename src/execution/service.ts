@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { pluginRootNamespace } from '../infra/paths.js';
 import {
+  isAppServerRuntime,
+  isDurableCliRuntime,
   isTerminalPhase,
+  type AppServerRuntimeRecord,
   type JobKind,
   type JobPhase,
   type LaunchDecision,
@@ -12,17 +15,26 @@ import {
   type ProviderInstruction,
   type ProviderProgressEvent,
   type ProviderRequest,
+  type ProviderResult,
   type TerminalResult,
+  type SessionEntry,
   type WaitRequest,
   type WaitStreamEvent,
   type WorkflowResultMeta,
 } from '../shared/types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
 import type { ProviderCliRunner } from '../providers/runner-port.js';
-import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
+import { backendLog } from '../shared/backend-log.js';
 import type { EffortLevel } from '../shared/schemas.js';
-import type { Provider, ProviderRuntime } from '../providers/types.js';
+import type {
+  Provider,
+  ProviderContinuityBlob,
+  ProviderRecoveryMeta,
+  ProviderRuntime,
+  ProviderServerLease,
+  ProviderServerSpec,
+} from '../providers/types.js';
 import {
   executePipeline,
   resumePipeline,
@@ -33,16 +45,8 @@ import {
 import type { WorkflowInput } from '../workflow/schemas.js';
 import type { PipelineAST } from '../workflow/types.js';
 import {
-  bindLaunchPermit,
-  cancelQueued,
   CliBusyError,
-  getActiveJobIds,
-  queuePosition,
-  requestLaunch,
-  releaseLaunch,
-  restoreActiveLaunch,
-  restoreQueuedLaunch,
-  spawnDurableJob,
+  LaunchCoordinator,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -51,7 +55,12 @@ import { AbortRegistry, type AbortResult } from './abort-registry.js';
 import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
-import type { SessionEntry } from './session-manager.js';
+import { TypedEventBus } from './event-bus.js';
+import {
+  type ProviderHostManager,
+  type ProviderServerAttachment,
+} from './host-manager.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
@@ -117,18 +126,73 @@ export interface ListResult {
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
+const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
+const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
 
+type InterruptedAppServerReason = 'restart' | 'handoff';
+type InterruptedProbeOutcome = 'verified' | 'missing' | 'unavailable' | 'waiting';
+type InterruptedAppServerFinalization = {
+  conversationRef?: string;
+  nonResumable?: boolean;
+  continuityMutation?: ProviderContinuityBlob;
+};
+
+const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
+const APP_SERVER_RESTART_NOTICE = 'Backend restarted during the app-server turn. The interrupted turn was not replayed.';
+const APP_SERVER_HANDOFF_NOTICE = 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+const APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE =
+  'The job ended before a resumable conversation checkpoint for this turn was written.';
+const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation reference.';
+const APP_SERVER_CONTINUITY_MISSING_NOTICE =
+  'The saved conversation reference is no longer available, so the session is non-resumable.';
+const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
+  'Session continuity could not be verified because the recovery probe was unavailable.';
+
+function joinNotice(...parts: Array<string | undefined>): string {
+  return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
+}
+
+function buildInterruptedAppServerReport(options: {
+  baseNotice: string;
+  probeOutcome: InterruptedProbeOutcome;
+  conversationRef?: string;
+}): string {
+  const lines = [options.baseNotice, ''];
+
+  if (options.probeOutcome === 'verified') {
+    lines.push('Session is resumable. Use resume to continue.');
+    if (options.conversationRef) {
+      lines.push(`Conversation reference preserved: ${options.conversationRef}`);
+    }
+    return lines.join('\n');
+  }
+
+  if (options.probeOutcome === 'missing') {
+    lines.push('Session thread is no longer available. Marked as non-resumable.');
+    return lines.join('\n');
+  }
+
+  if (options.probeOutcome === 'unavailable') {
+    lines.push('Could not reach provider server to verify session. Marked as non-resumable.');
+    return lines.join('\n');
+  }
+
+  lines.push('Session was interrupted before completion. State unknown.');
+  return lines.join('\n');
+}
+
 function bindProviderRunner(
+  launchCoordinator: LaunchCoordinator,
   provider: string,
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
 ): ProviderCliRunner {
   return (request) =>
-    spawnDurableJob({
+    launchCoordinator.spawnDurableJob({
       provider,
       signal,
       permitGranted: true,
@@ -142,6 +206,15 @@ function bindProviderRunner(
       onEvent: request.onEvent,
     });
 }
+
+export type ExecutionServiceDeps = {
+  progressStore?: ProgressStore;
+  bundleHash?: string;
+  providerHostManager: ProviderHostManager;
+  launchCoordinator: LaunchCoordinator;
+  eventBus: TypedEventBus;
+  providerRegistry: ProviderRegistry;
+};
 type ClaimJobOptions = {
   expectedVersion?: number;
   initialPhase?: Extract<JobPhase, 'queued' | 'launching'>;
@@ -167,6 +240,31 @@ function resolveBackendNamespace(pluginRoot: string): string {
   } catch {
     return pluginRootNamespace(defaultPluginRoot);
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toProviderRequest(launchRecord: PersistedLaunchRecord): ProviderRequest {
+  return {
+    action: launchRecord.providerAction,
+    sessionId: launchRecord.sessionId,
+    name: launchRecord.request.name,
+    prompt: launchRecord.request.prompt,
+    conversationRef: launchRecord.request.conversationRef,
+    model: launchRecord.request.model,
+    cwd: launchRecord.request.cwd,
+    effort: launchRecord.request.effort,
+    bypassPermissions: launchRecord.request.bypassPermissions,
+    systemPrompt: launchRecord.request.systemPrompt,
+    instruction: launchRecord.request.instruction,
+    coralEnv: launchRecord.request.coralEnv,
+  };
 }
 
 export function serializeWorkflowResult(details: StepDetail[]): {
@@ -218,20 +316,978 @@ class SessionClaimError extends Error {
   }
 }
 
-export class ExecutionService {
+type LaunchOrchestratorDeps = {
+  abortRegistry: AbortRegistry;
+  progressStore: ProgressStore;
+  sessionManager: SessionManager;
+  launchCoordinator: LaunchCoordinator;
+  backendNamespace: string;
+  bundleHash: string;
+  jobPools: Map<string, LaunchPool>;
+  acquireServer: (
+    spec: ProviderServerSpec,
+    options?: { jobId?: string; signal?: AbortSignal },
+  ) => Promise<ProviderServerLease>;
+  checkpointRecovery: (
+    jobId: string,
+    update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta },
+  ) => void;
+  finalizeProviderSession: (
+    providerName: string,
+    request: ProviderRequest,
+    sessionId: string,
+    jobId: string,
+    result: ProviderResult,
+  ) => Promise<void>;
+};
+
+class LaunchOrchestrator {
+  constructor(private readonly deps: LaunchOrchestratorDeps) {}
+
+  async claimAndAdmitJob(
+    session: SessionEntry,
+    providerName: string,
+    projectRoot: string,
+    sessionBusyMessage: string,
+    claimJobAtomic: (
+      session: SessionEntry,
+      jobId: string,
+      providerName: string,
+      projectRoot: string,
+      options?: ClaimJobOptions,
+    ) => Promise<SessionEntry>,
+    expectedVersion: number = session.version,
+    pool: LaunchPool = 'default',
+  ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
+    const { jobPools, launchCoordinator } = this.deps;
+    const jobId = randomUUID();
+    jobPools.set(jobId, pool);
+
+    const admission = launchCoordinator.requestLaunch(jobId, providerName, pool);
+    if (admission === 'queue_full') {
+      jobPools.delete(jobId);
+      return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
+    }
+
+    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> =
+      admission.type === 'queued' ? 'queued' : 'launching';
+
+    try {
+      await claimJobAtomic(session, jobId, providerName, projectRoot, { expectedVersion, initialPhase });
+    } catch (error: unknown) {
+      if (admission.type === 'queued') {
+        const waitForPermit = admission.waitForPermit();
+        admission.cancel();
+        void waitForPermit.catch((e: unknown) => {
+          backendLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(e)}`);
+        });
+      } else {
+        launchCoordinator.releaseLaunch(jobId, pool);
+      }
+      jobPools.delete(jobId);
+
+      if (error instanceof SessionClaimError) {
+        return rejectLaunch('session_busy', sessionBusyMessage);
+      }
+      throw error;
+    }
+
+    return { jobId, admission };
+  }
+
+  launchProviderJob(
+    provider: Provider,
+    sessionId: string,
+    jobId: string,
+    request: ProviderRequest,
+    admission: AcceptedAdmission,
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string } = {},
+  ): LaunchDecision {
+    const { abortRegistry, backendNamespace, bundleHash, progressStore } = this.deps;
+    const pool = opts.pool ?? 'default';
+
+    abortRegistry.register(jobId);
+    progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId,
+      provider: provider.name,
+      projectRoot: opts.projectRoot ?? request.cwd ?? '',
+      backendNamespace,
+      bundleHash,
+      pool,
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      providerAction: request.action,
+      request: {
+        prompt: request.prompt,
+        name: request.name,
+        model: request.model,
+        cwd: request.cwd,
+        effort: request.effort,
+        bypassPermissions: request.bypassPermissions,
+        systemPrompt: request.systemPrompt,
+        conversationRef: request.conversationRef,
+        instruction: request.instruction,
+        coralEnv: request.coralEnv,
+      },
+      parentWorkflowJobId: opts.parentWorkflowJobId,
+      createdAt: new Date().toISOString(),
+    });
+
+    const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
+    if (admission.type === 'queued') {
+      this.markJobQueued(jobId, sessionId, admission.queuePosition);
+    }
+
+    this.runAsync(provider, sessionId, jobId, request, admission, pool);
+    return { status: decisionStatus, job: jobId, session: sessionId };
+  }
+
+  runAsync(
+    provider: Provider,
+    sessionId: string,
+    jobId: string,
+    request: ProviderRequest,
+    admission: AcceptedAdmission,
+    pool: LaunchPool,
+  ): void {
+    const { abortRegistry, launchCoordinator } = this.deps;
+    const signal = abortRegistry.getSignal(jobId);
+    if (!signal) {
+      if (admission.type === 'queued') {
+        admission.cancel();
+      } else {
+        launchCoordinator.releaseLaunch(jobId, pool);
+      }
+      return;
+    }
+
+    void (async () => {
+      let permitAcquired = admission.type === 'immediate';
+
+      try {
+        if (admission.type === 'queued') {
+          const queueOutcome = await this.waitForQueuedPermit(admission, signal);
+          if (queueOutcome === 'aborted') {
+            this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
+            return;
+          }
+
+          permitAcquired = true;
+          this.markJobLaunching(jobId);
+          this.deps.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
+        }
+
+        launchCoordinator.bindLaunchPermit(jobId, signal, pool);
+        await this.executeJob(provider, request, jobId, sessionId, signal, pool);
+      } catch (error: unknown) {
+        this.handleProviderJobError(jobId, sessionId, signal, error);
+      } finally {
+        if (permitAcquired) {
+          launchCoordinator.releaseLaunch(jobId, pool);
+        }
+      }
+    })();
+  }
+
+  runRecoveredQueuedJob(
+    provider: Provider,
+    launchRecord: PersistedLaunchRecord,
+    admission: QueuedHandle,
+    pool: LaunchPool,
+  ): void {
+    const { abortRegistry, launchCoordinator, progressStore } = this.deps;
+    const jobId = launchRecord.jobId;
+    const sessionId = launchRecord.sessionId;
+    const signal = abortRegistry.getSignal(jobId);
+    if (!signal) {
+      admission.cancel();
+      return;
+    }
+
+    void (async () => {
+      try {
+        const queueOutcome = await this.waitForQueuedPermit(admission, signal);
+        if (queueOutcome === 'aborted') {
+          this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
+          return;
+        }
+
+        this.markJobLaunching(jobId);
+        progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
+
+        launchCoordinator.bindLaunchPermit(jobId, signal, pool);
+        await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
+      } catch (error: unknown) {
+        this.handleProviderJobError(jobId, sessionId, signal, error);
+      } finally {
+        launchCoordinator.releaseLaunch(jobId, pool);
+      }
+    })();
+  }
+
+  finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
+    this.finishAbortedJob(jobId, sessionId, message);
+  }
+
+  failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
+    const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
+    progressStore.updateLaunchState(jobId, launchState, message);
+    this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
+    abortRegistry.remove(jobId);
+    jobPools.delete(jobId);
+    sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  markJobRunning(jobId: string): void {
+    this.markJobReady(jobId);
+    this.deps.progressStore.updatePhase(jobId, 'running');
+  }
+
+  writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
+    const { progressStore } = this.deps;
+    try {
+      progressStore.appendTerminal(jobId, sessionId, result, phase);
+    } catch {
+      try {
+        progressStore.markTerminalStatus(jobId, result, phase);
+      } catch {
+        /* best-effort terminal write */
+      }
+    }
+  }
+
+  private async executeJob(
+    provider: Provider,
+    request: ProviderRequest,
+    jobId: string,
+    sessionId: string,
+    signal: AbortSignal,
+    pool: LaunchPool,
+  ): Promise<void> {
+    const onEvent = (event: ProviderProgressEvent): void => {
+      const currentStatus = this.deps.progressStore.readStatus(jobId);
+      if (canAdvanceLaunchState(currentStatus)) {
+        this.markJobRunning(jobId);
+      }
+      this.deps.progressStore.appendProgress(jobId, sessionId, event.message);
+    };
+
+    try {
+      const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
+      const result = await provider.execute(request, runtime);
+      await this.handleJobCompletion(provider.name, request, sessionId, jobId, result);
+    } catch (error: unknown) {
+      this.handleProviderJobError(jobId, sessionId, signal, error);
+    }
+  }
+
+  private async handleJobCompletion(
+    providerName: string,
+    request: ProviderRequest,
+    sessionId: string,
+    jobId: string,
+    result: ProviderResult,
+  ): Promise<void> {
+    const { abortRegistry, jobPools, progressStore } = this.deps;
+    if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
+      this.markJobReady(jobId);
+    }
+
+    const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
+    const terminalResult: TerminalResult = {
+      content: result.content,
+      durationMs: result.durationMs,
+      aborted: result.aborted,
+      nonResumable: result.nonResumable,
+      exitCode: result.exitCode,
+      notice: result.notice,
+      errors: result.errors,
+      warnings: result.warnings,
+      usage: result.usage,
+    };
+
+    const currentStatus = progressStore.readStatus(jobId);
+    if (currentStatus && isTerminalPhase(currentStatus.phase)) {
+      return;
+    }
+
+    this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
+    progressStore.writeResultMd(jobId, result.content);
+    abortRegistry.remove(jobId);
+    jobPools.delete(jobId);
+    await this.deps.finalizeProviderSession(providerName, request, sessionId, jobId, result);
+  }
+
+  private handleProviderJobError(
+    jobId: string,
+    sessionId: string,
+    signal: AbortSignal,
+    error: unknown,
+  ): void {
+    const currentStatus = this.deps.progressStore.readStatus(jobId);
+    if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
+      return;
+    }
+
+    if (error instanceof CliBusyError) {
+      this.failJob(jobId, sessionId, 'busy', error.message);
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    if (signal.aborted || isAbortError(error)) {
+      this.finishAbortedJob(jobId, sessionId, message);
+      return;
+    }
+
+    this.failJob(jobId, sessionId, 'error', message);
+  }
+
+  private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
+    this.deps.progressStore.updateLaunchState(jobId, 'queued');
+    this.deps.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
+  }
+
+  private createProviderRuntime(
+    providerName: string,
+    sessionId: string,
+    jobId: string,
+    signal: AbortSignal,
+    pool: LaunchPool,
+    onEvent: (event: ProviderProgressEvent) => void,
+  ): ProviderRuntime {
+    return {
+      signal,
+      onEvent,
+      runCli: bindProviderRunner(
+        this.deps.launchCoordinator,
+        providerName,
+        signal,
+        pool,
+        this.deps.progressStore.jobDir(jobId),
+      ),
+      acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
+      persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
+      checkpointRecovery: (update) => {
+        this.deps.checkpointRecovery(jobId, update);
+      },
+    };
+  }
+
+  private markJobLaunching(jobId: string): void {
+    this.deps.progressStore.updatePhase(jobId, 'launching');
+  }
+
+  private async waitForQueuedPermit(admission: QueuedHandle, signal: AbortSignal): Promise<'granted' | 'aborted'> {
+    return new Promise<'granted' | 'aborted'>((resolve, reject) => {
+      let settled = false;
+
+      const cleanup = () => {
+        signal.removeEventListener('abort', onAbort);
+      };
+
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        admission.cancel();
+        cleanup();
+        resolve('aborted');
+      };
+
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+
+      signal.addEventListener('abort', onAbort, { once: true });
+      admission
+        .waitForPermit()
+        .then(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve('granted');
+        })
+        .catch((error: unknown) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+  }
+
+  private markJobReady(jobId: string): void {
+    this.deps.progressStore.updateLaunchState(jobId, 'ready');
+  }
+
+  private finishAbortedJob(jobId: string, sessionId: string, message: string): void {
+    const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
+    progressStore.updateLaunchState(jobId, 'error', message);
+    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
+    abortRegistry.remove(jobId);
+    jobPools.delete(jobId);
+    sessionManager.releaseJob(sessionId, jobId);
+  }
+}
+
+type WaitCoordinatorDeps = {
+  progressStore: ProgressStore;
+  sessionManager: SessionManager;
+  launchCoordinator: LaunchCoordinator;
+  eventBus: TypedEventBus;
+  jobPools: ReadonlyMap<string, LaunchPool>;
+};
+
+class WaitCoordinator {
+  constructor(private readonly deps: WaitCoordinatorDeps) {}
+
+  async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
+    const initialStatus = this.readStatusOrThrow(jobId);
+    const owner = {
+      provider: initialStatus.provider,
+      sessionId: initialStatus.sessionId,
+    };
+    const timeoutError = new Error(
+      `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
+    );
+
+    if (this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, initialStatus)) {
+      return;
+    }
+
+    const startedAt = Date.now();
+    await new Promise<void>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      let settled = false;
+
+      const cleanup = (): void => {
+        this.deps.eventBus.off('job:completed', onJobCompleted);
+        this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
+        this.deps.eventBus.off('session:updated', onSessionUpdated);
+        if (timer) clearTimeout(timer);
+      };
+
+      const finish = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback();
+      };
+
+      const recheck = (): void => {
+        try {
+          const status = this.readStatusOrThrow(jobId);
+          if (!this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, status)) {
+            return;
+          }
+          finish(resolve);
+        } catch (error: unknown) {
+          finish(() => reject(error));
+        }
+      };
+
+      const onJobCompleted = ({ jobId: completedJobId }: { jobId: string }): void => {
+        if (completedJobId === jobId) {
+          recheck();
+        }
+      };
+
+      const onJobPhaseChanged = ({ jobId: changedJobId }: { jobId: string }): void => {
+        if (changedJobId === jobId) {
+          recheck();
+        }
+      };
+
+      const onSessionUpdated = ({ sessionId }: { sessionId: string }): void => {
+        if (sessionId === owner.sessionId) {
+          recheck();
+        }
+      };
+
+      this.deps.eventBus.on('job:completed', onJobCompleted);
+      this.deps.eventBus.on('job:phase_changed', onJobPhaseChanged);
+      this.deps.eventBus.on('session:updated', onSessionUpdated);
+
+      recheck();
+      if (settled) {
+        return;
+      }
+
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) {
+        finish(() => reject(timeoutError));
+        return;
+      }
+
+      timer = setTimeout(() => {
+        finish(() => reject(timeoutError));
+      }, remainingMs);
+    });
+  }
+
+  async *waitForJobs(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
+    const { progressStore, launchCoordinator, jobPools } = this.deps;
+    const { jobIds, timeoutSeconds = 600, cursor } = req;
+    const startMs = Date.now();
+    const timeoutMs = timeoutSeconds * 1000;
+
+    const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
+    const fileCursors = new Map(jobIds.map((jobId) => [jobId, createReplayCursor()]));
+    const emittedQueued = new Set<string>();
+    const pending = new Set(jobIds);
+
+    while (pending.size > 0) {
+      if (Date.now() - startMs >= timeoutMs) {
+        yield { type: 'timeout', runningJobIds: [...pending] };
+        return;
+      }
+
+      const seq = progressStore.getChangeSeq();
+
+      for (const jobId of [...pending]) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- fileCursors initialized from same jobIds as pending
+        const fileCursor = fileCursors.get(jobId)!;
+        const fromEventId = fromEventIds[jobId] ?? 0;
+        const status = progressStore.readStatus(jobId);
+        if (!status) {
+          continue;
+        }
+
+        if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
+          emittedQueued.add(jobId);
+          const pool = jobPools.get(jobId) ?? 'default';
+          yield {
+            type: 'queued',
+            jobId,
+            sessionId: status.sessionId,
+            queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
+            runningJobIds: launchCoordinator.getActiveJobIds(pool),
+          };
+        }
+
+        const events = progressStore.replayFrom(jobId, fromEventId, fileCursor);
+        for (const event of events) {
+          fromEventIds[jobId] = event.eventId;
+
+          if (event.type === 'progress') {
+            yield {
+              type: 'progress',
+              jobId,
+              sessionId: status.sessionId,
+              eventId: event.eventId,
+              message: event.message ?? '',
+            };
+            continue;
+          }
+
+          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          yield {
+            type: 'terminal',
+            completedJobId: jobId,
+            sessionId: status.sessionId,
+            remainingJobIds,
+            resultPath: jobResultPath(jobId),
+            result: event.result ?? { content: '' },
+          };
+          pending.delete(jobId);
+          break;
+        }
+
+        const currentStatus = progressStore.readStatus(jobId);
+        if (pending.has(jobId) && currentStatus && isTerminalPhase(currentStatus.phase)) {
+          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          yield {
+            type: 'terminal',
+            completedJobId: jobId,
+            sessionId: currentStatus.sessionId,
+            remainingJobIds,
+            resultPath: jobResultPath(jobId),
+            result: currentStatus.result ?? { content: '' },
+          };
+          pending.delete(jobId);
+        }
+      }
+
+      if (pending.size === 0) {
+        return;
+      }
+
+      const remainingMs = timeoutMs - (Date.now() - startMs);
+      if (remainingMs <= 0) {
+        continue;
+      }
+
+      await Promise.race([
+        progressStore.waitForChange(seq),
+        new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+      ]);
+    }
+  }
+
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
+    const request: WaitRequest = { jobIds: [jobId] };
+    if (timeoutMs !== undefined) {
+      request.timeoutSeconds = timeoutMs / 1000;
+    }
+
+    for await (const event of this.waitForJobs(request)) {
+      if (event.type === 'terminal' && event.completedJobId === jobId) {
+        return {
+          content: event.result.content,
+          nonResumable: event.result.nonResumable ?? false,
+        };
+      }
+      if (event.type === 'timeout') {
+        throw new Error('Job timed out waiting for terminal result');
+      }
+    }
+
+    throw new Error(`Job ${jobId} ended without a terminal result`);
+  }
+
+  private readStatusOrThrow(jobId: string): PersistedStatusRecord {
+    const status = this.deps.progressStore.readStatus(jobId);
+    if (!status) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+    return status;
+  }
+
+  private isTerminalAndReleased(
+    jobId: string,
+    providerName: string,
+    sessionId: string,
+    status: PersistedStatusRecord,
+  ): boolean {
+    if (!isTerminalPhase(status.phase)) {
+      return false;
+    }
+
+    const session = this.deps.sessionManager.get(providerName, sessionId);
+    return session?.activeJobId !== jobId;
+  }
+}
+
+/** Recovery-oriented interface for lifecycle startup/handoff/restart. */
+export interface RecoveryCapableService {
+  finalizeInterruptedAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+    context: { reason: 'restart' | 'handoff' },
+  ): Promise<void>;
+  adoptRunningJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: PersistedRuntimeRecord,
+  ): { cleanup: () => void };
+  recoverQueuedJob(launchRecord: PersistedLaunchRecord): string;
+  interruptAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+  ): Promise<void>;
+  completeRecoveredJob(
+    jobId: string,
+    sessionId: string,
+    result: TerminalResult,
+    phase: JobPhase,
+    options?: { conversationRef?: string; nonResumable?: boolean },
+  ): void;
+}
+
+export class ExecutionService implements RecoveryCapableService {
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
   private readonly bundleHash: string;
   private readonly progressStore: ProgressStore;
+  private readonly projectRoot: string;
   private readonly jobPools = new Map<string, LaunchPool>();
+  private readonly providerHostManager: ProviderHostManager;
+  private readonly launchCoordinator: LaunchCoordinator;
+  private readonly eventBus: TypedEventBus;
+  private readonly providerRegistry: ProviderRegistry;
+  private readonly launchOrchestrator: LaunchOrchestrator;
+  private readonly waitCoordinator: WaitCoordinator;
 
-  constructor(ctx: CallerContext, progressStore?: ProgressStore, bundleHash?: string) {
-    this.sessionManager = new SessionManager(ctx.projectRoot);
+  constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
+    this.projectRoot = ctx.projectRoot;
+    this.eventBus = deps.eventBus;
+    this.sessionManager = new SessionManager(ctx.projectRoot, this.eventBus);
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
-    this.bundleHash = bundleHash ?? 'unknown';
-    this.progressStore = progressStore ?? new ProgressStore();
+    this.bundleHash = deps.bundleHash ?? 'unknown';
+    this.progressStore = deps.progressStore ?? new ProgressStore(this.eventBus);
+    this.providerHostManager = deps.providerHostManager;
+    this.launchCoordinator = deps.launchCoordinator;
+    this.providerRegistry = deps.providerRegistry;
+    this.launchOrchestrator = new LaunchOrchestrator({
+      abortRegistry: this.abortRegistry,
+      progressStore: this.progressStore,
+      sessionManager: this.sessionManager,
+      launchCoordinator: this.launchCoordinator,
+      backendNamespace: this.backendNamespace,
+      bundleHash: this.bundleHash,
+      jobPools: this.jobPools,
+      acquireServer: (spec, options) => this.acquireServer(spec, options),
+      checkpointRecovery: (jobId, update) => this.checkpointRecovery(jobId, update),
+      finalizeProviderSession: (providerName, request, sessionId, jobId, result) =>
+        this.finalizeProviderSession(providerName, request, sessionId, jobId, result),
+    });
+    this.waitCoordinator = new WaitCoordinator({
+      progressStore: this.progressStore,
+      sessionManager: this.sessionManager,
+      launchCoordinator: this.launchCoordinator,
+      eventBus: this.eventBus,
+      jobPools: this.jobPools,
+    });
+  }
+
+  async acquireServer(
+    spec: ProviderServerSpec,
+    options?: { jobId?: string; signal?: AbortSignal },
+  ): Promise<ProviderServerLease> {
+    if (options?.jobId) {
+      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, { leaseState: 'waiting' });
+    }
+
+    const lease = await this.providerHostManager.acquireServer(spec, { signal: options?.signal });
+    if (options?.jobId) {
+      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
+        leaseState: 'acquired',
+        serverGeneration: lease.generation,
+      });
+    }
+    return lease;
+  }
+
+  checkpointRecovery(jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }): void {
+    const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+    if (!isAppServerRuntime(runtimeRecord)) {
+      throw new Error(`checkpointRecovery(${jobId}) requires an app-server runtime record`);
+    }
+    const providerMetaUpdate = update.providerMeta as Partial<AppServerRuntimeRecord['providerMeta']>;
+
+    const nextRecord: AppServerRuntimeRecord = {
+      ...runtimeRecord,
+      providerMeta: {
+        ...runtimeRecord.providerMeta,
+        ...providerMetaUpdate,
+        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
+      },
+    };
+    this.progressStore.writeRuntimeRecord(jobId, nextRecord);
+
+    const status = this.progressStore.readStatus(jobId);
+    if (status && isProviderContinuityBlob(nextRecord.providerMeta.providerContinuity)) {
+      this.sessionManager.checkpointProviderContinuity(status.sessionId, {
+        providerContinuity: nextRecord.providerMeta.providerContinuity,
+        conversationRef: update.conversationRef,
+      });
+      return;
+    }
+
+    if (status && update.conversationRef) {
+      this.sessionManager.setConversationRef(status.sessionId, update.conversationRef);
+    }
+  }
+
+  async interruptAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+  ): Promise<void> {
+    const provider = this.providerRegistry.get(launchRecord.provider);
+    if (!provider?.appServer) {
+      return;
+    }
+    const session = this.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
+    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
+    if (!continuity) {
+      return;
+    }
+
+    const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
+    if (spec.shared !== true) {
+      const liveServer = await this.providerHostManager.borrowLiveServer(spec, {
+        serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+      });
+      if (liveServer) {
+        await provider.appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
+        return;
+      }
+    }
+
+    const lease = await this.acquireServer(spec);
+    try {
+      await provider.appServer.interrupt(lease, continuity);
+    } finally {
+      lease.release();
+    }
+  }
+
+  async finalizeInterruptedAppServerJob(
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: AppServerRuntimeRecord,
+    options: { reason: InterruptedAppServerReason },
+  ): Promise<void> {
+    const status = this.progressStore.readStatus(launchRecord.jobId);
+    if (!status || isTerminalPhase(status.phase)) {
+      return;
+    }
+
+    const baseNotice =
+      options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
+    const provider = this.providerRegistry.get(launchRecord.provider);
+    const session =
+      this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
+      ({
+        conversationRef: launchRecord.request.conversationRef,
+      } as Pick<SessionEntry, 'conversationRef' | 'providerContinuity'>);
+    const preservedConversationRef = session.conversationRef ?? launchRecord.request.conversationRef;
+    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
+
+    const toMutation = (finalization: InterruptedAppServerFinalization) => {
+      if (finalization.nonResumable) {
+        return {
+          type: 'clear_non_resumable',
+          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+        } as const;
+      }
+
+      const conversationRef = finalization.conversationRef ?? preservedConversationRef;
+      if (conversationRef) {
+        return {
+          type: 'set_resumable',
+          conversationRef,
+          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+        } as const;
+      }
+
+      return {
+        type: 'preserve',
+        ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
+      } as const;
+    };
+
+    let mutation:
+      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
+    let probeOutcome: InterruptedProbeOutcome;
+
+    if (provider?.appServer && continuity) {
+      if (runtimeRecord.providerMeta.leaseState === 'waiting') {
+        probeOutcome = 'waiting';
+        mutation = toMutation(
+          provider.appServer.finalizeInterrupted(
+            {
+              resumable: Boolean(preservedConversationRef ?? continuity),
+              updatedContinuity: continuity,
+            },
+            continuity,
+          ),
+        );
+      } else {
+        const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
+
+        try {
+          const liveServer =
+            spec.shared !== true && runtimeRecord.providerMeta.leaseState === 'acquired'
+              ? await this.providerHostManager.borrowLiveServer(spec, {
+                  serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+                })
+              : null;
+          const lease = liveServer ? this.createAttachedProviderServerLease(liveServer) : await this.acquireServer(spec);
+          try {
+            const probeResult = await provider.appServer.probe(lease, continuity);
+            probeOutcome = probeResult.resumable ? 'verified' : 'missing';
+            mutation = toMutation(provider.appServer.finalizeInterrupted(probeResult, continuity));
+          } finally {
+            if (!liveServer) {
+              lease.release();
+            }
+          }
+        } catch (error: unknown) {
+          backendLog.error(
+            `Probe failed for ${launchRecord.jobId}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          probeOutcome = 'unavailable';
+          mutation = toMutation(
+            provider.appServer.finalizeInterrupted(
+              {
+                resumable: false,
+                updatedContinuity: continuity,
+              },
+              continuity,
+            ),
+          );
+        }
+      }
+    } else if (preservedConversationRef) {
+      probeOutcome = 'waiting';
+      mutation = {
+        type: 'set_resumable',
+        conversationRef: preservedConversationRef,
+      };
+    } else {
+      probeOutcome = 'waiting';
+      mutation = { type: 'clear_non_resumable' };
+    }
+
+    let notice: string;
+    if (probeOutcome === 'waiting') {
+      notice = joinNotice(
+        baseNotice,
+        APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
+        mutation.type === 'clear_non_resumable'
+          ? 'No resumable conversation was available.'
+          : 'The existing conversation reference was preserved.',
+      );
+    } else if (probeOutcome === 'verified') {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE);
+    } else if (probeOutcome === 'missing') {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE);
+    } else {
+      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
+    }
+
+    let reportConversationRef: string | undefined;
+    if (probeOutcome === 'verified') {
+      reportConversationRef =
+        mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
+    }
+
+    const interruptedReport = buildInterruptedAppServerReport({
+      baseNotice,
+      probeOutcome,
+      conversationRef: reportConversationRef,
+    });
+
+    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
+    this.writeTerminalResult(
+      launchRecord.jobId,
+      launchRecord.sessionId,
+      {
+        content: interruptedReport,
+        notice,
+        ...(probeOutcome === 'missing' || probeOutcome === 'unavailable' ? { nonResumable: true } : {}),
+      },
+      'error',
+    );
+    this.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
+    this.abortRegistry.remove(launchRecord.jobId);
+    this.launchCoordinator.releaseLaunch(
+      launchRecord.jobId,
+      (this.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool,
+    );
+    this.jobPools.delete(launchRecord.jobId);
+    await this.finalizeSessionContinuityMutation(
+      launchRecord.provider,
+      launchRecord.sessionId,
+      launchRecord.jobId,
+      mutation,
+    );
   }
 
   private async claimJobAtomic(
@@ -268,6 +1324,53 @@ export class ExecutionService {
     }
   }
 
+  private createAttachedProviderServerLease(attachment: ProviderServerAttachment): ProviderServerLease {
+    return {
+      rpc: attachment.rpc,
+      subscribe: attachment.subscribe,
+      release: () => {},
+      closed: attachment.closed,
+    };
+  }
+
+  private resolveAppServerContinuity(
+    providerName: string,
+    runtimeRecord: AppServerRuntimeRecord,
+    session?: Pick<SessionEntry, 'providerContinuity'> | null,
+  ): ProviderContinuityBlob | undefined {
+    if (isProviderContinuityBlob(runtimeRecord.providerMeta.providerContinuity)) {
+      return runtimeRecord.providerMeta.providerContinuity;
+    }
+    if (isProviderContinuityBlob(session?.providerContinuity)) {
+      return session.providerContinuity;
+    }
+
+    const provider = this.providerRegistry.get(providerName);
+    return provider?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
+  }
+
+  private writeAppServerRuntimeRecord(
+    jobId: string,
+    providerName: string,
+    update: Partial<AppServerRuntimeRecord['providerMeta']>,
+  ): void {
+    const current = this.progressStore.readRuntimeRecord(jobId);
+    const appRuntime = isAppServerRuntime(current) ? current : null;
+    const record: AppServerRuntimeRecord = {
+      transport: 'app-server',
+      startTime: appRuntime?.startTime ?? new Date().toISOString(),
+      providerMeta: {
+        provider: providerName,
+        leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
+        serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
+        providerContinuity:
+          update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
+        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
+      },
+    };
+    this.progressStore.writeRuntimeRecord(jobId, record);
+  }
+
   private async claimAndAdmitJob(
     session: SessionEntry,
     providerName: string,
@@ -276,36 +1379,16 @@ export class ExecutionService {
     expectedVersion: number = session.version,
     pool: LaunchPool = 'default',
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
-    const jobId = randomUUID();
-    this.jobPools.set(jobId, pool);
-    const admission = requestLaunch(jobId, providerName, pool);
-    if (admission === 'queue_full') {
-      this.jobPools.delete(jobId);
-      return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
-    }
-
-    const initialPhase: Extract<JobPhase, 'queued' | 'launching'> =
-      admission.type === 'queued' ? 'queued' : 'launching';
-
-    try {
-      await this.claimJobAtomic(session, jobId, providerName, projectRoot, { expectedVersion, initialPhase });
-    } catch (error: unknown) {
-      if (admission.type === 'queued') {
-        const waitForPermit = admission.waitForPermit();
-        admission.cancel();
-        void waitForPermit.catch(() => {});
-      } else {
-        releaseLaunch(jobId, pool);
-      }
-      this.jobPools.delete(jobId);
-
-      if (error instanceof SessionClaimError) {
-        return rejectLaunch('session_busy', sessionBusyMessage);
-      }
-      throw error;
-    }
-
-    return { jobId, admission };
+    return this.launchOrchestrator.claimAndAdmitJob(
+      session,
+      providerName,
+      projectRoot,
+      sessionBusyMessage,
+      (claimSession, jobId, claimProviderName, claimProjectRoot, options) =>
+        this.claimJobAtomic(claimSession, jobId, claimProviderName, claimProjectRoot, options),
+      expectedVersion,
+      pool,
+    );
   }
 
   private launchProviderJob(
@@ -314,50 +1397,13 @@ export class ExecutionService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    pool: LaunchPool = 'default',
-    projectRoot?: string,
-    parentWorkflowJobId?: string,
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string } = {},
   ): LaunchDecision {
-    this.abortRegistry.register(jobId);
-
-    // Write durable launch record before queue admission / execution
-    this.progressStore.writeLaunchRecord(jobId, {
-      jobId,
-      sessionId,
-      provider: provider.name,
-      projectRoot: projectRoot ?? request.cwd ?? '',
-      backendNamespace: this.backendNamespace,
-      bundleHash: this.bundleHash,
-      pool,
-      enqueueSequence: this.progressStore.nextEnqueueSequence(),
-      providerAction: request.action,
-      request: {
-        prompt: request.prompt,
-        name: request.name,
-        model: request.model,
-        cwd: request.cwd,
-        effort: request.effort,
-        bypassPermissions: request.bypassPermissions,
-        systemPrompt: request.systemPrompt,
-        conversationRef: request.conversationRef,
-        instruction: request.instruction,
-        coralEnv: request.coralEnv,
-      },
-      parentWorkflowJobId,
-      createdAt: new Date().toISOString(),
-    });
-
-    const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
-    if (admission.type === 'queued') {
-      this.markJobQueued(jobId, sessionId, admission.queuePosition);
-    }
-
-    this.runAsync(provider, sessionId, jobId, request, admission, pool);
-    return { status: decisionStatus, job: jobId, session: sessionId };
+    return this.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }
 
   async start(providerName: string, input: ExecInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const preflightError = await runProviderPreflight(provider);
@@ -393,20 +1439,15 @@ export class ExecutionService {
       coralEnv: ctx.coralEnv,
     };
 
-    return this.launchProviderJob(
-      provider,
-      session.sessionId,
-      admitted.jobId,
-      request,
-      admitted.admission,
+    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
       pool,
-      ctx.projectRoot,
-      input.parentWorkflowJobId,
-    );
+      projectRoot: ctx.projectRoot,
+      parentWorkflowJobId: input.parentWorkflowJobId,
+    });
   }
 
   async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -455,20 +1496,15 @@ export class ExecutionService {
       coralEnv: ctx.coralEnv,
     };
 
-    return this.launchProviderJob(
-      provider,
-      session.sessionId,
-      admitted.jobId,
-      request,
-      admitted.admission,
+    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
       pool,
-      ctx.projectRoot,
-      input.parentWorkflowJobId,
-    );
+      projectRoot: ctx.projectRoot,
+      parentWorkflowJobId: input.parentWorkflowJobId,
+    });
   }
 
   async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -525,15 +1561,9 @@ export class ExecutionService {
         coralEnv: ctx.coralEnv,
       };
 
-      return this.launchProviderJob(
-        provider,
-        newSession.sessionId,
-        admitted.jobId,
-        request,
-        admitted.admission,
-        'default',
-        ctx.projectRoot,
-      );
+      return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
+        projectRoot: ctx.projectRoot,
+      });
     } finally {
       this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
     }
@@ -595,7 +1625,9 @@ export class ExecutionService {
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
-    if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    if (!this.providerRegistry.get(providerName)) {
+      return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    }
 
     const session = this.sessionManager.allocate(
       providerName,
@@ -646,10 +1678,19 @@ export class ExecutionService {
       }
 
       const status = this.progressStore.readStatus(jobId);
-      if (status?.phase === 'queued' && cancelQueued(jobId)) {
+      const pool = this.jobPools.get(jobId) ?? 'default';
+      if (status?.phase === 'queued' && this.launchCoordinator.cancelQueued(jobId, pool)) {
         this.finishQueuedAbort(jobId, status.sessionId, QUEUED_ABORT_MESSAGE);
         aborted.push(jobId);
         continue;
+      }
+
+      const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+      const launchRecord = this.progressStore.readLaunchRecord(jobId);
+      if (launchRecord && isAppServerRuntime(runtimeRecord)) {
+        void this.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
+          backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
+        });
       }
 
       this.abortRegistry.abort([jobId]);
@@ -657,6 +1698,10 @@ export class ExecutionService {
     }
 
     return { aborted, notFound };
+  }
+
+  async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
+    return this.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);
   }
 
   // ── Recovery adoption APIs ──────────────────────────────────────────────────
@@ -675,7 +1720,7 @@ export class ExecutionService {
     this.progressStore.hydrateEventCounter(jobId);
 
     // Restore queue entry and register abort with cancel callback
-    const queuedHandle = restoreQueuedLaunch(jobId, launchRecord.provider, pool);
+    const queuedHandle = this.launchCoordinator.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
     this.abortRegistry.register(jobId, () => {
       queuedHandle.cancel();
     });
@@ -684,7 +1729,7 @@ export class ExecutionService {
     this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
 
     // Wire up the async execution path
-    const provider = getNewProvider(launchRecord.provider);
+    const provider = this.providerRegistry.get(launchRecord.provider);
     if (provider) {
       this.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
     }
@@ -702,12 +1747,17 @@ export class ExecutionService {
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
+    // TODO(AC2-AC10): branch on runtime transport during startup recovery instead of assuming a durable PID.
+    if (!isDurableCliRuntime(runtimeRecord)) {
+      throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
+    }
+
     this.jobPools.set(jobId, pool);
     this.progressStore.hydrateEventCounter(jobId);
     this.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
     // Restore active permit before fence lifts
-    restoreActiveLaunch(jobId, launchRecord.provider, pool);
+    this.launchCoordinator.restoreActiveLaunch(jobId, launchRecord.provider, pool);
 
     // Rebind namespace to current backend instance
     this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
@@ -729,7 +1779,7 @@ export class ExecutionService {
         if (cleaned) return;
         cleaned = true;
         this.abortRegistry.remove(jobId);
-        releaseLaunch(jobId, pool);
+        this.launchCoordinator.releaseLaunch(jobId, pool);
         this.jobPools.delete(jobId);
       },
     };
@@ -750,12 +1800,95 @@ export class ExecutionService {
     this.progressStore.writeResultMd(jobId, result.content);
     this.abortRegistry.remove(jobId);
     const pool = this.jobPools.get(jobId) ?? 'default';
-    releaseLaunch(jobId, pool);
+    this.launchCoordinator.releaseLaunch(jobId, pool);
     this.jobPools.delete(jobId);
 
     if (options?.conversationRef) {
       this.sessionManager.setConversationRef(sessionId, options.conversationRef);
     } else if (options?.nonResumable) {
+      this.sessionManager.setNonResumable(sessionId);
+    }
+    this.sessionManager.releaseJob(sessionId, jobId);
+  }
+
+  private async finalizeSessionContinuityMutation(
+    providerName: string,
+    sessionId: string,
+    jobId: string,
+    mutation:
+      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
+      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob },
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < FINALIZE_CONTINUITY_MAX_RETRIES; attempt += 1) {
+      const session = this.sessionManager.get(providerName, sessionId);
+      if (!session || session.activeJobId !== jobId) {
+        return false;
+      }
+
+      const finalized = await this.sessionManager.finalizeJobContinuityAtomic(sessionId, {
+        expectedActiveJobId: jobId,
+        expectedVersion: session.version,
+        mutation,
+      });
+      if (finalized) {
+        return true;
+      }
+    }
+
+    // Retries exhausted — release claim as fallback to prevent session leak.
+    // Mutation data (conversationRef, resumability) is lost but will be re-derived on next job.
+    this.sessionManager.releaseJob(sessionId, jobId);
+    return false;
+  }
+
+  private async finalizeProviderSession(
+    providerName: string,
+    request: ProviderRequest,
+    sessionId: string,
+    jobId: string,
+    result: ProviderResult,
+  ): Promise<void> {
+    const provider = this.providerRegistry.get(providerName);
+    const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
+    if (provider?.appServer && isAppServerRuntime(runtimeRecord)) {
+      const continuity = this.resolveAppServerContinuity(
+        providerName,
+        runtimeRecord,
+        this.sessionManager.get(providerName, sessionId),
+      );
+
+      if (request.action === 'resume' && result.nonResumable && !continuity) {
+        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+          type: 'clear_non_resumable',
+        });
+        return;
+      }
+
+      if (result.conversationRef && !continuity) {
+        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+          type: 'set_resumable',
+          conversationRef: result.conversationRef,
+        });
+        return;
+      }
+
+      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+        type: 'preserve',
+      });
+      return;
+    }
+
+    if (request.action === 'resume' && result.nonResumable) {
+      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
+        type: 'clear_non_resumable',
+      });
+      return;
+    }
+
+    if (result.conversationRef) {
+      this.sessionManager.setConversationRef(sessionId, result.conversationRef);
+    } else if (result.nonResumable) {
       this.sessionManager.setNonResumable(sessionId);
     }
     this.sessionManager.releaseJob(sessionId, jobId);
@@ -784,115 +1917,11 @@ export class ExecutionService {
 
   /** Async generator yielding queued/progress/terminal/timeout events for monitored jobs. */
   async *waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
-    const { jobIds, timeoutSeconds = 600, cursor } = req;
-    const startMs = Date.now();
-    const timeoutMs = timeoutSeconds * 1000;
-
-    const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
-    const fileCursors = new Map(jobIds.map((id) => [id, createReplayCursor()]));
-    const emittedQueued = new Set<string>();
-    const pending = new Set(jobIds);
-
-    while (pending.size > 0) {
-      if (Date.now() - startMs >= timeoutMs) {
-        yield { type: 'timeout', runningJobIds: [...pending] };
-        return;
-      }
-
-      const seq = this.progressStore.getChangeSeq();
-
-      for (const jobId of [...pending]) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- fileCursors initialized from same jobIds as pending
-        const fileCursor = fileCursors.get(jobId)!;
-        const fromEventId = fromEventIds[jobId] ?? 0;
-        const status = this.progressStore.readStatus(jobId);
-        if (!status) continue;
-
-        const sessionId = status.sessionId;
-        const pool = this.jobPools.get(jobId) ?? 'default';
-        if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
-          emittedQueued.add(jobId);
-          yield {
-            type: 'queued',
-            jobId,
-            sessionId,
-            queuePosition: queuePosition(jobId, pool) ?? 0,
-            runningJobIds: getActiveJobIds(pool),
-          };
-        }
-        const events = this.progressStore.replayFrom(jobId, fromEventId, fileCursor);
-
-        for (const event of events) {
-          fromEventIds[jobId] = event.eventId;
-
-          if (event.type === 'progress') {
-            yield {
-              type: 'progress',
-              jobId,
-              sessionId,
-              eventId: event.eventId,
-              message: event.message ?? '',
-            };
-          } else if (event.type === 'terminal') {
-            const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
-            yield {
-              type: 'terminal',
-              completedJobId: jobId,
-              sessionId,
-              remainingJobIds,
-              resultPath: jobResultPath(jobId),
-              result: event.result ?? { content: '' },
-            };
-            pending.delete(jobId);
-            break;
-          }
-        }
-
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (pending.has(jobId) && currentStatus && isTerminalPhase(currentStatus.phase)) {
-          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
-          yield {
-            type: 'terminal',
-            completedJobId: jobId,
-            sessionId: currentStatus.sessionId,
-            remainingJobIds,
-            resultPath: jobResultPath(jobId),
-            result: currentStatus.result ?? { content: '' },
-          };
-          pending.delete(jobId);
-        }
-      }
-
-      if (pending.size > 0) {
-        const remainingMs = timeoutMs - (Date.now() - startMs);
-        if (remainingMs <= 0) continue;
-        await Promise.race([
-          this.progressStore.waitForChange(seq),
-          new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
-        ]);
-      }
-    }
+    yield* this.waitCoordinator.waitForJobs(req);
   }
 
   async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
-    const request: WaitRequest = { jobIds: [jobId] };
-    if (timeoutMs !== undefined) {
-      request.timeoutSeconds = timeoutMs / 1000;
-    }
-
-    for await (const event of this.waitStream(request)) {
-      if (event.type === 'terminal' && event.completedJobId === jobId) {
-        return {
-          content: event.result.content,
-          nonResumable: event.result.nonResumable ?? false,
-        };
-      }
-      if (event.type === 'timeout') {
-        throw new Error('Job timed out waiting for terminal result');
-      }
-    }
-
-    throw new Error(`Job ${jobId} ended without a terminal result`);
+    return this.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
   }
 
   private runAsync(
@@ -903,90 +1932,7 @@ export class ExecutionService {
     admission: AcceptedAdmission,
     pool: LaunchPool,
   ): void {
-    const signal = this.abortRegistry.getSignal(jobId);
-    if (!signal) {
-      if (admission.type === 'queued') admission.cancel();
-      else releaseLaunch(jobId, pool);
-      return;
-    }
-
-    const onEvent = (event: ProviderProgressEvent): void => {
-      const currentStatus = this.progressStore.readStatus(jobId);
-      if (canAdvanceLaunchState(currentStatus)) {
-        this.markJobRunning(jobId);
-      }
-      this.progressStore.appendProgress(jobId, sessionId, event.message);
-    };
-
-    void (async () => {
-      let permitAcquired = admission.type === 'immediate';
-
-      try {
-        if (admission.type === 'queued') {
-          const queueOutcome = await this.waitForQueuedPermit(admission, signal);
-          if (queueOutcome === 'aborted') {
-            this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
-            return;
-          }
-
-          permitAcquired = true;
-          this.markJobLaunching(jobId);
-          this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
-        }
-
-        bindLaunchPermit(jobId, signal, pool);
-        const runtime: ProviderRuntime = {
-          signal,
-          onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
-        };
-        const result = await provider.execute(request, runtime);
-
-        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
-          this.markJobReady(jobId);
-        }
-
-        const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
-        const terminalResult: TerminalResult = {
-          content: result.content,
-          durationMs: result.durationMs,
-          aborted: result.aborted,
-          nonResumable: result.nonResumable,
-          exitCode: result.exitCode,
-          notice: result.notice,
-          errors: result.errors,
-          warnings: result.warnings,
-          usage: result.usage,
-        };
-
-        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
-        this.progressStore.writeResultMd(jobId, result.content);
-        this.abortRegistry.remove(jobId);
-        this.jobPools.delete(jobId);
-
-        if (result.conversationRef) {
-          this.sessionManager.setConversationRef(sessionId, result.conversationRef);
-        } else if (result.nonResumable) {
-          this.sessionManager.setNonResumable(sessionId);
-        }
-        this.sessionManager.releaseJob(sessionId, jobId);
-      } catch (err: unknown) {
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
-          return;
-        }
-
-        if (err instanceof CliBusyError) {
-          this.failJob(jobId, sessionId, 'busy', err.message);
-          return;
-        }
-
-        const message = err instanceof Error ? err.message : String(err);
-        this.failJob(jobId, sessionId, 'error', message);
-      } finally {
-        if (permitAcquired) releaseLaunch(jobId, pool);
-      }
-    })();
+    this.launchOrchestrator.runAsync(provider, sessionId, jobId, request, admission, pool);
   }
 
   /**
@@ -1000,172 +1946,19 @@ export class ExecutionService {
     admission: QueuedHandle,
     pool: LaunchPool,
   ): void {
-    const jobId = launchRecord.jobId;
-    const sessionId = launchRecord.sessionId;
-    const signal = this.abortRegistry.getSignal(jobId);
-    if (!signal) {
-      admission.cancel();
-      return;
-    }
-
-    const onEvent = (event: ProviderProgressEvent): void => {
-      const currentStatus = this.progressStore.readStatus(jobId);
-      if (canAdvanceLaunchState(currentStatus)) {
-        this.markJobRunning(jobId);
-      }
-      this.progressStore.appendProgress(jobId, sessionId, event.message);
-    };
-
-    void (async () => {
-      try {
-        const queueOutcome = await this.waitForQueuedPermit(admission, signal);
-        if (queueOutcome === 'aborted') {
-          this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
-          return;
-        }
-
-        this.markJobLaunching(jobId);
-        this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
-
-        bindLaunchPermit(jobId, signal, pool);
-        const request: ProviderRequest = {
-          action: launchRecord.providerAction,
-          sessionId: launchRecord.sessionId,
-          name: launchRecord.request.name,
-          prompt: launchRecord.request.prompt,
-          conversationRef: launchRecord.request.conversationRef,
-          model: launchRecord.request.model,
-          cwd: launchRecord.request.cwd,
-          effort: launchRecord.request.effort,
-          bypassPermissions: launchRecord.request.bypassPermissions,
-          systemPrompt: launchRecord.request.systemPrompt,
-          instruction: launchRecord.request.instruction,
-          coralEnv: launchRecord.request.coralEnv,
-        };
-
-        const runtime: ProviderRuntime = {
-          signal,
-          onEvent,
-          runCli: bindProviderRunner(provider.name, signal, pool, this.progressStore.jobDir(jobId)),
-        };
-        const result = await provider.execute(request, runtime);
-
-        if (canAdvanceLaunchState(this.progressStore.readStatus(jobId))) {
-          this.markJobReady(jobId);
-        }
-
-        const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
-        const terminalResult: TerminalResult = {
-          content: result.content,
-          durationMs: result.durationMs,
-          aborted: result.aborted,
-          nonResumable: result.nonResumable,
-          exitCode: result.exitCode,
-          notice: result.notice,
-          errors: result.errors,
-          warnings: result.warnings,
-          usage: result.usage,
-        };
-
-        this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
-        this.progressStore.writeResultMd(jobId, result.content);
-        this.abortRegistry.remove(jobId);
-        this.jobPools.delete(jobId);
-
-        if (result.conversationRef) {
-          this.sessionManager.setConversationRef(sessionId, result.conversationRef);
-        } else if (result.nonResumable) {
-          this.sessionManager.setNonResumable(sessionId);
-        }
-        this.sessionManager.releaseJob(sessionId, jobId);
-      } catch (err: unknown) {
-        const currentStatus = this.progressStore.readStatus(jobId);
-        if (!currentStatus || isTerminalPhase(currentStatus.phase)) return;
-
-        if (err instanceof CliBusyError) {
-          this.failJob(jobId, sessionId, 'busy', err.message);
-          return;
-        }
-
-        const message = err instanceof Error ? err.message : String(err);
-        this.failJob(jobId, sessionId, 'error', message);
-      } finally {
-        releaseLaunch(jobId, pool);
-      }
-    })();
-  }
-
-  private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
-    this.progressStore.updateLaunchState(jobId, 'queued');
-    this.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
-  }
-
-  private markJobLaunching(jobId: string): void {
-    this.progressStore.updatePhase(jobId, 'launching');
-  }
-
-  private async waitForQueuedPermit(admission: QueuedHandle, signal: AbortSignal): Promise<'granted' | 'aborted'> {
-    return new Promise<'granted' | 'aborted'>((resolve, reject) => {
-      let settled = false;
-
-      const cleanup = () => {
-        signal.removeEventListener('abort', onAbort);
-      };
-
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        admission.cancel();
-        cleanup();
-        resolve('aborted');
-      };
-
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-
-      signal.addEventListener('abort', onAbort, { once: true });
-      admission
-        .waitForPermit()
-        .then(() => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve('granted');
-        })
-        .catch((error: unknown) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        });
-    });
+    this.launchOrchestrator.runRecoveredQueuedJob(provider, launchRecord, admission, pool);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
-    this.progressStore.updateLaunchState(jobId, 'error', message);
-    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
-    this.abortRegistry.remove(jobId);
-    this.jobPools.delete(jobId);
-    this.sessionManager.releaseJob(sessionId, jobId);
-  }
-
-  private markJobReady(jobId: string): void {
-    this.progressStore.updateLaunchState(jobId, 'ready');
+    this.launchOrchestrator.finishQueuedAbort(jobId, sessionId, message);
   }
 
   private markJobRunning(jobId: string): void {
-    this.markJobReady(jobId);
-    this.progressStore.updatePhase(jobId, 'running');
+    this.launchOrchestrator.markJobRunning(jobId);
   }
 
   private failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
-    this.progressStore.updateLaunchState(jobId, launchState, message);
-    this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
-    this.abortRegistry.remove(jobId);
-    this.jobPools.delete(jobId);
-    this.sessionManager.releaseJob(sessionId, jobId);
+    this.launchOrchestrator.failJob(jobId, sessionId, launchState, message);
   }
 
   private finishWorkflowJob(
@@ -1183,11 +1976,7 @@ export class ExecutionService {
   }
 
   private writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
-    try {
-      this.progressStore.appendTerminal(jobId, sessionId, result, phase);
-    } catch {
-      this.progressStore.markTerminalStatus(jobId, result, phase);
-    }
+    this.launchOrchestrator.writeTerminalResult(jobId, sessionId, result, phase);
   }
 
   private runWorkflowAsync(
