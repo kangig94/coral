@@ -319,127 +319,158 @@ export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
   return changed;
 }
 
-export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }): KbRuntime {
-  let indexCache: { index: KbIndex | null; mtime: number } | null = null;
-  let cachedOramaIndex: KbCachedOramaIndex | null = null;
-  let mutationLock: Promise<void> = Promise.resolve();
-  let vectorPluginRoot: string | null = null;
-  let activeVectorHandle: RuntimeVectorHandle | null = null;
-  let upgradeGuardDone = false;
-  let nextVectorGeneration = 1;
-  const retiredVectorHandles = new Set<RuntimeVectorHandle>();
-  const vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
+type OpenedVectorStore = {
+  store: VectorStore;
+  close(): Promise<void>;
+};
 
-  type OpenedVectorStore = {
-    store: VectorStore;
-    close(): Promise<void>;
-  };
+type RuntimeVectorHandle = OpenedVectorStore & {
+  specId: string;
+  snapshotId: string;
+  generation: number;
+  leaseCount: number;
+  retired: boolean;
+  closeTimer: NodeJS.Timeout | null;
+  closed: boolean;
+};
 
-  type RuntimeVectorHandle = OpenedVectorStore & {
-    specId: string;
-    snapshotId: string;
-    generation: number;
-    leaseCount: number;
-    retired: boolean;
-    closeTimer: NodeJS.Timeout | null;
-    closed: boolean;
-  };
+function readVectorDrainTimeoutMs(): number {
+  const raw = process.env.CORAL_VECTOR_DRAIN_TIMEOUT_MS;
+  if (raw === undefined) {
+    return 30_000;
+  }
 
-  function readVectorDrainTimeoutMs(): number {
-    const raw = process.env.CORAL_VECTOR_DRAIN_TIMEOUT_MS;
-    if (raw === undefined) {
-      return 30_000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
+}
+
+class KbRuntimeImpl implements KbRuntime {
+  readonly markdownRoot: string;
+  readonly runtimeDir: string;
+  vectorStore: VectorStore | null = null;
+
+  private indexCache: { index: KbIndex | null; mtime: number } | null = null;
+  private cachedOramaIndex: KbCachedOramaIndex | null = null;
+  private mutationLock: Promise<void> = Promise.resolve();
+  private vectorPluginRoot: string | null = null;
+  private activeVectorHandle: RuntimeVectorHandle | null = null;
+  private upgradeGuardDone = false;
+  private pendingRepairCache: { mtime: number; result: boolean } | null = null;
+  private nextVectorGeneration = 1;
+  private readonly retiredVectorHandles = new Set<RuntimeVectorHandle>();
+  private readonly vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
+
+  constructor({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }) {
+    this.markdownRoot = markdownRoot;
+    this.runtimeDir = runtimeDir;
+
+    mkdirSync(this.runtimeDir, { recursive: true });
+    runEntrySeqUpgradeGuard(this);
+    this.upgradeGuardDone = true;
+  }
+
+  notesDir(): string {
+    return pathsNotesDir(this.markdownRoot);
+  }
+
+  sourcesDir(): string {
+    return pathsSourcesDir(this.markdownRoot);
+  }
+
+  communitiesDir(): string {
+    return pathsCommunitiesDir(this.markdownRoot);
+  }
+
+  principlesDir(): string {
+    return pathsPrinciplesDir(this.markdownRoot);
+  }
+
+  notePath(note: string): string {
+    return notePathFromName(note, this.markdownRoot);
+  }
+
+  sourcePath(source: string): string {
+    return sourcePathFromName(source, this.markdownRoot);
+  }
+
+  communityPath(community: string): string {
+    return communityPathFromName(community, this.markdownRoot);
+  }
+
+  principlePath(principle: string): string {
+    return principlePathFromName(principle, this.markdownRoot);
+  }
+
+  sourceImportStageDir(): string {
+    return pathsSourceImportStageDir(this.runtimeDir);
+  }
+
+  curateStatePath(): string {
+    return join(this.runtimeDir, CURATE_STATE_FILE);
+  }
+
+  async initVectorStore(pluginRoot: string): Promise<void> {
+    this.vectorPluginRoot = pluginRoot;
+    rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
+    await this.closeVectorStores();
+    this.vectorStore = null;
+    mkdirSync(this.runtimeDir, { recursive: true });
+    if (!this.upgradeGuardDone) {
+      runEntrySeqUpgradeGuard(this);
+      this.upgradeGuardDone = true;
     }
 
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
+    if (this.textArtifactsNeedRebuild()) {
+      return;
+    }
+
+    try {
+      this.installOramaCache(await this.loadOramaSnapshot());
+    } catch {
+      this.cachedOramaIndex = null;
+    }
+
+    let desiredSpecId: string | null = null;
+    try {
+      desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
+    } catch {
+      desiredSpecId = null;
+    }
+
+    if (desiredSpecId === null) {
+      return;
+    }
+
+    const snapshotId = readActiveSnapshotId(this.runtimeDir, desiredSpecId);
+    if (snapshotId === null) {
+      return;
+    }
+
+    try {
+      await this.activateVectorSnapshot(desiredSpecId, snapshotId);
+    } catch {
+      await this.closeVectorStores();
+    }
   }
 
-  function notesDir(): string {
-    return pathsNotesDir(markdownRoot);
-  }
-
-  function principlesDir(): string {
-    return pathsPrinciplesDir(markdownRoot);
-  }
-
-  function communitiesDir(): string {
-    return pathsCommunitiesDir(markdownRoot);
-  }
-
-  function sourcesDir(): string {
-    return pathsSourcesDir(markdownRoot);
-  }
-
-  function notePath(note: string): string {
-    return notePathFromName(note, markdownRoot);
-  }
-
-  function sourcePath(source: string): string {
-    return sourcePathFromName(source, markdownRoot);
-  }
-
-  function communityPath(community: string): string {
-    return communityPathFromName(community, markdownRoot);
-  }
-
-  function principlePath(principle: string): string {
-    return principlePathFromName(principle, markdownRoot);
-  }
-
-  function sourceImportStageDir(): string {
-    return pathsSourceImportStageDir(runtimeDir);
-  }
-
-  function curateStatePath(): string {
-    return join(runtimeDir, CURATE_STATE_FILE);
-  }
-
-  function indexPath(): string {
-    return join(runtimeDir, INDEX_FILE);
-  }
-
-  function indexStatePath(): string {
-    return join(runtimeDir, INDEX_STATE_FILE);
-  }
-
-  function oramaIndexPath(): string {
-    return join(runtimeDir, ORAMA_INDEX_FILE);
-  }
-
-  function vectorHandleDir(handleToken: string): string {
-    return join(runtimeDir, 'vec', 'handles', handleToken);
-  }
-
-  function vectorHandleAddonPath(handleToken: string): string {
-    return join(vectorHandleDir(handleToken), 'coral-needle.node');
-  }
-
-  function makeHandleToken(prefix: string): string {
-    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  async function openVectorStore(
-    dbPath: string,
-    handleToken: string,
-  ): Promise<OpenedVectorStore | null> {
-    if (vectorPluginRoot === null) {
+  async openVectorStore(dbPath: string, handleToken: string): Promise<OpenedVectorStore | null> {
+    if (this.vectorPluginRoot === null) {
       return null;
     }
 
-    const sourceAddonPath = vectorAddonPath(runtimeDir);
+    const sourceAddonPath = vectorAddonPath(this.runtimeDir);
     if (!existsSync(sourceAddonPath)) {
       return null;
     }
 
-    const addonDir = vectorHandleDir(handleToken);
-    const addonPath = vectorHandleAddonPath(handleToken);
+    const addonDir = this.vectorHandleDir(handleToken);
+    const addonPath = this.vectorHandleAddonPath(handleToken);
     mkdirSync(addonDir, { recursive: true });
     copyFileSync(sourceAddonPath, addonPath);
 
     const store = createDuckDBVectorStore({
-      pluginRoot: vectorPluginRoot,
-      runtimeDir,
+      pluginRoot: this.vectorPluginRoot,
+      runtimeDir: this.runtimeDir,
       addonPath,
     });
     if (store === null) {
@@ -464,7 +495,398 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     };
   }
 
-  async function forceCloseRuntimeVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
+  async activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
+    const opened = await this.openVectorStore(
+      vectorSnapshotDbPath(this.runtimeDir, specId, snapshotId),
+      this.makeHandleToken(`active-${specId}-${snapshotId}`),
+    );
+    if (opened === null) {
+      throw new Error('KB vector store is unavailable.');
+    }
+
+    this.publishVectorHandle({
+      ...opened,
+      specId,
+      snapshotId,
+      generation: this.nextVectorGeneration,
+      leaseCount: 0,
+      retired: false,
+      closeTimer: null,
+      closed: false,
+    });
+    this.nextVectorGeneration += 1;
+  }
+
+  async acquireVectorLease(): Promise<KbVectorLease | null> {
+    const handle = this.activeVectorHandle;
+    if (handle === null || handle.closed) {
+      return null;
+    }
+
+    handle.leaseCount += 1;
+    const vectorStatus = this.getVectorStatus(handle.specId);
+    let released = false;
+
+    return {
+      store: handle.store,
+      specId: handle.specId,
+      snapshotId: handle.snapshotId,
+      generation: handle.generation,
+      vectorStatus,
+      release: async () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        handle.leaseCount = Math.max(0, handle.leaseCount - 1);
+        await this.maybeCloseRetiredVectorHandle(handle);
+      },
+    };
+  }
+
+  async closeVectorStores(): Promise<void> {
+    const handles = [
+      ...(this.activeVectorHandle === null ? [] : [this.activeVectorHandle]),
+      ...this.retiredVectorHandles,
+    ];
+
+    this.activeVectorHandle = null;
+    this.vectorStore = null;
+    this.retiredVectorHandles.clear();
+
+    for (const handle of handles) {
+      await this.forceCloseRuntimeVectorHandle(handle).catch(() => {});
+    }
+  }
+
+  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null {
+    const handle = this.activeVectorHandle;
+    if (handle === null || handle.closed) {
+      return null;
+    }
+
+    return {
+      specId: handle.specId,
+      snapshotId: handle.snapshotId,
+      generation: handle.generation,
+    };
+  }
+
+  readIndex(): KbIndex | null {
+    if (this.indexCache !== null) {
+      return this.indexCache.index;
+    }
+
+    try {
+      const raw = readFileSync(this.indexPath(), 'utf-8');
+      let parsed: KbIndex;
+      try {
+        parsed = parseIndex(JSON.parse(raw) as unknown);
+      } catch {
+        this.indexCache = { index: null, mtime: 0 };
+        this.cachedOramaIndex = null;
+        rmSync(this.indexPath(), { force: true });
+        return null;
+      }
+      this.indexCache = { index: parsed, mtime: statSync(this.indexPath()).mtimeMs };
+      return parsed;
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        this.indexCache = { index: null, mtime: 0 };
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  persistIndexToDisk(index: KbIndex): KbIndex {
+    const normalized = parseIndex(index);
+    writeJsonAtomic(this.indexPath(), normalized);
+    return normalized;
+  }
+
+  writeIndex(index: KbIndex): KbIndex {
+    return this.installIndexCache(this.persistIndexToDisk(index));
+  }
+
+  readIndexOrEmpty(): KbIndex {
+    return this.readIndex() ?? emptyIndex();
+  }
+
+  readIndexStateIfPresent(): KbIndexState | null {
+    try {
+      const raw = readFileSync(this.indexStatePath(), 'utf-8');
+      return parseIndexState(JSON.parse(raw) as unknown);
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return null;
+      }
+      // Corrupt index-state.json: delete and return null (same as missing).
+      // The next mutation or rebuild will recreate it from defaultIndexState().
+      rmSync(this.indexStatePath(), { force: true });
+      return null;
+    }
+  }
+
+  readIndexState(): KbIndexState {
+    return this.readIndexStateIfPresent() ?? defaultIndexState();
+  }
+
+  writeIndexState(state: KbIndexState): void {
+    writeJsonAtomic(this.indexStatePath(), state);
+  }
+
+  recordMutationCommitted(): KbIndexState {
+    const state = this.readIndexState();
+    const nextState = { ...state, mutationSeq: state.mutationSeq + 1 };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  recordIndexSyncSuccess(): KbIndexState {
+    const state = this.readIndexState();
+    const nextState: KbIndexState = {
+      mutationSeq: state.mutationSeq,
+      textIndexedSeq: state.mutationSeq,
+      vector: state.vector,
+    };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  recordIndexSyncFailure(reason: string): KbIndexState {
+    const state = this.readIndexState();
+    const nextState: KbIndexState = {
+      mutationSeq: state.mutationSeq,
+      textIndexedSeq: state.textIndexedSeq,
+      textStaleReason: reason,
+      vector: state.vector,
+    };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  recordReindexSuccess(startSeq: number): KbIndexState {
+    const state = this.readIndexState();
+    if (state.mutationSeq !== startSeq) {
+      return state;
+    }
+
+    const nextState: KbIndexState = {
+      mutationSeq: state.mutationSeq,
+      textIndexedSeq: startSeq,
+      vector: state.vector,
+    };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  recordVectorSyncSuccess(specId: string, startSeq: number, snapshotId: string): KbIndexState {
+    const state = this.readIndexState();
+    if (state.mutationSeq !== startSeq) {
+      return state;
+    }
+
+    const nextState: KbIndexState = {
+      ...state,
+      vector: {
+        bySpec: {
+          ...state.vector.bySpec,
+          [specId]: {
+            indexedSeq: startSeq,
+            activeSnapshotId: snapshotId,
+          },
+        },
+      },
+    };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState {
+    const state = this.readIndexState();
+    const current = state.vector.bySpec[specId];
+    const nextState: KbIndexState = {
+      ...state,
+      vector: {
+        bySpec: {
+          ...state.vector.bySpec,
+          [specId]: {
+            indexedSeq: current?.indexedSeq ?? 0,
+            staleReason: reason,
+            ...(activeSnapshotId === undefined
+              ? current?.activeSnapshotId === undefined
+                ? {}
+                : { activeSnapshotId: current.activeSnapshotId }
+              : { activeSnapshotId }),
+          },
+        },
+      },
+    };
+    this.writeIndexState(nextState);
+    return nextState;
+  }
+
+  getVectorStatus(specId: string): KbVectorSpecState | null {
+    return this.readIndexState().vector.bySpec[specId] ?? null;
+  }
+
+  async ensureIndex(): Promise<KbIndex> {
+    if (this.textArtifactsNeedRebuild()) {
+      await this.withMutationLock(async () => {
+        if (!this.upgradeGuardDone) {
+          runEntrySeqUpgradeGuard(this);
+          this.upgradeGuardDone = true;
+        }
+        const state = this.readIndexStateIfPresent();
+        const startSeq = state?.mutationSeq ?? 0;
+        if (!this.textArtifactsNeedRebuild(state)) {
+          return;
+        }
+
+        await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+      });
+    }
+
+    return this.readIndex() ?? emptyIndex();
+  }
+
+  async ensureOramaIndex(): Promise<{
+    db: KbOramaDb;
+    tokenizer: KbOramaTokenizer;
+    index: KbIndex;
+  }> {
+    const indexAfterEnsure = await this.ensureIndex();
+    // Fast path: index is fresh and Orama cache is valid — skip re-read.
+    // ensureIndex() guarantees text artifacts are up-to-date when it returns.
+    if (this.cachedOramaIndex !== null && this.indexCache !== null) {
+      return {
+        ...this.cachedOramaIndex,
+        index: indexAfterEnsure,
+      };
+    }
+
+    return this.withMutationLock(async () => {
+      const state = this.readIndexStateIfPresent();
+      const startSeq = state?.mutationSeq ?? 0;
+
+      if (this.textArtifactsNeedRebuild(state)) {
+        try {
+          await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+        } catch (error: unknown) {
+          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
+        }
+      } else if (this.cachedOramaIndex === null) {
+        try {
+          this.installOramaCache(await this.loadOramaSnapshot());
+        } catch {
+          try {
+            await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+          } catch (error: unknown) {
+            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
+          }
+        }
+      }
+
+      const stateAfterArtifacts = this.readIndexStateIfPresent();
+      if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
+        throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
+      }
+
+      return {
+        ...this.cachedOramaIndex,
+        index: this.readIndex() ?? emptyIndex(),
+      };
+    });
+  }
+
+  async ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
+    if (this.textArtifactsNeedRebuild()) {
+      const result = await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+      return this.snapshotFromRebuildResult(result);
+    }
+
+    if (this.cachedOramaIndex === null) {
+      try {
+        this.installOramaCache(await this.loadOramaSnapshot());
+      } catch {
+        const result = await rebuildTextArtifactsAndPersistRepairState(this, startSeq);
+        return this.snapshotFromRebuildResult(result);
+      }
+    }
+
+    const stateAfterArtifacts = this.readIndexStateIfPresent();
+    if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
+      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
+    }
+
+    return this.captureVectorTextSnapshot();
+  }
+
+  async withMutationLock<T>(fn: () => Promise<T> | T): Promise<T> {
+    const previous = this.mutationLock;
+    let release!: () => void;
+    this.mutationLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
+  invalidateKbCache(): void {
+    this.indexCache = null;
+    this.cachedOramaIndex = null;
+  }
+
+  invalidateTextSnapshot(reason: string): KbIndexState {
+    const nextState = this.recordIndexSyncFailure(reason);
+    this.cachedOramaIndex = null;
+    rmSync(this.oramaIndexPath(), { force: true });
+    return nextState;
+  }
+
+  installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex {
+    const normalized = this.installIndexCache(index);
+    this.installOramaCache(orama);
+    return normalized;
+  }
+
+  persistOramaSnapshot(db: KbOramaDb): void {
+    const snapshot = save(db) as unknown as RawData;
+    writeJsonAtomic(this.oramaIndexPath(), snapshot);
+  }
+
+  private indexPath(): string {
+    return join(this.runtimeDir, INDEX_FILE);
+  }
+
+  private indexStatePath(): string {
+    return join(this.runtimeDir, INDEX_STATE_FILE);
+  }
+
+  private oramaIndexPath(): string {
+    return join(this.runtimeDir, ORAMA_INDEX_FILE);
+  }
+
+  private vectorHandleDir(handleToken: string): string {
+    return join(this.runtimeDir, 'vec', 'handles', handleToken);
+  }
+
+  private vectorHandleAddonPath(handleToken: string): string {
+    return join(this.vectorHandleDir(handleToken), 'coral-needle.node');
+  }
+
+  private makeHandleToken(prefix: string): string {
+    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private async forceCloseRuntimeVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
     if (handle.closed) {
       return;
     }
@@ -475,124 +897,60 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       handle.closeTimer = null;
     }
 
-    if (activeVectorHandle?.generation === handle.generation) {
-      activeVectorHandle = null;
-      kbRuntime.vectorStore = null;
+    if (this.activeVectorHandle?.generation === handle.generation) {
+      this.activeVectorHandle = null;
+      this.vectorStore = null;
     }
 
-    retiredVectorHandles.delete(handle);
+    this.retiredVectorHandles.delete(handle);
     await handle.close();
   }
 
-  async function maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
+  private async maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
     if (!handle.retired || handle.leaseCount !== 0) {
       return;
     }
 
-    await forceCloseRuntimeVectorHandle(handle);
+    await this.forceCloseRuntimeVectorHandle(handle);
   }
 
-  function scheduleRetiredHandleClose(handle: RuntimeVectorHandle): void {
+  private scheduleRetiredHandleClose(handle: RuntimeVectorHandle): void {
     if (handle.closeTimer !== null || handle.closed) {
       return;
     }
 
     handle.closeTimer = setTimeout(() => {
       if (handle.closed || handle.leaseCount === 0) {
-        void maybeCloseRetiredVectorHandle(handle);
+        void this.maybeCloseRetiredVectorHandle(handle);
         return;
       }
 
       process.stderr.write(
-        `Warning: forcing close of retired KB vector handle after ${vectorDrainTimeoutMs}ms drain timeout.\n`,
+        `Warning: forcing close of retired KB vector handle after ${this.vectorDrainTimeoutMs}ms drain timeout.\n`,
       );
-      void forceCloseRuntimeVectorHandle(handle);
-    }, vectorDrainTimeoutMs);
+      void this.forceCloseRuntimeVectorHandle(handle);
+    }, this.vectorDrainTimeoutMs);
     handle.closeTimer.unref?.();
   }
 
-  function retireVectorHandle(handle: RuntimeVectorHandle): void {
+  private retireVectorHandle(handle: RuntimeVectorHandle): void {
     handle.retired = true;
-    retiredVectorHandles.add(handle);
-    scheduleRetiredHandleClose(handle);
-    void maybeCloseRetiredVectorHandle(handle);
+    this.retiredVectorHandles.add(handle);
+    this.scheduleRetiredHandleClose(handle);
+    void this.maybeCloseRetiredVectorHandle(handle);
   }
 
-  function publishVectorHandle(handle: RuntimeVectorHandle): void {
-    const previous = activeVectorHandle;
-    activeVectorHandle = handle;
-    kbRuntime.vectorStore = handle.store;
+  private publishVectorHandle(handle: RuntimeVectorHandle): void {
+    const previous = this.activeVectorHandle;
+    this.activeVectorHandle = handle;
+    this.vectorStore = handle.store;
     if (previous !== null && previous.generation !== handle.generation) {
-      retireVectorHandle(previous);
+      this.retireVectorHandle(previous);
     }
   }
 
-  async function activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
-    const opened = await openVectorStore(
-      vectorSnapshotDbPath(runtimeDir, specId, snapshotId),
-      makeHandleToken(`active-${specId}-${snapshotId}`),
-    );
-    if (opened === null) {
-      throw new Error('KB vector store is unavailable.');
-    }
-
-    publishVectorHandle({
-      ...opened,
-      specId,
-      snapshotId,
-      generation: nextVectorGeneration,
-      leaseCount: 0,
-      retired: false,
-      closeTimer: null,
-      closed: false,
-    });
-    nextVectorGeneration += 1;
-  }
-
-  async function acquireVectorLease(): Promise<KbVectorLease | null> {
-    const handle = activeVectorHandle;
-    if (handle === null || handle.closed) {
-      return null;
-    }
-
-    handle.leaseCount += 1;
-    const vectorStatus = kbRuntime.getVectorStatus(handle.specId);
-    let released = false;
-
-    return {
-      store: handle.store,
-      specId: handle.specId,
-      snapshotId: handle.snapshotId,
-      generation: handle.generation,
-      vectorStatus,
-      async release() {
-        if (released) {
-          return;
-        }
-        released = true;
-        handle.leaseCount = Math.max(0, handle.leaseCount - 1);
-        await maybeCloseRetiredVectorHandle(handle);
-      },
-    };
-  }
-
-  async function closeVectorStores(): Promise<void> {
-    const handles = [
-      ...(activeVectorHandle === null ? [] : [activeVectorHandle]),
-      ...retiredVectorHandles,
-    ];
-
-    activeVectorHandle = null;
-    kbRuntime.vectorStore = null;
-    retiredVectorHandles.clear();
-
-    for (const handle of handles) {
-      await forceCloseRuntimeVectorHandle(handle).catch(() => {});
-    }
-  }
-
-  function captureVectorTextSnapshot(): KbVectorTextSnapshot {
-    const index = kbRuntime.readIndex() ?? emptyIndex();
+  private captureVectorTextSnapshot(): KbVectorTextSnapshot {
+    const index = this.readIndex() ?? emptyIndex();
     const notes: KbVectorTextSnapshot['notes'] = [];
     const sources: KbVectorTextSnapshot['sources'] = [];
 
@@ -600,7 +958,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       if (isNoteEntry(entry)) {
         notes.push({
           entry,
-          body: loadKbNote(kbRuntime.notePath(entry.slug)).body,
+          body: loadKbNote(this.notePath(entry.slug)).body,
         });
         continue;
       }
@@ -608,7 +966,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       if (isSourceEntry(entry)) {
         sources.push({
           entry,
-          body: loadKbSource(kbRuntime.sourcePath(entry.slug)).body,
+          body: loadKbSource(this.sourcePath(entry.slug)).body,
         });
       }
     }
@@ -617,42 +975,23 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
   }
 
   /** Install an already-validated index into the in-memory cache. */
-  function installIndexCache(validated: KbIndex): KbIndex {
-    indexCache = { index: validated, mtime: Date.now() };
+  private installIndexCache(validated: KbIndex): KbIndex {
+    this.indexCache = { index: validated, mtime: Date.now() };
     return validated;
   }
 
-  function installOramaCache(orama: KbCachedOramaIndex): void {
-    cachedOramaIndex = orama;
+  private installOramaCache(orama: KbCachedOramaIndex): void {
+    this.cachedOramaIndex = orama;
   }
 
-  async function loadOramaSnapshot(): Promise<KbCachedOramaIndex> {
+  private async loadOramaSnapshot(): Promise<KbCachedOramaIndex> {
     const { db, tokenizer } = await createOramaDb();
-    const raw = JSON.parse(readFileSync(oramaIndexPath(), 'utf-8')) as RawData;
+    const raw = JSON.parse(readFileSync(this.oramaIndexPath(), 'utf-8')) as RawData;
     load(db, raw);
     return { db, tokenizer };
   }
 
-  function readIndexStateIfPresent(): KbIndexState | null {
-    try {
-      const raw = readFileSync(indexStatePath(), 'utf-8');
-      return parseIndexState(JSON.parse(raw) as unknown);
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) {
-        return null;
-      }
-      // Corrupt index-state.json: delete and return null (same as missing).
-      // The next mutation or rebuild will recreate it from defaultIndexState().
-      rmSync(indexStatePath(), { force: true });
-      return null;
-    }
-  }
-
-  function readIndexState(): KbIndexState {
-    return readIndexStateIfPresent() ?? defaultIndexState();
-  }
-
-  function dirModifiedAfter(dir: string, threshold: number): boolean {
+  private dirModifiedAfter(dir: string, threshold: number): boolean {
     try {
       return statSync(dir).mtimeMs > threshold;
     } catch {
@@ -660,42 +999,40 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
   }
 
-  function pendingRepairPath(entry: PendingRepair): string | null {
+  private pendingRepairPath(entry: PendingRepair): string | null {
     if (entry.entryId.startsWith('note:')) {
-      return notePath(entry.entryId.slice('note:'.length));
+      return this.notePath(entry.entryId.slice('note:'.length));
     }
     if (entry.entryId.startsWith('source:')) {
-      return sourcePath(entry.entryId.slice('source:'.length));
+      return this.sourcePath(entry.entryId.slice('source:'.length));
     }
 
     return null;
   }
 
-  let pendingRepairCache: { mtime: number; result: boolean } | null = null;
-
-  function pendingRepairNeedsRetry(): boolean {
+  private pendingRepairNeedsRetry(): boolean {
     // Cache the curate-state read to avoid per-request disk I/O.
     // Invalidated when curate-state.json mtime changes (any repair/curate write).
-    const curateStatePath = join(runtimeDir, 'curate-state.json');
+    const curateStatePath = join(this.runtimeDir, 'curate-state.json');
     let curateStateMtime: number;
     try {
       curateStateMtime = statSync(curateStatePath).mtimeMs;
     } catch {
       return false;
     }
-    if (pendingRepairCache !== null && pendingRepairCache.mtime === curateStateMtime) {
-      return pendingRepairCache.result;
+    if (this.pendingRepairCache !== null && this.pendingRepairCache.mtime === curateStateMtime) {
+      return this.pendingRepairCache.result;
     }
 
-    const pendingRepair = readCurateState(kbRuntime).pendingRepair;
+    const pendingRepair = readCurateState(this).pendingRepair;
     if (pendingRepair === null) {
-      pendingRepairCache = { mtime: curateStateMtime, result: false };
+      this.pendingRepairCache = { mtime: curateStateMtime, result: false };
       return false;
     }
 
     const result = pendingRepair.some((entry) => {
       const detectedAt = Date.parse(entry.detectedAt);
-      const path = pendingRepairPath(entry);
+      const path = this.pendingRepairPath(entry);
       if (Number.isNaN(detectedAt) || path === null) {
         return false;
       }
@@ -706,103 +1043,36 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         return false;
       }
     });
-    pendingRepairCache = { mtime: curateStateMtime, result };
+    this.pendingRepairCache = { mtime: curateStateMtime, result };
     return result;
   }
 
-  function indexNeedsRebuild(): boolean {
-    const currentIndexPath = indexPath();
+  private indexNeedsRebuild(): boolean {
+    const currentIndexPath = this.indexPath();
     if (!existsSync(currentIndexPath)) {
       return true;
     }
 
     try {
-      const indexMtime = indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
-      return [notesDir(), principlesDir(), sourcesDir(), communitiesDir()].some((dir) =>
-        dirModifiedAfter(dir, indexMtime),
+      const indexMtime = this.indexCache?.mtime || statSync(currentIndexPath).mtimeMs;
+      return [this.notesDir(), this.principlesDir(), this.sourcesDir(), this.communitiesDir()].some((dir) =>
+        this.dirModifiedAfter(dir, indexMtime),
       );
     } catch {
       return false;
     }
   }
 
-  function textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
-    const currentState = state === undefined ? readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || indexNeedsRebuild() || pendingRepairNeedsRetry();
-  }
-
-  async function ensureIndex(): Promise<KbIndex> {
-    if (textArtifactsNeedRebuild()) {
-      await kbRuntime.withMutationLock(async () => {
-        if (!upgradeGuardDone) {
-          runEntrySeqUpgradeGuard(kbRuntime);
-          upgradeGuardDone = true;
-        }
-        const state = readIndexStateIfPresent();
-        const startSeq = state?.mutationSeq ?? 0;
-        if (!textArtifactsNeedRebuild(state)) {
-          return;
-        }
-
-        await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-      });
-    }
-
-    return kbRuntime.readIndex() ?? emptyIndex();
-  }
-
-  async function ensureOramaIndex(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-  }> {
-    const indexAfterEnsure = await ensureIndex();
-    // Fast path: index is fresh and Orama cache is valid — skip re-read.
-    // ensureIndex() guarantees text artifacts are up-to-date when it returns.
-    if (cachedOramaIndex !== null && indexCache !== null) {
-      return {
-        ...cachedOramaIndex,
-        index: indexAfterEnsure,
-      };
-    }
-
-    return kbRuntime.withMutationLock(async () => {
-      const state = readIndexStateIfPresent();
-      const startSeq = state?.mutationSeq ?? 0;
-
-      if (textArtifactsNeedRebuild(state)) {
-        try {
-          await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-        } catch (error: unknown) {
-          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-        }
-      } else if (cachedOramaIndex === null) {
-        try {
-          installOramaCache(await loadOramaSnapshot());
-        } catch {
-          try {
-            await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-          } catch (error: unknown) {
-            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-          }
-        }
-      }
-
-      const stateAfterArtifacts = readIndexStateIfPresent();
-      if (cachedOramaIndex === null || textArtifactsNeedRebuild(stateAfterArtifacts)) {
-        throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-      }
-
-      return {
-        ...cachedOramaIndex,
-        index: kbRuntime.readIndex() ?? emptyIndex(),
-      };
-    });
+  private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
+    const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
+    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild() || this.pendingRepairNeedsRetry();
   }
 
   /** Build a vector text snapshot directly from rebuild output, avoiding N re-reads from disk. */
-  function snapshotFromRebuildResult(result: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>): KbVectorTextSnapshot {
-    const index = kbRuntime.readIndex() ?? emptyIndex();
+  private snapshotFromRebuildResult(
+    result: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>,
+  ): KbVectorTextSnapshot {
+    const index = this.readIndex() ?? emptyIndex();
     const notes: KbVectorTextSnapshot['notes'] = [];
     const sources: KbVectorTextSnapshot['sources'] = [];
 
@@ -821,276 +1091,8 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
     return { index, notes, sources };
   }
+}
 
-  async function ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
-    if (textArtifactsNeedRebuild()) {
-      const result = await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-      return snapshotFromRebuildResult(result);
-    }
-
-    if (cachedOramaIndex === null) {
-      try {
-        installOramaCache(await loadOramaSnapshot());
-      } catch {
-        const result = await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
-        return snapshotFromRebuildResult(result);
-      }
-    }
-
-    const stateAfterArtifacts = readIndexStateIfPresent();
-    if (cachedOramaIndex === null || textArtifactsNeedRebuild(stateAfterArtifacts)) {
-      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-    }
-
-    return captureVectorTextSnapshot();
-  }
-
-  async function initVectorStore(pluginRoot: string): Promise<void> {
-    vectorPluginRoot = pluginRoot;
-    rmSync(join(runtimeDir, 'vec-staging'), { recursive: true, force: true });
-    await closeVectorStores();
-    kbRuntime.vectorStore = null;
-    mkdirSync(runtimeDir, { recursive: true });
-    if (!upgradeGuardDone) {
-      runEntrySeqUpgradeGuard(kbRuntime);
-      upgradeGuardDone = true;
-    }
-
-    if (textArtifactsNeedRebuild()) {
-      return;
-    }
-
-    try {
-      installOramaCache(await loadOramaSnapshot());
-    } catch {
-      cachedOramaIndex = null;
-    }
-
-    let desiredSpecId: string | null = null;
-    try {
-      desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
-    } catch {
-      desiredSpecId = null;
-    }
-
-    if (desiredSpecId === null) {
-      return;
-    }
-
-    const snapshotId = readActiveSnapshotId(runtimeDir, desiredSpecId);
-    if (snapshotId === null) {
-      return;
-    }
-
-    try {
-      await activateVectorSnapshot(desiredSpecId, snapshotId);
-    } catch {
-      await closeVectorStores();
-    }
-  }
-
-  const kbRuntime: KbRuntime = {
-    markdownRoot,
-    runtimeDir,
-    vectorStore: null,
-    initVectorStore,
-    openVectorStore,
-    activateVectorSnapshot,
-    acquireVectorLease,
-    closeVectorStores,
-    getActiveVectorHandleInfo() {
-      if (activeVectorHandle === null || activeVectorHandle.closed) {
-        return null;
-      }
-
-      return {
-        specId: activeVectorHandle.specId,
-        snapshotId: activeVectorHandle.snapshotId,
-        generation: activeVectorHandle.generation,
-      };
-    },
-    readIndex() {
-      if (indexCache !== null) {
-        return indexCache.index;
-      }
-
-      try {
-        const raw = readFileSync(indexPath(), 'utf-8');
-        let parsed: KbIndex;
-        try {
-          parsed = parseIndex(JSON.parse(raw) as unknown);
-        } catch {
-          indexCache = { index: null, mtime: 0 };
-          cachedOramaIndex = null;
-          rmSync(indexPath(), { force: true });
-          return null;
-        }
-        indexCache = { index: parsed, mtime: statSync(indexPath()).mtimeMs };
-        return parsed;
-      } catch (error: unknown) {
-        if (isNoEntryError(error)) {
-          indexCache = { index: null, mtime: 0 };
-          return null;
-        }
-        throw error;
-      }
-    },
-    persistIndexToDisk(index) {
-      const normalized = parseIndex(index);
-      writeJsonAtomic(indexPath(), normalized);
-      return normalized;
-    },
-    writeIndex(index) {
-      return installIndexCache(kbRuntime.persistIndexToDisk(index));
-    },
-    readIndexOrEmpty() {
-      return kbRuntime.readIndex() ?? emptyIndex();
-    },
-    readIndexStateIfPresent,
-    readIndexState,
-    writeIndexState(state) {
-      writeJsonAtomic(indexStatePath(), state);
-    },
-    async withMutationLock<T>(fn: () => Promise<T> | T): Promise<T> {
-      const previous = mutationLock;
-      let release!: () => void;
-      mutationLock = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-
-      await previous;
-
-      try {
-        return await fn();
-      } finally {
-        release();
-      }
-    },
-    recordMutationCommitted() {
-      const state = readIndexState();
-      const nextState = { ...state, mutationSeq: state.mutationSeq + 1 };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    recordIndexSyncSuccess() {
-      const state = readIndexState();
-      const nextState: KbIndexState = {
-        mutationSeq: state.mutationSeq,
-        textIndexedSeq: state.mutationSeq,
-        vector: state.vector,
-      };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    recordIndexSyncFailure(reason) {
-      const state = readIndexState();
-      const nextState: KbIndexState = {
-        mutationSeq: state.mutationSeq,
-        textIndexedSeq: state.textIndexedSeq,
-        textStaleReason: reason,
-        vector: state.vector,
-      };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    recordReindexSuccess(startSeq) {
-      const state = readIndexState();
-      if (state.mutationSeq !== startSeq) {
-        return state;
-      }
-
-      const nextState: KbIndexState = {
-        mutationSeq: state.mutationSeq,
-        textIndexedSeq: startSeq,
-        vector: state.vector,
-      };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    recordVectorSyncSuccess(specId, startSeq, snapshotId) {
-      const state = readIndexState();
-      if (state.mutationSeq !== startSeq) {
-        return state;
-      }
-
-      const nextState: KbIndexState = {
-        ...state,
-        vector: {
-          bySpec: {
-            ...state.vector.bySpec,
-            [specId]: {
-              indexedSeq: startSeq,
-              activeSnapshotId: snapshotId,
-            },
-          },
-        },
-      };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    recordVectorSyncFailure(specId, reason, activeSnapshotId) {
-      const state = readIndexState();
-      const current = state.vector.bySpec[specId];
-      const nextState: KbIndexState = {
-        ...state,
-        vector: {
-          bySpec: {
-            ...state.vector.bySpec,
-            [specId]: {
-              indexedSeq: current?.indexedSeq ?? 0,
-              staleReason: reason,
-              ...(activeSnapshotId === undefined
-                ? current?.activeSnapshotId === undefined
-                  ? {}
-                  : { activeSnapshotId: current.activeSnapshotId }
-                : { activeSnapshotId }),
-            },
-          },
-        },
-      };
-      kbRuntime.writeIndexState(nextState);
-      return nextState;
-    },
-    getVectorStatus(specId) {
-      return readIndexState().vector.bySpec[specId] ?? null;
-    },
-    ensureIndex,
-    ensureOramaIndex,
-    ensureTextArtifactsFreshUnderLock,
-    invalidateKbCache() {
-      indexCache = null;
-      cachedOramaIndex = null;
-    },
-    invalidateTextSnapshot(reason) {
-      const nextState = kbRuntime.recordIndexSyncFailure(reason);
-      cachedOramaIndex = null;
-      rmSync(oramaIndexPath(), { force: true });
-      return nextState;
-    },
-    installRebuiltArtifacts(index, orama) {
-      const normalized = installIndexCache(index);
-      installOramaCache(orama);
-      return normalized;
-    },
-    persistOramaSnapshot(db) {
-      const snapshot = save(db) as unknown as RawData;
-      writeJsonAtomic(oramaIndexPath(), snapshot);
-    },
-    notesDir,
-    sourcesDir,
-    communitiesDir,
-    principlesDir,
-    notePath,
-    sourcePath,
-    communityPath,
-    principlePath,
-    sourceImportStageDir,
-    curateStatePath,
-  };
-
-  mkdirSync(runtimeDir, { recursive: true });
-  runEntrySeqUpgradeGuard(kbRuntime);
-  upgradeGuardDone = true;
-
-  return kbRuntime;
+export function createKbRuntime(opts: { markdownRoot: string; runtimeDir: string }): KbRuntime {
+  return new KbRuntimeImpl(opts);
 }
