@@ -543,6 +543,41 @@ describe('provider servers', () => {
     await expect(handle.closePromise).resolves.toBeUndefined();
   });
 
+  it('sends initializeRequest before returning the handle when configured', async () => {
+    const script = [
+      "const { createInterface } = require('node:readline');",
+      'let initialized = false;',
+      'const rl = createInterface({ input: process.stdin });',
+      "rl.on('line', (line) => {",
+      '  const msg = JSON.parse(line);',
+      "  if (typeof msg.id === 'number' && msg.method === 'initialize') {",
+      '    initialized = true;',
+      "    process.stdout.write(JSON.stringify({ id: msg.id, result: { ready: true } }) + '\\n');",
+      '    return;',
+      '  }',
+      "  if (typeof msg.id === 'number' && msg.method === 'ping') {",
+      "    process.stdout.write(JSON.stringify({ id: msg.id, result: { initialized } }) + '\\n');",
+      '    return;',
+      '  }',
+      '});',
+      "process.on('SIGTERM', () => process.exit(0));",
+    ].join('');
+
+    const handle = await coordinator.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', script],
+      initializeRequest: {
+        method: 'initialize',
+        params: { clientInfo: { name: 'test', version: '0.0.1' } },
+      },
+    });
+
+    // By the time we get the handle, initialize has already been sent
+    await expect(handle.rpc.request('ping', {})).resolves.toEqual({ initialized: true });
+    await handle.close();
+  });
+
   it('killAllChildren leaves provider servers to the host manager', async () => {
     const handle = await coordinator.spawnProviderServer({
       provider: 'codex',

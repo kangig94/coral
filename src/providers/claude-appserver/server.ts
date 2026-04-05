@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';

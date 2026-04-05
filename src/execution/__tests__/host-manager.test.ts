@@ -285,6 +285,35 @@ describe('ProviderHostManager', () => {
     expect(markOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(rpcOrder ?? Number.POSITIVE_INFINITY);
   });
 
+  it('passes initializeRequest from spec to spawnProviderServer options', async () => {
+    const server = createFakeProviderServerHandle({ generation: 50 });
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+
+    const spec: ProviderServerSpec = {
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      cwd: '/workspace',
+      initializeRequest: {
+        method: 'initialize',
+        params: { clientInfo: { name: 'coral', version: '0.5.0' } },
+      },
+    };
+
+    const lease = await manager.acquireServer(spec);
+    expect(spawnProviderServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initializeRequest: {
+          method: 'initialize',
+          params: { clientInfo: { name: 'coral', version: '0.5.0' } },
+        },
+      }),
+    );
+    lease.release();
+    await manager.shutdown();
+  });
+
   it('falls back to signal shutdown when no graceful shutdown capability is declared', async () => {
     const server = createFakeProviderServerHandle({ generation: 9 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
