@@ -133,8 +133,8 @@ See [Hooks documentation](./hooks.md) for details.
 | `@modelcontextprotocol/sdk` | ^1.26.0 | MCP server framework |
 | `zod` | ^3.23.8 | Schema validation (MCP SDK dependency + input validation) |
 | `@orama/orama` | ^3.1.18 | Full-text BM25 search engine |
-| `graphology` | ^0.26.0 | Graph data structure library (tag-graph for community detection) |
-| `graphology-communities-louvain` | ^2.0.2 | Louvain community clustering algorithm |
+| `graphology` | ^0.26.0 | Graph data structure library (entity-relationship graph for community detection) |
+| `graphology-communities-louvain` | ^2.0.2 | Louvain community clustering with `detailed()` dendrogram for hierarchical communities |
 | `node-addon-api` | ^8.7.0 | N-API C++ addon headers (build-time) |
 
 ### Dev Dependencies
