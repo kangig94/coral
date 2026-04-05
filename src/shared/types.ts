@@ -49,6 +49,23 @@ export interface ProviderProgressEvent {
 /** Opaque provider-owned continuity data persisted by the execution layer. */
 export type ProviderContinuityBlob = Record<string, unknown>;
 
+export interface SessionEntry {
+  sessionId: string;
+  provider: string;
+  name: string;
+  state: SessionState;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: ProviderContinuityBlob;
+  model: string;
+  cwd: string;
+  projectRoot?: string;
+  createdAt: string;
+  lastUsedAt: string;
+  version: number;
+}
+
 /** Provider action type — the three launch operations a provider handles. */
 export type ProviderAction = 'exec' | 'resume' | 'fork';
 

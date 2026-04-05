@@ -19,12 +19,15 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
+  getCurateRepairFrontier,
   isClaimStale,
   migrateCurateStateIfNeeded,
+  normalizeCurateStateRepairFrontier,
   readCurateState,
   sameStringList,
   writeCurateState,
   type CurateCursor,
+  type CurateRepairFrontier,
   type CurateState,
   type PendingDiscovery,
 } from './curate-state.js';
@@ -58,8 +61,9 @@ import {
   markTextIndexStale,
   writeFileAtomic,
 } from './mutation-helpers.js';
-import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
-import { rebuildTextArtifacts } from './text-artifacts.js';
+import type { KbRuntime } from './contracts.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
   getEntry,
   isNoteEntry,
@@ -364,6 +368,28 @@ function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): 
   return compareCursor(left, right);
 }
 
+function isCursorBeforeRepairFrontier(cursor: CurateCursor, frontier: CurateRepairFrontier): boolean {
+  if (frontier.kind === 'none') {
+    return true;
+  }
+  if (frontier.kind === 'unknown') {
+    return false;
+  }
+
+  return compareCursor(cursor, frontier.cursor) < 0;
+}
+
+function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateCursor }>(
+  candidates: T[],
+  frontier: CurateRepairFrontier,
+): T[] {
+  if (frontier.kind === 'none') {
+    return candidates;
+  }
+
+  return candidates.filter((candidate) => isCursorBeforeRepairFrontier(candidate.cursor, frontier));
+}
+
 function noteCursor(note: string, entrySeq: number): CurateCursor {
   return {
     entryId: noteEntryId(note),
@@ -666,6 +692,70 @@ export type DiscoveryBatch = {
   nextHighSeq: number;
   nextOffset: number;
 };
+
+type PreparedDiscoveryBatch = {
+  batch: DiscoveryBatch;
+  processedThrough: CurateCursor;
+  state: CurateState;
+};
+
+function sameDiscoverySelection(left: NoteClaimCandidate[], right: NoteClaimCandidate[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((candidate, index) => {
+    const other = right[index];
+    return other !== undefined && compareCursor(candidate.cursor, other.cursor) === 0;
+  });
+}
+
+function effectiveDiscoveryThrough(requestedProcessedThrough: CurateCursor, state: CurateState): CurateCursor | null {
+  if (state.processedThrough === null) {
+    return null;
+  }
+
+  return compareCursor(requestedProcessedThrough, state.processedThrough) <= 0
+    ? requestedProcessedThrough
+    : state.processedThrough;
+}
+
+function shouldRunDiscoveryBatch(newNotes: NoteClaimCandidate[], state: CurateState, processedThrough: CurateCursor): boolean {
+  if (newNotes.length >= DISCOVERY_NEW_NOTE_THRESHOLD) {
+    return true;
+  }
+
+  // A rewound discovery frontier must replay already-curated notes even below the normal threshold.
+  return state.discoveryHighSeq > 0 && newNotes.length > 0 && state.discoveryHighSeq < processedThrough.entrySeq;
+}
+
+function prepareDiscoveryBatch(
+  index: KbIndex,
+  state: CurateState,
+  requestedProcessedThrough: CurateCursor,
+): PreparedDiscoveryBatch | null {
+  const normalizedState = normalizeCurateStateRepairFrontier(state);
+  const processedThrough = effectiveDiscoveryThrough(requestedProcessedThrough, normalizedState);
+  if (processedThrough === null) {
+    return null;
+  }
+
+  const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
+  const allClassified = filterCandidatesBeforeRepairFrontier(
+    collectDiscoveryCandidates(index).filter((candidate) => compareCursor(candidate.cursor, processedThrough) <= 0),
+    repairFrontier,
+  );
+  const newNotes = allClassified.filter((candidate) => candidate.cursor.entrySeq > normalizedState.discoveryHighSeq);
+  if (!shouldRunDiscoveryBatch(newNotes, normalizedState, processedThrough)) {
+    return null;
+  }
+
+  return {
+    batch: selectDiscoveryBatch(allClassified, normalizedState.discoveryHighSeq, normalizedState.discoveryOffset),
+    processedThrough,
+    state: normalizedState,
+  };
+}
 
 function selectDiscoveryBatch(allClassified: NoteClaimCandidate[], highSeq: number, offset: number): DiscoveryBatch {
   const newNotes = allClassified.filter((c) => c.cursor.entrySeq > highSeq);
@@ -1612,8 +1702,9 @@ export function createCurateScheduler({
       return state;
     }
 
-    writeCurateState(kb, next);
-    return next;
+    const normalizedNext = normalizeCurateStateRepairFrontier(next);
+    writeCurateState(kb, normalizedNext);
+    return normalizedNext;
   }
 
   function recordCurateFailureLocked(state: CurateState, through: CurateCursor | null, error: unknown): CurateState {
@@ -1714,12 +1805,13 @@ export function createCurateScheduler({
 
       if (mutated) {
         const rebuildSeq = kb.readIndexState().mutationSeq;
-        await rebuildTextArtifacts(kb, rebuildSeq);
+        await rebuildTextArtifactsAndPersistRepairState(kb, rebuildSeq);
         wroteCommunityFiles = true;
       }
 
+      const finalState = mutated ? readCurateState(kb) : state;
       writeCurateState(kb, {
-        ...state,
+        ...finalState,
         communityGraphHash: graphHash,
         communityMembershipFingerprints:
           communityDocuments.length === 0
@@ -1746,12 +1838,16 @@ export function createCurateScheduler({
 
   async function hasPendingEntriesBeyondCursor(cursor: CurateCursor): Promise<boolean> {
     return kb.withMutationLock(() => {
+      const state = readCurateState(kb);
       const index = kb.readIndex();
       if (index === null) {
         return false;
       }
 
-      return collectClaimCandidates(index).some((candidate) => compareCursor(candidate.cursor, cursor) > 0);
+      const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+      return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
+        (candidate) => compareCursor(candidate.cursor, cursor) > 0,
+      );
     });
   }
 
@@ -1803,8 +1899,10 @@ export function createCurateScheduler({
         return null;
       }
 
-      const pendingEntries = collectClaimCandidates(index).filter(
-        (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
+      const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+      const pendingEntries = filterCandidatesBeforeRepairFrontier(
+        collectClaimCandidates(index).filter((candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0),
+        repairFrontier,
       );
       if (pendingEntries.length === 0) {
         return null;
@@ -1834,17 +1932,20 @@ export function createCurateScheduler({
       };
       const freshPendingSuffix = pendingExtendsBeyondCursor(pendingEntries, state.lastAttemptedThrough);
 
-      writeCurateState(kb, {
-        ...state,
-        retryNotBefore: null,
-        activeClaim: {
-          through,
-          startedAt: now,
-        },
-        lastAttemptedThrough: through,
-        consecutiveFailures: freshPendingSuffix ? 0 : state.consecutiveFailures,
-        ...(firstPassClaim ? { lastRunDay: today } : {}),
-      });
+      writeCurateState(
+        kb,
+        normalizeCurateStateRepairFrontier({
+          ...state,
+          retryNotBefore: null,
+          activeClaim: {
+            through,
+            startedAt: now,
+          },
+          lastAttemptedThrough: through,
+          consecutiveFailures: freshPendingSuffix ? 0 : state.consecutiveFailures,
+          ...(firstPassClaim ? { lastRunDay: today } : {}),
+        }),
+      );
 
       return claim;
     });
@@ -1879,18 +1980,25 @@ export function createCurateScheduler({
   }
 
   async function commitMetadataTargetsLocked(targets: MetadataTarget[], state: CurateState): Promise<CurateState> {
+    const normalizedState = normalizeCurateStateRepairFrontier(state);
+    const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
     const sortedTargets = [...targets].sort(compareMetadataTarget);
     const currentIndex = kb.readIndexOrEmpty();
     const nextIndex = cloneKbIndex(currentIndex);
     const hasCleanup = sortedTargets.some((target) => target.kind === 'note' && target.cleanup === true);
     const cleanupTagSupport = hasCleanup ? countTagSupport(currentIndex) : new Map<string, number>();
-    let processedThrough = state.processedThrough;
+    let processedThrough = normalizedState.processedThrough;
     let cursorCanAdvance = true;
     let wroteMarkdown = false;
     let failure: unknown = null;
 
     for (const target of sortedTargets) {
       const cursor = cursorFromTarget(target);
+      if (!isCursorBeforeRepairFrontier(cursor, repairFrontier)) {
+        cursorCanAdvance = false;
+        continue;
+      }
+
       if (target.kind === 'note') {
         const notePath = kb.notePath(target.slug);
         let raw: string;
@@ -2013,11 +2121,11 @@ export function createCurateScheduler({
       processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
     }
 
-    const nextState = {
-      ...state,
+    const nextState = normalizeCurateStateRepairFrontier({
+      ...normalizedState,
       processedThrough,
       activeClaim: null,
-    };
+    });
 
     if (wroteMarkdown) {
       try {
@@ -2198,18 +2306,12 @@ export function createCurateScheduler({
     await drainPendingDiscoveries(processedThrough);
 
     const currentIndex = kb.readIndexOrEmpty();
-    let state = readCurateState(kb);
-
-    const allClassified = collectDiscoveryCandidates(currentIndex).filter(
-      (c) => compareCursor(c.cursor, processedThrough) <= 0,
-    );
-    const newNotes = allClassified.filter((c) => c.cursor.entrySeq > state.discoveryHighSeq);
-
-    if (newNotes.length < DISCOVERY_NEW_NOTE_THRESHOLD) {
+    const preparedBatch = prepareDiscoveryBatch(currentIndex, readCurateState(kb), processedThrough);
+    if (preparedBatch === null) {
       return;
     }
 
-    const batch = selectDiscoveryBatch(allClassified, state.discoveryHighSeq, state.discoveryOffset);
+    const batch = preparedBatch.batch;
     const eligibleNotes = loadEligibleDiscoveryNotes(batch.selected);
 
     const { prompt, corpusPath } = buildDiscoveryPrompt(eligibleNotes, currentIndex.principles);
@@ -2230,7 +2332,22 @@ export function createCurateScheduler({
     );
 
     await kb.withMutationLock(async () => {
-      let index = kb.readIndexOrEmpty();
+      const refreshedState = readCurateState(kb);
+      const refreshedIndex = kb.readIndexOrEmpty();
+      const refreshedBatch = prepareDiscoveryBatch(refreshedIndex, refreshedState, processedThrough);
+      if (
+        refreshedBatch === null ||
+        compareCursor(refreshedBatch.processedThrough, preparedBatch.processedThrough) !== 0 ||
+        !sameDiscoverySelection(refreshedBatch.batch.selected, batch.selected)
+      ) {
+        schedule();
+        return;
+      }
+
+      let state = refreshedBatch.state;
+      let index = refreshedIndex;
+      const repairFrontier = getCurateRepairFrontier(state.pendingRepair);
+      const effectiveProcessedThrough = refreshedBatch.processedThrough;
 
       for (const proposal of proposals) {
         const entry: PendingDiscovery = {
@@ -2287,13 +2404,21 @@ export function createCurateScheduler({
           markTextIndexStale(kb.invalidateTextSnapshot, CURATE_STALE_REASON);
         }
 
-        const targets = buildPrincipleAssignmentTargets(entry.principle, entry.notes, index, processedThrough);
+        const targets = filterCandidatesBeforeRepairFrontier(
+          buildPrincipleAssignmentTargets(entry.principle, entry.notes, index, effectiveProcessedThrough).map(
+            (target) => ({
+              cursor: cursorFromTarget(target),
+              target,
+            }),
+          ),
+          repairFrontier,
+        ).map(({ target }) => target);
         if (targets.length > 0) {
           state = await commitMetadataTargetsLocked(targets, state);
           index = kb.readIndexOrEmpty();
         }
 
-        if (pendingDiscoverySatisfied(entry, processedThrough)) {
+        if (pendingDiscoverySatisfied(entry, effectiveProcessedThrough)) {
           state = removePendingDiscoveryLocked(state, entry);
         }
       }
@@ -2326,6 +2451,11 @@ export function createCurateScheduler({
               continue;
             }
 
+            const cursor = noteCursor(note, noteMeta.entrySeq);
+            if (compareCursor(cursor, effectiveProcessedThrough) > 0 || !isCursorBeforeRepairFrontier(cursor, repairFrontier)) {
+              continue;
+            }
+
             targets.push({
               kind: 'note',
               entryId: noteEntryId(assertNoteSlug(note, 'note')),
@@ -2344,7 +2474,7 @@ export function createCurateScheduler({
         }
       }
 
-      state = recordDiscoveryAttemptLocked(state, batch.nextHighSeq, batch.nextOffset);
+      state = recordDiscoveryAttemptLocked(state, refreshedBatch.batch.nextHighSeq, refreshedBatch.batch.nextOffset);
     });
   }
 

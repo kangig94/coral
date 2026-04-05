@@ -20,12 +20,11 @@ export {
   readDiscussDiscovery,
 } from './readers.js';
 export type {
-  ProvenanceState,
-  LenientSessionEntry,
   DiscussEventLogEntry,
   DiscussDiscoverySession,
   DiscussDiscoveryData,
 } from './readers.js';
+export type { ProvenanceState, LenientSessionEntry } from '../shared/session-entry.js';
 
 // ./discuss.js
 export { buildDiscussDetail, buildDiscussSummary } from './discuss.js';
@@ -55,6 +54,7 @@ export type { CallerContext, BackendHealth } from './http-client.js';
 export type {
   PersistedStatusRecord,
   PersistedProgressRecord,
+  SessionEntry,
   WaitStreamEvent,
   WaitCursor,
   TerminalResult,
@@ -66,9 +66,6 @@ export type {
   WorkflowStepMeta,
   UsageSummary,
 } from '../shared/types.js';
-
-// ../execution/session-manager.js
-export type { SessionEntry } from '../execution/session-manager.js';
 
 // ../discuss/types.js
 export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/types.js';

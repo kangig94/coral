@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KbRuntime } from '../contracts.js';
 import {
   buildTagCooccurrenceGraph,
   carryOverSlugs,
@@ -12,7 +13,7 @@ import {
   renderCommunityDocument,
   type ExistingGeneratedCommunity,
 } from '../community-detection.js';
-import { createKbRuntime, type KbRuntime } from '../runtime.js';
+import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry, type SourceEntry } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-04-02';

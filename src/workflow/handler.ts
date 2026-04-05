@@ -1,5 +1,5 @@
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { getNewProvider } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../execution/request-context.js';
@@ -82,18 +82,16 @@ function unknownProviderDecision(providers: string[]): LaunchDecision {
   };
 }
 
-function findUnknownProviders(ast: PipelineAST, defaultProviderName: string): string[] {
-  registerBuiltInProviders();
-
+function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderRegistry): string[] {
   const unknownProviders = new Set<string>();
-  if (!getNewProvider(defaultProviderName)) {
+  if (!providerRegistry.get(defaultProviderName)) {
     unknownProviders.add(defaultProviderName);
   }
 
   for (const step of ast) {
     for (const atom of step) {
       const providerName = atom.provider ?? defaultProviderName;
-      if (!getNewProvider(providerName)) {
+      if (!providerRegistry.get(providerName)) {
         unknownProviders.add(providerName);
       }
     }
@@ -106,6 +104,7 @@ export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
   executionSvc: WorkflowService,
   ctx: CallerContext,
+  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
   const normalizedAst = normalizeAst(parseExpression(input.expression), input.provider);
@@ -114,7 +113,7 @@ export async function handleWorkflow(
   validateNamespaces(normalizedAst);
   validateParallelDuplicates(normalizedAst);
 
-  const unknownProviders = findUnknownProviders(normalizedAst, input.provider);
+  const unknownProviders = findUnknownProviders(normalizedAst, input.provider, providerRegistry);
   if (unknownProviders.length > 0) {
     return unknownProviderDecision(unknownProviders);
   }

@@ -6,7 +6,7 @@ import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 
 export async function promote(
   rt: KbRuntime,

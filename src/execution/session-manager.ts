@@ -1,29 +1,13 @@
-import { readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { ProviderContinuityBlob, SessionState } from '../shared/types.js';
+import { acquireDirectoryLock } from '../shared/fs-lock.js';
+import { isValidSessionEntry } from '../shared/session-entry.js';
+import type { ProviderContinuityBlob, SessionEntry } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
-import { isValidSessionEntry } from '../client/readers.js';
-import { eventBus } from './event-bus.js';
-
-export interface SessionEntry {
-  sessionId: string;
-  provider: string;
-  name: string;
-  state: SessionState;
-  activeJobId?: string;
-  lastJobId?: string;
-  conversationRef?: string;
-  providerContinuity?: ProviderContinuityBlob;
-  model: string;
-  cwd: string;
-  projectRoot?: string;
-  createdAt: string;
-  lastUsedAt: string;
-  version: number;
-}
+import { TypedEventBus } from './event-bus.js';
 
 export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
@@ -55,20 +39,23 @@ function isValidEntry(value: unknown): value is SessionEntry {
 export class SessionManager {
   private static readonly shardStamps = new Map<string, number>();
   private readonly sessionDir: string;
+  private readonly eventBus: TypedEventBus;
   private readonly cache = new Map<string, CachedSession>();
   private readonly knownSessionIds = new Set<string>();
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string) {
+  constructor(workingDirectory: string, eventBus: TypedEventBus = new TypedEventBus()) {
     this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory));
+    this.eventBus = eventBus;
     mkdirSync(this.sessionDir, { recursive: true });
     this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
   }
 
-  static openShard(shardDir: string): SessionManager {
+  static openShard(shardDir: string, eventBus: TypedEventBus = new TypedEventBus()): SessionManager {
     const manager = Object.create(SessionManager.prototype) as SessionManager;
     (manager as unknown as { sessionDir: string }).sessionDir = shardDir;
+    (manager as unknown as { eventBus: TypedEventBus }).eventBus = eventBus;
     (manager as unknown as { cache: Map<string, CachedSession> }).cache = new Map();
     (manager as unknown as { knownSessionIds: Set<string> }).knownSessionIds = new Set();
     (manager as unknown as { shardStamp: number }).shardStamp = SessionManager.ensureShardStamp(shardDir);
@@ -109,33 +96,7 @@ export class SessionManager {
   }
 
   private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
-    const lockDir = this.lockPath(sessionId);
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      try {
-        mkdirSync(lockDir);
-        return () => {
-          try {
-            rmdirSync(lockDir);
-          } catch { /* empty */ }
-        };
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        try {
-          const stats = statSync(lockDir);
-          if (Date.now() - stats.mtimeMs > 30000) {
-            try {
-              rmdirSync(lockDir);
-            } catch { /* empty */ }
-            continue;
-          }
-        } catch { /* empty */ }
-        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 50));
-      }
-    }
-
-    throw new Error(`Session lock timeout: ${sessionId}`);
+    return acquireDirectoryLock(this.lockPath(sessionId), timeoutMs);
   }
 
   private syncCacheWithShardStamp(): void {
@@ -199,7 +160,7 @@ export class SessionManager {
     this.shardStamp = SessionManager.bumpShardStamp(this.sessionDir);
     this.populateCache(entry.sessionId, entry);
     const shardHash = basename(this.sessionDir);
-    eventBus.emit('session:updated', {
+    this.eventBus.emit('session:updated', {
       sessionId: entry.sessionId,
       shardHash,
       version: entry.version,

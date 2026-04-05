@@ -17,13 +17,13 @@ import {
   type ProviderRequest,
   type ProviderResult,
   type TerminalResult,
+  type SessionEntry,
   type WaitRequest,
   type WaitStreamEvent,
   type WorkflowResultMeta,
 } from '../shared/types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
 import type { ProviderCliRunner } from '../providers/runner-port.js';
-import { getNewProvider } from '../providers/registry.js';
 import { errorMessage } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { EffortLevel } from '../shared/schemas.js';
@@ -45,16 +45,8 @@ import {
 import type { WorkflowInput } from '../workflow/schemas.js';
 import type { PipelineAST } from '../workflow/types.js';
 import {
-  bindLaunchPermit,
-  cancelQueued,
   CliBusyError,
-  getActiveJobIds,
-  queuePosition,
-  requestLaunch,
-  releaseLaunch,
-  restoreActiveLaunch,
-  restoreQueuedLaunch,
-  spawnDurableJob,
+  LaunchCoordinator,
   type AdmissionResult,
   type LaunchPool,
   type QueuedHandle,
@@ -63,12 +55,12 @@ import { AbortRegistry, type AbortResult } from './abort-registry.js';
 import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
-import type { SessionEntry } from './session-manager.js';
-import { eventBus } from './event-bus.js';
+import { TypedEventBus } from './event-bus.js';
 import {
   type ProviderHostManager,
   type ProviderServerAttachment,
 } from './host-manager.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 
 import type { CallerContext } from './request-context.js';
 export type { CallerContext } from './request-context.js';
@@ -193,13 +185,14 @@ function buildInterruptedAppServerReport(options: {
 }
 
 function bindProviderRunner(
+  launchCoordinator: LaunchCoordinator,
   provider: string,
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
 ): ProviderCliRunner {
   return (request) =>
-    spawnDurableJob({
+    launchCoordinator.spawnDurableJob({
       provider,
       signal,
       permitGranted: true,
@@ -213,6 +206,15 @@ function bindProviderRunner(
       onEvent: request.onEvent,
     });
 }
+
+export type ExecutionServiceDeps = {
+  progressStore?: ProgressStore;
+  bundleHash?: string;
+  providerHostManager: ProviderHostManager;
+  launchCoordinator: LaunchCoordinator;
+  eventBus: TypedEventBus;
+  providerRegistry: ProviderRegistry;
+};
 type ClaimJobOptions = {
   expectedVersion?: number;
   initialPhase?: Extract<JobPhase, 'queued' | 'launching'>;
@@ -348,23 +350,21 @@ export class ExecutionService implements RecoveryCapableService {
   private readonly projectRoot: string;
   private readonly jobPools = new Map<string, LaunchPool>();
   private readonly providerHostManager: ProviderHostManager;
+  private readonly launchCoordinator: LaunchCoordinator;
+  private readonly eventBus: TypedEventBus;
+  private readonly providerRegistry: ProviderRegistry;
 
-  constructor(
-    ctx: CallerContext,
-    progressStore?: ProgressStore,
-    bundleHash?: string,
-    providerHostManager?: ProviderHostManager,
-  ) {
-    if (!providerHostManager) {
-      throw new Error('ExecutionService requires an injected ProviderHostManager');
-    }
+  constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
     this.projectRoot = ctx.projectRoot;
-    this.sessionManager = new SessionManager(ctx.projectRoot);
+    this.eventBus = deps.eventBus;
+    this.sessionManager = new SessionManager(ctx.projectRoot, this.eventBus);
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
-    this.bundleHash = bundleHash ?? 'unknown';
-    this.progressStore = progressStore ?? new ProgressStore();
-    this.providerHostManager = providerHostManager;
+    this.bundleHash = deps.bundleHash ?? 'unknown';
+    this.progressStore = deps.progressStore ?? new ProgressStore(this.eventBus);
+    this.providerHostManager = deps.providerHostManager;
+    this.launchCoordinator = deps.launchCoordinator;
+    this.providerRegistry = deps.providerRegistry;
   }
 
   async acquireServer(
@@ -420,7 +420,7 @@ export class ExecutionService implements RecoveryCapableService {
     launchRecord: PersistedLaunchRecord,
     runtimeRecord: AppServerRuntimeRecord,
   ): Promise<void> {
-    const provider = getNewProvider(launchRecord.provider);
+    const provider = this.providerRegistry.get(launchRecord.provider);
     if (!provider?.appServer) {
       return;
     }
@@ -461,7 +461,7 @@ export class ExecutionService implements RecoveryCapableService {
 
     const baseNotice =
       options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
-    const provider = getNewProvider(launchRecord.provider);
+    const provider = this.providerRegistry.get(launchRecord.provider);
     const session =
       this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
       ({
@@ -600,7 +600,10 @@ export class ExecutionService implements RecoveryCapableService {
     );
     this.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
     this.abortRegistry.remove(launchRecord.jobId);
-    releaseLaunch(launchRecord.jobId, (this.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool);
+    this.launchCoordinator.releaseLaunch(
+      launchRecord.jobId,
+      (this.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool,
+    );
     this.jobPools.delete(launchRecord.jobId);
     await this.finalizeSessionContinuityMutation(
       launchRecord.provider,
@@ -665,7 +668,7 @@ export class ExecutionService implements RecoveryCapableService {
       return session.providerContinuity;
     }
 
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     return provider?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
   }
 
@@ -701,7 +704,7 @@ export class ExecutionService implements RecoveryCapableService {
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
     const jobId = randomUUID();
     this.jobPools.set(jobId, pool);
-    const admission = requestLaunch(jobId, providerName, pool);
+    const admission = this.launchCoordinator.requestLaunch(jobId, providerName, pool);
     if (admission === 'queue_full') {
       this.jobPools.delete(jobId);
       return rejectLaunch('busy', QUEUE_FULL_MESSAGE);
@@ -718,7 +721,7 @@ export class ExecutionService implements RecoveryCapableService {
         admission.cancel();
         void waitForPermit.catch((e: unknown) => { backendLog.warn(`Queued permit cleanup failed for ${jobId}: ${errorMessage(e)}`); });
       } else {
-        releaseLaunch(jobId, pool);
+        this.launchCoordinator.releaseLaunch(jobId, pool);
       }
       this.jobPools.delete(jobId);
 
@@ -780,7 +783,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async start(providerName: string, input: ExecInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const preflightError = await runProviderPreflight(provider);
@@ -829,7 +832,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -891,7 +894,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -1018,7 +1021,9 @@ export class ExecutionService implements RecoveryCapableService {
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
-    if (!getNewProvider(providerName)) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    if (!this.providerRegistry.get(providerName)) {
+      return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    }
 
     const session = this.sessionManager.allocate(
       providerName,
@@ -1069,7 +1074,8 @@ export class ExecutionService implements RecoveryCapableService {
       }
 
       const status = this.progressStore.readStatus(jobId);
-      if (status?.phase === 'queued' && cancelQueued(jobId)) {
+      const pool = this.jobPools.get(jobId) ?? 'default';
+      if (status?.phase === 'queued' && this.launchCoordinator.cancelQueued(jobId, pool)) {
         this.finishQueuedAbort(jobId, status.sessionId, QUEUED_ABORT_MESSAGE);
         aborted.push(jobId);
         continue;
@@ -1131,9 +1137,9 @@ export class ExecutionService implements RecoveryCapableService {
       let settled = false;
 
       const cleanup = (): void => {
-        eventBus.off('job:completed', onJobCompleted);
-        eventBus.off('job:phase_changed', onJobPhaseChanged);
-        eventBus.off('session:updated', onSessionUpdated);
+        this.eventBus.off('job:completed', onJobCompleted);
+        this.eventBus.off('job:phase_changed', onJobPhaseChanged);
+        this.eventBus.off('session:updated', onSessionUpdated);
         if (timer) clearTimeout(timer);
       };
 
@@ -1178,9 +1184,9 @@ export class ExecutionService implements RecoveryCapableService {
         recheck();
       };
 
-      eventBus.on('job:completed', onJobCompleted);
-      eventBus.on('job:phase_changed', onJobPhaseChanged);
-      eventBus.on('session:updated', onSessionUpdated);
+      this.eventBus.on('job:completed', onJobCompleted);
+      this.eventBus.on('job:phase_changed', onJobPhaseChanged);
+      this.eventBus.on('session:updated', onSessionUpdated);
 
       recheck();
       if (settled) {
@@ -1215,7 +1221,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.progressStore.hydrateEventCounter(jobId);
 
     // Restore queue entry and register abort with cancel callback
-    const queuedHandle = restoreQueuedLaunch(jobId, launchRecord.provider, pool);
+    const queuedHandle = this.launchCoordinator.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
     this.abortRegistry.register(jobId, () => {
       queuedHandle.cancel();
     });
@@ -1224,7 +1230,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
 
     // Wire up the async execution path
-    const provider = getNewProvider(launchRecord.provider);
+    const provider = this.providerRegistry.get(launchRecord.provider);
     if (provider) {
       this.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
     }
@@ -1252,7 +1258,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
     // Restore active permit before fence lifts
-    restoreActiveLaunch(jobId, launchRecord.provider, pool);
+    this.launchCoordinator.restoreActiveLaunch(jobId, launchRecord.provider, pool);
 
     // Rebind namespace to current backend instance
     this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
@@ -1274,7 +1280,7 @@ export class ExecutionService implements RecoveryCapableService {
         if (cleaned) return;
         cleaned = true;
         this.abortRegistry.remove(jobId);
-        releaseLaunch(jobId, pool);
+        this.launchCoordinator.releaseLaunch(jobId, pool);
         this.jobPools.delete(jobId);
       },
     };
@@ -1295,7 +1301,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.progressStore.writeResultMd(jobId, result.content);
     this.abortRegistry.remove(jobId);
     const pool = this.jobPools.get(jobId) ?? 'default';
-    releaseLaunch(jobId, pool);
+    this.launchCoordinator.releaseLaunch(jobId, pool);
     this.jobPools.delete(jobId);
 
     if (options?.conversationRef) {
@@ -1344,7 +1350,7 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     result: ProviderResult,
   ): Promise<void> {
-    const provider = getNewProvider(providerName);
+    const provider = this.providerRegistry.get(providerName);
     const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
     if (provider?.appServer && isAppServerRuntime(runtimeRecord)) {
       const continuity = this.resolveAppServerContinuity(
@@ -1444,8 +1450,8 @@ export class ExecutionService implements RecoveryCapableService {
             type: 'queued',
             jobId,
             sessionId,
-            queuePosition: queuePosition(jobId, pool) ?? 0,
-            runningJobIds: getActiveJobIds(pool),
+            queuePosition: this.launchCoordinator.queuePosition(jobId, pool) ?? 0,
+            runningJobIds: this.launchCoordinator.getActiveJobIds(pool),
           };
         }
         const events = this.progressStore.replayFrom(jobId, fromEventId, fileCursor);
@@ -1534,7 +1540,7 @@ export class ExecutionService implements RecoveryCapableService {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) {
       if (admission.type === 'queued') admission.cancel();
-      else releaseLaunch(jobId, pool);
+      else this.launchCoordinator.releaseLaunch(jobId, pool);
       return;
     }
 
@@ -1554,12 +1560,12 @@ export class ExecutionService implements RecoveryCapableService {
           this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
         }
 
-        bindLaunchPermit(jobId, signal, pool);
+        this.launchCoordinator.bindLaunchPermit(jobId, signal, pool);
         await this.executeProviderJob(provider, request, jobId, sessionId, signal, pool);
       } catch (err: unknown) {
         this.handleProviderJobError(jobId, sessionId, signal, err);
       } finally {
-        if (permitAcquired) releaseLaunch(jobId, pool);
+        if (permitAcquired) this.launchCoordinator.releaseLaunch(jobId, pool);
       }
     })();
   }
@@ -1594,13 +1600,13 @@ export class ExecutionService implements RecoveryCapableService {
         this.markJobLaunching(jobId);
         this.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
 
-        bindLaunchPermit(jobId, signal, pool);
+        this.launchCoordinator.bindLaunchPermit(jobId, signal, pool);
         const request = toProviderRequest(launchRecord);
         await this.executeProviderJob(provider, request, jobId, sessionId, signal, pool);
       } catch (err: unknown) {
         this.handleProviderJobError(jobId, sessionId, signal, err);
       } finally {
-        releaseLaunch(jobId, pool);
+        this.launchCoordinator.releaseLaunch(jobId, pool);
       }
     })();
   }
@@ -1697,7 +1703,13 @@ export class ExecutionService implements RecoveryCapableService {
     return {
       signal,
       onEvent,
-      runCli: bindProviderRunner(providerName, signal, pool, this.progressStore.jobDir(jobId)),
+      runCli: bindProviderRunner(
+        this.launchCoordinator,
+        providerName,
+        signal,
+        pool,
+        this.progressStore.jobDir(jobId),
+      ),
       acquireServer: (spec) => this.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.sessionManager.get(providerName, sessionId)?.providerContinuity,
       checkpointRecovery: (update) => {

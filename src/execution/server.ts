@@ -8,13 +8,13 @@ import { join } from 'node:path';
 import { formatError, readBundleHash } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
-import type { ExecutionService, RecoveryCapableService } from './service.js';
-import { activeChildren, activeDurablePids, killAllChildren, queueDepth } from './engine.js';
+import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
+import { LaunchCoordinator } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
 import type { AbortResult } from './abort-registry.js';
 
-import { eventBus } from './event-bus.js';
+import { TypedEventBus } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
@@ -50,6 +50,7 @@ import {
 import { createHttpHandler, sendJson } from './http-handler.js';
 import type { EventStreamHandlers, HttpHandlerDeps, MutableBackendRuntimeState } from './backend-contracts.js';
 import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import {
   closeServer as defaultCloseServer,
   createKbSubsystem as defaultCreateKbSubsystem,
@@ -62,10 +63,9 @@ import {
   type LifecycleDeps,
   type LifecycleController,
 } from './lifecycle.js';
+import type { BackendServerInfo, LifecycleState } from './server-types.js';
 
 export { routeToolCall, getToolDescriptors };
-
-export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -79,11 +79,7 @@ type BackendServerOptions = {
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (
     ctx: CallerContext,
-    deps: {
-      progressStore: ProgressStore;
-      bundleHash: string;
-      providerHostManager: ProviderHostManager;
-    },
+    deps: ExecutionServiceDeps,
   ) => ExecutionServiceLike;
   acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
@@ -97,20 +93,12 @@ type BackendServerOptions = {
   killAllChildrenFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
   providerHostManager?: ProviderHostManager;
+  launchCoordinator?: LaunchCoordinator;
+  eventBus?: TypedEventBus;
+  providerRegistry?: ProviderRegistry;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
-};
-
-export type BackendServerInfo = {
-  port: number;
-  host: string;
-  token: string;
-  version: string;
-  bundleHash: string;
-  namespace: string;
-  instanceId: string;
-  startedAt: number;
 };
 
 export type BackendServerController = {
@@ -121,9 +109,7 @@ export type BackendServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => IdleTimer;
 };
-
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
-const globalDiscussRegistry = createDiscussContextRegistry();
 
 export function listInstantiatedExecutionServices(
   services: ReadonlyMap<string, ExecutionServiceLike>,
@@ -139,9 +125,16 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
-  const discussRegistry = options.discussRegistry ?? globalDiscussRegistry;
-  const progressStore = options.progressStore ?? new ProgressStore();
-  const providerHostManager = options.providerHostManager ?? createProviderHostManager();
+  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator();
+  const eventBus = options.eventBus ?? options.progressStore?.getEventBus() ?? new TypedEventBus();
+  const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
+  const progressStore = options.progressStore ?? new ProgressStore(eventBus);
+  const providerHostManager =
+    options.providerHostManager ??
+    createProviderHostManager({
+      spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    });
   const sessionIndex = new SessionIndex();
   const now = options.now ?? (() => Date.now());
   backendLog.init({ version, bundleHash });
@@ -152,17 +145,19 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     });
   const createExecutionService =
     options.createExecutionService ??
-    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps.progressStore, deps.bundleHash, deps.providerHostManager));
+    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
   const acquireLockFn = options.acquireLockFn ?? acquireLock;
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
-  const routeToolCallFn = options.routeToolCallFn ?? routeToolCall;
+  const routeToolCallFn =
+    options.routeToolCallFn ??
+    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem, providerRegistry));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const recoverOrphanedJobsFn =
     options.recoverOrphanedJobsFn ??
     ((currentNamespace: string) => {
-      recoverOrphanedJobs(progressStore, currentNamespace, log);
+      recoverOrphanedJobs(progressStore, currentNamespace, log, eventBus);
     });
   const cleanupStaleJobsFn =
     options.cleanupStaleJobsFn ??
@@ -174,7 +169,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     ((currentNamespace: string, message: string) => {
       markJobsAsError(progressStore, currentNamespace, message);
     });
-  const killAllChildrenFn = options.killAllChildrenFn ?? killAllChildren;
+  const killAllChildrenFn = options.killAllChildrenFn ?? (() => launchCoordinator.killAllChildren());
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
@@ -218,6 +213,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       progressStore,
       bundleHash,
       providerHostManager,
+      launchCoordinator,
+      eventBus,
+      providerRegistry,
     });
     services.set(key, created);
     return created;
@@ -414,9 +412,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     idleTimer,
     progressStore,
     sessionIndex,
-    activeChildren,
-    activeDurablePids,
-    queueDepth,
+    // Intentional readonly exposure: httpHandlerDeps needs read access to the coordinator's
+    // child sets for health/status endpoints. The Set references are readonly — mutation is
+    // only performed through LaunchCoordinator methods.
+    activeChildren: launchCoordinator.activeChildren,
+    activeDurablePids: launchCoordinator.activeDurablePids,
+    queueDepth: () => launchCoordinator.queueDepth(),
     streamResponses,
     isDrainRequested: () => drainRequested,
     requestDrain: (reason: string) => {
@@ -428,7 +429,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     abortJobs,
     scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
     routeToolCall: routeToolCallFn,
-    getToolDescriptors,
+    getToolDescriptors: () => getToolDescriptors(providerRegistry),
     subscribeBackendEvents: (handlers: EventStreamHandlers) => {
       eventBus.on('job:created', handlers.onJobCreated);
       eventBus.on('job:phase_changed', handlers.onPhaseChanged);
@@ -473,6 +474,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     streamResponses,
     discussStores,
     discussRegistry,
+    eventBus,
+    launchCoordinator,
+    providerRegistry,
     server,
     getExecutionService,
     getRecoveryService,

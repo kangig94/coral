@@ -16,23 +16,26 @@ vi.mock('node:os', async () => {
 });
 
 import { SessionManager } from '../session-manager.js';
-import { eventBus } from '../event-bus.js';
+import { TypedEventBus } from '../event-bus.js';
+
+let eventBus: TypedEventBus;
 
 describe('execution SessionManager', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
+    eventBus = new TypedEventBus();
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
-    eventBus.removeAllListeners();
+    eventBus.reset();
     vi.restoreAllMocks();
   });
 
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir), workDir };
+    return { mgr: new SessionManager(workDir, eventBus), workDir };
   }
 
   it('allocate creates an entry with state pending', () => {
@@ -73,7 +76,7 @@ describe('execution SessionManager', () => {
   it('session:updated payload includes projectRoot when present', () => {
     const { mgr, workDir } = setup('emit-root');
     const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload) => emitted.push(payload));
+    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
     mgr.allocate('codex', 'delta', 'gpt-5', workDir, '/proj/root');
 
@@ -84,7 +87,7 @@ describe('execution SessionManager', () => {
   it('session:updated payload omits projectRoot when not set', () => {
     const { mgr, workDir } = setup('emit-no-root');
     const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload) => emitted.push(payload));
+    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
     mgr.allocate('codex', 'epsilon', 'gpt-5', workDir);
 

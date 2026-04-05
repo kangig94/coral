@@ -20,19 +20,14 @@ import type {
 import type { Provider } from '../../providers/types.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
-import * as engineModule from '../engine.js';
 import {
+  LaunchCoordinator,
   MAX_ACTIVE_SESSIONS,
-  cancelQueued,
-  getActiveJobIds,
-  killAllChildren,
-  queueDepth,
-  releaseLaunch,
-  restoreActiveLaunch,
   type ProviderServerHandle,
+  type SpawnProviderServerFn,
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-registry.js';
-import { eventBus } from '../event-bus.js';
+import { TypedEventBus } from '../event-bus.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
@@ -75,6 +70,33 @@ type ServiceInternals = {
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
+let eventBus: TypedEventBus;
+let launchCoordinator: LaunchCoordinator;
+let spawnProviderServer: SpawnProviderServerFn;
+
+function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
+  return launchCoordinator.cancelQueued(jobId, pool);
+}
+
+function getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
+  return launchCoordinator.getActiveJobIds(pool);
+}
+
+function killAllChildren(): void {
+  launchCoordinator.killAllChildren();
+}
+
+function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
+  return launchCoordinator.queueDepth(pool);
+}
+
+function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.releaseLaunch(jobId, pool);
+}
+
+function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
+}
 
 function getInternals(service: ExecutionService): ServiceInternals {
   return service as unknown as ServiceInternals;
@@ -88,12 +110,33 @@ function createService(
     providerHostManager?: ProviderHostManager;
   } = {},
 ): ExecutionService {
-  return new ExecutionService(
-    ctx,
-    options.progressStore,
-    options.bundleHash,
-    options.providerHostManager ?? createProviderHostManager(),
-  );
+  return new ExecutionService(ctx, {
+    progressStore: options.progressStore,
+    bundleHash: options.bundleHash,
+    providerHostManager: options.providerHostManager ?? createProviderHostManager({ spawnProviderServer }),
+    launchCoordinator,
+    eventBus,
+    providerRegistry: {
+      get: mockState.getNewProvider,
+      getAll: () => [],
+      registerBuiltIns: () => {},
+    } as never,
+  });
+}
+
+function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
+  const fallback = handles.at(-1);
+  const mock = vi.fn(async () => {
+    if (!fallback) {
+      throw new Error('No provider server handle configured');
+    }
+    return fallback;
+  });
+  for (const handle of handles) {
+    mock.mockResolvedValueOnce(handle);
+  }
+  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
+  return mock;
 }
 
 function trackJob(jobId: string): void {
@@ -149,12 +192,14 @@ function createFakeProviderServerHandle(options?: {
     });
   const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
   const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-    handlers.add(handler);
-    return () => {
-      handlers.delete(handler);
-    };
-  });
+  const onNotificationMock = vi.fn(
+    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+      handlers.add(handler);
+      return () => {
+        handlers.delete(handler);
+      };
+    },
+  );
   const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {});
   const closePromise = new Promise<Error | void>(() => {});
@@ -253,8 +298,7 @@ function makeCodexAppServerProvider(): Provider {
       finalizeInterrupted: (probeResult, continuity) =>
         probeResult.resumable
           ? {
-              conversationRef:
-                typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
+              conversationRef: typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
               continuityMutation: continuity,
             }
           : {
@@ -378,6 +422,9 @@ describe('ExecutionService', () => {
     mkdirSync(projectRoot, { recursive: true });
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
+    eventBus = new TypedEventBus();
+    launchCoordinator = new LaunchCoordinator();
+    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveCoralContent.mockReset();
   });
@@ -478,11 +525,11 @@ describe('ExecutionService', () => {
   });
 
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
-    const service = createService(ctx);
-    const { progressStore } = getInternals(service);
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle({ generation: 41 });
-    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
     const jobId1 = `app-server-runtime-${randomUUID()}`;
     const jobId2 = `app-server-runtime-${randomUUID()}`;
     trackJob(jobId1);
@@ -539,7 +586,7 @@ describe('ExecutionService', () => {
     expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
     expect(waitingRuntime.providerMeta.providerContinuity).toBeUndefined();
     expect(secondSettled).toBe(false);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
 
     firstLease.release();
     const secondLease = await secondLeasePromise;
@@ -561,8 +608,6 @@ describe('ExecutionService', () => {
   });
 
   it('allows shared app-server leases to overlap on the same handle', async () => {
-    const service = createService(ctx);
-    const { progressStore } = getInternals(service);
     const spec = {
       provider: 'claude',
       command: process.execPath,
@@ -583,7 +628,9 @@ describe('ExecutionService', () => {
         return params;
       },
     });
-    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
     const jobId1 = `shared-app-server-${randomUUID()}`;
     const jobId2 = `shared-app-server-${randomUUID()}`;
     trackJob(jobId1);
@@ -639,12 +686,10 @@ describe('ExecutionService', () => {
 
     firstLease.release();
     secondLease.release();
-    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
   });
 
   it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
-    const service = createService(ctx);
-    const { progressStore, abortRegistry } = getInternals(service);
     const jobId = `app-server-abort-${randomUUID()}`;
     const server = createFakeProviderServerHandle({
       request: async (method, params) => {
@@ -657,6 +702,9 @@ describe('ExecutionService', () => {
         return {};
       },
     });
+    setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
+    const { progressStore, abortRegistry } = getInternals(service);
     trackJob(jobId);
     mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
@@ -701,8 +749,6 @@ describe('ExecutionService', () => {
     });
     abortRegistry.register(jobId);
 
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
-
     expect(service.abort([jobId])).toEqual({
       aborted: [jobId],
       notFound: [],
@@ -717,7 +763,6 @@ describe('ExecutionService', () => {
   });
 
   it('routes shared app-server interrupts through acquireServer while a live lease is active', async () => {
-    const service = createService(ctx);
     const spec = {
       provider: 'claude',
       command: process.execPath,
@@ -726,7 +771,8 @@ describe('ExecutionService', () => {
       shared: true as const,
     };
     const server = createFakeProviderServerHandle();
-    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
     mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
 
     const firstLease = await service.acquireServer(spec);
@@ -777,17 +823,17 @@ describe('ExecutionService', () => {
       brokerSessionKey: 'broker-session-1',
       brokerTurnId: 'broker-turn-1',
     });
-    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
 
     acquireServerSpy.mockRestore();
     firstLease.release();
   });
 
   it('borrows the live exclusive app-server host for interrupts instead of queueing a second lease', async () => {
-    const service = createService(ctx);
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle();
-    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    const service = createService(ctx);
     mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
     const firstLease = await service.acquireServer(spec);
@@ -832,7 +878,7 @@ describe('ExecutionService', () => {
       threadId: 'thread-live',
       turnId: 'turn-live',
     });
-    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
 
     acquireServerSpy.mockRestore();
     firstLease.release();
@@ -841,7 +887,7 @@ describe('ExecutionService', () => {
   it('persists app-server lease-wait aborts as aborted instead of error', async () => {
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle();
-    const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     const firstLeaseHeld = createDeferred<void>();
     const { provider } = makeProvider({
       execute: async (_request, runtime): Promise<ProviderResult> => {
@@ -896,7 +942,7 @@ describe('ExecutionService', () => {
 
     firstLeaseHeld.resolve();
     await waitForTerminalEvent(service, first.job);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(1);
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
   });
 
   it('start rejects unknown providers', async () => {
@@ -1208,7 +1254,10 @@ describe('ExecutionService', () => {
       let injected = false;
       let suppressWakeups = false;
 
-      vi.spyOn(eventBus, 'emit').mockImplementation(((event, payload) => {
+      vi.spyOn(eventBus, 'emit').mockImplementation(((
+        event: Parameters<TypedEventBus['emit']>[0],
+        payload: Parameters<TypedEventBus['emit']>[1],
+      ) => {
         if (
           suppressWakeups &&
           (event === 'job:completed' || event === 'job:phase_changed' || event === 'session:updated')
@@ -1218,7 +1267,10 @@ describe('ExecutionService', () => {
         return originalEmit(event, payload);
       }) as typeof eventBus.emit);
 
-      vi.spyOn(eventBus, 'on').mockImplementation(((event, listener) => {
+      vi.spyOn(eventBus, 'on').mockImplementation(((
+        event: Parameters<TypedEventBus['on']>[0],
+        listener: Parameters<TypedEventBus['on']>[1],
+      ) => {
         if (!injected) {
           injected = true;
           suppressWakeups = true;
@@ -2094,10 +2146,7 @@ describe('ExecutionService', () => {
       };
     }
 
-    function buildExpectedInterruptedReport(
-      reason: 'restart' | 'handoff',
-      ...detailLines: string[]
-    ): string {
+    function buildExpectedInterruptedReport(reason: 'restart' | 'handoff', ...detailLines: string[]): string {
       const baseNotice =
         reason === 'restart'
           ? 'Backend restarted during the app-server turn. The interrupted turn was not replayed.'
@@ -2371,9 +2420,10 @@ describe('ExecutionService', () => {
 
     describe('finalizeInterruptedAppServerJob', () => {
       it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
+        const spawnProviderServerMock = vi.fn();
+        spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
         const service = createService(ctx);
         const { progressStore, sessionManager } = getInternals(service);
-        const spawnProviderServer = vi.spyOn(engineModule, 'spawnProviderServer');
         const jobId = `app-server-waiting-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
@@ -2418,7 +2468,7 @@ describe('ExecutionService', () => {
           'Session was interrupted before completion. State unknown.',
         );
 
-        expect(spawnProviderServer).not.toHaveBeenCalled();
+        expect(spawnProviderServerMock).not.toHaveBeenCalled();
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
           result: {
@@ -2436,10 +2486,8 @@ describe('ExecutionService', () => {
       });
 
       it('stores the recovered threadId when continuity is verified', async () => {
-        const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+        setSpawnProviderServerMock(
           createFakeProviderServerHandle({
             request: async (method) => {
               if (method === 'thread/resume') {
@@ -2449,6 +2497,8 @@ describe('ExecutionService', () => {
             },
           }).handle,
         );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
         const jobId = `app-server-verified-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
@@ -2499,10 +2549,8 @@ describe('ExecutionService', () => {
       });
 
       it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
-        const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+        setSpawnProviderServerMock(
           createFakeProviderServerHandle({
             request: async (method) => {
               if (method === 'thread/resume') {
@@ -2512,6 +2560,8 @@ describe('ExecutionService', () => {
             },
           }).handle,
         );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
         const jobId = `app-server-missing-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
@@ -2575,10 +2625,8 @@ describe('ExecutionService', () => {
       });
 
       it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
-        const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-        vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(
+        setSpawnProviderServerMock(
           createFakeProviderServerHandle({
             request: async (method) => {
               if (method === 'thread/resume') {
@@ -2588,6 +2636,8 @@ describe('ExecutionService', () => {
             },
           }).handle,
         );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);

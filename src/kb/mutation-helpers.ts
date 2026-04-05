@@ -2,8 +2,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { KbIndexState } from './runtime.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbIndexState, KbRuntime } from './contracts.js';
 import {
   isCommunityEntry,
   isNoteEntry,

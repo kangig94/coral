@@ -11,11 +11,11 @@ import {
   parseCommunityFrontmatter,
   serializeCommunityFrontmatter,
 } from './frontmatter.js';
+import { sortedMarkdownEntries } from './markdown-entries.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { stripMdExt } from './paths.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import type { KbRuntime } from './runtime.js';
-import { sortedMarkdownEntries } from './text-artifacts.js';
+import type { KbRuntime } from './contracts.js';
 import { compareLocale, stripMarkdownCodeFences } from './validation.js';
 import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from './types.js';
 

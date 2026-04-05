@@ -8,7 +8,7 @@ import {
   type KbOramaDocument,
   type KbOramaTokenizer,
 } from './orama-factory.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 import {
   getEntry,
   isCommunityEntry,

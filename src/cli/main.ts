@@ -51,16 +51,18 @@ import {
 } from './format.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject, parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from './parse.js';
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
-import { getAllNewProviders } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
 import type { ToolDomainResult } from '../execution/tool-response.js';
 
-/** Return registered provider names. Built-ins are registered on first call. */
-function getProviderNames(): string[] {
-  registerBuiltInProviders();
-  return getAllNewProviders().map((p) => p.name);
+function getProviderNames(providerRegistry: ProviderRegistry): string[] {
+  return providerRegistry.getAll().map((provider) => provider.name);
+}
+
+function createCliProviderRegistry(): ProviderRegistry {
+  return createBuiltInProviderRegistry();
 }
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
@@ -405,14 +407,17 @@ function shapeWaitOutputRecord(event: WaitStreamEvent, cursor: string | null, em
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
-export function normalizeProviderArgv(argv: readonly string[]): string[] {
+export function normalizeProviderArgv(
+  argv: readonly string[],
+  providerRegistry: ProviderRegistry = createCliProviderRegistry(),
+): string[] {
   if (argv.length < 4) {
     return argv.slice();
   }
 
   const [nodePath, scriptPath, provider, dispatchToken] = argv;
 
-  if (!getProviderNames().includes(provider)) {
+  if (!getProviderNames(providerRegistry).includes(provider)) {
     return argv.slice();
   }
 
@@ -424,8 +429,8 @@ export function normalizeProviderArgv(argv: readonly string[]): string[] {
   return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
 }
 
-function registerProviderCommands(program: Command): void {
-  for (const providerName of getProviderNames()) {
+function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
+  for (const providerName of getProviderNames(providerRegistry)) {
     const provider = program.command(providerName).description(`${providerName} provider operations`);
 
     const execCommand = provider.command('exec');
@@ -515,7 +520,7 @@ function registerProviderCommands(program: Command): void {
   }
 }
 
-export function buildProgram(): Command {
+export function buildProgram(providerRegistry: ProviderRegistry = createCliProviderRegistry()): Command {
   const program = new Command();
 
   program
@@ -524,7 +529,7 @@ export function buildProgram(): Command {
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
   program.addOption(new Option('--output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
 
-  registerProviderCommands(program);
+  registerProviderCommands(program, providerRegistry);
 
   const waitCommand = program.command('wait');
   waitCommand

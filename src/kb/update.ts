@@ -5,7 +5,7 @@ import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 
 export async function applyNoteUpdateLocked(
   rt: KbRuntime,

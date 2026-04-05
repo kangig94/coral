@@ -1,5 +1,5 @@
 import { requireString } from './tool-response.js';
-import type * as EngineMod from './engine.js';
+import type { SpawnCliFn } from './engine.js';
 import {
   coralAgentOpSchema,
   internalProviderFieldsShape,
@@ -10,11 +10,11 @@ import {
 import type { ExecutionService } from './service.js';
 import type { AbortResult } from './abort-registry.js';
 import type { DiscussContext } from './discuss/context.js';
-import { getAllNewProviders, getNewProvider } from '../providers/registry.js';
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
+import type { ProviderRegistry } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { handleWorkflow } from '../workflow/handler.js';
 import type { CurateHandle } from '../kb/curate.js';
-import type { KbRuntime } from '../kb/runtime.js';
+import type { KbRuntime } from '../kb/contracts.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import { handleKbToolCall } from './kb-tools.js';
 import { handleDiscussToolCall } from './discuss-tools.js';
@@ -54,7 +54,7 @@ export type KbSubsystem = {
 
 export type CreateKbSubsystemFn = (options: {
   pluginRoot: string;
-  spawnCli: typeof EngineMod.spawnCli;
+  spawnCli: SpawnCliFn;
 }) => Promise<KbSubsystem>;
 
 const CORAL_OP_PREFIX = 'coral:';
@@ -122,10 +122,15 @@ export function isWorkAdmittingToolRequest(request: ToolRequest): boolean {
   return op === 'exec' || op === 'resume' || op === 'fork' || op === 'bypass_exec' || op.startsWith(CORAL_OP_PREFIX);
 }
 
-export function getToolDescriptors(): Array<Record<string, unknown>> {
-  registerBuiltInProviders();
-
-  const providerTools = getAllNewProviders().map((provider) => ({
+/**
+ * Build MCP tool descriptors for all registered providers plus built-in tools.
+ * The default registry is a convenience for CLI/bridge callers that don't own a backend.
+ * Backend paths should always pass their owned registry explicitly.
+ */
+export function getToolDescriptors(
+  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
+): Array<Record<string, unknown>> {
+  const providerTools = providerRegistry.getAll().map((provider) => ({
     name: provider.name,
     description: `Execute prompts with the ${provider.name} provider.`,
     inputSchema: {
@@ -300,9 +305,8 @@ export async function routeToolCall(
     scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   },
   kbSubsystem: KbSubsystem | null = null,
+  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<ToolDomainResult> {
-  registerBuiltInProviders();
-
   try {
     if (request.name === 'abort') {
       if (!isStringArray(request.args.jobs)) {
@@ -322,7 +326,7 @@ export async function routeToolCall(
     if (request.name === 'workflow') {
       const svc = helpers.getExecutionService(request.context);
       try {
-        const decision = await handleWorkflow(request.args, svc, request.context);
+        const decision = await handleWorkflow(request.args, svc, request.context, providerRegistry);
         return launchDecisionToDomain(decision);
       } catch (error: unknown) {
         return invalidRequest(errorMessage(error, 'Invalid workflow request'));
@@ -338,7 +342,7 @@ export async function routeToolCall(
       return handleKbToolCall(request, kbSubsystem);
     }
 
-    if (!getNewProvider(request.name)) {
+    if (!providerRegistry.get(request.name)) {
       return domainError('not_found', `Unknown tool: ${request.name}`);
     }
 

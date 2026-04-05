@@ -8,12 +8,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readDiscussDiscovery, readDiscussEventLog, readDiscussSummaryIndex } from '../../client/readers.js';
 import {
+  discussBaseDirForSource,
   discussSourcesPath,
   discussDiscoveryPath,
   discussEventLogPath,
@@ -152,6 +154,47 @@ function buildExpectedSummaryRow(snapshot: Awaited<ReturnType<DiscussSessionStor
   };
 }
 
+function releaseLocksLater(lockDirs: string[], delayMs = 150): Promise<void> {
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `
+        import { rmSync } from 'node:fs';
+
+        const lockDirs = JSON.parse(process.env.LOCK_DIRS ?? '[]');
+        const delayMs = Number(process.env.LOCK_DELAY_MS ?? '0');
+
+        setTimeout(() => {
+          for (const lockDir of lockDirs) {
+            rmSync(lockDir, { recursive: true, force: true });
+          }
+        }, delayMs);
+      `,
+    ],
+    {
+      env: {
+        ...process.env,
+        LOCK_DIRS: JSON.stringify(lockDirs),
+        LOCK_DELAY_MS: String(delayMs),
+      },
+      stdio: 'ignore',
+    },
+  );
+
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Lock releaser exited with code ${code ?? 'null'}`));
+    });
+  });
+}
+
 beforeEach(() => {
   homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
   process.env.HOME = homeRoot;
@@ -261,6 +304,30 @@ describe('DiscussSessionStore', () => {
     await expect(store.append(SESSION_ID, 1, bidEvents)).rejects.toMatchObject({
       expectedSeq: 1,
       actualSeq: created.lastAppliedSeq,
+    });
+  });
+
+  it('waits for the session filesystem lock before appending', async () => {
+    const store = createStore(source);
+    const lockDir = join(discussSessionDir(projectRoot, SESSION_ID), '.lock');
+    mkdirSync(lockDir, { recursive: true });
+    const createEvents = unwrap(decideSessionCreate(makeInput(), SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'));
+
+    const appendPromise = store.append(SESSION_ID, 0, createEvents);
+
+    let settled = false;
+    void appendPromise.finally(() => {
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(settled).toBe(false);
+
+    rmSync(lockDir, { recursive: true, force: true });
+
+    await expect(appendPromise).resolves.toMatchObject({
+      sessionId: SESSION_ID,
+      lastAppliedSeq: createEvents.at(-1)?.seq,
     });
   });
 
@@ -515,6 +582,81 @@ describe('DiscussSessionStore', () => {
       source,
       updatedAt: secondSnapshot.updatedAt,
       sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
+    });
+  });
+
+  it('waits for source and registry filesystem locks before flushing dirty indexes', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+    const sourceLockDir = join(discussBaseDirForSource(source), '.lock');
+    const registryLockDir = `${discussSourcesPath()}.lock`;
+    mkdirSync(sourceLockDir, { recursive: true });
+    mkdirSync(registryLockDir, { recursive: true });
+
+    const releaseLocks = releaseLocksLater([sourceLockDir, registryLockDir]);
+    const startedAt = Date.now();
+    store.flushDirtyIndexes();
+    const elapsedMs = Date.now() - startedAt;
+    await releaseLocks;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(100);
+    expect(readDiscussDiscovery(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: finalSnapshot.state.created_at,
+        },
+      ],
+    });
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+
+  it('waits for source and registry filesystem locks when repairing summary-index.json on cold start', async () => {
+    const store = createStore(source);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
+
+    unlinkSync(discussSummaryIndexPath(projectRoot));
+    writeJsonAtomic(discussSourcesPath(), {
+      updatedAt: '2026-03-11T00:00:04.000Z',
+      sources: [],
+    });
+
+    const sourceLockDir = join(discussBaseDirForSource(source), '.lock');
+    const registryLockDir = `${discussSourcesPath()}.lock`;
+    mkdirSync(sourceLockDir, { recursive: true });
+    mkdirSync(registryLockDir, { recursive: true });
+
+    const coldStartStore = createStore(source);
+    const releaseLocks = releaseLocksLater([sourceLockDir, registryLockDir]);
+    const startedAt = Date.now();
+    const summaries = coldStartStore.listSummariesFromIndex();
+    const elapsedMs = Date.now() - startedAt;
+    await releaseLocks;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(100);
+    expect(summaries.map((summary) => summary.sessionId).sort()).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: secondSnapshot.updatedAt,
+      sources: [source],
     });
   });
 

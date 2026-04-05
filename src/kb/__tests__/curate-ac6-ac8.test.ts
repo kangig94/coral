@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate.js';
+import type { KbRuntime } from '../contracts.js';
 import { readCurateState } from '../curate-state.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { reindex } from '../reindex.js';
-import { createKbRuntime, type KbRuntime } from '../runtime.js';
+import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';

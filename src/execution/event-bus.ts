@@ -54,5 +54,6 @@ export class TypedEventBus {
   }
 }
 
-/** Singleton event bus for execution-layer state changes. */
-export const eventBus = new TypedEventBus();
+export function createEventBus(): TypedEventBus {
+  return new TypedEventBus();
+}

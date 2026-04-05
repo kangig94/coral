@@ -1,3 +1,5 @@
+import { claudeProvider } from './claude/adapter.js';
+import { codexProvider } from './codex/adapter.js';
 import type { Provider } from './types.js';
 
 const RESERVED_TOOL_NAMES = new Set([
@@ -25,27 +27,38 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_participate',
   'discuss_abort',
 ]);
-const newProviders = new Map<string, Provider>();
+export class ProviderRegistry {
+  private providers = new Map<string, Provider>();
+  private bootstrapped = false;
 
-export function registerNewProvider(provider: Provider): void {
-  if (RESERVED_TOOL_NAMES.has(provider.name)) {
-    throw new Error(`Provider name "${provider.name}" is reserved`);
+  register(provider: Provider): void {
+    if (RESERVED_TOOL_NAMES.has(provider.name)) {
+      throw new Error(`Provider name "${provider.name}" is reserved`);
+    }
+    if (this.providers.has(provider.name)) {
+      throw new Error(`New provider "${provider.name}" is already registered`);
+    }
+    this.providers.set(provider.name, provider);
   }
-  if (newProviders.has(provider.name)) {
-    throw new Error(`New provider "${provider.name}" is already registered`);
+
+  get(name: string): Provider | undefined {
+    return this.providers.get(name);
   }
-  newProviders.set(provider.name, provider);
-}
 
-export function getNewProvider(name: string): Provider | undefined {
-  return newProviders.get(name);
-}
+  getAll(): Provider[] {
+    return [...this.providers.values()];
+  }
 
-export function getAllNewProviders(): Provider[] {
-  return [...newProviders.values()];
-}
+  registerBuiltIns(): void {
+    if (this.bootstrapped) return;
+    this.register(codexProvider);
+    this.register(claudeProvider);
+    this.bootstrapped = true;
+  }
 
-/** Reset provider registry. Intended for test isolation. */
-export function clearNewProviders(): void {
-  newProviders.clear();
+  /** Reset provider registry state. Intended for test isolation. */
+  clear(): void {
+    this.providers.clear();
+    this.bootstrapped = false;
+  }
 }

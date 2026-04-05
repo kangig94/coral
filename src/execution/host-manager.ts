@@ -1,6 +1,6 @@
 import { raceTimeout } from '../shared/mcp-utils.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
-import { spawnProviderServer, type ProviderServerHandle } from './engine.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from './engine.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
@@ -122,9 +122,11 @@ export function hostKeyFromSpec(spec: ProviderServerSpec): string {
 export class DefaultProviderHostManager implements ProviderHostManager {
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly idleTimeoutMs: number;
+  private readonly spawnProviderServer: SpawnProviderServerFn;
 
-  constructor(options?: { idleTimeoutMs?: number }) {
-    this.idleTimeoutMs = options?.idleTimeoutMs ?? parseIdleTimeoutMs(process.env.CORAL_BROKER_IDLE_MS);
+  constructor(options: { idleTimeoutMs?: number; spawnProviderServer: SpawnProviderServerFn }) {
+    this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(process.env.CORAL_BROKER_IDLE_MS);
+    this.spawnProviderServer = options.spawnProviderServer;
   }
 
   async acquireServer(spec: ProviderServerSpec, options?: { signal?: AbortSignal }): Promise<ProviderServerLease> {
@@ -205,10 +207,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     return created;
   }
 
-  private createProviderServerLease(
-    handle: ProviderServerHandle,
-    entry: ProviderHostEntry,
-  ): ProviderServerLease {
+  private createProviderServerLease(handle: ProviderServerHandle, entry: ProviderHostEntry): ProviderServerLease {
     let released = false;
     return {
       rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
@@ -250,7 +249,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
       return entry.spawnPromise;
     }
 
-    entry.spawnPromise = spawnProviderServer({
+    entry.spawnPromise = this.spawnProviderServer({
       provider: entry.spec.provider,
       command: entry.spec.command,
       args: entry.spec.args,
@@ -527,6 +526,11 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   }
 }
 
-export function createProviderHostManager(): ProviderHostManager {
-  return new DefaultProviderHostManager();
+export function createProviderHostManager(
+  options: {
+    idleTimeoutMs?: number;
+    spawnProviderServer: SpawnProviderServerFn;
+  },
+): ProviderHostManager {
+  return new DefaultProviderHostManager(options);
 }

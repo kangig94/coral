@@ -14,10 +14,10 @@ import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { kbRoot } from '../infra/paths.js';
-import { activeChildren as activeCliChildren, spawnCli } from './engine.js';
+import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { RecoveryRegistry } from './recovery-registry.js';
-import { eventBus, type EventBusEvents } from './event-bus.js';
+import { type EventBusEvents, type TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
@@ -29,7 +29,7 @@ import { clearAllDiscuss, hasRunningSessions, type DiscussContextRegistry } from
 import * as discussLoop from './discuss/loop.js';
 import * as discussOperations from './discuss/operations.js';
 import type { removeLockIfOwner } from './backend-lock.js';
-import { getNewProvider } from '../providers/registry.js';
+import { type ProviderRegistry } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { type RecoveryCapableService } from './service.js';
 import {
@@ -48,8 +48,8 @@ import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import type { BackendIdentity, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
+import type { BackendServerInfo } from './server-types.js';
 import type { CreateKbSubsystemFn, ExecutionServiceLike, KbSubsystem } from './tool-router.js';
-import type { BackendServerInfo } from './server.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -267,10 +267,11 @@ export function recoverOrphanedJobs(
   progressStore: ProgressStore,
   namespace: string,
   log: (message: string) => void,
+  eventBus: TypedEventBus,
 ): void {
   for (const shardDir of SessionManager.listShards()) {
     try {
-      const sessionManager = SessionManager.openShard(shardDir);
+      const sessionManager = SessionManager.openShard(shardDir, eventBus);
       for (const sessionRef of readSessionRefs(shardDir)) {
         try {
           const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
@@ -291,7 +292,7 @@ export function recoverOrphanedJobs(
     try {
       const notice = progressStore.hasLaunchRecord(status.jobId) ? ORPHANED_JOB_NOTICE : OLD_FORMAT_NOTICE;
       markJobAsError(progressStore, status, notice, log);
-      const sessionManager = new SessionManager(status.projectRoot);
+      const sessionManager = new SessionManager(status.projectRoot, eventBus);
       sessionManager.releaseJob(status.sessionId, status.jobId);
       log(`Recovered orphaned job: ${status.jobId}\n`);
     } catch (err) {
@@ -336,7 +337,7 @@ export async function createKbSubsystem({
   spawnCli: spawnKbCli,
 }: {
   pluginRoot: string;
-  spawnCli: typeof spawnCli;
+  spawnCli: SpawnCliFn;
 }): Promise<KbSubsystem> {
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
@@ -397,6 +398,9 @@ export type LifecycleDeps = {
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
   readonly discussRegistry: DiscussContextRegistry;
+  readonly eventBus: TypedEventBus;
+  readonly launchCoordinator: LaunchCoordinator;
+  readonly providerRegistry: ProviderRegistry;
 
   // Server / transport
   readonly server: Server;
@@ -461,6 +465,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     streamResponses,
     discussStores,
     discussRegistry,
+    eventBus,
+    launchCoordinator,
+    providerRegistry,
     server,
     getExecutionService,
     getRecoveryService,
@@ -562,7 +569,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
         const service = getRecoveryService(ctx);
-        const provider = getNewProvider(launchRecord.provider);
+        const provider = providerRegistry.get(launchRecord.provider);
         const recovery = provider?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
           assertStartupStillActive();
@@ -810,8 +817,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       for (const store of discussStores.values()) {
         store.dispose();
       }
-      eventBus.removeAllListeners();
-
       runtimeState.setLifecycle('stopped');
       removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
       removeLockIfOwnerFn(pluginRoot, instanceId);
@@ -846,10 +851,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     try {
       await acquireLockFn(pluginRoot, instanceId, version, bundleHash);
       assertStartupStillActive();
-      registerBuiltInProviders();
+      registerBuiltInProviders(providerRegistry);
       const kbSub = await createKbSubsystemFn({
         pluginRoot,
-        spawnCli,
+        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
       });
       assertStartupStillActive();
       runtimeState.setKbSubsystem(kbSub);
@@ -933,7 +938,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       for (const status of incompatibleJobs) {
         try {
           markJobAsError(progressStore, status, OLD_FORMAT_NOTICE, log);
-          const sessionManager = new SessionManager(status.projectRoot);
+          const sessionManager = new SessionManager(status.projectRoot, eventBus);
           sessionManager.releaseJob(status.sessionId, status.jobId);
           log(`Marked incompatible old-format job: ${status.jobId}\n`);
         } catch (err) {
@@ -944,7 +949,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       for (const status of ghostLaunchJobs) {
         try {
           markJobAsError(progressStore, status, GHOST_LAUNCH_NOTICE, log);
-          const sessionManager = new SessionManager(status.projectRoot);
+          const sessionManager = new SessionManager(status.projectRoot, eventBus);
           sessionManager.releaseJob(status.sessionId, status.jobId);
           log(`Marked ghost launch job: ${status.jobId}\n`);
         } catch (err) {
@@ -955,7 +960,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Release terminal-but-still-claimed sessions
       for (const shardDir of SessionManager.listShards()) {
         try {
-          const sessionManager = SessionManager.openShard(shardDir);
+          const sessionManager = SessionManager.openShard(shardDir, eventBus);
           for (const sessionRef of readSessionRefs(shardDir)) {
             try {
               const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
@@ -1049,7 +1054,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
-          activeCliChildren.size === 0 &&
+          launchCoordinator.activeChildren.size === 0 &&
           adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&

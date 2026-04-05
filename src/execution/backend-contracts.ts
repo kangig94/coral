@@ -14,9 +14,9 @@ import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
 import type { SessionIndex } from './session-index.js';
+import type { LifecycleState } from './server-types.js';
 import type { ExecutionServiceLike, KbSubsystem, RouteToolCallFn, ScopeCheckResult } from './tool-router.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
-import type { LifecycleState } from './server.js';
 
 // ---------------------------------------------------------------------------
 // BackendIdentity — immutable config/identity for a backend instance

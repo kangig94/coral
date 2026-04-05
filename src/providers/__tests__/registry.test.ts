@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { registerBuiltInProviders } from '../bootstrap.js';
+import { ProviderRegistry } from '../registry.js';
 import type { Provider } from '../types.js';
 
 function makeProvider(name: string): Provider {
@@ -8,107 +10,127 @@ function makeProvider(name: string): Provider {
   };
 }
 
-async function loadProviderModules() {
-  vi.resetModules();
-  const [registry, bootstrap] = await Promise.all([import('../registry.js'), import('../bootstrap.js')]);
-  return { registry, bootstrap };
-}
-
 function providerNames(providers: Provider[]): string[] {
   return providers.map((provider) => provider.name);
 }
 
-describe('providers registry', () => {
-  afterEach(() => {
-    vi.resetModules();
-  });
-
-  it('registers and resolves providers', async () => {
-    const { registry } = await loadProviderModules();
+describe('ProviderRegistry', () => {
+  it('registers and resolves providers', () => {
+    const registry = new ProviderRegistry();
     const provider = makeProvider('codex-like');
 
-    registry.registerNewProvider(provider);
+    registry.register(provider);
 
-    expect(registry.getNewProvider('codex-like')).toBe(provider);
-    expect(providerNames(registry.getAllNewProviders())).toEqual(['codex-like']);
+    expect(registry.get('codex-like')).toBe(provider);
+    expect(providerNames(registry.getAll())).toEqual(['codex-like']);
   });
 
-  it('rejects reserved provider names', async () => {
-    const { registry } = await loadProviderModules();
+  it('rejects reserved provider names', () => {
+    const registry = new ProviderRegistry();
 
-    expect(() => registry.registerNewProvider(makeProvider('wait'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('workflow'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('abort'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('backend'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_search'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_promote'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_update'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_delete'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_reindex'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_memo'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_memo_list'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_memo_delete'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('kb_memo_purge'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('discuss_seed'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('discuss_start'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('discuss_watch'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('discuss_participate'))).toThrow('reserved');
-    expect(() => registry.registerNewProvider(makeProvider('discuss_abort'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('wait'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('workflow'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('abort'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('backend'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_search'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_promote'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_update'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_delete'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_reindex'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_memo'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_memo_list'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_memo_delete'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('kb_memo_purge'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('discuss_seed'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('discuss_start'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('discuss_watch'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('discuss_participate'))).toThrow('reserved');
+    expect(() => registry.register(makeProvider('discuss_abort'))).toThrow('reserved');
   });
 
-  it('rejects duplicate provider registrations', async () => {
-    const { registry } = await loadProviderModules();
+  it('rejects duplicate provider registrations', () => {
+    const registry = new ProviderRegistry();
 
-    registry.registerNewProvider(makeProvider('dup'));
-    expect(() => registry.registerNewProvider(makeProvider('dup'))).toThrow('already registered');
+    registry.register(makeProvider('dup'));
+    expect(() => registry.register(makeProvider('dup'))).toThrow('already registered');
   });
 
-  it('preserves registration insertion order', async () => {
-    const { registry } = await loadProviderModules();
+  it('preserves registration insertion order', () => {
+    const registry = new ProviderRegistry();
 
-    registry.registerNewProvider(makeProvider('zzz'));
-    registry.registerNewProvider(makeProvider('aaa'));
-    registry.registerNewProvider(makeProvider('mmm'));
+    registry.register(makeProvider('zzz'));
+    registry.register(makeProvider('aaa'));
+    registry.register(makeProvider('mmm'));
 
-    expect(providerNames(registry.getAllNewProviders())).toEqual(['zzz', 'aaa', 'mmm']);
+    expect(providerNames(registry.getAll())).toEqual(['zzz', 'aaa', 'mmm']);
   });
 
-  it('returns empty state before any registration', async () => {
-    const { registry } = await loadProviderModules();
+  it('keeps registry state isolated per instance', () => {
+    const left = new ProviderRegistry();
+    const right = new ProviderRegistry();
 
-    expect(registry.getAllNewProviders()).toEqual([]);
-    expect(registry.getNewProvider('codex')).toBeUndefined();
+    left.register(makeProvider('left'));
+    right.register(makeProvider('right'));
+
+    expect(providerNames(left.getAll())).toEqual(['left']);
+    expect(providerNames(right.getAll())).toEqual(['right']);
+  });
+
+  it('returns empty state before any registration', () => {
+    const registry = new ProviderRegistry();
+
+    expect(registry.getAll()).toEqual([]);
+    expect(registry.get('codex')).toBeUndefined();
   });
 });
 
-describe('provider bootstrap', () => {
-  afterEach(() => {
-    vi.resetModules();
+describe('registerBuiltInProviders', () => {
+  it('registers built-in execution providers on the target registry', () => {
+    const registry = new ProviderRegistry();
+
+    registerBuiltInProviders(registry);
+
+    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
   });
 
-  it('registers built-in execution providers once', async () => {
-    const { registry, bootstrap } = await loadProviderModules();
+  it('is idempotent per registry instance', () => {
+    const registry = new ProviderRegistry();
 
-    bootstrap.registerBuiltInProviders();
+    registerBuiltInProviders(registry);
 
-    expect(providerNames(registry.getAllNewProviders())).toEqual(['codex', 'claude']);
+    expect(() => registerBuiltInProviders(registry)).not.toThrow();
+    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
   });
 
-  it('is idempotent across repeated calls', async () => {
-    const { registry, bootstrap } = await loadProviderModules();
+  it('does not affect other registries', () => {
+    const bootstrapped = new ProviderRegistry();
+    const untouched = new ProviderRegistry();
 
-    bootstrap.registerBuiltInProviders();
+    registerBuiltInProviders(bootstrapped);
 
-    expect(() => bootstrap.registerBuiltInProviders()).not.toThrow();
-    expect(providerNames(registry.getAllNewProviders())).toEqual(['codex', 'claude']);
+    expect(providerNames(bootstrapped.getAll())).toEqual(['codex', 'claude']);
+    expect(untouched.getAll()).toEqual([]);
   });
 
-  it('fails when a conflicting provider is already registered', async () => {
-    const { registry, bootstrap } = await loadProviderModules();
+  it('fails when a conflicting provider is already registered', () => {
+    const registry = new ProviderRegistry();
 
-    registry.registerNewProvider(makeProvider('codex'));
+    registry.register(makeProvider('codex'));
 
-    expect(() => bootstrap.registerBuiltInProviders()).toThrow(/already registered/i);
-    expect(providerNames(registry.getAllNewProviders())).toEqual(['codex']);
+    expect(() => registerBuiltInProviders(registry)).toThrow(/already registered/i);
+    expect(providerNames(registry.getAll())).toEqual(['codex']);
+  });
+
+  it('clear resets registered providers and bootstrap state', () => {
+    const registry = new ProviderRegistry();
+
+    registerBuiltInProviders(registry);
+    registry.clear();
+
+    expect(registry.getAll()).toEqual([]);
+
+    registerBuiltInProviders(registry);
+
+    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
   });
 });

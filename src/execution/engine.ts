@@ -103,20 +103,22 @@ type QueuedLaunchEntry = {
   reject: (error: Error) => void;
 };
 
-export const activeChildren = new Set<ActiveChild>();
-export const activeDurablePids = new Set<number>();
-let nextProviderServerGeneration = 1;
-
-const activeLaunchesDefault = new Map<string, string>();
-const activeLaunchesDiscuss = new Map<string, string>();
-const activeLaunchesCurate = new Map<string, string>();
-const queuedLaunchesDefault: QueuedLaunchEntry[] = [];
-const queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
-const queuedLaunchesCurate: QueuedLaunchEntry[] = [];
-const signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
+
+type LaunchCoordinatorState = {
+  activeChildren: Set<ActiveChild>;
+  activeDurablePids: Set<number>;
+  nextProviderServerGeneration: number;
+  activeLaunchesDefault: Map<string, string>;
+  activeLaunchesDiscuss: Map<string, string>;
+  activeLaunchesCurate: Map<string, string>;
+  queuedLaunchesDefault: QueuedLaunchEntry[];
+  queuedLaunchesDiscuss: QueuedLaunchEntry[];
+  queuedLaunchesCurate: QueuedLaunchEntry[];
+  signalLaunchPermits: WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>;
+};
 
 export type CliBusyErrorDetail = {
   error: 'busy';
@@ -136,6 +138,79 @@ export class CliBusyError extends Error {
   }
 }
 
+export type SpawnCliFn = (options: SpawnCliOptions) => Promise<CliExecResult>;
+export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<CliExecResult>;
+export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
+
+export class LaunchCoordinator {
+  readonly activeChildren = new Set<ActiveChild>();
+  readonly activeDurablePids = new Set<number>();
+  private readonly state: LaunchCoordinatorState = {
+    activeChildren: this.activeChildren,
+    activeDurablePids: this.activeDurablePids,
+    nextProviderServerGeneration: 1,
+    activeLaunchesDefault: new Map<string, string>(),
+    activeLaunchesDiscuss: new Map<string, string>(),
+    activeLaunchesCurate: new Map<string, string>(),
+    queuedLaunchesDefault: [],
+    queuedLaunchesDiscuss: [],
+    queuedLaunchesCurate: [],
+    signalLaunchPermits: new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>(),
+  };
+
+  requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
+    return requestLaunchInState(this.state, jobId, provider, pool);
+  }
+
+  releaseLaunch(jobId: string, pool: LaunchPool = 'default'): void {
+    releaseLaunchInState(this.state, jobId, pool);
+  }
+
+  cancelQueued(jobId: string, pool: LaunchPool = 'default'): boolean {
+    return cancelQueuedInState(this.state, jobId, pool);
+  }
+
+  queueDepth(pool: LaunchPool = 'default'): number {
+    return queueDepthInState(this.state, pool);
+  }
+
+  queuePosition(jobId: string, pool: LaunchPool = 'default'): number | null {
+    return queuePositionInState(this.state, jobId, pool);
+  }
+
+  getActiveJobIds(pool: LaunchPool = 'default'): string[] {
+    return getActiveJobIdsInState(this.state, pool);
+  }
+
+  bindLaunchPermit(jobId: string, signal: AbortSignal, pool: LaunchPool = 'default'): void {
+    bindLaunchPermitInState(this.state, jobId, signal, pool);
+  }
+
+  spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
+    return spawnCliInState(this.state, options);
+  }
+
+  spawnProviderServer(options: SpawnProviderServerOptions): Promise<ProviderServerHandle> {
+    return spawnProviderServerInState(this.state, options);
+  }
+
+  spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
+    return spawnDurableJobInState(this.state, options);
+  }
+
+  restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
+    restoreActiveLaunchInState(this.state, jobId, provider, pool);
+  }
+
+  restoreQueuedLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): QueuedHandle {
+    return restoreQueuedLaunchInState(this.state, jobId, provider, pool);
+  }
+
+  killAllChildren(): void {
+    killAllChildrenInState(this.state);
+  }
+}
+
 export function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number(raw);
@@ -143,24 +218,24 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   return parsed;
 }
 
-function getActiveMap(pool: LaunchPool): Map<string, string> {
+function getActiveMap(state: LaunchCoordinatorState, pool: LaunchPool): Map<string, string> {
   if (pool === 'discuss') {
-    return activeLaunchesDiscuss;
+    return state.activeLaunchesDiscuss;
   }
   if (pool === 'curate') {
-    return activeLaunchesCurate;
+    return state.activeLaunchesCurate;
   }
-  return activeLaunchesDefault;
+  return state.activeLaunchesDefault;
 }
 
-function getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
+function getQueue(state: LaunchCoordinatorState, pool: LaunchPool): QueuedLaunchEntry[] {
   if (pool === 'discuss') {
-    return queuedLaunchesDiscuss;
+    return state.queuedLaunchesDiscuss;
   }
   if (pool === 'curate') {
-    return queuedLaunchesCurate;
+    return state.queuedLaunchesCurate;
   }
-  return queuedLaunchesDefault;
+  return state.queuedLaunchesDefault;
 }
 
 function getActiveLimit(pool: LaunchPool): number {
@@ -173,36 +248,36 @@ function getActiveLimit(pool: LaunchPool): number {
   return MAX_ACTIVE_SESSIONS;
 }
 
-function hasLaunchCapacity(pool: LaunchPool): boolean {
-  return getActiveMap(pool).size < getActiveLimit(pool);
+function hasLaunchCapacity(state: LaunchCoordinatorState, pool: LaunchPool): boolean {
+  return getActiveMap(state, pool).size < getActiveLimit(pool);
 }
 
-function queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
-  const queue = getQueue(pool);
+function queuedHandle(state: LaunchCoordinatorState, entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
+  const queue = getQueue(state, pool);
   return {
     type: 'queued',
-    queuePosition: queuePosition(entry.jobId, pool) ?? queue.length,
+    queuePosition: queuePositionInState(state, entry.jobId, pool) ?? queue.length,
     waitForPermit: () => entry.promise,
     cancel: () => {
-      cancelQueued(entry.jobId, pool);
+      cancelQueuedInState(state, entry.jobId, pool);
     },
   };
 }
 
-function findQueuedLaunch(jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
-  for (const entry of getQueue(pool)) {
+function findQueuedLaunch(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
+  for (const entry of getQueue(state, pool)) {
     if (entry.jobId === jobId) return entry;
   }
   return null;
 }
 
-function admitQueueHead(pool: LaunchPool): void {
-  const queue = getQueue(pool);
+function admitQueueHead(state: LaunchCoordinatorState, pool: LaunchPool): void {
+  const queue = getQueue(state, pool);
   const head = queue[0];
   if (!head) return;
-  if (!hasLaunchCapacity(pool)) return;
+  if (!hasLaunchCapacity(state, pool)) return;
   queue.shift();
-  getActiveMap(pool).set(head.jobId, head.provider);
+  getActiveMap(state, pool).set(head.jobId, head.provider);
   head.resolve();
 }
 
@@ -214,28 +289,33 @@ function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): voi
   }
 }
 
-function drainQueuedLaunches(message: string): void {
-  drainQueuedLaunchPool(queuedLaunchesDefault, message);
-  drainQueuedLaunchPool(queuedLaunchesDiscuss, message);
-  drainQueuedLaunchPool(queuedLaunchesCurate, message);
+function drainQueuedLaunches(state: LaunchCoordinatorState, message: string): void {
+  drainQueuedLaunchPool(state.queuedLaunchesDefault, message);
+  drainQueuedLaunchPool(state.queuedLaunchesDiscuss, message);
+  drainQueuedLaunchPool(state.queuedLaunchesCurate, message);
 }
 
-function consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
-  const permit = signalLaunchPermits.get(signal);
+function consumeSignalPermit(state: LaunchCoordinatorState, signal: AbortSignal, provider: string): boolean {
+  const permit = state.signalLaunchPermits.get(signal);
   if (!permit) return false;
-  signalLaunchPermits.delete(signal);
-  return getActiveMap(permit.pool).get(permit.jobId) === provider;
+  state.signalLaunchPermits.delete(signal);
+  return getActiveMap(state, permit.pool).get(permit.jobId) === provider;
 }
 
-export function requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
-  const activeLaunches = getActiveMap(pool);
-  const queuedLaunches = getQueue(pool);
+function requestLaunchInState(
+  state: LaunchCoordinatorState,
+  jobId: string,
+  provider: string,
+  pool: LaunchPool = 'default',
+): AdmissionResult {
+  const activeLaunches = getActiveMap(state, pool);
+  const queuedLaunches = getQueue(state, pool);
   if (activeLaunches.has(jobId)) return IMMEDIATE_PERMIT;
 
-  const existingQueued = findQueuedLaunch(jobId, pool);
-  if (existingQueued) return queuedHandle(existingQueued, pool);
+  const existingQueued = findQueuedLaunch(state, jobId, pool);
+  if (existingQueued) return queuedHandle(state, existingQueued, pool);
 
-  if (queuedLaunches.length === 0 && hasLaunchCapacity(pool)) {
+  if (queuedLaunches.length === 0 && hasLaunchCapacity(state, pool)) {
     activeLaunches.set(jobId, provider);
     return IMMEDIATE_PERMIT;
   }
@@ -251,40 +331,49 @@ export function requestLaunch(jobId: string, provider: string, pool: LaunchPool 
 
   const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
   queuedLaunches.push(entry);
-  return queuedHandle(entry, pool);
+  return queuedHandle(state, entry, pool);
 }
 
-export function releaseLaunch(jobId: string, pool: LaunchPool = 'default'): void {
-  const activeLaunches = getActiveMap(pool);
+function releaseLaunchInState(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool = 'default'): void {
+  const activeLaunches = getActiveMap(state, pool);
   if (!activeLaunches.delete(jobId)) return;
-  admitQueueHead(pool);
+  admitQueueHead(state, pool);
 }
 
-export function cancelQueued(jobId: string, pool: LaunchPool = 'default'): boolean {
-  const queuedLaunches = getQueue(pool);
+function cancelQueuedInState(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool = 'default'): boolean {
+  const queuedLaunches = getQueue(state, pool);
   const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
   if (index === -1) return false;
   const [entry] = queuedLaunches.splice(index, 1);
   entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
-  admitQueueHead(pool);
+  admitQueueHead(state, pool);
   return true;
 }
 
-export function queueDepth(pool: LaunchPool = 'default'): number {
-  return getQueue(pool).length;
+function queueDepthInState(state: LaunchCoordinatorState, pool: LaunchPool = 'default'): number {
+  return getQueue(state, pool).length;
 }
 
-export function queuePosition(jobId: string, pool: LaunchPool = 'default'): number | null {
-  const index = getQueue(pool).findIndex((entry) => entry.jobId === jobId);
+function queuePositionInState(
+  state: LaunchCoordinatorState,
+  jobId: string,
+  pool: LaunchPool = 'default',
+): number | null {
+  const index = getQueue(state, pool).findIndex((entry) => entry.jobId === jobId);
   return index === -1 ? null : index + 1;
 }
 
-export function getActiveJobIds(pool: LaunchPool = 'default'): string[] {
-  return [...getActiveMap(pool).keys()];
+function getActiveJobIdsInState(state: LaunchCoordinatorState, pool: LaunchPool = 'default'): string[] {
+  return [...getActiveMap(state, pool).keys()];
 }
 
-export function bindLaunchPermit(jobId: string, signal: AbortSignal, pool: LaunchPool = 'default'): void {
-  signalLaunchPermits.set(signal, { jobId, pool });
+function bindLaunchPermitInState(
+  state: LaunchCoordinatorState,
+  jobId: string,
+  signal: AbortSignal,
+  pool: LaunchPool = 'default',
+): void {
+  state.signalLaunchPermits.set(signal, { jobId, pool });
 }
 
 function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -464,16 +553,16 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
 };
 
-export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
+function spawnCliInState(state: LaunchCoordinatorState, options: SpawnCliOptions): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
   const usingReservedPermit =
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-    options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
+    options.permitGranted || (options.signal ? consumeSignalPermit(state, options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
   if (!usingReservedPermit) {
-    const activeLaunches = getActiveMap(pool);
-    const queuedLaunches = getQueue(pool);
+    const activeLaunches = getActiveMap(state, pool);
+    const queuedLaunches = getQueue(state, pool);
     const globalActive = activeLaunches.size;
     const globalLimit = getActiveLimit(pool);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
@@ -502,7 +591,7 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       env: buildChildEnv(options.extraEnv),
     });
     const entry: ActiveChild = { provider: options.provider, child };
-    activeChildren.add(entry);
+    state.activeChildren.add(entry);
 
     let lastOutputAt = Date.now();
     let lastTickAt = Date.now();
@@ -523,9 +612,9 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
         settled = true;
         clearInterval(idleChecker);
         gracefulKill(child);
-        activeChildren.delete(entry);
+        state.activeChildren.delete(entry);
         if (internalPermitJobId) {
-          releaseLaunch(internalPermitJobId, pool);
+          releaseLaunchInState(state, internalPermitJobId, pool);
           internalPermitJobId = null;
         }
         reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
@@ -542,9 +631,9 @@ export function spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
       if (settled) return false;
       settled = true;
       clearInterval(idleChecker);
-      activeChildren.delete(entry);
+      state.activeChildren.delete(entry);
       if (internalPermitJobId) {
-        releaseLaunch(internalPermitJobId, pool);
+        releaseLaunchInState(state, internalPermitJobId, pool);
         internalPermitJobId = null;
       }
       if (abortHandler && options.signal) {
@@ -618,7 +707,17 @@ export type SpawnProviderServerOptions = {
   extraEnv?: Record<string, string>;
 };
 
-export async function spawnProviderServer(options: SpawnProviderServerOptions): Promise<ProviderServerHandle> {
+function spawnProviderServerInState(
+  state: LaunchCoordinatorState,
+  options: SpawnProviderServerOptions,
+): Promise<ProviderServerHandle> {
+  return spawnProviderServerAsync(state, options);
+}
+
+async function spawnProviderServerAsync(
+  state: LaunchCoordinatorState,
+  options: SpawnProviderServerOptions,
+): Promise<ProviderServerHandle> {
   const child = spawn(options.command, options.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
@@ -632,8 +731,8 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
     throw new Error(`Failed to spawn ${options.command}: child pid is unavailable`);
   }
 
-  const generation = nextProviderServerGeneration;
-  nextProviderServerGeneration += 1;
+  const generation = state.nextProviderServerGeneration;
+  state.nextProviderServerGeneration += 1;
 
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
@@ -687,7 +786,9 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
   });
 
   child.on('error', (error: Error) => {
-    const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, { stderr: entry.stderr });
+    const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, {
+      stderr: entry.stderr,
+    });
     if (!entry.closeRequested) {
       backendLog.error(`Provider server ${options.provider} failed`, error);
     }
@@ -722,7 +823,9 @@ export async function spawnProviderServer(options: SpawnProviderServerOptions): 
           sendProviderServerMessage(entry, { id, method, params });
         } catch (error) {
           entry.pending.delete(id);
-          reject(error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`));
+          reject(
+            error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`),
+          );
         }
       });
     },
@@ -994,16 +1097,26 @@ function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): voi
   renameSync(tmpPath, runtimePath);
 }
 
-export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
+function spawnDurableJobInState(
+  state: LaunchCoordinatorState,
+  options: SpawnDurableJobOptions,
+): Promise<CliExecResult> {
+  return spawnDurableJobAsync(state, options);
+}
+
+async function spawnDurableJobAsync(
+  state: LaunchCoordinatorState,
+  options: SpawnDurableJobOptions,
+): Promise<CliExecResult> {
   const pool = options.pool ?? 'default';
   const usingReservedPermit =
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-    options.permitGranted || (options.signal ? consumeSignalPermit(options.signal, options.provider) : false);
+    options.permitGranted || (options.signal ? consumeSignalPermit(state, options.signal, options.provider) : false);
   let internalPermitJobId: string | null = null;
 
   if (!usingReservedPermit) {
-    const activeLaunches = getActiveMap(pool);
-    const queuedLaunches = getQueue(pool);
+    const activeLaunches = getActiveMap(state, pool);
+    const queuedLaunches = getQueue(state, pool);
     const globalActive = activeLaunches.size;
     const globalLimit = getActiveLimit(pool);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
@@ -1040,7 +1153,7 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
       env: options.extraEnv,
     });
     durablePid = durable.pid;
-    activeDurablePids.add(durable.pid);
+    state.activeDurablePids.add(durable.pid);
 
     let abortedBySignal = false;
     let runtimeRecord = durable.runtimeRecord;
@@ -1133,14 +1246,14 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
     }
   } finally {
     if (durablePid !== null) {
-      activeDurablePids.delete(durablePid);
+      state.activeDurablePids.delete(durablePid);
     }
     if (killTimer) clearTimeout(killTimer);
     if (abortHandler && options.signal) {
       options.signal.removeEventListener('abort', abortHandler);
     }
     if (internalPermitJobId) {
-      releaseLaunch(internalPermitJobId, pool);
+      releaseLaunchInState(state, internalPermitJobId, pool);
     }
   }
 }
@@ -1148,13 +1261,23 @@ export async function spawnDurableJob(options: SpawnDurableJobOptions): Promise<
 // ── Recovery helpers ──────────────────────────────────────────────────────────
 
 /** Directly insert a job into a pool's activeLaunches map. Recovery-only. */
-export function restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
-  getActiveMap(pool).set(jobId, provider);
+function restoreActiveLaunchInState(
+  state: LaunchCoordinatorState,
+  jobId: string,
+  provider: string,
+  pool: LaunchPool = 'default',
+): void {
+  getActiveMap(state, pool).set(jobId, provider);
 }
 
 /** Insert a queue entry at the tail. Recovery calls this in sequence order. */
-export function restoreQueuedLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): QueuedHandle {
-  const queuedLaunches = getQueue(pool);
+function restoreQueuedLaunchInState(
+  state: LaunchCoordinatorState,
+  jobId: string,
+  provider: string,
+  pool: LaunchPool = 'default',
+): QueuedHandle {
+  const queuedLaunches = getQueue(state, pool);
 
   let resolve!: () => void;
   let reject!: (error: Error) => void;
@@ -1166,19 +1289,19 @@ export function restoreQueuedLaunch(jobId: string, provider: string, pool: Launc
   const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
   queuedLaunches.push(entry);
 
-  return queuedHandle(entry, pool);
+  return queuedHandle(state, entry, pool);
 }
 
-export function killAllChildren(): void {
-  drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
-  for (const { child } of activeChildren) {
+function killAllChildrenInState(state: LaunchCoordinatorState): void {
+  drainQueuedLaunches(state, QUEUE_DRAINED_MESSAGE);
+  for (const { child } of state.activeChildren) {
     gracefulKill(child);
   }
-  activeChildren.clear();
-  for (const pid of activeDurablePids) {
+  state.activeChildren.clear();
+  for (const pid of state.activeDurablePids) {
     safeKillPid(pid, 'SIGTERM');
     const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
     escalation.unref?.();
   }
-  activeDurablePids.clear();
+  state.activeDurablePids.clear();
 }

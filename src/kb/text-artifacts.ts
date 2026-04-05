@@ -1,8 +1,14 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
-import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
+import {
+  extractMalformedEntryRepair,
+  readCurateState,
+  writeCurateState,
+  type PendingRepair,
+} from './curate-state.js';
 import {
   deriveNoteIdentity,
   extractBody,
@@ -12,11 +18,12 @@ import {
   parseSourceFrontmatter,
 } from './frontmatter.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
+import { sortedMarkdownEntries } from './markdown-entries.js';
 import { stripMdExt } from './paths.js';
 import { loadKbNote } from './read.js';
-import { assertCommunitySlug, assertSourceSlug, compareLocale } from './validation.js';
+import { assertCommunitySlug, assertSourceSlug } from './validation.js';
 import { createOramaDb, toOramaDocument } from './orama-factory.js';
-import type { KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -28,22 +35,28 @@ import {
   type ReindexResult,
 } from './types.js';
 
-export function sortedMarkdownEntries(dirPath: string): string[] {
+type LoadedArtifacts<T> = {
+  entries: T[];
+  pendingRepair: PendingRepair[];
+};
+
+function readMalformedRepairEntry(
+  path: string,
+  kind: 'note' | 'source',
+  slug: string,
+  detectedAt: string,
+): PendingRepair | null {
   try {
-    return readdirSync(dirPath)
-      .filter((entry) => entry.endsWith('.md'))
-      .sort(compareLocale);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return [];
-    }
-    throw error;
+    return extractMalformedEntryRepair(kind, slug, readFileSync(path, 'utf-8'), detectedAt);
+  } catch {
+    return null;
   }
 }
 
-function loadNotes(kb: KbRuntime): KbReindexNoteRecord[] {
+function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindexNoteRecord> {
   const notesPath = kb.notesDir();
   const notes: KbReindexNoteRecord[] = [];
+  const pendingRepair: PendingRepair[] = [];
 
   for (const entry of sortedMarkdownEntries(notesPath)) {
     try {
@@ -58,16 +71,24 @@ function loadNotes(kb: KbRuntime): KbReindexNoteRecord[] {
         ...frontmatter,
       });
     } catch (error: unknown) {
+      const repair = readMalformedRepairEntry(join(notesPath, entry), 'note', stripMdExt(entry), detectedAt);
+      if (repair !== null) {
+        pendingRepair.push(repair);
+      }
       backendLog.warn(`Skipping malformed KB note ${entry}: ${errorMessage(error)}`);
     }
   }
 
-  return notes;
+  return {
+    entries: notes,
+    pendingRepair,
+  };
 }
 
-function loadSources(kb: KbRuntime): KbReindexSourceRecord[] {
+function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindexSourceRecord> {
   const sourcesPath = kb.sourcesDir();
   const sources: KbReindexSourceRecord[] = [];
+  const pendingRepair: PendingRepair[] = [];
 
   for (const entry of sortedMarkdownEntries(sourcesPath)) {
     try {
@@ -79,11 +100,18 @@ function loadSources(kb: KbRuntime): KbReindexSourceRecord[] {
         ...parseSourceFrontmatter(raw),
       });
     } catch (error: unknown) {
+      const repair = readMalformedRepairEntry(join(sourcesPath, entry), 'source', stripMdExt(entry), detectedAt);
+      if (repair !== null) {
+        pendingRepair.push(repair);
+      }
       backendLog.warn(`Skipping malformed KB source ${entry}: ${errorMessage(error)}`);
     }
   }
 
-  return sources;
+  return {
+    entries: sources,
+    pendingRepair,
+  };
 }
 
 function loadCommunityDocument(communityPath: string): Omit<KbReindexCommunityRecord, 'path' | 'slug'> {
@@ -207,15 +235,26 @@ function buildCounts(
 
 export class TextSnapshotRebuildError extends Error {
   readonly counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
+  readonly pendingRepair: PendingRepair[] | null;
 
   constructor(
     message: string,
     counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>,
+    pendingRepair: PendingRepair[] | null,
   ) {
     super(message);
     this.name = 'TextSnapshotRebuildError';
     this.counts = counts;
+    this.pendingRepair = pendingRepair;
   }
+}
+
+function persistPendingRepair(kb: KbRuntime, pendingRepair: PendingRepair[] | null): void {
+  const state = readCurateState(kb);
+  writeCurateState(kb, {
+    ...state,
+    pendingRepair,
+  });
 }
 
 /**
@@ -230,11 +269,14 @@ export async function rebuildTextArtifacts(
   communities: KbReindexCommunityRecord[];
   principles: Array<[string, string]>;
   counts: Pick<ReindexResult, 'notes' | 'sources' | 'communities' | 'principles' | 'tags'>;
+  pendingRepair: PendingRepair[] | null;
 }> {
-  const notes = loadNotes(kb);
-  const sources = loadSources(kb);
+  const detectedAt = new Date().toISOString();
+  const { entries: notes, pendingRepair: malformedNotes } = loadNotes(kb, detectedAt);
+  const { entries: sources, pendingRepair: malformedSources } = loadSources(kb, detectedAt);
   const communities = loadCommunities(kb);
   const principles = loadPrinciples(kb);
+  const pendingRepair = [...malformedNotes, ...malformedSources];
   const counts = buildCounts(notes, sources, communities, principles);
   const index = buildKbIndex(notes, sources, communities, principles);
   const { db, tokenizer } = await createOramaDb();
@@ -252,7 +294,7 @@ export async function rebuildTextArtifacts(
     const reason = `KB text index rebuild failed: ${errorMessage(error)}`;
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts);
+    throw new TextSnapshotRebuildError(reason, counts, pendingRepair.length === 0 ? null : pendingRepair);
   }
 
   const nextState = kb.recordReindexSuccess(startSeq);
@@ -264,7 +306,7 @@ export async function rebuildTextArtifacts(
     const reason = 'KB text index freshness changed during rebuild.';
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts);
+    throw new TextSnapshotRebuildError(reason, counts, pendingRepair.length === 0 ? null : pendingRepair);
   }
 
   kb.installRebuiltArtifacts(index, { db, tokenizer });
@@ -275,5 +317,25 @@ export async function rebuildTextArtifacts(
     communities,
     principles,
     counts,
+    pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
   };
+}
+
+/**
+ * @precondition Caller already holds `kb.withMutationLock()`.
+ */
+export async function rebuildTextArtifactsAndPersistRepairState(
+  kb: KbRuntime,
+  startSeq: number,
+): Promise<Awaited<ReturnType<typeof rebuildTextArtifacts>>> {
+  try {
+    const result = await rebuildTextArtifacts(kb, startSeq);
+    persistPendingRepair(kb, result.pendingRepair);
+    return result;
+  } catch (error: unknown) {
+    if (error instanceof TextSnapshotRebuildError) {
+      persistPendingRepair(kb, error.pendingRepair);
+    }
+    throw error;
+  }
 }

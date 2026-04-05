@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as curateState from '../curate-state.js';
+import type { KbRuntime } from '../contracts.js';
 import {
   buildClassificationPrompt,
   buildDiscoveryPrompt,
@@ -21,7 +22,7 @@ import {
 } from '../curate.js';
 import { readCurateState, writeCurateState, type CurateState } from '../curate-state.js';
 import { parseFrontmatter } from '../frontmatter.js';
-import { createKbRuntime, type KbRuntime } from '../runtime.js';
+import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
@@ -55,6 +56,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
+    pendingRepair: null,
     communityGraphHash: undefined,
     communityMembershipFingerprints: undefined,
     consecutiveFailures: 0,
@@ -727,6 +729,44 @@ describe('curate', () => {
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
 
+    it('uses the repair frontier for threshold checks before claiming', async () => {
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
+
+      for (let index = 1; index <= 10; index += 1) {
+        const slug = `coral-note-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Note ${index}`,
+          entrySeq: index,
+          body: `Body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Note ${index}`,
+          entrySeq: index,
+        });
+      }
+
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      writeCurateState(
+        runtime,
+        createCurateState({
+          lastRunDay: '2026-03-24',
+          pendingRepair: [
+            {
+              entryId: noteEntryId('coral-note-05'),
+              entrySeq: 5,
+              detectedAt: '2026-03-25T11:59:00.000Z',
+            },
+          ],
+        }),
+      );
+
+      await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
+      expect(readCurateState(runtime)).toMatchObject({
+        activeClaim: null,
+        lastAttemptedThrough: null,
+      });
+    });
+
     it('claims a new-day cohort in mutation-sequence order', async () => {
       const specs: Array<[string, number]> = [
         ['coral-ten', 10],
@@ -1058,6 +1098,87 @@ describe('curate', () => {
       expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-missing', 1));
     });
 
+    it('does not write or advance past the repair frontier during metadata commits', async () => {
+      writeNote('coral-safe', {
+        title: 'Safe',
+        tags: ['coral'],
+        updatedAt: '2026-03-21T00:00:00.000Z',
+        entrySeq: 4,
+      });
+      writeNote('coral-blocked', {
+        title: 'Blocked',
+        tags: ['coral'],
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        entrySeq: 6,
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-safe': createIndexNote({
+            title: 'Safe',
+            tags: ['coral'],
+            updatedAt: '2026-03-21T00:00:00.000Z',
+            entrySeq: 4,
+          }),
+          'coral-blocked': createIndexNote({
+            title: 'Blocked',
+            tags: ['coral'],
+            updatedAt: '2026-03-22T00:00:00.000Z',
+            entrySeq: 6,
+          }),
+        }),
+        principles: {},
+      });
+      writeCurateState(
+        runtime,
+        createCurateState({
+          pendingRepair: [
+            {
+              entryId: noteEntryId('coral-frontier'),
+              entrySeq: 5,
+              detectedAt: '2026-03-25T11:59:00.000Z',
+            },
+          ],
+        }),
+      );
+
+      await internals.commitMetadataTargets([
+        {
+          kind: 'note',
+          entryId: noteEntryId('coral-safe'),
+          slug: 'coral-safe',
+          entrySeq: 4,
+          claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
+          addTags: ['kb'],
+        },
+        {
+          kind: 'note',
+          entryId: noteEntryId('coral-blocked'),
+          slug: 'coral-blocked',
+          entrySeq: 6,
+          claimTimeUpdatedAt: '2026-03-22T00:00:00.000Z',
+          addTags: ['kb'],
+        },
+      ]);
+
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-safe.md'), 'utf-8')).tags).toEqual([
+        'coral',
+        'kb',
+      ]);
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-blocked.md'), 'utf-8')).tags).toEqual([
+        'coral',
+      ]);
+      expect(readCurateState(runtime)).toMatchObject({
+        processedThrough: cursor('coral-safe', 4),
+        pendingRepair: [
+          {
+            entryId: noteEntryId('coral-frontier'),
+            entrySeq: 5,
+            detectedAt: '2026-03-25T11:59:00.000Z',
+          },
+        ],
+      });
+    });
+
     it('applies cleanup-time parent absorption using live tag support', async () => {
       writeNote('coral-parent-child', {
         title: 'Parent Child',
@@ -1272,7 +1393,7 @@ describe('curate', () => {
       await internals.runPrincipleDiscovery(cursor('coral-discovery-54', 54));
 
       expect(lockSpy).toHaveBeenCalledTimes(2);
-      expect(readSpy).toHaveBeenCalledTimes(2);
+      expect(readSpy).toHaveBeenCalledTimes(3);
       lockSpy.mockRestore();
       readSpy.mockRestore();
 
@@ -1285,6 +1406,55 @@ describe('curate', () => {
       expect(
         parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-07.md'), 'utf-8')).principles,
       ).toEqual(['verify-at-boundaries']);
+    });
+
+    it('replays a rewound discovery frontier even below the normal threshold', async () => {
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
+
+      for (let index = 1; index <= 10; index += 1) {
+        const slug = `coral-replay-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Replay ${index}`,
+          entrySeq: index,
+          body: `Replay body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Replay ${index}`,
+          entrySeq: index,
+        });
+      }
+
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: cursor('coral-replay-10', 10),
+          discoveryHighSeq: 4,
+        }),
+      );
+      const spawn = vi.fn<SpawnCliFn>(async () => ({
+        stdout: JSON.stringify([
+          {
+            slug: 'replayed-principle',
+            statement: 'Replay rewound note ranges when discovery falls behind.',
+            notes: ['coral-replay-05', 'coral-replay-06', 'coral-replay-07'],
+          },
+        ]),
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+      useScheduler(spawn);
+
+      await internals.runPrincipleDiscovery(cursor('coral-replay-10', 10));
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(readCurateState(runtime)).toMatchObject({
+        discoveryHighSeq: 10,
+      });
+      expect(
+        parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-replay-05.md'), 'utf-8')).principles,
+      ).toEqual(['replayed-principle']);
     });
 
     it('refines an existing principle in the conflict path and still assigns it to the proposed notes', async () => {
@@ -1438,6 +1608,96 @@ describe('curate', () => {
         parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-discovery-09.md'), 'utf-8')).principles,
       ).toEqual(['payload-attachment-to-owner']);
       expect(readCurateState(runtime).pendingDiscoveries).toEqual([]);
+    });
+
+    it('re-reads and preserves fresh repair state when discovery resumes after the LLM await', async () => {
+      const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
+
+      for (let index = 1; index <= 50; index += 1) {
+        const slug = `coral-stale-${String(index).padStart(2, '0')}`;
+        writeNote(slug, {
+          title: `Stale ${index}`,
+          entrySeq: index,
+          body: `Stale body ${index}.`,
+        });
+        notes[slug] = createIndexNote({
+          title: `Stale ${index}`,
+          entrySeq: index,
+        });
+      }
+
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: cursor('coral-stale-50', 50),
+        }),
+      );
+
+      const spawnStarted = createDeferred<void>();
+      const releaseSpawn = createDeferred<void>();
+      useScheduler(async () => {
+        spawnStarted.resolve();
+        await releaseSpawn.promise;
+        return {
+          stdout: JSON.stringify([
+            {
+              slug: 'stale-batch-principle',
+              statement: 'Do not persist pre-await curate snapshots.',
+              notes: ['coral-stale-05', 'coral-stale-06', 'coral-stale-07'],
+            },
+          ]),
+          stderr: '',
+          code: 0,
+          aborted: false,
+        };
+      });
+
+      const discoveryPromise = internals.runPrincipleDiscovery(cursor('coral-stale-50', 50));
+      await spawnStarted.promise;
+
+      const pendingDiscovery = {
+        principle: 'existing-pending-principle',
+        statement: 'Preserve fresh pending discoveries.',
+        notes: ['coral-stale-01'],
+        createdAt: '2026-03-25T11:58:00.000Z',
+      };
+      writeCurateState(
+        runtime,
+        createCurateState({
+          processedThrough: cursor('coral-stale-10', 10),
+          discoveryHighSeq: 9,
+          pendingDiscoveries: [pendingDiscovery],
+          pendingRepair: [
+            {
+              entryId: noteEntryId('coral-stale-11'),
+              entrySeq: 11,
+              detectedAt: '2026-03-25T11:59:00.000Z',
+            },
+          ],
+        }),
+      );
+
+      releaseSpawn.resolve();
+      await discoveryPromise;
+
+      expect(existsSync(runtime.principlePath('stale-batch-principle'))).toBe(false);
+      expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-stale-05.md'), 'utf-8')).principles).toEqual(
+        [],
+      );
+      expect(readCurateState(runtime)).toMatchObject({
+        processedThrough: cursor('coral-stale-10', 10),
+        discoveryHighSeq: 9,
+        discoveryOffset: 0,
+        pendingDiscoveries: [pendingDiscovery],
+        pendingRepair: [
+          {
+            entryId: noteEntryId('coral-stale-11'),
+            entrySeq: 11,
+            detectedAt: '2026-03-25T11:59:00.000Z',
+          },
+        ],
+      });
     });
 
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
@@ -1768,6 +2028,24 @@ describe('curate', () => {
         entrySeq: 4,
         body: 'Indexing and planner tradeoffs.',
       });
+      writeFileSync(
+        join(runtime.notesDir(), 'coral-malformed.md'),
+        [
+          '---',
+          'tags: [coral',
+          'principles: []',
+          'source:',
+          '  - kangig94/coral',
+          'createdAt: 2026-03-20T00:00:00.000Z',
+          'updatedAt: 2026-03-20T00:00:00.000Z',
+          'entrySeq: 9',
+          '---',
+          '# Coral Malformed',
+          '',
+          'Body.',
+        ].join('\n'),
+        'utf-8',
+      );
 
       runtime.writeIndex({
         entries: createIndexEntries(notes),
@@ -1800,6 +2078,13 @@ describe('curate', () => {
       });
       expect(readCurateState(runtime)).toMatchObject({
         communityGraphHash: expect.any(String),
+        pendingRepair: [
+          {
+            entryId: noteEntryId('coral-malformed'),
+            entrySeq: 9,
+            detectedAt: expect.any(String),
+          },
+        ],
         communityMembershipFingerprints: {
           'attention-transformer-self-attention': expect.any(String),
           'query-planning-sqlite-indexing': expect.any(String),

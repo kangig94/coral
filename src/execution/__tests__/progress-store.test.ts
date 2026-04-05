@@ -13,7 +13,7 @@ import type {
   TerminalResult,
   WorkflowCheckpoint,
 } from '../../shared/types.js';
-import { eventBus } from '../event-bus.js';
+import { TypedEventBus } from '../event-bus.js';
 import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 
 const jobIdsToClean = new Set<string>();
@@ -23,6 +23,7 @@ const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
 const mockState = vi.hoisted(() => ({
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-progress-store-test-tmp`,
 }));
+let eventBus: TypedEventBus;
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -46,6 +47,7 @@ vi.mock('node:fs', async () => {
 beforeEach(() => {
   rmSync(mockState.tmpRoot, { recursive: true, force: true });
   mkdirSync(mockState.tmpRoot, { recursive: true });
+  eventBus = new TypedEventBus();
 });
 
 afterEach(() => {
@@ -55,13 +57,13 @@ afterEach(() => {
   jobIdsToClean.clear();
   rmSync(mockState.tmpRoot, { recursive: true, force: true });
   renameCalls.length = 0;
-  eventBus.removeAllListeners();
+  eventBus.reset();
   vi.restoreAllMocks();
 });
 
 describe('execution ProgressStore', () => {
   it('initJob creates directory and status.json with phase launching', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-init-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -79,7 +81,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendProgress returns incrementing eventId starting at 1', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-events-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -92,7 +94,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('emits event bus job lifecycle events', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-bus-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const created = vi.fn();
@@ -282,7 +284,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('markTerminalStatus emits job:completed', () => {
-    const store = new ProgressStore();
+    const store = new ProgressStore(eventBus);
     const jobId = `progress-terminal-event-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const completed = vi.fn();

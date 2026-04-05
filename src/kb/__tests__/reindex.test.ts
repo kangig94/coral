@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { communityEntryId, noteEntryId } from '../types.js';
+import { communityEntryId, noteEntryId, sourceEntryId } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -39,6 +39,10 @@ function createRuntime(
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
   });
+}
+
+function setMtime(path: string, mtime: Date): void {
+  utimesSync(path, mtime, mtime);
 }
 
 describe('kb reindex', () => {
@@ -282,5 +286,328 @@ This note has source as a bare string.
     const index = kb.readIndex();
     expect(index?.entries[noteEntryId('valid-note')]).toBeDefined();
     expect(index?.entries[noteEntryId('bad-source')]).toBeUndefined();
+  });
+
+  it('persists malformed note and source files into pendingRepair during reindex rebuilds', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { readCurateState } = await import('../curate-state.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.sourcesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.notesDir(), 'valid-note.md'),
+      `---
+tags: [test]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 5
+---
+# Valid Note
+Content here.
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.notesDir(), 'bad-note.md'),
+      `---
+tags: [test
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 7
+---
+# Bad Note
+This note has malformed frontmatter.
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.sourcesDir(), 'bad-source.md'),
+      `---
+title: Bad Source
+type: spec
+tags: [reference
+importedAt: 2026-03-20T00:00:00.000Z
+entrySeq: nope
+# Missing closing frontmatter delimiter on purpose
+`,
+      'utf-8',
+    );
+
+    const result = await reindex(kb);
+
+    expect(result).toMatchObject({
+      notes: 1,
+      sources: 0,
+      mode: 'text',
+    });
+    expect(readCurateState(kb).pendingRepair).toEqual(
+      expect.arrayContaining([
+        {
+          entryId: noteEntryId('bad-note'),
+          entrySeq: 7,
+          detectedAt: expect.any(String),
+        },
+        {
+          entryId: sourceEntryId('bad-source'),
+          entrySeq: null,
+          detectedAt: expect.any(String),
+        },
+      ]),
+    );
+  });
+
+  it('does not retry unchanged pendingRepair files on every runtime access', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { readCurateState } = await import('../curate-state.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.notesDir(), 'valid-note.md'),
+      `---
+tags: [test]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 5
+---
+# Valid Note
+Content here.
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.notesDir(), 'bad-note.md'),
+      `---
+tags: [test
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 7
+---
+# Bad Note
+This note has malformed frontmatter.
+`,
+      'utf-8',
+    );
+
+    await reindex(kb);
+
+    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+
+    await kb.ensureIndex();
+    await kb.ensureIndex();
+
+    expect(reindexSuccessSpy).not.toHaveBeenCalled();
+    expect(readCurateState(kb).pendingRepair).toEqual([
+      {
+        entryId: noteEntryId('bad-note'),
+        entrySeq: 7,
+        detectedAt: expect.any(String),
+      },
+    ]);
+  });
+
+  it('automatically retries pendingRepair notes after the file changes past detectedAt without relying on directory mtimes', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { readCurateState, writeCurateState } = await import('../curate-state.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.notesDir(), 'valid-note.md'),
+      `---
+tags: [test]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 12
+---
+# Valid Note
+Content here.
+`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(paths.notesDir(), 'bad-note.md'),
+      `---
+tags: [test
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 7
+---
+# Bad Note
+This note has malformed frontmatter.
+`,
+      'utf-8',
+    );
+    writeCurateState(kb, {
+      ...readCurateState(kb),
+      processedThrough: {
+        entryId: noteEntryId('valid-note'),
+        entrySeq: 12,
+      },
+      lastAttemptedThrough: {
+        entryId: noteEntryId('valid-note'),
+        entrySeq: 12,
+      },
+      discoveryHighSeq: 12,
+      discoveryOffset: 3,
+    });
+
+    await reindex(kb);
+
+    const pendingRepair = readCurateState(kb).pendingRepair;
+    expect(pendingRepair).toEqual([
+      {
+        entryId: noteEntryId('bad-note'),
+        entrySeq: 7,
+        detectedAt: expect.any(String),
+      },
+    ]);
+    expect(readCurateState(kb)).toMatchObject({
+      processedThrough: null,
+      lastAttemptedThrough: null,
+      discoveryHighSeq: 6,
+      discoveryOffset: 0,
+    });
+
+    const detectedAt = pendingRepair?.[0]?.detectedAt;
+    expect(detectedAt).toBeDefined();
+
+    writeFileSync(
+      join(paths.notesDir(), 'bad-note.md'),
+      `---
+tags: [test, repaired]
+principles: []
+source:
+  - kangig94/coral
+createdAt: 2026-03-20T00:00:00.000Z
+updatedAt: 2026-03-21T00:00:00.000Z
+entrySeq: 7
+---
+# Repaired Note
+This note is valid now.
+`,
+      'utf-8',
+    );
+    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) + 60_000));
+    setMtime(paths.notesDir(), new Date(Date.parse(detectedAt!) - 60_000));
+
+    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+
+    await kb.ensureIndex();
+
+    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(readCurateState(kb)).toMatchObject({
+      pendingRepair: null,
+      discoveryHighSeq: 6,
+      discoveryOffset: 0,
+    });
+    expect(kb.readIndex()?.entries[noteEntryId('bad-note')]).toEqual({
+      kind: 'note',
+      slug: 'bad-note',
+      title: 'Repaired Note',
+      tags: ['test', 'repaired'],
+      principles: [],
+      source: ['kangig94/coral'],
+      createdAt: '2026-03-20T00:00:00.000Z',
+      updatedAt: '2026-03-21T00:00:00.000Z',
+      related: [],
+      entrySeq: 7,
+    });
+  });
+
+  it('explicit reindex retries pendingRepair sources even when runtime freshness checks stay quiet', async () => {
+    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { readCurateState } = await import('../curate-state.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.sourcesDir(), { recursive: true });
+
+    writeFileSync(
+      join(paths.sourcesDir(), 'bad-source.md'),
+      `---
+title: Bad Source
+type: spec
+tags: [reference
+importedAt: 2026-03-20T00:00:00.000Z
+entrySeq: 8
+---
+# Bad Source
+Malformed source frontmatter.
+`,
+      'utf-8',
+    );
+
+    await reindex(kb);
+
+    const detectedAt = readCurateState(kb).pendingRepair?.[0]?.detectedAt;
+    expect(readCurateState(kb).pendingRepair).toEqual([
+      {
+        entryId: sourceEntryId('bad-source'),
+        entrySeq: 8,
+        detectedAt: expect.any(String),
+      },
+    ]);
+
+    writeFileSync(
+      join(paths.sourcesDir(), 'bad-source.md'),
+      `---
+title: Repaired Source
+type: spec
+tags: [reference]
+importedAt: 2026-03-21T00:00:00.000Z
+entrySeq: 8
+---
+# Repaired Source
+Source body.
+`,
+      'utf-8',
+    );
+    setMtime(join(paths.sourcesDir(), 'bad-source.md'), new Date(Date.parse(detectedAt!) - 60_000));
+    setMtime(paths.sourcesDir(), new Date(Date.parse(detectedAt!) - 60_000));
+
+    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+
+    await kb.ensureIndex();
+    expect(reindexSuccessSpy).not.toHaveBeenCalled();
+    expect(readCurateState(kb).pendingRepair).toEqual([
+      {
+        entryId: sourceEntryId('bad-source'),
+        entrySeq: 8,
+        detectedAt: expect.any(String),
+      },
+    ]);
+
+    await reindex(kb);
+
+    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(readCurateState(kb).pendingRepair).toBeNull();
+    expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
+      kind: 'source',
+      slug: 'bad-source',
+      title: 'Repaired Source',
+      type: 'spec',
+      tags: ['reference'],
+      importedAt: '2026-03-21T00:00:00.000Z',
+      related: [],
+      entrySeq: 8,
+    });
   });
 });

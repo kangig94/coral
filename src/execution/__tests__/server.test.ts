@@ -27,9 +27,13 @@ import {
 } from '../../infra/paths.js';
 import type { BackendServerController } from '../server.js';
 import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { LifecycleState } from '../server.js';
+import type { LifecycleState } from '../server-types.js';
 import type { PersistedLaunchRecord } from '../../shared/types.js';
 import { domainSuccess, type ToolDomainResult } from '../tool-response.js';
+import { LaunchCoordinator } from '../engine.js';
+import { TypedEventBus } from '../event-bus.js';
+import { createProviderHostManager } from '../host-manager.js';
+import { ProviderRegistry } from '../../providers/registry.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -503,12 +507,12 @@ describe('execution backend server', () => {
   });
 
   it('includes durable pids in activeChildren count', async () => {
-    const backend = await startBackendServer();
-    const engineModule = await import('../engine.js');
+    const launchCoordinator = new LaunchCoordinator();
+    const backend = await startBackendServer({ launchCoordinator });
 
     // Simulate two durable processes running
-    engineModule.activeDurablePids.add(99901);
-    engineModule.activeDurablePids.add(99902);
+    launchCoordinator.activeDurablePids.add(99901);
+    launchCoordinator.activeDurablePids.add(99902);
 
     try {
       const response = await fetch(`${backend.baseUrl}/health`, {
@@ -518,16 +522,15 @@ describe('execution backend server', () => {
 
       expect(body.activeChildren).toBe(2);
     } finally {
-      engineModule.activeDurablePids.delete(99901);
-      engineModule.activeDurablePids.delete(99902);
+      launchCoordinator.activeDurablePids.delete(99901);
+      launchCoordinator.activeDurablePids.delete(99902);
     }
   });
 
   it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
     const { serverModule } = await loadExecutionModules();
-    const [{ ExecutionService }, engineModule, claudeRequestMapping, codexRequestMapping] = await Promise.all([
+    const [{ ExecutionService }, claudeRequestMapping, codexRequestMapping] = await Promise.all([
       import('../service.js'),
-      import('../engine.js'),
       import('../../providers/claude/request-mapping.js'),
       import('../../providers/codex/request-mapping.js'),
     ]);
@@ -561,6 +564,25 @@ describe('execution backend server', () => {
 
     const services = new Map<string, InstanceType<typeof ExecutionService>>();
     const capturedManagers: unknown[] = [];
+    const sharedClaudeHandle = createFakeProviderServerHandle({
+      generation: 11,
+      request: async (method) => {
+        if (method === 'broker/shutdown') {
+          sharedClaudeHandle.resolveClosed();
+        }
+        return {};
+      },
+    });
+    const codexHandleA = createFakeProviderServerHandle({ generation: 22 });
+    const codexHandleB = createFakeProviderServerHandle({ generation: 33 });
+    const spawnProviderServer = vi
+      .fn()
+      .mockResolvedValueOnce(sharedClaudeHandle.handle)
+      .mockResolvedValueOnce(codexHandleA.handle)
+      .mockResolvedValueOnce(codexHandleB.handle);
+    const providerHostManager = createProviderHostManager({
+      spawnProviderServer,
+    });
     controller = serverModule.createBackendServer({
       instanceId: 'execution-backend-instance-1',
       token: 'test-token',
@@ -570,9 +592,10 @@ describe('execution backend server', () => {
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
       progressStore,
+      providerHostManager,
       createExecutionService: (ctx, deps) => {
         capturedManagers.push(deps.providerHostManager);
-        const service = new ExecutionService(ctx, deps.progressStore, deps.bundleHash, deps.providerHostManager);
+        const service = new ExecutionService(ctx, deps);
         services.set(ctx.projectRoot, service);
         return service;
       },
@@ -611,23 +634,6 @@ describe('execution backend server', () => {
     const serviceB = services.get(projectRootB);
     expect(serviceA).toBeInstanceOf(ExecutionService);
     expect(serviceB).toBeInstanceOf(ExecutionService);
-
-    const sharedClaudeHandle = createFakeProviderServerHandle({
-      generation: 11,
-      request: async (method) => {
-        if (method === 'broker/shutdown') {
-          sharedClaudeHandle.resolveClosed();
-        }
-        return {};
-      },
-    });
-    const codexHandleA = createFakeProviderServerHandle({ generation: 22 });
-    const codexHandleB = createFakeProviderServerHandle({ generation: 33 });
-    const spawnProviderServer = vi
-      .spyOn(engineModule, 'spawnProviderServer')
-      .mockResolvedValueOnce(sharedClaudeHandle.handle)
-      .mockResolvedValueOnce(codexHandleA.handle)
-      .mockResolvedValueOnce(codexHandleB.handle);
 
     const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec();
     const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
@@ -842,15 +848,14 @@ describe('execution backend server', () => {
       throw new Error('Expected idle watcher callback');
     }
 
-    const engine = await import('../engine.js');
-    const handle = await engine.spawnProviderServer({
+    const launchCoordinator = new LaunchCoordinator();
+    const handle = await launchCoordinator.spawnProviderServer({
       provider: 'codex',
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
 
     try {
-      expect(engine.activeChildren.size).toBe(0);
       expect(checkIdle()).toBe(true);
     } finally {
       await handle.close();
@@ -1316,10 +1321,11 @@ describe('execution backend server', () => {
 
   it('streams passive dashboard SSE events and applies the optional job filter', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
+    const eventBus = new TypedEventBus();
     const backend = await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
+      eventBus,
     });
-    const { eventBus } = await import('../event-bus.js');
 
     const stream = await openHttpStream(`${backend.baseUrl}/events/stream?filter=job:job-1`, {
       'X-Coral-Backend-Token': backend.token,
@@ -2036,6 +2042,9 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
         getRecoveryService: () => fakeService as never,
@@ -2301,6 +2310,9 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
         getRecoveryService: () => fakeService as never,
@@ -2414,6 +2426,9 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
         getRecoveryService: () => fakeService as never,
@@ -2553,6 +2568,9 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         discussStores: new Map([[source, store]]),
         discussRegistry,
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator(),
+        providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
         getRecoveryService: () => fakeService as never,

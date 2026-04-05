@@ -1,5 +1,6 @@
-import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
-import { TextSnapshotRebuildError, rebuildTextArtifacts } from './text-artifacts.js';
+import type { KbRuntime } from './contracts.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import type { ReindexResult } from './types.js';
 import { ensureVectorIndex } from './vector-sync.js';
 
@@ -9,10 +10,10 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const textResult = await kb.withMutationLock(async () => {
     runEntrySeqUpgradeGuard(kb);
     const startSeq = kb.readIndexState().mutationSeq;
-    let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifacts>>;
+    let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
 
     try {
-      rebuildResult = await rebuildTextArtifacts(kb, startSeq);
+      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(kb, startSeq);
     } catch (error: unknown) {
       if (error instanceof TextSnapshotRebuildError) {
         return {

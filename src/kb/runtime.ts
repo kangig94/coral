@@ -2,8 +2,17 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
-import { CURATE_STATE_FILE } from './curate-state.js';
+import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate-state.js';
+import type {
+  KbCachedOramaIndex,
+  KbIndexState,
+  KbRuntime,
+  KbVectorLease,
+  KbVectorSpecState,
+  KbVectorTextSnapshot,
+} from './contracts.js';
 import { normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
+import { sortedMarkdownEntries } from './markdown-entries.js';
 import { writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
 import {
@@ -18,7 +27,7 @@ import {
   sourcesDir as pathsSourcesDir,
   stripMdExt,
 } from './paths.js';
-import { rebuildTextArtifacts, sortedMarkdownEntries } from './text-artifacts.js';
+import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
   communityEntryId,
   isNoteEntry,
@@ -54,95 +63,6 @@ const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
 export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
-
-export type KbVectorSpecState = {
-  indexedSeq: number;
-  staleReason?: string;
-  activeSnapshotId?: string;
-};
-
-export type KbVectorLease = {
-  store: VectorStore;
-  specId: string;
-  snapshotId: string;
-  generation: number;
-  vectorStatus: KbVectorSpecState | null;
-  release(): Promise<void>;
-};
-
-export type KbVectorTextSnapshot = {
-  index: KbIndex;
-  notes: Array<{ entry: NoteEntry; body: string }>;
-  sources: Array<{ entry: SourceEntry; body: string }>;
-};
-
-export type KbIndexState = {
-  mutationSeq: number;
-  textIndexedSeq: number;
-  textStaleReason?: string;
-  vector: {
-    bySpec: Record<string, KbVectorSpecState>;
-  };
-};
-
-export type KbCachedOramaIndex = {
-  db: KbOramaDb;
-  tokenizer: KbOramaTokenizer;
-};
-
-export type KbRuntime = {
-  readonly markdownRoot: string;
-  readonly runtimeDir: string;
-  vectorStore: VectorStore | null;
-  initVectorStore(pluginRoot: string): Promise<void>;
-  openVectorStore(
-    dbPath: string,
-    handleToken: string,
-  ): Promise<{
-    store: VectorStore;
-    close(): Promise<void>;
-  } | null>;
-  activateVectorSnapshot(specId: string, snapshotId: string): Promise<void>;
-  acquireVectorLease(): Promise<KbVectorLease | null>;
-  closeVectorStores(): Promise<void>;
-  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null;
-  readIndex(): KbIndex | null;
-  persistIndexToDisk(index: KbIndex): KbIndex;
-  writeIndex(index: KbIndex): KbIndex;
-  readIndexOrEmpty(): KbIndex;
-  readIndexStateIfPresent(): KbIndexState | null;
-  readIndexState(): KbIndexState;
-  writeIndexState(state: KbIndexState): void;
-  recordMutationCommitted(): KbIndexState;
-  recordIndexSyncSuccess(): KbIndexState;
-  recordIndexSyncFailure(reason: string): KbIndexState;
-  recordReindexSuccess(startSeq: number): KbIndexState;
-  recordVectorSyncSuccess(specId: string, startSeq: number, snapshotId: string): KbIndexState;
-  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState;
-  getVectorStatus(specId: string): KbVectorSpecState | null;
-  ensureIndex(): Promise<KbIndex>;
-  ensureOramaIndex(): Promise<{
-    db: KbOramaDb;
-    tokenizer: KbOramaTokenizer;
-    index: KbIndex;
-  }>;
-  ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot>;
-  withMutationLock<T>(fn: () => Promise<T> | T): Promise<T>;
-  invalidateKbCache(): void;
-  invalidateTextSnapshot(reason: string): KbIndexState;
-  installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex;
-  persistOramaSnapshot(db: KbOramaDb): void;
-  notesDir(): string;
-  sourcesDir(): string;
-  communitiesDir(): string;
-  principlesDir(): string;
-  notePath(note: string): string;
-  sourcePath(source: string): string;
-  communityPath(community: string): string;
-  principlePath(principle: string): string;
-  sourceImportStageDir(): string;
-  curateStatePath(): string;
-};
 
 function defaultIndexState(): KbIndexState {
   return {
@@ -739,6 +659,38 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     }
   }
 
+  function pendingRepairPath(entry: PendingRepair): string | null {
+    if (entry.entryId.startsWith('note:')) {
+      return notePath(entry.entryId.slice('note:'.length));
+    }
+    if (entry.entryId.startsWith('source:')) {
+      return sourcePath(entry.entryId.slice('source:'.length));
+    }
+
+    return null;
+  }
+
+  function pendingRepairNeedsRetry(): boolean {
+    const pendingRepair = readCurateState(kbRuntime).pendingRepair;
+    if (pendingRepair === null) {
+      return false;
+    }
+
+    return pendingRepair.some((entry) => {
+      const detectedAt = Date.parse(entry.detectedAt);
+      const path = pendingRepairPath(entry);
+      if (Number.isNaN(detectedAt) || path === null) {
+        return false;
+      }
+
+      try {
+        return statSync(path).mtimeMs > detectedAt;
+      } catch {
+        return false;
+      }
+    });
+  }
+
   function indexNeedsRebuild(): boolean {
     const currentIndexPath = indexPath();
     if (!existsSync(currentIndexPath)) {
@@ -757,7 +709,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
   function textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
     const currentState = state === undefined ? readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || indexNeedsRebuild();
+    return !isFreshTextSnapshot(currentState) || indexNeedsRebuild() || pendingRepairNeedsRetry();
   }
 
   async function ensureIndex(): Promise<KbIndex> {
@@ -770,7 +722,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
           return;
         }
 
-        await rebuildTextArtifacts(kbRuntime, startSeq);
+        await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
       });
     }
 
@@ -798,7 +750,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
       if (textArtifactsNeedRebuild(state)) {
         try {
-          await rebuildTextArtifacts(kbRuntime, startSeq);
+          await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
         } catch (error: unknown) {
           throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
         }
@@ -807,7 +759,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
           installOramaCache(await loadOramaSnapshot());
         } catch {
           try {
-            await rebuildTextArtifacts(kbRuntime, startSeq);
+            await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
           } catch (error: unknown) {
             throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
           }
@@ -828,7 +780,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
 
   async function ensureTextArtifactsFreshUnderLock(startSeq: number): Promise<KbVectorTextSnapshot> {
     if (textArtifactsNeedRebuild()) {
-      await rebuildTextArtifacts(kbRuntime, startSeq);
+      await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
       return captureVectorTextSnapshot();
     }
 
@@ -836,7 +788,7 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
       try {
         installOramaCache(await loadOramaSnapshot());
       } catch {
-        await rebuildTextArtifacts(kbRuntime, startSeq);
+        await rebuildTextArtifactsAndPersistRepairState(kbRuntime, startSeq);
       }
     }
 

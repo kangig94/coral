@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderServerHandle } from '../engine.js';
-import * as engineModule from '../engine.js';
 import { DefaultProviderHostManager, hostKeyFromSpec } from '../host-manager.js';
 import type { ProviderServerSpec } from '../../providers/types.js';
 
@@ -66,6 +65,20 @@ function createFakeProviderServerHandle(options?: {
   };
 }
 
+function createSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
+  const fallback = handles.at(-1);
+  const spawnProviderServer = vi.fn(async () => {
+    if (!fallback) {
+      throw new Error('No provider server handle configured');
+    }
+    return fallback;
+  });
+  for (const handle of handles) {
+    spawnProviderServer.mockResolvedValueOnce(handle);
+  }
+  return spawnProviderServer;
+}
+
 describe('ProviderHostManager', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -121,15 +134,15 @@ describe('ProviderHostManager', () => {
   });
 
   it('reuses one shared host and isolates incompatible codex hosts by spawn invariants', async () => {
-    const manager = new DefaultProviderHostManager();
     const firstHandle = createFakeProviderServerHandle({ generation: 11 });
     const secondHandle = createFakeProviderServerHandle({ generation: 22 });
     const thirdHandle = createFakeProviderServerHandle({ generation: 33 });
-    const spawnProviderServer = vi
-      .spyOn(engineModule, 'spawnProviderServer')
-      .mockResolvedValueOnce(firstHandle.handle)
-      .mockResolvedValueOnce(secondHandle.handle)
-      .mockResolvedValueOnce(thirdHandle.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(
+      firstHandle.handle,
+      secondHandle.handle,
+      thirdHandle.handle,
+    );
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const sharedSpec: ProviderServerSpec = {
       provider: 'claude',
@@ -172,9 +185,9 @@ describe('ProviderHostManager', () => {
   });
 
   it('borrows a live exclusive host only when the generation matches', async () => {
-    const manager = new DefaultProviderHostManager();
     const server = createFakeProviderServerHandle({ generation: 41 });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',
@@ -199,12 +212,12 @@ describe('ProviderHostManager', () => {
   it('falls back to signal shutdown when broker/shutdown succeeds but the process never closes', async () => {
     vi.useFakeTimers();
 
-    const manager = new DefaultProviderHostManager();
     const server = createFakeProviderServerHandle({
       generation: 17,
       request: async () => ({ ok: true }),
     });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -233,7 +246,6 @@ describe('ProviderHostManager', () => {
   });
 
   it('uses shutdown capability metadata for graceful RPC shutdown before any signal fallback', async () => {
-    const manager = new DefaultProviderHostManager();
     const server = createFakeProviderServerHandle({
       generation: 7,
       request: async (method) => {
@@ -243,7 +255,8 @@ describe('ProviderHostManager', () => {
         return { ok: true };
       },
     });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -273,9 +286,9 @@ describe('ProviderHostManager', () => {
   });
 
   it('falls back to signal shutdown when no graceful shutdown capability is declared', async () => {
-    const manager = new DefaultProviderHostManager();
     const server = createFakeProviderServerHandle({ generation: 9 });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',
@@ -297,7 +310,6 @@ describe('ProviderHostManager', () => {
   it('starts Claude idle timeout from host/stats, cancels on activity and acquire, and shuts down after the TTL', async () => {
     vi.useFakeTimers();
 
-    const manager = new DefaultProviderHostManager({ idleTimeoutMs: 25 });
     const server = createFakeProviderServerHandle({
       generation: 12,
       request: async (method) => {
@@ -307,7 +319,8 @@ describe('ProviderHostManager', () => {
         return { ok: true };
       },
     });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ idleTimeoutMs: 25, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -363,9 +376,9 @@ describe('ProviderHostManager', () => {
     vi.useFakeTimers();
     vi.stubEnv('CORAL_BROKER_IDLE_MS', '15');
 
-    const manager = new DefaultProviderHostManager();
     const server = createFakeProviderServerHandle({ generation: 13 });
-    vi.spyOn(engineModule, 'spawnProviderServer').mockResolvedValue(server.handle);
+    const spawnProviderServer = createSpawnProviderServerMock(server.handle);
+    const manager = new DefaultProviderHostManager({ spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',

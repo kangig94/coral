@@ -3,7 +3,8 @@ import { isNoEntryError } from '../shared/mcp-utils.js';
 import { parseSourceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
 import { buildSourceIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
-import { runEntrySeqUpgradeGuard, type KbRuntime } from './runtime.js';
+import type { KbRuntime } from './contracts.js';
+import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceListResult } from './types.js';
 import { compareLocale, assertSourceSlug } from './validation.js';
 

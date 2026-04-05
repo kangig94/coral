@@ -28,7 +28,7 @@ import {
 } from '../shared/types.js';
 import { isNoEntryError, nowIsoString } from '../shared/mcp-utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
-import { eventBus } from './event-bus.js';
+import { TypedEventBus } from './event-bus.js';
 
 export { JOBS_DIR } from '../infra/paths.js';
 
@@ -71,11 +71,13 @@ export class ProgressStore {
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private readonly runtimeCache = new Map<string, PersistedRuntimeRecord | null>();
   private readonly knownJobIds = new Set<string>();
+  private readonly eventBus: TypedEventBus;
   private liveCount = 0;
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
 
-  constructor() {
+  constructor(eventBus: TypedEventBus = new TypedEventBus()) {
+    this.eventBus = eventBus;
     try {
       for (const entry of readdirSync(JOBS_DIR, { withFileTypes: true })) {
         if (entry.isDirectory()) {
@@ -87,6 +89,10 @@ export class ProgressStore {
         throw error;
       }
     }
+  }
+
+  getEventBus(): TypedEventBus {
+    return this.eventBus;
   }
 
   /**
@@ -160,7 +166,7 @@ export class ProgressStore {
     this.statusCache.set(jobId, { ...record });
     this.notifyWaiters();
     if (oldRecord && oldRecord.phase !== record.phase) {
-      eventBus.emit('job:phase_changed', { jobId, phase: record.phase, previousPhase: oldRecord.phase });
+      this.eventBus.emit('job:phase_changed', { jobId, phase: record.phase, previousPhase: oldRecord.phase });
     }
   }
 
@@ -214,7 +220,7 @@ export class ProgressStore {
     this.knownJobIds.add(jobId);
     this.applyStatusRecord(jobId, record);
     this.writeJobFile(this.progressPath(jobId), '');
-    eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
+    this.eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
     this.jobStartedAt.set(jobId, Date.now());
   }
 
@@ -302,7 +308,7 @@ export class ProgressStore {
       /* progress write must not break execution */
     }
     this.notifyWaiters();
-    eventBus.emit('job:progress', { jobId, eventId, message: stamped });
+    this.eventBus.emit('job:progress', { jobId, eventId, message: stamped });
     return eventId;
   }
 
@@ -328,7 +334,7 @@ export class ProgressStore {
 
     this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
-    eventBus.emit('job:completed', { jobId, result });
+    this.eventBus.emit('job:completed', { jobId, result });
     return eventId;
   }
 
@@ -338,7 +344,7 @@ export class ProgressStore {
     if (!didUpdateStatus) {
       this.notifyWaiters();
     }
-    eventBus.emit('job:completed', { jobId, result });
+    this.eventBus.emit('job:completed', { jobId, result });
   }
 
   private updateTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): boolean {

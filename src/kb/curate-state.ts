@@ -1,12 +1,13 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
 import { replaceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
+import { sortedMarkdownEntries } from './markdown-entries.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import { stripMdExt } from './paths.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import type { KbRuntime } from './runtime.js';
-import { sortedMarkdownEntries } from './text-artifacts.js';
+import type { KbRuntime } from './contracts.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -21,11 +22,13 @@ import { parseNonNegativeInteger, parsePositiveInteger } from './validation.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
-export const CURATE_STATE_MIGRATION_VERSION = 2;
+export const CURATE_STATE_MIGRATION_VERSION = 3;
 const CLAIM_STALE_MS = 15 * 60 * 1000;
 const CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 const CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
 const CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
+const LENIENT_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)(?:\r?\n---(?:\r?\n|$)|$)/;
+const LENIENT_ENTRY_SEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
 
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
@@ -48,6 +51,12 @@ export type CurateCursor = {
   entryId: KbEntryId;
 };
 
+export type PendingRepair = {
+  entrySeq: number | null;
+  entryId: KbEntryId;
+  detectedAt: string;
+};
+
 export type CurateState = {
   processedThrough: CurateCursor | null;
   discoveryHighSeq: number;
@@ -65,6 +74,7 @@ export type CurateState = {
     notes: string[];
     createdAt: string;
   }>;
+  pendingRepair: PendingRepair[] | null;
   communityGraphHash?: string;
   communityMembershipFingerprints?: Record<string, string>;
   consecutiveFailures: number;
@@ -73,6 +83,34 @@ export type CurateState = {
 };
 
 export type PendingDiscovery = CurateState['pendingDiscoveries'][number];
+export type CurateRepairFrontier =
+  | { kind: 'none' }
+  | { kind: 'unknown' }
+  | {
+      kind: 'known';
+      cursor: CurateCursor;
+    };
+
+const kbEntryIdSchema = z.string().transform((value, ctx): KbEntryId => {
+  const entryId = parseKbEntryId(value);
+  if (entryId !== null) {
+    return entryId;
+  }
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: 'must be a KB entry ID',
+  });
+  return z.NEVER;
+});
+
+const pendingRepairEntrySchema = z.object({
+  entrySeq: z.number().int().positive().nullable(),
+  entryId: kbEntryIdSchema,
+  detectedAt: z.string().datetime({ offset: true }),
+});
+
+const pendingRepairSchema = z.array(pendingRepairEntrySchema).nullable();
 
 type ScannedNote = {
   note: string;
@@ -99,6 +137,7 @@ function defaultCurateState(): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
+    pendingRepair: null,
     communityGraphHash: undefined,
     communityMembershipFingerprints: undefined,
     consecutiveFailures: 0,
@@ -223,6 +262,14 @@ function parsePendingDiscoveries(value: unknown): CurateState['pendingDiscoverie
   });
 }
 
+function parsePendingRepair(value: unknown): CurateState['pendingRepair'] {
+  if (value === undefined) {
+    return null;
+  }
+
+  return pendingRepairSchema.parse(value);
+}
+
 function parseActiveClaim(value: unknown): CurateState['activeClaim'] {
   if (value === undefined || value === null) {
     return null;
@@ -250,7 +297,7 @@ function parseCurateState(value: unknown): CurateState {
     throw new Error('Invalid curate state');
   }
 
-  return {
+  return normalizeCurateStateRepairFrontier({
     processedThrough: parseCursor(value.processedThrough, 'processedThrough'),
     discoveryHighSeq: parseNonNegativeInteger(value.discoveryHighSeq ?? 0, 'discoveryHighSeq'),
     discoveryOffset: parseNonNegativeInteger(value.discoveryOffset ?? 0, 'discoveryOffset'),
@@ -259,6 +306,7 @@ function parseCurateState(value: unknown): CurateState {
     retryNotBefore: parseOptionalString(value.retryNotBefore, 'retryNotBefore'),
     activeClaim: parseActiveClaim(value.activeClaim),
     pendingDiscoveries: parsePendingDiscoveries(value.pendingDiscoveries),
+    pendingRepair: parsePendingRepair(value.pendingRepair),
     communityGraphHash: parseOptionalDefinedString(value.communityGraphHash, 'communityGraphHash'),
     communityMembershipFingerprints: parseOptionalStringRecord(
       value.communityMembershipFingerprints,
@@ -267,7 +315,7 @@ function parseCurateState(value: unknown): CurateState {
     consecutiveFailures: parseNonNegativeInteger(value.consecutiveFailures ?? 0, 'consecutiveFailures'),
     initialized: value.initialized === true,
     migrationVersion: parseNonNegativeInteger(value.migrationVersion ?? 0, 'migrationVersion'),
-  };
+  });
 }
 
 function recoverCursor(value: unknown): CurateCursor | null {
@@ -303,6 +351,14 @@ function recoverPendingDiscoveries(value: unknown): CurateState['pendingDiscover
     return parsePendingDiscoveries(value);
   } catch {
     return [];
+  }
+}
+
+function recoverPendingRepair(value: unknown): CurateState['pendingRepair'] {
+  try {
+    return parsePendingRepair(value);
+  } catch {
+    return null;
   }
 }
 
@@ -375,7 +431,7 @@ function recoverCurateState(value: unknown): CurateState {
     }
   }
 
-  return {
+  return normalizeCurateStateRepairFrontier({
     processedThrough: recoverCursor(value.processedThrough),
     discoveryHighSeq,
     discoveryOffset,
@@ -384,12 +440,13 @@ function recoverCurateState(value: unknown): CurateState {
     retryNotBefore: recoverOptionalString(value.retryNotBefore),
     activeClaim,
     pendingDiscoveries: recoverPendingDiscoveries(value.pendingDiscoveries),
+    pendingRepair: recoverPendingRepair(value.pendingRepair),
     communityGraphHash: recoverOptionalDefinedString(value.communityGraphHash),
     communityMembershipFingerprints: recoverOptionalStringRecord(value.communityMembershipFingerprints),
     consecutiveFailures,
     initialized: value.initialized === true,
     migrationVersion,
-  };
+  });
 }
 
 function readRawCurateState(target: CurateStateTarget): unknown | undefined {
@@ -547,7 +604,7 @@ export function readCurateState(target: CurateStateTarget): CurateState {
 }
 
 export function writeCurateState(target: CurateStateTarget, state: CurateState): void {
-  writeFileAtomic(curateStatePath(target), `${JSON.stringify(state, null, 2)}\n`);
+  writeFileAtomic(curateStatePath(target), `${JSON.stringify(normalizeCurateStateRepairFrontier(state), null, 2)}\n`);
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {
@@ -563,6 +620,168 @@ export function sameStringList(left: string[], right: string[]): boolean {
   }
 
   return left.every((value, index) => value === right[index]);
+}
+
+function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
+  if (left.entrySeq === null || right.entrySeq === null) {
+    if (left.entrySeq === null && right.entrySeq === null) {
+      return left.entryId.localeCompare(right.entryId);
+    }
+
+    return left.entrySeq === null ? -1 : 1;
+  }
+
+  return compareCursor(
+    {
+      entryId: left.entryId,
+      entrySeq: left.entrySeq,
+    },
+    {
+      entryId: right.entryId,
+      entrySeq: right.entrySeq,
+    },
+  );
+}
+
+function effectivePendingRepair(pendingRepair: CurateState['pendingRepair']): PendingRepair[] | null {
+  if (pendingRepair === null || pendingRepair.length === 0) {
+    return null;
+  }
+
+  return [...pendingRepair].sort(comparePendingRepair);
+}
+
+export function getCurateRepairFrontier(pendingRepair: CurateState['pendingRepair']): CurateRepairFrontier {
+  const normalizedPendingRepair = effectivePendingRepair(pendingRepair);
+  if (normalizedPendingRepair === null) {
+    return { kind: 'none' };
+  }
+
+  if (normalizedPendingRepair.some((entry) => entry.entrySeq === null)) {
+    return { kind: 'unknown' };
+  }
+
+  const first = normalizedPendingRepair[0];
+  if (first === undefined || first.entrySeq === null) {
+    return { kind: 'none' };
+  }
+
+  return {
+    kind: 'known',
+    cursor: {
+      entryId: first.entryId,
+      entrySeq: first.entrySeq,
+    },
+  };
+}
+
+function clampCursorToRepairFrontier(cursor: CurateCursor | null, frontier: CurateRepairFrontier): CurateCursor | null {
+  if (cursor === null || frontier.kind === 'none') {
+    return cursor;
+  }
+  if (frontier.kind === 'unknown') {
+    return null;
+  }
+
+  return compareCursor(cursor, frontier.cursor) >= 0 ? null : cursor;
+}
+
+export function normalizeCurateStateRepairFrontier(state: CurateState): CurateState {
+  const pendingRepair = effectivePendingRepair(state.pendingRepair);
+  const frontier = getCurateRepairFrontier(pendingRepair);
+
+  if (frontier.kind === 'unknown') {
+    return {
+      ...state,
+      processedThrough: null,
+      lastAttemptedThrough: null,
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+      pendingRepair,
+    };
+  }
+
+  if (frontier.kind === 'known' && state.discoveryHighSeq >= frontier.cursor.entrySeq) {
+    return {
+      ...state,
+      processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
+      lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
+      discoveryHighSeq: Math.max(frontier.cursor.entrySeq - 1, 0),
+      discoveryOffset: 0,
+      pendingRepair,
+    };
+  }
+
+  return {
+    ...state,
+    processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
+    lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
+    pendingRepair,
+  };
+}
+
+type MalformedEntryKind = 'note' | 'source';
+
+function extractLenientFrontmatterRegion(content: string): string {
+  const match = content.match(LENIENT_FRONTMATTER_PATTERN);
+  if (match !== null) {
+    return match[1];
+  }
+
+  if (!content.startsWith('---')) {
+    return content.slice(0, 2048);
+  }
+
+  return content.slice(4, 2048);
+}
+
+function extractLenientEntrySeq(content: string): number | null {
+  const match = extractLenientFrontmatterRegion(content).match(LENIENT_ENTRY_SEQ_PATTERN);
+  if (match === null) {
+    return null;
+  }
+
+  const entrySeq = Number.parseInt(match[1] ?? '', 10);
+  if (!Number.isSafeInteger(entrySeq) || entrySeq < 1) {
+    return null;
+  }
+
+  return entrySeq;
+}
+
+function parseMalformedEntryId(kind: MalformedEntryKind, slug: string): KbEntryId | null {
+  return parseKbEntryId(kind === 'note' ? noteEntryId(slug) : sourceEntryId(slug));
+}
+
+export function extractMalformedEntryRepair(
+  kind: MalformedEntryKind,
+  slug: string,
+  raw: string,
+  detectedAt: string,
+): PendingRepair | null {
+  const entryId = parseMalformedEntryId(kind, slug);
+  if (entryId === null) {
+    return null;
+  }
+
+  return {
+    entryId,
+    entrySeq: extractLenientEntrySeq(raw),
+    detectedAt,
+  };
+}
+
+function readMalformedEntryRepair(
+  path: string,
+  kind: MalformedEntryKind,
+  slug: string,
+  detectedAt: string,
+): PendingRepair | null {
+  try {
+    return extractMalformedEntryRepair(kind, slug, readFileSync(path, 'utf-8'), detectedAt);
+  } catch {
+    return null;
+  }
 }
 
 export function applyRecordCurateFailure(
@@ -695,11 +914,17 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     const indexState = kb.readIndexState();
     const scannedNotes: ScannedNote[] = [];
     const scannedSources: ScannedSource[] = [];
+    const pendingRepair: PendingRepair[] = [];
+    const detectedAt = new Date().toISOString();
 
     for (const note of sortedNoteNames(kb)) {
       try {
         scannedNotes.push(scanNote(kb, note));
       } catch (error: unknown) {
+        const repair = readMalformedEntryRepair(kb.notePath(note), 'note', note, detectedAt);
+        if (repair !== null) {
+          pendingRepair.push(repair);
+        }
         backendLog.warn(`Skipping malformed KB note ${note} during migration: ${errorMessage(error)}`);
       }
     }
@@ -708,17 +933,12 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
       try {
         scannedSources.push(scanSource(kb, slug));
       } catch (error: unknown) {
+        const repair = readMalformedEntryRepair(kb.sourcePath(slug), 'source', slug, detectedAt);
+        if (repair !== null) {
+          pendingRepair.push(repair);
+        }
         backendLog.warn(`Skipping malformed KB source ${slug} during migration: ${errorMessage(error)}`);
       }
-    }
-
-    if (scannedNotes.length === 0 && scannedSources.length === 0) {
-      writeCurateState(kb, {
-        ...recoveredState,
-        initialized: true,
-        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
-      });
-      return;
     }
 
     let highestExistingEntrySeq = indexState.mutationSeq;
@@ -730,6 +950,11 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     for (const scannedSource of scannedSources) {
       if (scannedSource.frontmatter.entrySeq !== undefined) {
         highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedSource.frontmatter.entrySeq);
+      }
+    }
+    for (const repair of pendingRepair) {
+      if (repair.entrySeq !== null) {
+        highestExistingEntrySeq = Math.max(highestExistingEntrySeq, repair.entrySeq);
       }
     }
 
@@ -779,6 +1004,7 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     writeCurateState(kb, {
       ...recoveredState,
       processedThrough: inferProcessedThrough(recoveredState, scannedNotes),
+      pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
       initialized: true,
       migrationVersion: CURATE_STATE_MIGRATION_VERSION,
     });
