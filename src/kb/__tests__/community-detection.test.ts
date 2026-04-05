@@ -257,7 +257,7 @@ describe('community-detection', () => {
       createdAt: DEFAULT_CREATED_AT,
       updatedAt: DEFAULT_UPDATED_AT,
     });
-    expect(withSummary).toContain('summary: Shared retrieval graph patterns.');
+    expect(withSummary).not.toContain('summary: Shared retrieval graph patterns.');
     expect(withSummary).toContain('## Summary\n\nShared retrieval graph patterns.');
   });
 

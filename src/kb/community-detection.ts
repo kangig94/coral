@@ -7,6 +7,7 @@ import type { AbstractGraph, GraphConstructor } from 'graphology-types';
 import { unlinkIfExists } from '../shared/mcp-utils.js';
 import {
   deriveNoteIdentity,
+  extractBody,
   extractTitle,
   parseCommunityFrontmatter,
   serializeCommunityFrontmatter,
@@ -420,10 +421,15 @@ export function loadExistingCommunityState(
     const raw = readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
 
     try {
+      const frontmatter = parseCommunityFrontmatter(raw);
+      const body = extractBody(raw);
       generated.push({
         slug,
         title: extractTitle(raw),
-        ...parseCommunityFrontmatter(raw),
+        members: parseMembersFromBody(body),
+        summary: parseSummaryFromBody(body),
+        createdAt: frontmatter.createdAt,
+        updatedAt: frontmatter.updatedAt,
       });
     } catch {
       reservedSlugs.add(slug);
@@ -441,10 +447,6 @@ export function renderCommunityDocument(document: {
   updatedAt: string;
 }): string {
   const frontmatter = serializeCommunityFrontmatter({
-    level: 0,
-    members: document.members,
-    ...(document.summary === undefined ? {} : { summary: document.summary }),
-    generatedBy: 'curate',
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
   });
@@ -452,6 +454,25 @@ export function renderCommunityDocument(document: {
     document.summary === undefined ? '' : `## Summary\n\n${document.summary}\n\n`;
 
   return `${frontmatter}# ${document.title}\n\n${summarySection}${renderMembersSection(document.members)}\n`;
+}
+
+/** Parse members from the `## Members` body section. */
+export function parseMembersFromBody(body: string): string[] {
+  const membersMatch = body.match(/## Members\s*\n([\s\S]*?)(?:\n##|\n*$)/);
+  if (!membersMatch) return [];
+  return membersMatch[1]
+    .split('\n')
+    .map((line) => line.replace(/^-\s*#?/, '').trim())
+    .filter(Boolean)
+    .sort();
+}
+
+/** Parse optional summary from the `## Summary` body section. */
+export function parseSummaryFromBody(body: string): string | undefined {
+  const summaryMatch = body.match(/## Summary\s*\n\n([\s\S]*?)(?:\n\n## |\n*$)/);
+  if (!summaryMatch) return undefined;
+  const text = summaryMatch[1].trim();
+  return text || undefined;
 }
 
 function priorMembershipFingerprintForCommunity(

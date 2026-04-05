@@ -66,7 +66,6 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     title: meta.title,
     level: meta.level,
     members: [...meta.members],
-    generatedBy: 'curate',
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
   };

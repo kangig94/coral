@@ -158,9 +158,6 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
   if (entryId !== communityEntryId(slug)) {
     throw new Error('Invalid KB index');
   }
-  if (value.generatedBy !== 'curate') {
-    throw new Error('Invalid KB index');
-  }
 
   const parent = normalizeCommunityParent(value.parent);
   const summary = parseOptionalTrimmedString(value.summary, 'summary');
@@ -169,11 +166,10 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
     kind: 'community',
     slug,
     title: assertNonEmptyText(value.title, 'KB index entry title'),
-    level: parseNonNegativeInteger(value.level, 'level'),
+    level: parseNonNegativeInteger(value.level ?? 0, 'level'),
     members: parseStringArray(value.members),
     ...(parent === undefined ? {} : { parent }),
     ...(summary === undefined ? {} : { summary }),
-    generatedBy: 'curate',
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
   };
