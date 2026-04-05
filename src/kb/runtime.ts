@@ -677,13 +677,29 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     return null;
   }
 
+  let pendingRepairCache: { mtime: number; result: boolean } | null = null;
+
   function pendingRepairNeedsRetry(): boolean {
+    // Cache the curate-state read to avoid per-request disk I/O.
+    // Invalidated when curate-state.json mtime changes (any repair/curate write).
+    const curateStatePath = join(runtimeDir, 'curate-state.json');
+    let curateStateMtime: number;
+    try {
+      curateStateMtime = statSync(curateStatePath).mtimeMs;
+    } catch {
+      return false;
+    }
+    if (pendingRepairCache !== null && pendingRepairCache.mtime === curateStateMtime) {
+      return pendingRepairCache.result;
+    }
+
     const pendingRepair = readCurateState(kbRuntime).pendingRepair;
     if (pendingRepair === null) {
+      pendingRepairCache = { mtime: curateStateMtime, result: false };
       return false;
     }
 
-    return pendingRepair.some((entry) => {
+    const result = pendingRepair.some((entry) => {
       const detectedAt = Date.parse(entry.detectedAt);
       const path = pendingRepairPath(entry);
       if (Number.isNaN(detectedAt) || path === null) {
@@ -696,6 +712,8 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
         return false;
       }
     });
+    pendingRepairCache = { mtime: curateStateMtime, result };
+    return result;
   }
 
   function indexNeedsRebuild(): boolean {
@@ -741,13 +759,13 @@ export function createKbRuntime({ markdownRoot, runtimeDir }: { markdownRoot: st
     tokenizer: KbOramaTokenizer;
     index: KbIndex;
   }> {
-    await ensureIndex();
-    const stateAfterEnsureIndex = readIndexStateIfPresent();
-
-    if (cachedOramaIndex !== null && !textArtifactsNeedRebuild(stateAfterEnsureIndex)) {
+    const indexAfterEnsure = await ensureIndex();
+    // Fast path: index is fresh and Orama cache is valid — skip re-read.
+    // ensureIndex() guarantees text artifacts are up-to-date when it returns.
+    if (cachedOramaIndex !== null && indexCache !== null) {
       return {
         ...cachedOramaIndex,
-        index: kbRuntime.readIndex() ?? emptyIndex(),
+        index: indexAfterEnsure,
       };
     }
 

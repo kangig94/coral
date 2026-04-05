@@ -412,9 +412,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     idleTimer,
     progressStore,
     sessionIndex,
-    // Intentional readonly exposure: httpHandlerDeps needs read access to the coordinator's
-    // child sets for health/status endpoints. The Set references are readonly — mutation is
-    // only performed through LaunchCoordinator methods.
     activeChildren: launchCoordinator.activeChildren,
     activeDurablePids: launchCoordinator.activeDurablePids,
     queueDepth: () => launchCoordinator.queueDepth(),

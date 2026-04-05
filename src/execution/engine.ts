@@ -143,11 +143,9 @@ export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<Cli
 export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
 
 export class LaunchCoordinator {
-  readonly activeChildren = new Set<ActiveChild>();
-  readonly activeDurablePids = new Set<number>();
   private readonly state: LaunchCoordinatorState = {
-    activeChildren: this.activeChildren,
-    activeDurablePids: this.activeDurablePids,
+    activeChildren: new Set<ActiveChild>(),
+    activeDurablePids: new Set<number>(),
     nextProviderServerGeneration: 1,
     activeLaunchesDefault: new Map<string, string>(),
     activeLaunchesDiscuss: new Map<string, string>(),
@@ -157,6 +155,22 @@ export class LaunchCoordinator {
     queuedLaunchesCurate: [],
     signalLaunchPermits: new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>(),
   };
+
+  get activeChildren(): ReadonlySet<ActiveChild> {
+    return this.state.activeChildren;
+  }
+
+  get activeDurablePids(): ReadonlySet<number> {
+    return this.state.activeDurablePids;
+  }
+
+  get activeChildCount(): number {
+    return this.state.activeChildren.size;
+  }
+
+  get activeDurablePidCount(): number {
+    return this.state.activeDurablePids.size;
+  }
 
   requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
     return requestLaunchInState(this.state, jobId, provider, pool);

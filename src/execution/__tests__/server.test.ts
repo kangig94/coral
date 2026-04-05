@@ -510,9 +510,10 @@ describe('execution backend server', () => {
     const launchCoordinator = new LaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
-    // Simulate two durable processes running
-    launchCoordinator.activeDurablePids.add(99901);
-    launchCoordinator.activeDurablePids.add(99902);
+    // Simulate two durable processes via internal state (test-only bypass of ReadonlySet)
+    const durablePids = launchCoordinator.activeDurablePids as Set<number>;
+    durablePids.add(99901);
+    durablePids.add(99902);
 
     try {
       const response = await fetch(`${backend.baseUrl}/health`, {
@@ -522,8 +523,8 @@ describe('execution backend server', () => {
 
       expect(body.activeChildren).toBe(2);
     } finally {
-      launchCoordinator.activeDurablePids.delete(99901);
-      launchCoordinator.activeDurablePids.delete(99902);
+      durablePids.delete(99901);
+      durablePids.delete(99902);
     }
   });
 
