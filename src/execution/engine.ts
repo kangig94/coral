@@ -107,19 +107,6 @@ const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 
-type LaunchCoordinatorState = {
-  activeChildren: Set<ActiveChild>;
-  activeDurablePids: Set<number>;
-  nextProviderServerGeneration: number;
-  activeLaunchesDefault: Map<string, string>;
-  activeLaunchesDiscuss: Map<string, string>;
-  activeLaunchesCurate: Map<string, string>;
-  queuedLaunchesDefault: QueuedLaunchEntry[];
-  queuedLaunchesDiscuss: QueuedLaunchEntry[];
-  queuedLaunchesCurate: QueuedLaunchEntry[];
-  signalLaunchPermits: WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>;
-};
-
 export type CliBusyErrorDetail = {
   error: 'busy';
   provider: string;
@@ -143,85 +130,647 @@ export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<Cli
 export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
 
 export class LaunchCoordinator {
-  private readonly state: LaunchCoordinatorState = {
-    activeChildren: new Set<ActiveChild>(),
-    activeDurablePids: new Set<number>(),
-    nextProviderServerGeneration: 1,
-    activeLaunchesDefault: new Map<string, string>(),
-    activeLaunchesDiscuss: new Map<string, string>(),
-    activeLaunchesCurate: new Map<string, string>(),
-    queuedLaunchesDefault: [],
-    queuedLaunchesDiscuss: [],
-    queuedLaunchesCurate: [],
-    signalLaunchPermits: new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>(),
-  };
+  private readonly activeChildrenSet = new Set<ActiveChild>();
+  private readonly activeDurablePidsSet = new Set<number>();
+  private nextProviderServerGeneration = 1;
+  private readonly activeLaunchesDefault = new Map<string, string>();
+  private readonly activeLaunchesDiscuss = new Map<string, string>();
+  private readonly activeLaunchesCurate = new Map<string, string>();
+  private readonly queuedLaunchesDefault: QueuedLaunchEntry[] = [];
+  private readonly queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
+  private readonly queuedLaunchesCurate: QueuedLaunchEntry[] = [];
+  private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 
   get activeChildren(): ReadonlySet<ActiveChild> {
-    return this.state.activeChildren;
+    return this.activeChildrenSet;
   }
 
   get activeDurablePids(): ReadonlySet<number> {
-    return this.state.activeDurablePids;
+    return this.activeDurablePidsSet;
   }
 
   get activeChildCount(): number {
-    return this.state.activeChildren.size;
+    return this.activeChildrenSet.size;
   }
 
   get activeDurablePidCount(): number {
-    return this.state.activeDurablePids.size;
+    return this.activeDurablePidsSet.size;
   }
 
   requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
-    return requestLaunchInState(this.state, jobId, provider, pool);
+    const activeLaunches = this.getActiveMap(pool);
+    const queuedLaunches = this.getQueue(pool);
+    if (activeLaunches.has(jobId)) return IMMEDIATE_PERMIT;
+
+    const existingQueued = this.findQueuedLaunch(jobId, pool);
+    if (existingQueued) return this.queuedHandle(existingQueued, pool);
+
+    if (queuedLaunches.length === 0 && this.hasLaunchCapacity(pool)) {
+      activeLaunches.set(jobId, provider);
+      return IMMEDIATE_PERMIT;
+    }
+
+    if (queuedLaunches.length >= MAX_QUEUE_SIZE) return 'queue_full';
+
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+
+    const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
+    queuedLaunches.push(entry);
+    return this.queuedHandle(entry, pool);
   }
 
   releaseLaunch(jobId: string, pool: LaunchPool = 'default'): void {
-    releaseLaunchInState(this.state, jobId, pool);
+    const activeLaunches = this.getActiveMap(pool);
+    if (!activeLaunches.delete(jobId)) return;
+    this.admitQueueHead(pool);
   }
 
   cancelQueued(jobId: string, pool: LaunchPool = 'default'): boolean {
-    return cancelQueuedInState(this.state, jobId, pool);
+    const queuedLaunches = this.getQueue(pool);
+    const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
+    if (index === -1) return false;
+    const [entry] = queuedLaunches.splice(index, 1);
+    entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
+    this.admitQueueHead(pool);
+    return true;
   }
 
   queueDepth(pool: LaunchPool = 'default'): number {
-    return queueDepthInState(this.state, pool);
+    return this.getQueue(pool).length;
   }
 
   queuePosition(jobId: string, pool: LaunchPool = 'default'): number | null {
-    return queuePositionInState(this.state, jobId, pool);
+    const index = this.getQueue(pool).findIndex((entry) => entry.jobId === jobId);
+    return index === -1 ? null : index + 1;
   }
 
   getActiveJobIds(pool: LaunchPool = 'default'): string[] {
-    return getActiveJobIdsInState(this.state, pool);
+    return [...this.getActiveMap(pool).keys()];
   }
 
   bindLaunchPermit(jobId: string, signal: AbortSignal, pool: LaunchPool = 'default'): void {
-    bindLaunchPermitInState(this.state, jobId, signal, pool);
+    this.signalLaunchPermits.set(signal, { jobId, pool });
   }
 
   spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
-    return spawnCliInState(this.state, options);
+    const pool = options.pool ?? 'default';
+    const usingReservedPermit =
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
+      options.permitGranted || (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
+    let internalPermitJobId: string | null = null;
+
+    if (!usingReservedPermit) {
+      const activeLaunches = this.getActiveMap(pool);
+      const queuedLaunches = this.getQueue(pool);
+      const globalActive = activeLaunches.size;
+      const globalLimit = getActiveLimit(pool);
+      if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
+        return Promise.reject(
+          new CliBusyError({
+            error: 'busy',
+            provider: options.provider,
+            globalActive,
+            globalLimit,
+          }),
+        );
+      }
+      internalPermitJobId = `spawncli-${randomUUID()}`;
+      activeLaunches.set(internalPermitJobId, options.provider);
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let abortedBySignal = false;
+
+      const child = spawn(options.command, options.args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
+        cwd: options.cwd || undefined,
+        shell: process.platform === 'win32',
+        env: buildChildEnv(options.extraEnv),
+      });
+      const entry: ActiveChild = { provider: options.provider, child };
+      this.activeChildrenSet.add(entry);
+
+      let lastOutputAt = Date.now();
+      let lastTickAt = Date.now();
+      const idleChecker = setInterval(() => {
+        if (settled) return;
+        const now = Date.now();
+        const tickGap = now - lastTickAt;
+        lastTickAt = now;
+
+        if (tickGap > IDLE_CHECK_INTERVAL * 3) {
+          // Tick arrived far later than expected — system likely woke from sleep.
+          // Reset baseline so the child gets a fresh idle window to resume output.
+          lastOutputAt = now;
+          return;
+        }
+
+        if (now - lastOutputAt >= IDLE_TIMEOUT) {
+          settled = true;
+          clearInterval(idleChecker);
+          gracefulKill(child);
+          this.activeChildrenSet.delete(entry);
+          if (internalPermitJobId) {
+            this.releaseLaunch(internalPermitJobId, pool);
+            internalPermitJobId = null;
+          }
+          reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
+        }
+      }, IDLE_CHECK_INTERVAL);
+
+      function resetIdle() {
+        lastOutputAt = Date.now();
+      }
+
+      let abortHandler: (() => void) | null = null;
+
+      const finish = (): boolean => {
+        if (settled) return false;
+        settled = true;
+        clearInterval(idleChecker);
+        this.activeChildrenSet.delete(entry);
+        if (internalPermitJobId) {
+          this.releaseLaunch(internalPermitJobId, pool);
+          internalPermitJobId = null;
+        }
+        if (abortHandler && options.signal) {
+          options.signal.removeEventListener('abort', abortHandler);
+          abortHandler = null;
+        }
+        return true;
+      };
+
+      if (options.signal) {
+        abortHandler = () => {
+          if (settled) return;
+          abortedBySignal = true;
+          clearInterval(idleChecker);
+          gracefulKill(child);
+        };
+        if (options.signal.aborted) abortHandler();
+        else options.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      let stdout = '';
+      let stderr = '';
+      let lineBuffer = '';
+
+      child.stdout.on('data', (data: Buffer) => {
+        const chunk = data.toString();
+        resetIdle();
+        stdout = appendBuffer(stdout, chunk);
+        if (options.onEvent) {
+          lineBuffer += chunk;
+          const parts = lineBuffer.split('\n');
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- split() always returns at least one element
+          lineBuffer = parts.pop()!;
+          for (const line of parts) {
+            if (line.trim()) options.onEvent(line);
+          }
+        }
+      });
+
+      child.stderr.on('data', (data: Buffer) => {
+        resetIdle();
+        stderr = appendBuffer(stderr, data.toString());
+      });
+
+      child.on('close', (code) => {
+        if (finish()) resolve({ stdout, stderr, code, aborted: abortedBySignal });
+      });
+
+      child.on('error', (err) => {
+        if (finish()) reject(new Error(`Failed to spawn ${options.command}: ${err.message}`));
+      });
+
+      if (options.prompt) {
+        child.stdin.on('error', (err) => {
+          if (finish()) {
+            child.kill('SIGTERM');
+            reject(new Error(`Stdin write error: ${err.message}`));
+          }
+        });
+        child.stdin.write(options.prompt);
+      }
+      child.stdin.end();
+    });
   }
 
   spawnProviderServer(options: SpawnProviderServerOptions): Promise<ProviderServerHandle> {
-    return spawnProviderServerInState(this.state, options);
+    return this.spawnProviderServerAsync(options);
   }
 
   spawnDurableJob(options: SpawnDurableJobOptions): Promise<CliExecResult> {
-    return spawnDurableJobInState(this.state, options);
+    return this.spawnDurableJobAsync(options);
   }
 
   restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
-    restoreActiveLaunchInState(this.state, jobId, provider, pool);
+    this.getActiveMap(pool).set(jobId, provider);
   }
 
   restoreQueuedLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): QueuedHandle {
-    return restoreQueuedLaunchInState(this.state, jobId, provider, pool);
+    const queuedLaunches = this.getQueue(pool);
+
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+
+    const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
+    queuedLaunches.push(entry);
+
+    return this.queuedHandle(entry, pool);
   }
 
   killAllChildren(): void {
-    killAllChildrenInState(this.state);
+    this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
+    for (const { child } of this.activeChildrenSet) {
+      gracefulKill(child);
+    }
+    this.activeChildrenSet.clear();
+    for (const pid of this.activeDurablePidsSet) {
+      safeKillPid(pid, 'SIGTERM');
+      const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+      escalation.unref?.();
+    }
+    this.activeDurablePidsSet.clear();
+  }
+
+  private getActiveMap(pool: LaunchPool): Map<string, string> {
+    if (pool === 'discuss') {
+      return this.activeLaunchesDiscuss;
+    }
+    if (pool === 'curate') {
+      return this.activeLaunchesCurate;
+    }
+    return this.activeLaunchesDefault;
+  }
+
+  private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
+    if (pool === 'discuss') {
+      return this.queuedLaunchesDiscuss;
+    }
+    if (pool === 'curate') {
+      return this.queuedLaunchesCurate;
+    }
+    return this.queuedLaunchesDefault;
+  }
+
+  private hasLaunchCapacity(pool: LaunchPool): boolean {
+    return this.getActiveMap(pool).size < getActiveLimit(pool);
+  }
+
+  private queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
+    const queue = this.getQueue(pool);
+    return {
+      type: 'queued',
+      queuePosition: this.queuePosition(entry.jobId, pool) ?? queue.length,
+      waitForPermit: () => entry.promise,
+      cancel: () => {
+        this.cancelQueued(entry.jobId, pool);
+      },
+    };
+  }
+
+  private findQueuedLaunch(jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
+    for (const entry of this.getQueue(pool)) {
+      if (entry.jobId === jobId) return entry;
+    }
+    return null;
+  }
+
+  private admitQueueHead(pool: LaunchPool): void {
+    const queue = this.getQueue(pool);
+    const head = queue[0];
+    if (!head) return;
+    if (!this.hasLaunchCapacity(pool)) return;
+    queue.shift();
+    this.getActiveMap(pool).set(head.jobId, head.provider);
+    head.resolve();
+  }
+
+  private drainQueuedLaunches(message: string): void {
+    drainQueuedLaunchPool(this.queuedLaunchesDefault, message);
+    drainQueuedLaunchPool(this.queuedLaunchesDiscuss, message);
+    drainQueuedLaunchPool(this.queuedLaunchesCurate, message);
+  }
+
+  private consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
+    const permit = this.signalLaunchPermits.get(signal);
+    if (!permit) return false;
+    this.signalLaunchPermits.delete(signal);
+    return this.getActiveMap(permit.pool).get(permit.jobId) === provider;
+  }
+
+  private async spawnProviderServerAsync(options: SpawnProviderServerOptions): Promise<ProviderServerHandle> {
+    const child = spawn(options.command, options.args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
+      cwd: options.cwd || undefined,
+      shell: process.platform === 'win32',
+      env: buildChildEnv(options.extraEnv),
+    });
+
+    const pid = child.pid;
+    if (pid === undefined) {
+      throw new Error(`Failed to spawn ${options.command}: child pid is unavailable`);
+    }
+
+    const generation = this.nextProviderServerGeneration;
+    this.nextProviderServerGeneration += 1;
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
+    let resolveClose!: (outcome: Error | void) => void;
+    const closePromise = new Promise<Error | void>((resolve) => {
+      resolveClose = resolve;
+    });
+
+    const entry: ProviderServerEntry = {
+      provider: options.provider,
+      child,
+      pid,
+      generation,
+      pending: new Map(),
+      nextRequestId: 1,
+      notificationHandlers: new Set(),
+      readline: createInterface({ input: child.stdout }),
+      stderr: '',
+      closed: false,
+      closeRequested: false,
+      closePromise,
+      resolveClose,
+      closeOutcome: undefined,
+    };
+
+    const finalizeClose = (outcome?: Error): void => {
+      if (outcome) {
+        entry.closeOutcome = outcome;
+      }
+      detachProviderServer(entry, outcome);
+      entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
+    };
+
+    entry.readline.on('line', (line: string) => {
+      handleProviderServerLine(entry, line);
+    });
+
+    child.stderr.on('data', (chunk: string | Buffer) => {
+      entry.stderr = appendBuffer(entry.stderr, chunk.toString());
+    });
+
+    child.stdin.on('error', (error: Error) => {
+      if (entry.closed) return;
+      const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
+        stderr: entry.stderr,
+      });
+      backendLog.error(stdinError.message, error);
+      detachProviderServer(entry, stdinError);
+      gracefulKill(child);
+    });
+
+    child.on('error', (error: Error) => {
+      const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, {
+        stderr: entry.stderr,
+      });
+      if (!entry.closeRequested) {
+        backendLog.error(`Provider server ${options.provider} failed`, error);
+      }
+      detachProviderServer(entry, closeError);
+      entry.resolveClose(entry.closeRequested ? undefined : closeError);
+    });
+
+    child.on('close', (code, signal) => {
+      let closeError: Error | undefined;
+      if (!entry.closeRequested) {
+        const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
+        closeError = createProviderServerError(options.provider, detail, { stderr: entry.stderr });
+        if (code !== 0 || signal !== null) {
+          backendLog.error(closeError.message);
+        }
+      }
+      finalizeClose(closeError);
+    });
+
+    const rpc: ProviderServerRpc = {
+      request: <TResult = unknown>(method: string, params: Record<string, unknown> = {}): Promise<TResult> => {
+        if (entry.closed) {
+          return Promise.reject(createProviderServerError(entry.provider, 'is closed', { stderr: entry.stderr }));
+        }
+
+        const id = entry.nextRequestId;
+        entry.nextRequestId += 1;
+
+        return new Promise<TResult>((resolve, reject) => {
+          entry.pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject });
+          try {
+            sendProviderServerMessage(entry, { id, method, params });
+          } catch (error) {
+            entry.pending.delete(id);
+            reject(
+              error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`),
+            );
+          }
+        });
+      },
+      notify: (method: string, params: Record<string, unknown> = {}): void => {
+        if (entry.closed) return;
+        try {
+          sendProviderServerMessage(entry, { method, params });
+        } catch (error) {
+          const notifyError =
+            error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`);
+          backendLog.error(notifyError.message, error);
+          detachProviderServer(entry, notifyError);
+          gracefulKill(entry.child);
+        }
+      },
+    };
+
+    return {
+      pid,
+      child,
+      generation,
+      rpc,
+      onNotification: (handler: (message: ProviderServerNotification) => void): (() => void) => {
+        if (entry.closed) return () => {};
+        entry.notificationHandlers.add(handler);
+        return () => {
+          entry.notificationHandlers.delete(handler);
+        };
+      },
+      closePromise,
+      markExpectedClose: () => {
+        entry.closeRequested = true;
+      },
+      close: async () => {
+        beginProviderServerShutdown(entry, 'closed');
+        await entry.closePromise;
+      },
+    };
+  }
+
+  private async spawnDurableJobAsync(options: SpawnDurableJobOptions): Promise<CliExecResult> {
+    const pool = options.pool ?? 'default';
+    const usingReservedPermit =
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
+      options.permitGranted || (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
+    let internalPermitJobId: string | null = null;
+
+    if (!usingReservedPermit) {
+      const activeLaunches = this.getActiveMap(pool);
+      const queuedLaunches = this.getQueue(pool);
+      const globalActive = activeLaunches.size;
+      const globalLimit = getActiveLimit(pool);
+      if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
+        return Promise.reject(
+          new CliBusyError({
+            error: 'busy',
+            provider: options.provider,
+            globalActive,
+            globalLimit,
+          }),
+        );
+      }
+      internalPermitJobId = `spawndurable-${randomUUID()}`;
+      activeLaunches.set(internalPermitJobId, options.provider);
+    }
+
+    let abortHandler: (() => void) | null = null;
+    let killTimer: NodeJS.Timeout | null = null;
+    let durablePid: number | null = null;
+
+    try {
+      if (options.signal?.aborted) {
+        return { stdout: '', stderr: '', code: null, aborted: true };
+      }
+
+      const durable = await spawnDurableWrapper({
+        provider: options.provider,
+        command: options.command,
+        args: options.args,
+        prompt: options.prompt,
+        cwd: options.cwd,
+        jobDir: options.jobDir,
+        pool,
+        env: options.extraEnv,
+      });
+      durablePid = durable.pid;
+      this.activeDurablePidsSet.add(durable.pid);
+
+      let abortedBySignal = false;
+      let runtimeRecord = durable.runtimeRecord;
+      let tailOffset = runtimeRecord.tailWatermark ?? 0;
+      let pidExitedAt: number | null = null;
+      let lastOutputAt = Date.now();
+      let lastTickAt = Date.now();
+
+      const drainStdout = (): void => {
+        const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset);
+        if (newOffset === tailOffset) {
+          return;
+        }
+
+        tailOffset = newOffset;
+        lastOutputAt = Date.now();
+        runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
+        try {
+          writeRuntimeRecord(options.jobDir, runtimeRecord);
+        } catch {
+          /* best effort */
+        }
+
+        for (const line of lines) {
+          options.onEvent?.(line);
+        }
+      };
+
+      if (options.signal) {
+        abortHandler = () => {
+          if (abortedBySignal) return;
+          abortedBySignal = true;
+          safeKillPid(durable.pid, 'SIGTERM');
+          killTimer = setTimeout(() => {
+            safeKillPid(durable.pid, 'SIGKILL');
+          }, SIGTERM_GRACE_MS);
+          killTimer.unref?.();
+        };
+
+        if (options.signal.aborted) abortHandler();
+        else options.signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      while (true) {
+        drainStdout();
+
+        const exitRecord = readExitRecord(options.jobDir);
+        if (exitRecord) {
+          drainStdout();
+          return {
+            stdout: readOutputFile(durable.stdoutPath),
+            stderr: readOutputFile(durable.stderrPath),
+            code: exitRecord.exitCode,
+            aborted: abortedBySignal,
+          };
+        }
+
+        if (!isPidAlive(durable.pid)) {
+          drainStdout();
+          const lateExitRecord = readExitRecord(options.jobDir);
+          if (lateExitRecord) {
+            return {
+              stdout: readOutputFile(durable.stdoutPath),
+              stderr: readOutputFile(durable.stderrPath),
+              code: lateExitRecord.exitCode,
+              aborted: abortedBySignal,
+            };
+          }
+          pidExitedAt ??= Date.now();
+          if (Date.now() - pidExitedAt >= DURABLE_EXIT_GRACE_MS) {
+            throw new Error(`Durable process ${durable.pid} exited before exit.json was written`);
+          }
+        } else {
+          pidExitedAt = null;
+        }
+
+        // Idle timeout — mirrors spawnCli's 10-minute inactivity kill
+        const now = Date.now();
+        const tickGap = now - lastTickAt;
+        lastTickAt = now;
+        if (tickGap > IDLE_CHECK_INTERVAL * 3) {
+          // System likely woke from sleep — reset baseline
+          lastOutputAt = now;
+        } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
+          safeKillPid(durable.pid, 'SIGTERM');
+          throw new Error(
+            `Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
+          );
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
+      }
+    } finally {
+      if (durablePid !== null) {
+        this.activeDurablePidsSet.delete(durablePid);
+      }
+      if (killTimer) clearTimeout(killTimer);
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener('abort', abortHandler);
+      }
+      if (internalPermitJobId) {
+        this.releaseLaunch(internalPermitJobId, pool);
+      }
+    }
   }
 }
 
@@ -230,26 +779,6 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
   return parsed;
-}
-
-function getActiveMap(state: LaunchCoordinatorState, pool: LaunchPool): Map<string, string> {
-  if (pool === 'discuss') {
-    return state.activeLaunchesDiscuss;
-  }
-  if (pool === 'curate') {
-    return state.activeLaunchesCurate;
-  }
-  return state.activeLaunchesDefault;
-}
-
-function getQueue(state: LaunchCoordinatorState, pool: LaunchPool): QueuedLaunchEntry[] {
-  if (pool === 'discuss') {
-    return state.queuedLaunchesDiscuss;
-  }
-  if (pool === 'curate') {
-    return state.queuedLaunchesCurate;
-  }
-  return state.queuedLaunchesDefault;
 }
 
 function getActiveLimit(pool: LaunchPool): number {
@@ -262,132 +791,12 @@ function getActiveLimit(pool: LaunchPool): number {
   return MAX_ACTIVE_SESSIONS;
 }
 
-function hasLaunchCapacity(state: LaunchCoordinatorState, pool: LaunchPool): boolean {
-  return getActiveMap(state, pool).size < getActiveLimit(pool);
-}
-
-function queuedHandle(state: LaunchCoordinatorState, entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
-  const queue = getQueue(state, pool);
-  return {
-    type: 'queued',
-    queuePosition: queuePositionInState(state, entry.jobId, pool) ?? queue.length,
-    waitForPermit: () => entry.promise,
-    cancel: () => {
-      cancelQueuedInState(state, entry.jobId, pool);
-    },
-  };
-}
-
-function findQueuedLaunch(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
-  for (const entry of getQueue(state, pool)) {
-    if (entry.jobId === jobId) return entry;
-  }
-  return null;
-}
-
-function admitQueueHead(state: LaunchCoordinatorState, pool: LaunchPool): void {
-  const queue = getQueue(state, pool);
-  const head = queue[0];
-  if (!head) return;
-  if (!hasLaunchCapacity(state, pool)) return;
-  queue.shift();
-  getActiveMap(state, pool).set(head.jobId, head.provider);
-  head.resolve();
-}
-
 function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): void {
   const drained = queue.splice(0, queue.length);
   const error = new Error(message);
   for (const entry of drained) {
     entry.reject(error);
   }
-}
-
-function drainQueuedLaunches(state: LaunchCoordinatorState, message: string): void {
-  drainQueuedLaunchPool(state.queuedLaunchesDefault, message);
-  drainQueuedLaunchPool(state.queuedLaunchesDiscuss, message);
-  drainQueuedLaunchPool(state.queuedLaunchesCurate, message);
-}
-
-function consumeSignalPermit(state: LaunchCoordinatorState, signal: AbortSignal, provider: string): boolean {
-  const permit = state.signalLaunchPermits.get(signal);
-  if (!permit) return false;
-  state.signalLaunchPermits.delete(signal);
-  return getActiveMap(state, permit.pool).get(permit.jobId) === provider;
-}
-
-function requestLaunchInState(
-  state: LaunchCoordinatorState,
-  jobId: string,
-  provider: string,
-  pool: LaunchPool = 'default',
-): AdmissionResult {
-  const activeLaunches = getActiveMap(state, pool);
-  const queuedLaunches = getQueue(state, pool);
-  if (activeLaunches.has(jobId)) return IMMEDIATE_PERMIT;
-
-  const existingQueued = findQueuedLaunch(state, jobId, pool);
-  if (existingQueued) return queuedHandle(state, existingQueued, pool);
-
-  if (queuedLaunches.length === 0 && hasLaunchCapacity(state, pool)) {
-    activeLaunches.set(jobId, provider);
-    return IMMEDIATE_PERMIT;
-  }
-
-  if (queuedLaunches.length >= MAX_QUEUE_SIZE) return 'queue_full';
-
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-
-  const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
-  queuedLaunches.push(entry);
-  return queuedHandle(state, entry, pool);
-}
-
-function releaseLaunchInState(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool = 'default'): void {
-  const activeLaunches = getActiveMap(state, pool);
-  if (!activeLaunches.delete(jobId)) return;
-  admitQueueHead(state, pool);
-}
-
-function cancelQueuedInState(state: LaunchCoordinatorState, jobId: string, pool: LaunchPool = 'default'): boolean {
-  const queuedLaunches = getQueue(state, pool);
-  const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
-  if (index === -1) return false;
-  const [entry] = queuedLaunches.splice(index, 1);
-  entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
-  admitQueueHead(state, pool);
-  return true;
-}
-
-function queueDepthInState(state: LaunchCoordinatorState, pool: LaunchPool = 'default'): number {
-  return getQueue(state, pool).length;
-}
-
-function queuePositionInState(
-  state: LaunchCoordinatorState,
-  jobId: string,
-  pool: LaunchPool = 'default',
-): number | null {
-  const index = getQueue(state, pool).findIndex((entry) => entry.jobId === jobId);
-  return index === -1 ? null : index + 1;
-}
-
-function getActiveJobIdsInState(state: LaunchCoordinatorState, pool: LaunchPool = 'default'): string[] {
-  return [...getActiveMap(state, pool).keys()];
-}
-
-function bindLaunchPermitInState(
-  state: LaunchCoordinatorState,
-  jobId: string,
-  signal: AbortSignal,
-  pool: LaunchPool = 'default',
-): void {
-  state.signalLaunchPermits.set(signal, { jobId, pool });
 }
 
 function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -567,152 +976,6 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
 };
 
-function spawnCliInState(state: LaunchCoordinatorState, options: SpawnCliOptions): Promise<CliExecResult> {
-  const pool = options.pool ?? 'default';
-  const usingReservedPermit =
-    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-    options.permitGranted || (options.signal ? consumeSignalPermit(state, options.signal, options.provider) : false);
-  let internalPermitJobId: string | null = null;
-
-  if (!usingReservedPermit) {
-    const activeLaunches = getActiveMap(state, pool);
-    const queuedLaunches = getQueue(state, pool);
-    const globalActive = activeLaunches.size;
-    const globalLimit = getActiveLimit(pool);
-    if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-      return Promise.reject(
-        new CliBusyError({
-          error: 'busy',
-          provider: options.provider,
-          globalActive,
-          globalLimit,
-        }),
-      );
-    }
-    internalPermitJobId = `spawncli-${randomUUID()}`;
-    activeLaunches.set(internalPermitJobId, options.provider);
-  }
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let abortedBySignal = false;
-
-    const child = spawn(options.command, options.args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
-      cwd: options.cwd || undefined,
-      shell: process.platform === 'win32',
-      env: buildChildEnv(options.extraEnv),
-    });
-    const entry: ActiveChild = { provider: options.provider, child };
-    state.activeChildren.add(entry);
-
-    let lastOutputAt = Date.now();
-    let lastTickAt = Date.now();
-    const idleChecker = setInterval(() => {
-      if (settled) return;
-      const now = Date.now();
-      const tickGap = now - lastTickAt;
-      lastTickAt = now;
-
-      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
-        // Tick arrived far later than expected — system likely woke from sleep.
-        // Reset baseline so the child gets a fresh idle window to resume output.
-        lastOutputAt = now;
-        return;
-      }
-
-      if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        settled = true;
-        clearInterval(idleChecker);
-        gracefulKill(child);
-        state.activeChildren.delete(entry);
-        if (internalPermitJobId) {
-          releaseLaunchInState(state, internalPermitJobId, pool);
-          internalPermitJobId = null;
-        }
-        reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
-      }
-    }, IDLE_CHECK_INTERVAL);
-
-    function resetIdle() {
-      lastOutputAt = Date.now();
-    }
-
-    let abortHandler: (() => void) | null = null;
-
-    function finish(): boolean {
-      if (settled) return false;
-      settled = true;
-      clearInterval(idleChecker);
-      state.activeChildren.delete(entry);
-      if (internalPermitJobId) {
-        releaseLaunchInState(state, internalPermitJobId, pool);
-        internalPermitJobId = null;
-      }
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener('abort', abortHandler);
-        abortHandler = null;
-      }
-      return true;
-    }
-
-    if (options.signal) {
-      abortHandler = () => {
-        if (settled) return;
-        abortedBySignal = true;
-        clearInterval(idleChecker);
-        gracefulKill(child);
-      };
-      if (options.signal.aborted) abortHandler();
-      else options.signal.addEventListener('abort', abortHandler, { once: true });
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let lineBuffer = '';
-
-    child.stdout.on('data', (data: Buffer) => {
-      const chunk = data.toString();
-      resetIdle();
-      stdout = appendBuffer(stdout, chunk);
-      if (options.onEvent) {
-        lineBuffer += chunk;
-        const parts = lineBuffer.split('\n');
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- split() always returns at least one element
-        lineBuffer = parts.pop()!;
-        for (const line of parts) {
-          if (line.trim()) options.onEvent(line);
-        }
-      }
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      resetIdle();
-      stderr = appendBuffer(stderr, data.toString());
-    });
-
-    child.on('close', (code) => {
-      if (finish()) resolve({ stdout, stderr, code, aborted: abortedBySignal });
-    });
-
-    child.on('error', (err) => {
-      if (finish()) reject(new Error(`Failed to spawn ${options.command}: ${err.message}`));
-    });
-
-    if (options.prompt) {
-      child.stdin.on('error', (err) => {
-        if (finish()) {
-          child.kill('SIGTERM');
-          reject(new Error(`Stdin write error: ${err.message}`));
-        }
-      });
-      child.stdin.write(options.prompt);
-    }
-    child.stdin.end();
-  });
-}
-
 export type SpawnProviderServerOptions = {
   provider: string;
   command: string;
@@ -720,165 +983,6 @@ export type SpawnProviderServerOptions = {
   cwd?: string;
   extraEnv?: Record<string, string>;
 };
-
-function spawnProviderServerInState(
-  state: LaunchCoordinatorState,
-  options: SpawnProviderServerOptions,
-): Promise<ProviderServerHandle> {
-  return spawnProviderServerAsync(state, options);
-}
-
-async function spawnProviderServerAsync(
-  state: LaunchCoordinatorState,
-  options: SpawnProviderServerOptions,
-): Promise<ProviderServerHandle> {
-  const child = spawn(options.command, options.args, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
-    cwd: options.cwd || undefined,
-    shell: process.platform === 'win32',
-    env: buildChildEnv(options.extraEnv),
-  });
-
-  const pid = child.pid;
-  if (pid === undefined) {
-    throw new Error(`Failed to spawn ${options.command}: child pid is unavailable`);
-  }
-
-  const generation = state.nextProviderServerGeneration;
-  state.nextProviderServerGeneration += 1;
-
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-
-  let resolveClose!: (outcome: Error | void) => void;
-  const closePromise = new Promise<Error | void>((resolve) => {
-    resolveClose = resolve;
-  });
-
-  const entry: ProviderServerEntry = {
-    provider: options.provider,
-    child,
-    pid,
-    generation,
-    pending: new Map(),
-    nextRequestId: 1,
-    notificationHandlers: new Set(),
-    readline: createInterface({ input: child.stdout }),
-    stderr: '',
-    closed: false,
-    closeRequested: false,
-    closePromise,
-    resolveClose,
-    closeOutcome: undefined,
-  };
-
-  const finalizeClose = (outcome?: Error): void => {
-    if (outcome) {
-      entry.closeOutcome = outcome;
-    }
-    detachProviderServer(entry, outcome);
-    entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
-  };
-
-  entry.readline.on('line', (line: string) => {
-    handleProviderServerLine(entry, line);
-  });
-
-  child.stderr.on('data', (chunk: string | Buffer) => {
-    entry.stderr = appendBuffer(entry.stderr, chunk.toString());
-  });
-
-  child.stdin.on('error', (error: Error) => {
-    if (entry.closed) return;
-    const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
-      stderr: entry.stderr,
-    });
-    backendLog.error(stdinError.message, error);
-    detachProviderServer(entry, stdinError);
-    gracefulKill(child);
-  });
-
-  child.on('error', (error: Error) => {
-    const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, {
-      stderr: entry.stderr,
-    });
-    if (!entry.closeRequested) {
-      backendLog.error(`Provider server ${options.provider} failed`, error);
-    }
-    detachProviderServer(entry, closeError);
-    entry.resolveClose(entry.closeRequested ? undefined : closeError);
-  });
-
-  child.on('close', (code, signal) => {
-    let closeError: Error | undefined;
-    if (!entry.closeRequested) {
-      const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
-      closeError = createProviderServerError(options.provider, detail, { stderr: entry.stderr });
-      if (code !== 0 || signal !== null) {
-        backendLog.error(closeError.message);
-      }
-    }
-    finalizeClose(closeError);
-  });
-
-  const rpc: ProviderServerRpc = {
-    request: <TResult = unknown>(method: string, params: Record<string, unknown> = {}): Promise<TResult> => {
-      if (entry.closed) {
-        return Promise.reject(createProviderServerError(entry.provider, 'is closed', { stderr: entry.stderr }));
-      }
-
-      const id = entry.nextRequestId;
-      entry.nextRequestId += 1;
-
-      return new Promise<TResult>((resolve, reject) => {
-        entry.pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject });
-        try {
-          sendProviderServerMessage(entry, { id, method, params });
-        } catch (error) {
-          entry.pending.delete(id);
-          reject(
-            error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`),
-          );
-        }
-      });
-    },
-    notify: (method: string, params: Record<string, unknown> = {}): void => {
-      if (entry.closed) return;
-      try {
-        sendProviderServerMessage(entry, { method, params });
-      } catch (error) {
-        const notifyError =
-          error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`);
-        backendLog.error(notifyError.message, error);
-        detachProviderServer(entry, notifyError);
-        gracefulKill(entry.child);
-      }
-    },
-  };
-
-  return {
-    pid,
-    child,
-    generation,
-    rpc,
-    onNotification: (handler: (message: ProviderServerNotification) => void): (() => void) => {
-      if (entry.closed) return () => {};
-      entry.notificationHandlers.add(handler);
-      return () => {
-        entry.notificationHandlers.delete(handler);
-      };
-    },
-    closePromise,
-    markExpectedClose: () => {
-      entry.closeRequested = true;
-    },
-    close: async () => {
-      beginProviderServerShutdown(entry, 'closed');
-      await entry.closePromise;
-    },
-  };
-}
 
 // ── Durable wrapper spawn ─────────────────────────────────────────────────────
 
@@ -1109,213 +1213,4 @@ function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): voi
   const tmpPath = `${runtimePath}.tmp`;
   writeFileSync(tmpPath, JSON.stringify(record, null, 2));
   renameSync(tmpPath, runtimePath);
-}
-
-function spawnDurableJobInState(
-  state: LaunchCoordinatorState,
-  options: SpawnDurableJobOptions,
-): Promise<CliExecResult> {
-  return spawnDurableJobAsync(state, options);
-}
-
-async function spawnDurableJobAsync(
-  state: LaunchCoordinatorState,
-  options: SpawnDurableJobOptions,
-): Promise<CliExecResult> {
-  const pool = options.pool ?? 'default';
-  const usingReservedPermit =
-    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-    options.permitGranted || (options.signal ? consumeSignalPermit(state, options.signal, options.provider) : false);
-  let internalPermitJobId: string | null = null;
-
-  if (!usingReservedPermit) {
-    const activeLaunches = getActiveMap(state, pool);
-    const queuedLaunches = getQueue(state, pool);
-    const globalActive = activeLaunches.size;
-    const globalLimit = getActiveLimit(pool);
-    if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-      return Promise.reject(
-        new CliBusyError({
-          error: 'busy',
-          provider: options.provider,
-          globalActive,
-          globalLimit,
-        }),
-      );
-    }
-    internalPermitJobId = `spawndurable-${randomUUID()}`;
-    activeLaunches.set(internalPermitJobId, options.provider);
-  }
-
-  let abortHandler: (() => void) | null = null;
-  let killTimer: NodeJS.Timeout | null = null;
-  let durablePid: number | null = null;
-
-  try {
-    if (options.signal?.aborted) {
-      return { stdout: '', stderr: '', code: null, aborted: true };
-    }
-
-    const durable = await spawnDurableWrapper({
-      provider: options.provider,
-      command: options.command,
-      args: options.args,
-      prompt: options.prompt,
-      cwd: options.cwd,
-      jobDir: options.jobDir,
-      pool,
-      env: options.extraEnv,
-    });
-    durablePid = durable.pid;
-    state.activeDurablePids.add(durable.pid);
-
-    let abortedBySignal = false;
-    let runtimeRecord = durable.runtimeRecord;
-    let tailOffset = runtimeRecord.tailWatermark ?? 0;
-    let pidExitedAt: number | null = null;
-    let lastOutputAt = Date.now();
-    let lastTickAt = Date.now();
-
-    const drainStdout = (): void => {
-      const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset);
-      if (newOffset === tailOffset) {
-        return;
-      }
-
-      tailOffset = newOffset;
-      lastOutputAt = Date.now();
-      runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
-      try {
-        writeRuntimeRecord(options.jobDir, runtimeRecord);
-      } catch {
-        /* best effort */
-      }
-
-      for (const line of lines) {
-        options.onEvent?.(line);
-      }
-    };
-
-    if (options.signal) {
-      abortHandler = () => {
-        if (abortedBySignal) return;
-        abortedBySignal = true;
-        safeKillPid(durable.pid, 'SIGTERM');
-        killTimer = setTimeout(() => {
-          safeKillPid(durable.pid, 'SIGKILL');
-        }, SIGTERM_GRACE_MS);
-        killTimer.unref?.();
-      };
-
-      if (options.signal.aborted) abortHandler();
-      else options.signal.addEventListener('abort', abortHandler, { once: true });
-    }
-
-    while (true) {
-      drainStdout();
-
-      const exitRecord = readExitRecord(options.jobDir);
-      if (exitRecord) {
-        drainStdout();
-        return {
-          stdout: readOutputFile(durable.stdoutPath),
-          stderr: readOutputFile(durable.stderrPath),
-          code: exitRecord.exitCode,
-          aborted: abortedBySignal,
-        };
-      }
-
-      if (!isPidAlive(durable.pid)) {
-        drainStdout();
-        const lateExitRecord = readExitRecord(options.jobDir);
-        if (lateExitRecord) {
-          return {
-            stdout: readOutputFile(durable.stdoutPath),
-            stderr: readOutputFile(durable.stderrPath),
-            code: lateExitRecord.exitCode,
-            aborted: abortedBySignal,
-          };
-        }
-        pidExitedAt ??= Date.now();
-        if (Date.now() - pidExitedAt >= DURABLE_EXIT_GRACE_MS) {
-          throw new Error(`Durable process ${durable.pid} exited before exit.json was written`);
-        }
-      } else {
-        pidExitedAt = null;
-      }
-
-      // Idle timeout — mirrors spawnCli's 10-minute inactivity kill
-      const now = Date.now();
-      const tickGap = now - lastTickAt;
-      lastTickAt = now;
-      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
-        // System likely woke from sleep — reset baseline
-        lastOutputAt = now;
-      } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        safeKillPid(durable.pid, 'SIGTERM');
-        throw new Error(`Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`);
-      }
-
-      await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
-    }
-  } finally {
-    if (durablePid !== null) {
-      state.activeDurablePids.delete(durablePid);
-    }
-    if (killTimer) clearTimeout(killTimer);
-    if (abortHandler && options.signal) {
-      options.signal.removeEventListener('abort', abortHandler);
-    }
-    if (internalPermitJobId) {
-      releaseLaunchInState(state, internalPermitJobId, pool);
-    }
-  }
-}
-
-// ── Recovery helpers ──────────────────────────────────────────────────────────
-
-/** Directly insert a job into a pool's activeLaunches map. Recovery-only. */
-function restoreActiveLaunchInState(
-  state: LaunchCoordinatorState,
-  jobId: string,
-  provider: string,
-  pool: LaunchPool = 'default',
-): void {
-  getActiveMap(state, pool).set(jobId, provider);
-}
-
-/** Insert a queue entry at the tail. Recovery calls this in sequence order. */
-function restoreQueuedLaunchInState(
-  state: LaunchCoordinatorState,
-  jobId: string,
-  provider: string,
-  pool: LaunchPool = 'default',
-): QueuedHandle {
-  const queuedLaunches = getQueue(state, pool);
-
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-
-  const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
-  queuedLaunches.push(entry);
-
-  return queuedHandle(state, entry, pool);
-}
-
-function killAllChildrenInState(state: LaunchCoordinatorState): void {
-  drainQueuedLaunches(state, QUEUE_DRAINED_MESSAGE);
-  for (const { child } of state.activeChildren) {
-    gracefulKill(child);
-  }
-  state.activeChildren.clear();
-  for (const pid of state.activeDurablePids) {
-    safeKillPid(pid, 'SIGTERM');
-    const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
-    escalation.unref?.();
-  }
-  state.activeDurablePids.clear();
 }
