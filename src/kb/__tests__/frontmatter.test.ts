@@ -102,15 +102,21 @@ updatedAt: 2026-03-23
     });
   });
 
-  it('parses and serializes community frontmatter (dates only)', () => {
+  it('parses and serializes community frontmatter with hierarchy metadata', () => {
     const serialized = serializeCommunityFrontmatter({
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
+      level: 1,
+      parent: 'community:platform-architecture',
+      children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
     });
 
     expect(parseCommunityFrontmatter(`${serialized}# Graph RAG\n\nBody.\n`)).toEqual({
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
+      level: 1,
+      parent: 'community:platform-architecture',
+      children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
     });
   });
 

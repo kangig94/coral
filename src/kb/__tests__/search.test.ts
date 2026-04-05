@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import type { EntityGraph } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -145,30 +146,94 @@ function writeCommunity(
   {
     title,
     members,
+    level = 0,
+    parent,
+    children,
     summary,
     body,
   }: {
     title: string;
     members: string[];
+    level?: number;
+    parent?: string;
+    children?: string[];
     summary?: string;
     body: string;
   },
 ): void {
+  const lines = [
+    '---',
+    'createdAt: 2026-04-02',
+    'updatedAt: 2026-04-02',
+    `level: ${level}`,
+    ...(parent === undefined ? [] : [`parent: ${parent}`]),
+    ...(children === undefined ? [] : ['children:', ...children.map((child) => `  - ${child}`)]),
+    '---',
+    `# ${title}`,
+    '',
+    ...(summary === undefined ? [] : ['## Summary', '', summary, '']),
+    '## Members',
+    ...members.map((member) => `- #${member}`),
+    '',
+    body,
+    '',
+  ];
   writeFileSync(
     join(communityDir, `${slug}.md`),
-    `---
-createdAt: 2026-04-02
-updatedAt: 2026-04-02
----
-# ${title}
-
-${summary === undefined ? '' : `## Summary\n\n${summary}\n\n`}## Members
-${members.map((member) => `- #${member}`).join('\n')}
-
-${body}
-`,
+    `${lines.join('\n')}\n`,
     'utf-8',
   );
+}
+
+/**
+ * Ensure manually-written community files are indexed with fresh Orama freshness.
+ *
+ * The entity-graph topology refresh deletes community files on the first reindex
+ * (topology hash changes from undefined to the empty-graph hash). Community summary
+ * freshness requires stored fingerprints that can only be computed after the index
+ * includes the community entries. Three reindex passes resolve the bootstrap:
+ *   1. First reindex establishes the empty-graph topology hash in curate state.
+ *   2. Re-write community files; second reindex indexes them (still stale).
+ *   3. markCommunityStateFresh stores correct summary fingerprints.
+ *   4. Third reindex inserts community Orama documents as fresh.
+ */
+async function ensureFreshCommunityIndex(
+  kb: { readIndex: () => any },
+  reindex: (kb: any) => Promise<any>,
+  writeCommunities: () => void,
+) {
+  await reindex(kb);
+  writeCommunities();
+  await reindex(kb);
+  await markCommunityStateFresh(kb);
+  await reindex(kb);
+}
+
+async function markCommunityStateFresh(kb: { readIndex: () => any }) {
+  const [{ computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint }, { readCurateState, writeCurateState }] =
+    await Promise.all([import('../community-detection.js'), import('../curate-state.js')]);
+  const index = kb.readIndex();
+  expect(index).not.toBeNull();
+
+  const communities = Object.values(index!.entries)
+    .filter((entry: any) => entry.kind === 'community')
+    .map((community: any) => ({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.children === undefined ? {} : { children: community.children }),
+      ...(community.summary === undefined ? {} : { summary: community.summary }),
+    }));
+  const topologyHash = computeCommunityTopologyFingerprint(index!);
+  const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index!);
+
+  writeCurateState(kb as any, {
+    ...readCurateState(kb as any),
+    communityTopologyHash: topologyHash,
+    communitySummaryTopologyHash: topologyHash,
+    communitySummaryInputFingerprints: fingerprints,
+  });
 }
 
 function resultNotes(results: { note: string }[]): string[] {
@@ -188,27 +253,31 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
 }
 
 function mockHybridSearch(
-  kb: { acquireVectorLease: (...args: any[]) => Promise<any>; readIndexState: () => { mutationSeq: number } },
+  kb: {
+    acquireVectorLease: (...args: any[]) => Promise<any>;
+    readIndexState: () => { contentSeq: number; mutationSeq: number };
+  },
   {
     searchVector,
     embedQuery = vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     specId = 'spec-1',
     snapshotId = 'snapshot-1',
+    indexedSeq = kb.readIndexState().contentSeq,
   }: {
     searchVector: (query: Float32Array, candidateK: number) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>;
     embedQuery?: (query: string) => Promise<Float32Array>;
     specId?: string;
     snapshotId?: string;
+    indexedSeq?: number;
   },
 ) {
-  const mutationSeq = kb.readIndexState().mutationSeq;
   const release = vi.fn().mockResolvedValue(undefined);
 
   hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
     mode: 'hybrid',
     specId,
     vectorStatus: {
-      indexedSeq: mutationSeq,
+      indexedSeq,
       activeSnapshotId: snapshotId,
     },
   });
@@ -223,7 +292,7 @@ function mockHybridSearch(
     snapshotId,
     generation: 1,
     vectorStatus: {
-      indexedSeq: mutationSeq,
+      indexedSeq,
       activeSnapshotId: snapshotId,
     },
     release,
@@ -403,6 +472,201 @@ describe('kb search', () => {
     expect(match.matchedBy).toEqual(['filename', 'principle', 'tag']);
   });
 
+  it('seeds graph ranking from aliases and bounded one-hop expansion instead of raw token overlap alone', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'memory-entry', {
+      title: 'Opaque Memory Entry',
+      tags: ['gpu-device-memory'],
+      body: 'Archive only.',
+    });
+    writeNote(paths.notesDir(), 'runtime-entry', {
+      title: 'Opaque Runtime Entry',
+      tags: ['cuda-runtime-api'],
+      body: 'Archive only.',
+    });
+
+    const graph: EntityGraph = {
+      entityMeta: {
+        'gpu-device-memory': {
+          type: 'component',
+          description: 'GPU device memory.',
+          aliases: ['vram'],
+        },
+        'cuda-runtime-api': {
+          type: 'technology',
+          description: 'CUDA runtime APIs.',
+        },
+      },
+      relationships: [
+        {
+          source: 'cuda-runtime-api',
+          target: 'gpu-device-memory',
+          type: 'enables',
+          description: 'The runtime API manages device memory.',
+          evidence: ['note:memory-entry'],
+        },
+      ],
+    };
+    kb.writeEntityGraph(graph);
+
+    await reindex(kb);
+
+    const aliasResponse = await searchKb(kb, 'vram', 5);
+    expect(aliasResponse.mode).toBe('text');
+    expect(resultNotes(aliasResponse.results).slice(0, 2)).toEqual(['memory-entry', 'runtime-entry']);
+    expect(resultFor(aliasResponse.results, 'memory-entry').matchedBy).toEqual([]);
+    expect(resultFor(aliasResponse.results, 'runtime-entry').matchedBy).toEqual([]);
+
+    const exactResponse = await searchKb(kb, 'gpu-device-memory', 5);
+    expect(resultNotes(exactResponse.results).slice(0, 2)).toEqual(['memory-entry', 'runtime-entry']);
+
+    const phraseResponse = await searchKb(kb, 'cuda runtime api', 5);
+    expect(resultNotes(phraseResponse.results).slice(0, 2)).toEqual(['runtime-entry', 'memory-entry']);
+  });
+
+  it('injects fresh community summaries into related note results when the graph and summaries are current', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.communitiesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'graph-rag-overview', {
+      title: 'Graph RAG Overview',
+      tags: ['graph-rag', 'retrieval'],
+      body: 'Retrieval behavior depends on graph structure.',
+    });
+    writeNote(paths.notesDir(), 'retrieval-eval', {
+      title: 'Retrieval Evaluation',
+      tags: ['retrieval'],
+      body: 'Retrieval quality depends on graph traces.',
+    });
+
+    kb.writeEntityGraph({
+      entityMeta: {
+        'graph-rag': {
+          type: 'concept',
+          description: 'Graph-backed retrieval.',
+        },
+        retrieval: {
+          type: 'operation',
+          description: 'Retrieval workflows.',
+        },
+      },
+      relationships: [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure improves retrieval.',
+          evidence: ['note:graph-rag-overview', 'note:retrieval-eval'],
+        },
+      ],
+    });
+
+    await reindex(kb);
+    writeCommunity(paths.communitiesDir(), 'graph-rag-context', {
+      title: 'Graph RAG',
+      members: ['graph-rag', 'retrieval'],
+      summary: 'Shared graph-backed retrieval patterns.',
+      body: 'Community body.',
+    });
+    await reindex(kb);
+    await markCommunityStateFresh(kb);
+
+    const response = await searchKb(kb, 'retrieval', 5, 'all');
+
+    expect(response.mode).toBe('text');
+    expect(resultFor(response.results, 'graph-rag-overview').communityContext).toEqual([
+      'Graph RAG: Shared graph-backed retrieval patterns.',
+    ]);
+    expect(resultFor(response.results, 'retrieval-eval').communityContext).toEqual([
+      'Graph RAG: Shared graph-backed retrieval patterns.',
+    ]);
+  });
+
+  it('filters stale community documents at query time for all and community scopes', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { readCurateState, writeCurateState } = await import('../curate-state.js');
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+    mkdirSync(paths.communitiesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'retrieval-note', {
+      title: 'Retrieval Note',
+      tags: ['retrieval'],
+      body: 'Shared retrieval patterns appear here.',
+    });
+    writeCommunity(paths.communitiesDir(), 'graph-rag', {
+      title: 'Graph RAG',
+      members: ['retrieval'],
+      summary: 'Shared retrieval patterns.',
+      body: 'Shared retrieval patterns appear here too.',
+    });
+
+    await reindex(kb);
+    writeCurateState(kb, {
+      ...readCurateState(kb),
+      communityTopologyHash: 'stale-topology',
+      communitySummaryTopologyHash: 'stale-topology',
+      communitySummaryInputFingerprints: {
+        'graph-rag': 'stale-fingerprint',
+      },
+    });
+
+    const allScope = await searchKb(kb, 'shared retrieval patterns', 5, 'all');
+    const communityScope = await searchKb(kb, 'shared retrieval patterns', 5, 'communities');
+
+    expect(resultNotes(allScope.results)).toContain('retrieval-note');
+    expect(resultNotes(allScope.results)).not.toContain('graph-rag');
+    expect(communityScope.results).toEqual([]);
+  });
+
+  it('rebuilds graph-aware search state on the next search after a manual entity graph edit', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'memory-entry', {
+      title: 'Opaque Memory Entry',
+      tags: ['gpu-device-memory'],
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+    expect((await searchKb(kb, 'vram', 5)).results).toEqual([]);
+
+    writeFileSync(
+      kb.entityGraphPath(),
+      `${JSON.stringify(
+        {
+          entityMeta: {
+            'gpu-device-memory': {
+              type: 'component',
+              description: 'GPU device memory.',
+              aliases: ['vram'],
+            },
+          },
+          relationships: [],
+        } satisfies EntityGraph,
+        null,
+        2,
+      )}\n`,
+      'utf-8',
+    );
+    // Ensure the entity graph file mtime is strictly after the index file
+    // so detectTextArtifactRebuildInfo triggers a rebuild.
+    const futureTime = new Date(Date.now() + 60_000);
+    utimesSync(kb.entityGraphPath(), futureTime, futureTime);
+
+    const response = await searchKb(kb, 'vram', 5);
+
+    expect(resultNotes(response.results)).toEqual(['memory-entry']);
+    expect(resultFor(response.results, 'memory-entry').matchedBy).toEqual([]);
+  });
+
   it('fuses Orama and vector ranks with RRF for note and source entries', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
@@ -528,14 +792,17 @@ describe('kb search', () => {
       title: 'Latent Note',
       body: 'Archive only.',
     });
-    writeCommunity(paths.communitiesDir(), 'graph-rag', {
-      title: 'Graph RAG',
-      members: ['graph-rag', 'retrieval'],
-      summary: 'Shared retrieval patterns.',
-      body: 'Retrieval patterns stay clustered here.',
-    });
+    const writeCommunities = () => {
+      writeCommunity(paths.communitiesDir(), 'graph-rag', {
+        title: 'Graph RAG',
+        members: ['graph-rag', 'retrieval'],
+        summary: 'Shared retrieval patterns.',
+        body: 'Retrieval patterns stay clustered here.',
+      });
+    };
+    writeCommunities();
 
-    await reindex(kb);
+    await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
 
     mockHybridSearch(kb, {
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
@@ -555,21 +822,24 @@ describe('kb search', () => {
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.communitiesDir(), { recursive: true });
 
-    writeCommunity(paths.communitiesDir(), 'graph-rag', {
-      title: 'Graph RAG',
-      members: ['graph-rag', 'retrieval'],
-      summary: 'Shared retrieval patterns.',
-      body: 'Retrieval patterns stay clustered here.',
-    });
+    const writeCommunities = () => {
+      writeCommunity(paths.communitiesDir(), 'graph-rag', {
+        title: 'Graph RAG',
+        members: ['graph-rag', 'retrieval'],
+        summary: 'Shared retrieval patterns.',
+        body: 'Retrieval patterns stay clustered here.',
+      });
+    };
+    writeCommunities();
 
-    await reindex(kb);
+    await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
 
     const acquireVectorLease = vi.spyOn(kb, 'acquireVectorLease');
     hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
       mode: 'hybrid',
       specId: 'spec-1',
       vectorStatus: {
-        indexedSeq: kb.readIndexState().mutationSeq,
+        indexedSeq: kb.readIndexState().contentSeq,
         activeSnapshotId: 'snapshot-1',
       },
     });
@@ -584,6 +854,70 @@ describe('kb search', () => {
     expect(acquireVectorLease).not.toHaveBeenCalled();
     expect(hybridMockState.ensureVectorIndex).not.toHaveBeenCalled();
     expect(hybridMockState.createEmbeddingProvider).not.toHaveBeenCalled();
+  });
+
+  it('keeps hybrid search enabled when only metadataSeq advances beyond the vector snapshot', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'hybrid-metadata-note', {
+      title: 'Hybrid Metadata Note',
+      body: 'Semantic retrieval target.',
+    });
+
+    await reindex(kb);
+    kb.writeIndexState({
+      contentSeq: 5,
+      metadataSeq: 9,
+      mutationSeq: 9,
+      textIndexedSeq: 9,
+      vector: { bySpec: {} },
+    });
+
+    mockHybridSearch(kb, {
+      indexedSeq: 5,
+      searchVector: vi.fn().mockResolvedValue([
+        { chunkId: 'hybrid:0', entryId: 'note:hybrid-metadata-note', score: 0.99 },
+      ]),
+    });
+
+    const response = await searchKb(kb, 'semantic', 5);
+
+    expect(response.mode).toBe('hybrid');
+    expect(resultNotes(response.results)).toContain('hybrid-metadata-note');
+  });
+
+  it('falls back to text mode when the vector snapshot lags behind contentSeq', async () => {
+    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'stale-vector-note', {
+      title: 'Stale Vector Note',
+      body: 'Rendering guides keep frames stable.',
+    });
+
+    await reindex(kb);
+    kb.writeIndexState({
+      contentSeq: 6,
+      metadataSeq: 9,
+      mutationSeq: 9,
+      textIndexedSeq: 9,
+      vector: { bySpec: {} },
+    });
+
+    mockHybridSearch(kb, {
+      indexedSeq: 5,
+      searchVector: vi.fn().mockResolvedValue([{ chunkId: 'stale:0', entryId: 'note:stale-vector-note', score: 0.99 }]),
+    });
+
+    const response = await searchKb(kb, 'rendering', 5);
+
+    expect(response.mode).toBe('text');
+    expect(resultFor(response.results, 'stale-vector-note').matchedBy).toEqual(
+      expect.arrayContaining(['content']),
+    );
   });
 
   it('falls back to text mode when vector query embedding fails', async () => {

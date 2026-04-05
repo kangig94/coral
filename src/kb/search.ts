@@ -1,5 +1,10 @@
 import { search as oramaSearch } from '@orama/orama';
 import {
+  computeCommunitySummaryInputFingerprints,
+  computeCommunityTopologyFingerprint,
+} from './community-detection.js';
+import { readCurateState } from './curate-state.js';
+import {
   type KbOramaDb,
   normalizeOramaTerm,
   normalizeWhitespace,
@@ -10,6 +15,7 @@ import {
 } from './orama-factory.js';
 import type { KbRuntime } from './contracts.js';
 import {
+  type EntityGraph,
   getEntry,
   isCommunityEntry,
   isNoteEntry,
@@ -20,6 +26,7 @@ import {
   type KbResult,
   type KbSearchResponse,
   type KbSearchScope,
+  type RelationshipType,
 } from './types.js';
 import { createEmbeddingProvider } from './embedding.js';
 import { ensureVectorIndex } from './vector-sync.js';
@@ -40,6 +47,23 @@ const KIND_ORDER: Record<KbResult['kind'], number> = {
 };
 const HYBRID_RRF_K = 60;
 const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
+const GRAPH_RRF_WEIGHT = 0.22;
+const GRAPH_MAX_NEIGHBORS_PER_SEED = 10;
+const GRAPH_CONTEXT_MAX_COMMUNITIES = 3;
+const GRAPH_COMMUNITY_RESULT_SPAN_MIN = 2;
+const GRAPH_ENTRY_MATCH_WEIGHTS = [1, 0.65, 0.4] as const;
+const GRAPH_RELATIONSHIP_WEIGHTS: Record<RelationshipType, number> = {
+  enables: 0.78,
+  requires: 0.74,
+  constrains: 0.58,
+  implements: 0.76,
+  specializes: 0.66,
+  'conflicts-with': 0.42,
+  precedes: 0.48,
+  composes: 0.7,
+  abstracts: 0.54,
+  replaces: 0.6,
+};
 
 type SnippetAnchor = {
   index: number;
@@ -73,6 +97,24 @@ type HybridKbSearchHit = ResolvedKbSearchEntry & {
   document: KbOramaDocument | null;
   score: number;
   vectorRank?: number;
+  graphRank?: number;
+};
+
+type GraphNeighbor = {
+  entity: string;
+  weight: number;
+  relationshipTypes: RelationshipType[];
+};
+
+type GraphSearchContext = {
+  entityMeta: EntityGraph['entityMeta'];
+  adjacency: Map<string, GraphNeighbor[]>;
+  aliasLookup: Map<string, Set<string>>;
+  phraseLookup: Map<string, Set<string>>;
+};
+
+type GraphKbSearchHit = ResolvedKbSearchEntry & {
+  score: number;
 };
 
 function denormalizeSlug(slug: string): string {
@@ -192,7 +234,9 @@ type QueryContext = {
 };
 
 function extractSnippet(content: string, query: QueryContext): string | undefined {
-  const anchor = findPhraseAnchor(content, query.rawQuery, query.oramaTerm) ?? findTokenAnchor(content, query.queryTokens, query.tokenizer);
+  const anchor =
+    findPhraseAnchor(content, query.rawQuery, query.oramaTerm) ??
+    findTokenAnchor(content, query.queryTokens, query.tokenizer);
 
   if (anchor === null) {
     return undefined;
@@ -246,6 +290,276 @@ function resolveHit(hit: KbSearchHit, index: KbIndex): ResolvedKbSearchHit {
   };
 }
 
+function normalizeGraphPhrase(value: string): string {
+  return normalizeWhitespace(
+    value
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/[^a-z0-9\s]+/g, ' '),
+  );
+}
+
+function normalizeGraphSlug(value: string): string {
+  const phrase = normalizeGraphPhrase(value);
+  return phrase === '' ? '' : phrase.replace(/\s+/g, '-');
+}
+
+function addLookupValue(lookup: Map<string, Set<string>>, key: string, value: string): void {
+  if (key === '') {
+    return;
+  }
+
+  const existing = lookup.get(key);
+  if (existing === undefined) {
+    lookup.set(key, new Set([value]));
+    return;
+  }
+
+  existing.add(value);
+}
+
+function stableEntityGraph(graph: EntityGraph): EntityGraph {
+  return {
+    entityMeta: Object.fromEntries(
+      Object.entries(graph.entityMeta)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([entityName, meta]) => [
+          entityName,
+          {
+            type: meta.type,
+            description: meta.description,
+            ...(meta.aliases === undefined
+              ? {}
+              : { aliases: [...new Set(meta.aliases)].sort((left, right) => left.localeCompare(right)) }),
+          },
+        ]),
+    ),
+    relationships: [...graph.relationships]
+      .map((relationship) => ({
+        source: relationship.source,
+        target: relationship.target,
+        type: relationship.type,
+        description: relationship.description,
+        evidence: [...new Set(relationship.evidence)].sort((left, right) => left.localeCompare(right)),
+      }))
+      .sort(
+        (left, right) =>
+          left.source.localeCompare(right.source) ||
+          left.target.localeCompare(right.target) ||
+          left.type.localeCompare(right.type) ||
+          left.description.localeCompare(right.description),
+      ),
+  };
+}
+
+function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): boolean {
+  const loadedGraph = stableEntityGraph({
+    entityMeta: index.entityMeta ?? {},
+    relationships: index.relationships ?? [],
+  });
+
+  return JSON.stringify(loadedGraph) === JSON.stringify(stableEntityGraph(currentGraph));
+}
+
+function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGraph | null): GraphSearchContext | null {
+  if (currentGraph === null || Object.keys(currentGraph.entityMeta).length === 0 || !graphStateMatchesIndex(index, currentGraph)) {
+    return null;
+  }
+
+  const adjacencyBuilders = new Map<
+    string,
+    Map<string, { weight: number; relationshipTypes: Set<RelationshipType> }>
+  >();
+  const aliasLookup = new Map<string, Set<string>>();
+  const phraseLookup = new Map<string, Set<string>>();
+
+  const ensureNeighbors = (entityName: string) => {
+    const existing = adjacencyBuilders.get(entityName);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const next = new Map<string, { weight: number; relationshipTypes: Set<RelationshipType> }>();
+    adjacencyBuilders.set(entityName, next);
+    return next;
+  };
+
+  for (const [entityName, meta] of Object.entries(currentGraph.entityMeta)) {
+    addLookupValue(phraseLookup, normalizeGraphPhrase(entityName), entityName);
+
+    for (const alias of meta.aliases ?? []) {
+      addLookupValue(aliasLookup, normalizeGraphSlug(alias), entityName);
+      addLookupValue(phraseLookup, normalizeGraphPhrase(alias), entityName);
+    }
+  }
+
+  for (const relationship of currentGraph.relationships) {
+    if (
+      currentGraph.entityMeta[relationship.source] === undefined ||
+      currentGraph.entityMeta[relationship.target] === undefined ||
+      relationship.source === relationship.target
+    ) {
+      continue;
+    }
+
+    const relationshipWeight = GRAPH_RELATIONSHIP_WEIGHTS[relationship.type];
+    for (const [source, target] of [
+      [relationship.source, relationship.target],
+      [relationship.target, relationship.source],
+    ] as const) {
+      const neighbors = ensureNeighbors(source);
+      const existing = neighbors.get(target);
+      if (existing === undefined) {
+        neighbors.set(target, {
+          weight: relationshipWeight,
+          relationshipTypes: new Set([relationship.type]),
+        });
+        continue;
+      }
+
+      existing.weight = Math.max(existing.weight, relationshipWeight);
+      existing.relationshipTypes.add(relationship.type);
+    }
+  }
+
+  const adjacency = new Map<string, GraphNeighbor[]>();
+  for (const entityName of Object.keys(currentGraph.entityMeta)) {
+    const neighbors = [...(adjacencyBuilders.get(entityName)?.entries() ?? [])]
+      .map(([neighbor, attributes]) => ({
+        entity: neighbor,
+        weight: attributes.weight,
+        relationshipTypes: [...attributes.relationshipTypes].sort((left, right) => left.localeCompare(right)),
+      }))
+      .sort(
+        (left, right) =>
+          right.weight - left.weight ||
+          left.entity.localeCompare(right.entity) ||
+          left.relationshipTypes.join('\u0000').localeCompare(right.relationshipTypes.join('\u0000')),
+      );
+    adjacency.set(entityName, neighbors);
+  }
+
+  return {
+    entityMeta: currentGraph.entityMeta,
+    adjacency,
+    aliasLookup,
+    phraseLookup,
+  };
+}
+
+function containsNormalizedPhrase(query: string, phrase: string): boolean {
+  if (query === '' || phrase === '') {
+    return false;
+  }
+
+  return ` ${query} `.includes(` ${phrase} `);
+}
+
+function setMaxScore(scores: Map<string, number>, entity: string, score: number): void {
+  const current = scores.get(entity) ?? 0;
+  if (score > current) {
+    scores.set(entity, score);
+  }
+}
+
+function addBoundedScore(scores: Map<string, number>, entity: string, score: number, cap: number): void {
+  const current = scores.get(entity) ?? 0;
+  scores.set(entity, Math.min(cap, current + score));
+}
+
+function resolveGraphSeeds(rawQuery: string, graph: GraphSearchContext): Map<string, number> {
+  const seeds = new Map<string, number>();
+  const normalizedSlug = normalizeGraphSlug(rawQuery);
+  if (normalizedSlug !== '' && graph.entityMeta[normalizedSlug] !== undefined) {
+    setMaxScore(seeds, normalizedSlug, 1);
+  }
+
+  for (const canonicalName of graph.aliasLookup.get(normalizedSlug) ?? []) {
+    setMaxScore(seeds, canonicalName, 0.96);
+  }
+
+  const normalizedQuery = normalizeGraphPhrase(rawQuery);
+  if (normalizedQuery === '') {
+    return seeds;
+  }
+
+  for (const [phrase, canonicalNames] of graph.phraseLookup.entries()) {
+    if (!containsNormalizedPhrase(normalizedQuery, phrase)) {
+      continue;
+    }
+
+    for (const canonicalName of canonicalNames) {
+      setMaxScore(seeds, canonicalName, 0.86);
+    }
+  }
+
+  return seeds;
+}
+
+function expandGraphEntityScores(seeds: ReadonlyMap<string, number>, graph: GraphSearchContext): Map<string, number> {
+  const entityScores = new Map<string, number>();
+
+  for (const [seed, seedScore] of seeds.entries()) {
+    addBoundedScore(entityScores, seed, seedScore, 1.35);
+
+    for (const neighbor of (graph.adjacency.get(seed) ?? []).slice(0, GRAPH_MAX_NEIGHBORS_PER_SEED)) {
+      addBoundedScore(entityScores, neighbor.entity, seedScore * neighbor.weight, 1.1);
+    }
+  }
+
+  return entityScores;
+}
+
+function scoreGraphMatches(matchScores: number[]): number {
+  return [...matchScores]
+    .sort((left, right) => right - left)
+    .slice(0, GRAPH_ENTRY_MATCH_WEIGHTS.length)
+    .reduce((total, score, index) => total + score * GRAPH_ENTRY_MATCH_WEIGHTS[index], 0);
+}
+
+function buildGraphHits(
+  index: KbIndex,
+  rawQuery: string,
+  scope: KbSearchScope,
+  graph: GraphSearchContext | null,
+): GraphKbSearchHit[] {
+  if (graph === null) {
+    return [];
+  }
+
+  const seeds = resolveGraphSeeds(rawQuery, graph);
+  if (seeds.size === 0) {
+    return [];
+  }
+
+  const entityScores = expandGraphEntityScores(seeds, graph);
+  if (entityScores.size === 0) {
+    return [];
+  }
+
+  const hits: GraphKbSearchHit[] = [];
+  for (const entryId of Object.keys(index.entries)) {
+    const entry = resolveEntry(entryId, index);
+    if (entry === null || !isVectorScope(entry.kind, scope)) {
+      continue;
+    }
+
+    const matchScores = [...new Set(entry.tags)]
+      .map((tag) => entityScores.get(tag))
+      .filter((score): score is number => score !== undefined);
+    if (matchScores.length === 0) {
+      continue;
+    }
+
+    hits.push({
+      ...entry,
+      score: scoreGraphMatches(matchScores),
+    });
+  }
+
+  return rerankHits(hits);
+}
+
 function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
   if (scope === 'all') {
     // Communities are meta-documents — exclude from default results so they
@@ -255,6 +569,71 @@ function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scop
 
   const targetKind = scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : 'community';
   return hits.filter((hit) => hit.kind === targetKind);
+}
+
+function areCommunityResultsFresh(
+  rt: Pick<KbRuntime, 'curateStatePath' | 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+): boolean {
+  const hasCommunityEntries = Object.values(index.entries).some((entry) => entry.kind === 'community');
+  if (!hasCommunityEntries) {
+    return true;
+  }
+
+  const state = readCurateState(rt);
+  const topologyHash = computeCommunityTopologyFingerprint(index);
+  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
+    return false;
+  }
+
+  try {
+    const communities = Object.values(index.entries)
+      .filter(isCommunityEntry)
+      .map((community) => ({
+        slug: community.slug,
+        title: community.title,
+        level: community.level,
+        members: community.members,
+        ...(community.children === undefined ? {} : { children: community.children }),
+        ...(community.summary === undefined ? {} : { summary: community.summary }),
+      }));
+    const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, rt, index);
+    const storedFingerprints = state.communitySummaryInputFingerprints ?? {};
+    const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
+    const storedEntries = Object.entries(storedFingerprints)
+      .filter(([slug]) => slug in currentFingerprints)
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    return (
+      currentEntries.length === storedEntries.length &&
+      currentEntries.every(
+        ([slug, fingerprint], index) =>
+          storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSearchableHit(hit: ResolvedKbSearchHit, communitiesFresh: boolean): boolean {
+  if (hit.kind !== 'community') {
+    return true;
+  }
+
+  if (hit.document.freshness === 'stale') {
+    return false;
+  }
+
+  if (hit.document.freshness === 'fresh') {
+    return true;
+  }
+
+  return communitiesFresh;
+}
+
+function filterSearchableHits(hits: ResolvedKbSearchHit[], communitiesFresh: boolean): ResolvedKbSearchHit[] {
+  return hits.filter((hit) => isSearchableHit(hit, communitiesFresh));
 }
 
 function rerankHits<T extends { score: number; kind: KbResult['kind']; slug: string }>(hits: T[]): T[] {
@@ -284,15 +663,17 @@ function maxPossibleOmittedScore(hits: KbSearchHit[]): number {
 function shouldContinueWidening(
   hits: KbSearchHit[],
   resolvedHits: ResolvedKbSearchHit[],
+  communitiesFresh: boolean,
   scope: KbSearchScope,
   topK: number,
   exhausted: boolean,
 ): boolean {
+  const searchableHits = filterSearchableHits(resolvedHits, communitiesFresh);
   if (scope !== 'all') {
-    return !exhausted && filterHitsByScope(resolvedHits, scope).length < topK;
+    return !exhausted && filterHitsByScope(searchableHits, scope).length < topK;
   }
 
-  const rerankedHits = rerankHits(resolvedHits);
+  const rerankedHits = rerankHits(searchableHits);
   if (rerankedHits.length < topK) {
     return !exhausted;
   }
@@ -312,13 +693,97 @@ async function searchOrama(db: KbOramaDb, oramaTerm: string, limit: number): Pro
   return response.hits as KbSearchHit[];
 }
 
+function withCommunityContext(result: KbResult, communityContext: string[] | undefined): KbResult {
+  if (communityContext === undefined || communityContext.length === 0) {
+    return result;
+  }
+
+  return {
+    ...result,
+    communityContext: [...communityContext],
+  };
+}
+
+function buildCommunityContextMap(
+  hits: Array<Pick<ResolvedKbSearchEntry, 'entryId' | 'kind' | 'tags'>>,
+  index: KbIndex,
+  communitiesFresh: boolean,
+  graphFresh: boolean,
+): Map<KbEntryId, string[]> {
+  if (!communitiesFresh || !graphFresh) {
+    return new Map();
+  }
+
+  const noteSourceHits = hits.filter((hit) => hit.kind !== 'community');
+  if (noteSourceHits.length < GRAPH_COMMUNITY_RESULT_SPAN_MIN) {
+    return new Map();
+  }
+
+  const contextMap = new Map<KbEntryId, string[]>();
+  const relevantCommunities = Object.values(index.entries)
+    .filter(isCommunityEntry)
+    .filter((community) => typeof community.summary === 'string' && community.summary.trim() !== '')
+    .map((community) => {
+      const memberSet = new Set(community.members);
+      const overlapMembers = new Set<string>();
+      const matchingEntryIds = new Set<KbEntryId>();
+
+      for (const hit of noteSourceHits) {
+        const matchedMembers = hit.tags.filter((tag) => memberSet.has(tag));
+        if (matchedMembers.length === 0) {
+          continue;
+        }
+
+        matchingEntryIds.add(hit.entryId);
+        for (const member of matchedMembers) {
+          overlapMembers.add(member);
+        }
+      }
+
+      return {
+        community,
+        memberSet,
+        overlapMembers,
+        matchingEntryIds,
+      };
+    })
+    .filter(({ matchingEntryIds }) => matchingEntryIds.size >= GRAPH_COMMUNITY_RESULT_SPAN_MIN)
+    .sort(
+      (left, right) =>
+        right.matchingEntryIds.size - left.matchingEntryIds.size ||
+        right.overlapMembers.size - left.overlapMembers.size ||
+        left.community.level - right.community.level ||
+        left.community.slug.localeCompare(right.community.slug),
+    )
+    .slice(0, GRAPH_CONTEXT_MAX_COMMUNITIES);
+
+  for (const { community, memberSet } of relevantCommunities) {
+    const summaryText = `${community.title}: ${community.summary!.trim()}`;
+    for (const hit of noteSourceHits) {
+      if (!hit.tags.some((tag) => memberSet.has(tag))) {
+        continue;
+      }
+
+      const existing = contextMap.get(hit.entryId) ?? [];
+      if (!existing.includes(summaryText)) {
+        existing.push(summaryText);
+      }
+      contextMap.set(hit.entryId, existing);
+    }
+  }
+
+  return contextMap;
+}
+
 function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
   const matchedBy = new Set<KbMatchSurface>();
 
   if (hasTokenOverlap(query.queryTokens, tokenizeField(hit.slug, query.tokenizer))) {
     matchedBy.add('filename');
   }
-  if (hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, tokenizeField(principle, query.tokenizer)))) {
+  if (
+    hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, tokenizeField(principle, query.tokenizer)))
+  ) {
     matchedBy.add('principle');
   }
   if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, tokenizeField(tag, query.tokenizer)))) {
@@ -346,40 +811,71 @@ function toResult(hit: ResolvedKbSearchHit, query: QueryContext): KbResult {
   };
 }
 
-function toVectorOnlyResult(hit: ResolvedKbSearchEntry): KbResult {
-  return {
-    note: hit.slug,
-    kind: hit.kind,
-    title: hit.title,
-    matchedBy: [],
-    tags: [...hit.tags],
-    principles: [...hit.principles],
-  };
+function toVectorOnlyResult(hit: ResolvedKbSearchEntry, communityContext?: string[]): KbResult {
+  return withCommunityContext(
+    {
+      note: hit.slug,
+      kind: hit.kind,
+      title: hit.title,
+      matchedBy: [],
+      tags: [...hit.tags],
+      principles: [...hit.principles],
+    },
+    communityContext,
+  );
 }
 
-function toHybridResult(hit: HybridKbSearchHit, query: QueryContext): KbResult {
+function toHybridResult(hit: HybridKbSearchHit, query: QueryContext, communityContext?: string[]): KbResult {
   if (hit.document === null) {
-    return toVectorOnlyResult(hit);
+    return toVectorOnlyResult(hit, communityContext);
   }
 
-  return toResult(
-    {
-      ...hit,
-      document: hit.document,
-    },
-    query,
+  return withCommunityContext(
+    toResult(
+      {
+        ...hit,
+        document: hit.document,
+      },
+      query,
+    ),
+    communityContext,
   );
 }
 
 function buildTextResponse(
-  hits: ResolvedKbSearchHit[],
+  hits: Array<ResolvedKbSearchHit | HybridKbSearchHit>,
   query: QueryContext,
   topK: number,
+  index: KbIndex,
+  communitiesFresh: boolean,
+  graphFresh: boolean,
   warning?: string,
 ): KbSearchResponse {
+  const finalHits = hits.slice(0, topK);
+  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+
   return {
-    results: hits.slice(0, topK).map((hit) => toResult(hit, query)),
+    results: finalHits.map((hit) => toHybridResult(hit as HybridKbSearchHit, query, communityContext.get(hit.entryId))),
     mode: 'text',
+    ...(warning === undefined ? {} : { warning }),
+  };
+}
+
+function buildHybridResponse(
+  hits: HybridKbSearchHit[],
+  query: QueryContext,
+  topK: number,
+  index: KbIndex,
+  communitiesFresh: boolean,
+  graphFresh: boolean,
+  warning?: string,
+): KbSearchResponse {
+  const finalHits = hits.slice(0, topK);
+  const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
+
+  return {
+    results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
+    mode: 'hybrid',
     ...(warning === undefined ? {} : { warning }),
   };
 }
@@ -421,7 +917,11 @@ function rrfScore(rank: number): number {
   return 1 / (HYBRID_RRF_K + rank);
 }
 
-function fuseHits(oramaHits: ResolvedKbSearchHit[], vectorHits: VectorKbSearchHit[]): HybridKbSearchHit[] {
+function fuseHits(
+  oramaHits: ResolvedKbSearchHit[],
+  vectorHits: VectorKbSearchHit[],
+  graphHits: GraphKbSearchHit[],
+): HybridKbSearchHit[] {
   const fused = new Map<KbEntryId, HybridKbSearchHit>();
 
   for (const [index, hit] of oramaHits.entries()) {
@@ -429,6 +929,28 @@ function fuseHits(oramaHits: ResolvedKbSearchHit[], vectorHits: VectorKbSearchHi
       ...hit,
       document: hit.document,
       score: rrfScore(index + 1),
+    });
+  }
+
+  for (const [index, hit] of graphHits.entries()) {
+    const graphRank = index + 1;
+    const contribution = GRAPH_RRF_WEIGHT * rrfScore(graphRank);
+    const previous = fused.get(hit.entryId);
+
+    if (previous === undefined) {
+      fused.set(hit.entryId, {
+        ...hit,
+        document: null,
+        score: contribution,
+        graphRank,
+      });
+      continue;
+    }
+
+    fused.set(hit.entryId, {
+      ...previous,
+      score: previous.score + contribution,
+      graphRank,
     });
   }
 
@@ -458,7 +980,10 @@ function fuseHits(oramaHits: ResolvedKbSearchHit[], vectorHits: VectorKbSearchHi
 }
 
 async function searchVectorEntries(
-  searchVector: (query: Float32Array, candidateK: number) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>,
+  searchVector: (
+    query: Float32Array,
+    candidateK: number,
+  ) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>,
   queryVector: Float32Array,
   topK: number,
   index: KbIndex,
@@ -513,13 +1038,16 @@ export async function searchKb(
 
   const queryCtx: QueryContext = { rawQuery, oramaTerm, queryTokens, tokenizer };
   const indexState = rt.readIndexState();
+  const communitiesFresh = areCommunityResultsFresh(rt, index);
+  const graphContext = buildGraphSearchContext(index, rt.readEntityGraph());
+  const graphFresh = graphContext !== null;
 
   let limit = topK;
   let hits = await searchOrama(db, oramaTerm, limit);
   let exhausted = hits.length < limit;
   let resolvedHits = hits.map((hit) => resolveHit(hit, index));
 
-  while (shouldContinueWidening(hits, resolvedHits, scope, topK, exhausted)) {
+  while (shouldContinueWidening(hits, resolvedHits, communitiesFresh, scope, topK, exhausted)) {
     const prevCount = hits.length;
     limit = Math.max(limit + 1, limit * 2);
     hits = await searchOrama(db, oramaTerm, limit);
@@ -529,9 +1057,13 @@ export async function searchKb(
     }
   }
 
-  const selectedHits = scope === 'all' ? rerankHits(resolvedHits) : filterHitsByScope(resolvedHits, scope);
+  const searchableHits = filterSearchableHits(resolvedHits, communitiesFresh);
+  const selectedHits = scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, scope);
+  const graphHits = buildGraphHits(index, rawQuery, scope, graphContext);
+  const textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit> =
+    graphHits.length === 0 ? selectedHits : fuseHits(selectedHits, [], graphHits);
   if (scope === 'communities') {
-    return buildTextResponse(selectedHits, queryCtx, topK);
+    return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh);
   }
 
   const vectorResult = await ensureVectorIndex(rt);
@@ -544,37 +1076,39 @@ export async function searchKb(
       vectorLease !== null &&
       vectorLease.specId === vectorResult.specId &&
       vectorLease.vectorStatus !== null &&
-      vectorLease.vectorStatus.indexedSeq === indexState.mutationSeq &&
+      vectorLease.vectorStatus.indexedSeq === indexState.contentSeq &&
       vectorLease.vectorStatus.staleReason === undefined &&
       vectorLease.vectorStatus.activeSnapshotId === vectorLease.snapshotId;
 
     if (!canUseHybrid) {
-      return buildTextResponse(selectedHits, queryCtx, topK, vectorResult.warning);
+      return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
     }
 
     try {
       const provider = await createEmbeddingProvider(rt.runtimeDir);
       if (provider === null) {
-        return buildTextResponse(selectedHits, queryCtx, topK, vectorResult.warning);
+        return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
       }
 
       const queryVector = await provider.embedQuery(rawQuery);
-      const vectorHits = await searchVectorEntries(vectorLease.store.searchVector.bind(vectorLease.store), queryVector, topK, index, scope);
-      const fusedHits = fuseHits(selectedHits, vectorHits);
+      const vectorHits = await searchVectorEntries(
+        vectorLease.store.searchVector.bind(vectorLease.store),
+        queryVector,
+        topK,
+        index,
+        scope,
+      );
+      const fusedHits = fuseHits(selectedHits, vectorHits, graphHits);
       const finalHits = fusedHits.slice(0, topK);
       const usedVector = finalHits.some((hit) => hit.vectorRank !== undefined);
 
       if (!usedVector) {
-        return buildTextResponse(selectedHits, queryCtx, topK, vectorResult.warning);
+        return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
       }
 
-      return {
-        results: finalHits.map((hit) => toHybridResult(hit, queryCtx)),
-        mode: 'hybrid',
-        ...(vectorResult.warning === undefined ? {} : { warning: vectorResult.warning }),
-      };
+      return buildHybridResponse(fusedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
     } catch {
-      return buildTextResponse(selectedHits, queryCtx, topK, vectorResult.warning);
+      return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
     }
   } finally {
     await vectorLease?.release();

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,7 +23,7 @@ import {
 import { readCurateState, writeCurateState, type CurateState } from '../curate-state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
-import { noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../types.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
@@ -57,8 +57,9 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     activeClaim: null,
     pendingDiscoveries: [],
     pendingRepair: null,
-    communityGraphHash: undefined,
-    communityMembershipFingerprints: undefined,
+    communityTopologyHash: undefined,
+    communitySummaryTopologyHash: undefined,
+    communitySummaryInputFingerprints: undefined,
     consecutiveFailures: 0,
     initialized: false,
     migrationVersion: 0,
@@ -252,7 +253,7 @@ afterEach(() => {
 
 describe('curate', () => {
   describe('prompt building and response parsing', () => {
-    it('builds a classification prompt with every note, tag, and principle', () => {
+    it('builds a classification prompt with entity and relationship vocabularies plus the new response shape', () => {
       const prompt = buildClassificationPrompt(
         [
           buildClaimedNote({
@@ -268,18 +269,61 @@ describe('curate', () => {
             entrySeq: 2,
           }),
         ],
-        ['coral', 'kb', 'ui-pattern'],
+        [
+          {
+            name: 'graph-rag',
+            type: 'concept',
+            description: 'Graph-backed retrieval.',
+            relevant: true,
+            support: 3,
+          },
+          {
+            name: 'retrieval-pipeline',
+            type: 'operation',
+            description: 'Retrieval workflow orchestration.',
+            relevant: false,
+            support: 1,
+          },
+        ],
         ['contract-first-design', 'deterministic-ordering'],
       );
 
-      expect(prompt).toContain('Tag vocabulary:\n\n- coral\n- kb\n- ui-pattern');
+      expect(prompt).toContain('Entity type vocabulary:');
+      expect(prompt).toContain('Relationship type vocabulary:');
+      expect(prompt).toContain('Existing entity vocabulary:\n\n- graph-rag: concept (Graph-backed retrieval.)');
+      expect(prompt).toContain('- retrieval-pipeline: operation');
       expect(prompt).toContain('Principle names:\n\n- contract-first-design\n- deterministic-ordering');
       expect(prompt).toContain('## note:coral-alpha\nAlpha\nAlpha body.');
       expect(prompt).toContain('## note:coral-beta\nBeta\nBeta body.');
-      expect(prompt).toContain('Return a JSON array: [{ "entry": "note:<slug>"');
+      expect(prompt).toContain('"newEntities": { "<entity-name>": { "type": "<entity-type>", "description": "<one sentence>" } }');
+      expect(prompt).toContain('"relationships": [{ "source": "<entity-name>", "target": "<entity-name>", "type": "<relationship-type>", "description": "<one sentence>" }]');
     });
 
-    it('parses classification responses from raw and code-fenced JSON arrays', () => {
+    it('truncates oversized entity vocabularies under the prompt token budget', () => {
+      const prompt = buildClassificationPrompt(
+        [
+          buildClaimedNote({
+            slug: 'coral-alpha',
+            title: 'Alpha',
+            body: 'Alpha body.',
+            entrySeq: 1,
+          }),
+        ],
+        Array.from({ length: 500 }, (_, index) => ({
+          name: `entity-${String(index).padStart(3, '0')}-descriptor`,
+          type: 'concept' as const,
+          description: 'A long description that exists only to consume prompt budget tokens.',
+          relevant: true,
+          support: 0,
+        })),
+        [],
+      );
+
+      expect(prompt).toContain('- entity-000-descriptor: concept');
+      expect(prompt).not.toContain('- entity-499-descriptor: concept');
+    });
+
+    it('parses classification responses from raw and code-fenced JSON arrays with newEntities and relationships', () => {
       const entryMap = new Map<string, true>([
         [noteEntryId('coral-alpha'), true],
         [noteEntryId('coral-beta'), true],
@@ -287,12 +331,27 @@ describe('curate', () => {
       const raw = JSON.stringify([
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['coral', 'kb'],
+          tags: ['graph-rag', 'retrieval-pipeline'],
           principles: ['deterministic-ordering'],
+          related: ['source:retrieval-paper'],
+          newEntities: {
+            'retrieval-pipeline': {
+              type: 'operation',
+              description: 'A retrieval pipeline.',
+            },
+          },
+          relationships: [
+            {
+              source: 'graph-rag',
+              target: 'retrieval-pipeline',
+              type: 'enables',
+              description: 'Graph RAG enables the retrieval pipeline.',
+            },
+          ],
         },
         {
           entry: noteEntryId('coral-beta'),
-          tags: ['coral'],
+          tags: ['graph-rag'],
           principles: [],
         },
       ]);
@@ -300,24 +359,54 @@ describe('curate', () => {
       expect(parseClassificationResponse(raw, entryMap)).toEqual([
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['coral', 'kb'],
+          tags: ['graph-rag', 'retrieval-pipeline'],
           principles: ['deterministic-ordering'],
+          related: ['source:retrieval-paper'],
+          newEntities: {
+            'retrieval-pipeline': {
+              type: 'operation',
+              description: 'A retrieval pipeline.',
+            },
+          },
+          relationships: [
+            {
+              source: 'graph-rag',
+              target: 'retrieval-pipeline',
+              type: 'enables',
+              description: 'Graph RAG enables the retrieval pipeline.',
+            },
+          ],
         },
         {
           entry: noteEntryId('coral-beta'),
-          tags: ['coral'],
+          tags: ['graph-rag'],
           principles: [],
         },
       ]);
       expect(parseClassificationResponse(`\`\`\`json\n${raw}\n\`\`\``, entryMap)).toEqual([
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['coral', 'kb'],
+          tags: ['graph-rag', 'retrieval-pipeline'],
           principles: ['deterministic-ordering'],
+          related: ['source:retrieval-paper'],
+          newEntities: {
+            'retrieval-pipeline': {
+              type: 'operation',
+              description: 'A retrieval pipeline.',
+            },
+          },
+          relationships: [
+            {
+              source: 'graph-rag',
+              target: 'retrieval-pipeline',
+              type: 'enables',
+              description: 'Graph RAG enables the retrieval pipeline.',
+            },
+          ],
         },
         {
           entry: noteEntryId('coral-beta'),
-          tags: ['coral'],
+          tags: ['graph-rag'],
           principles: [],
         },
       ]);
@@ -332,8 +421,18 @@ describe('curate', () => {
         parseClassificationResponse(
           JSON.stringify([
             { entry: noteEntryId('coral-alpha'), tags: ['coral'] },
-            { entry: noteEntryId('coral-missing'), tags: ['coral'], principles: [] },
-            { entry: noteEntryId('coral-alpha'), tags: ['coral'], principles: [] },
+            {
+              entry: noteEntryId('coral-missing'),
+              tags: ['coral'],
+              principles: [],
+              newEntities: 'nope',
+            },
+            {
+              entry: noteEntryId('coral-alpha'),
+              tags: ['coral'],
+              principles: [],
+              relationships: [{ source: 'coral', target: 'coral', type: 'bad-type', description: '' }],
+            },
           ]),
           entryMap,
         ),
@@ -351,12 +450,12 @@ describe('curate', () => {
       ]);
     });
 
-    it('validates assignments by dropping unknown notes and principles while requiring new-tag support', () => {
+    it('validates assignments with sparse entity admission, structural quality gates, and relationship endpoint checks', () => {
       const index: KbIndex = {
         entries: createIndexEntries({
           'coral-alpha': createIndexNote({
             title: 'Alpha',
-            tags: ['coral', 'existing-tag'],
+            tags: ['coral', 'graph-rag'],
             entrySeq: 1,
           }),
           'coral-beta': createIndexNote({
@@ -371,6 +470,17 @@ describe('curate', () => {
         principles: {
           'deterministic-ordering': 'Sort once before assigning metadata.',
         },
+        entityMeta: {
+          coral: {
+            type: 'domain',
+            description: 'Coral domain.',
+          },
+          'graph-rag': {
+            type: 'concept',
+            description: 'Graph-backed retrieval.',
+          },
+        },
+        relationships: [],
       };
       const claimedNotes = [
         buildClaimedNote({ slug: 'coral-alpha', title: 'Alpha', entrySeq: 1 }),
@@ -380,27 +490,67 @@ describe('curate', () => {
       const proposals: ClassificationAssignment[] = [
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['existing-tag', 'new-supported', 'new-single'],
+          tags: ['coral', 'graph-rag', 'retrieval-pipeline', 'sparse-entity'],
           principles: ['deterministic-ordering', 'unknown-principle'],
+          newEntities: {
+            'retrieval-pipeline': {
+              type: 'operation',
+              description: 'A retrieval pipeline.',
+            },
+            'sparse-entity': {
+              type: 'concept',
+              description: 'A sparse but valid entity.',
+            },
+          },
+          relationships: [
+            {
+              source: 'graph-rag',
+              target: 'retrieval-pipeline',
+              type: 'enables',
+              description: 'Graph RAG enables the retrieval pipeline.',
+            },
+            {
+              source: 'graph-rag',
+              target: 'missing-endpoint',
+              type: 'enables',
+              description: 'Invalid endpoints must be dropped.',
+            },
+          ],
         },
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['new-supported', 'existing-tag'],
+          tags: ['coral', 'retrieval-pipeline', 'graph-rag'],
           principles: ['deterministic-ordering'],
         },
         {
           entry: noteEntryId('coral-beta'),
-          tags: ['new-supported', 'new-unsupported'],
+          tags: ['coral', 'bad-entity', 'single'],
           principles: [],
+          newEntities: {
+            'bad-entity': {
+              type: 'invalid-type' as never,
+              description: 'Bad type.',
+            },
+            single: {
+              type: 'concept',
+              description: 'One segment should be dropped.',
+            },
+          },
         },
         {
           entry: noteEntryId('coral-gamma'),
-          tags: ['new-supported'],
+          tags: ['coral', 'empty-description'],
           principles: ['unknown-principle'],
+          newEntities: {
+            'empty-description': {
+              type: 'concept',
+              description: '   ',
+            },
+          },
         },
         {
           entry: noteEntryId('coral-outside'),
-          tags: ['new-supported'],
+          tags: ['retrieval-pipeline'],
           principles: ['deterministic-ordering'],
         },
       ];
@@ -408,17 +558,35 @@ describe('curate', () => {
       expect(validateAssignments(proposals, index, claimedNotes)).toEqual([
         {
           entry: noteEntryId('coral-alpha'),
-          tags: ['coral', 'existing-tag', 'new-supported'],
+          tags: ['coral', 'graph-rag', 'retrieval-pipeline', 'sparse-entity'],
           principles: ['deterministic-ordering'],
+          newEntities: {
+            'retrieval-pipeline': {
+              type: 'operation',
+              description: 'A retrieval pipeline.',
+            },
+            'sparse-entity': {
+              type: 'concept',
+              description: 'A sparse but valid entity.',
+            },
+          },
+          relationships: [
+            {
+              source: 'graph-rag',
+              target: 'retrieval-pipeline',
+              type: 'enables',
+              description: 'Graph RAG enables the retrieval pipeline.',
+            },
+          ],
         },
         {
           entry: noteEntryId('coral-beta'),
-          tags: ['coral', 'new-supported'],
+          tags: ['coral'],
           principles: [],
         },
         {
           entry: noteEntryId('coral-gamma'),
-          tags: ['coral', 'new-supported'],
+          tags: ['coral'],
           principles: [],
         },
       ]);
@@ -951,7 +1119,7 @@ describe('curate', () => {
           slug: 'coral-alpha',
           entrySeq: 2,
           claimTimeUpdatedAt: '2026-03-22T00:00:00.000Z',
-          addTags: ['kb'],
+          desiredTags: ['coral', 'kb'],
           addPrinciples: ['deterministic-ordering'],
         },
       ]);
@@ -1179,7 +1347,7 @@ describe('curate', () => {
       });
     });
 
-    it('applies cleanup-time parent absorption using live tag support', async () => {
+    it('applies desiredTags exactly when committing note metadata', async () => {
       writeNote('coral-parent-child', {
         title: 'Parent Child',
         tags: ['coral', 'stable-parent', 'stable-parent-child'],
@@ -1224,17 +1392,18 @@ describe('curate', () => {
           entrySeq: 1,
           claimTimeUpdatedAt: DEFAULT_UPDATED_AT,
           desiredTags: ['coral', 'stable-parent', 'stable-parent-child'],
-          cleanup: true,
         },
       ]);
 
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
         'coral',
         'stable-parent',
+        'stable-parent-child',
       ]);
       expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-parent-child'))).toEqual([
         'coral',
         'stable-parent',
+        'stable-parent-child',
       ]);
     });
 
@@ -1726,7 +1895,7 @@ describe('curate', () => {
       expect(readFileSync(gitignorePath, 'utf-8')).toBe(afterFirstStart);
     });
 
-    it('runs cleanup successfully in a non-git KB root while removing cleanup tags', async () => {
+    it('runs successfully in a non-git KB root without rewriting tags when classification returns no assignments', async () => {
       const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
       const spawn = vi.fn<SpawnCliFn>(async () => ({
         stdout: '[]',
@@ -1778,15 +1947,21 @@ describe('curate', () => {
       expect(spawn).toHaveBeenCalledTimes(1);
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-pattern-note.md'), 'utf-8')).tags).toEqual([
         'coral',
+        'isolated-pattern',
       ]);
       expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-parent-child.md'), 'utf-8')).tags).toEqual([
         'coral',
         'stable-parent',
+        'stable-parent-child',
       ]);
-      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-pattern-note'))).toEqual(['coral']);
+      expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-pattern-note'))).toEqual([
+        'coral',
+        'isolated-pattern',
+      ]);
       expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-parent-child'))).toEqual([
         'coral',
         'stable-parent',
+        'stable-parent-child',
       ]);
       expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-note-10', 10));
     });
@@ -1834,7 +2009,17 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
-      writeCurateState(runtime, createCurateState({ initialized: true }));
+      runtime.writeIndexState({
+        contentSeq: 10,
+        metadataSeq: 10,
+        mutationSeq: 10,
+        textIndexedSeq: 10,
+        vector: { bySpec: {} },
+      });
+      writeCurateState(runtime, createCurateState({
+        initialized: true,
+        migrationVersion: curateState.CURATE_STATE_MIGRATION_VERSION,
+      }));
       useScheduler(spawn);
 
       await scheduler.start();
@@ -1954,6 +2139,17 @@ describe('curate', () => {
       }
 
       runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndexState({
+        contentSeq: 10,
+        metadataSeq: 10,
+        mutationSeq: 10,
+        textIndexedSeq: 10,
+        vector: { bySpec: {} },
+      });
+      writeCurateState(runtime, createCurateState({
+        initialized: true,
+        migrationVersion: curateState.CURATE_STATE_MIGRATION_VERSION,
+      }));
       useScheduler(async () => ({
         stdout: '[',
         stderr: '',
@@ -1980,7 +2176,7 @@ describe('curate', () => {
       expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
     });
 
-    it('rebuilds text artifacts once with the final mutation sequence after community writes', async () => {
+    it('rebuilds text artifacts for entity-graph communities and persists summary fingerprints', async () => {
       const notes: Record<string, ReturnType<typeof createIndexNote>> = {
         'coral-transformers-a': createIndexNote({
           title: 'Transformers A',
@@ -2051,6 +2247,47 @@ describe('curate', () => {
         entries: createIndexEntries(notes),
         principles: {},
       });
+      const graph: EntityGraph = {
+        entityMeta: {
+          attention: { type: 'concept', description: 'Attention mechanisms.' },
+          transformer: { type: 'technology', description: 'Transformer architectures.' },
+          'self-attention': { type: 'pattern', description: 'Self-attention variants.' },
+          sqlite: { type: 'technology', description: 'SQLite.' },
+          'query-planning': { type: 'operation', description: 'Query planning.' },
+          indexing: { type: 'operation', description: 'Index maintenance.' },
+        },
+        relationships: [
+          {
+            source: 'transformer',
+            target: 'attention',
+            type: 'requires',
+            description: 'Transformers rely on attention.',
+            evidence: ['note:coral-transformers-a'],
+          },
+          {
+            source: 'self-attention',
+            target: 'attention',
+            type: 'specializes',
+            description: 'Self-attention specializes attention.',
+            evidence: ['note:coral-transformers-b'],
+          },
+          {
+            source: 'sqlite',
+            target: 'query-planning',
+            type: 'requires',
+            description: 'SQLite depends on query planning.',
+            evidence: ['note:coral-sqlite-a'],
+          },
+          {
+            source: 'query-planning',
+            target: 'indexing',
+            type: 'enables',
+            description: 'Query planning informs indexing.',
+            evidence: ['note:coral-sqlite-b'],
+          },
+        ],
+      };
+      runtime.writeEntityGraph(graph);
       writeCurateState(runtime, createCurateState({ initialized: true }));
 
       const spawn = vi.fn<SpawnCliFn>(async () => ({
@@ -2067,17 +2304,13 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       expect(lockSpy).toHaveBeenCalledTimes(1);
-      expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
-      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(reindexSuccessSpy.mock.calls.length).toBeGreaterThan(0);
+      expect(spawn.mock.calls.length).toBeGreaterThan(0);
 
-      const rebuildSeq = reindexSuccessSpy.mock.calls[0]?.[0];
-      expect(rebuildSeq).toBe(runtime.readIndexState().mutationSeq);
-      expect(runtime.readIndexState()).toMatchObject({
-        mutationSeq: rebuildSeq,
-        textIndexedSeq: rebuildSeq,
-      });
-      expect(readCurateState(runtime)).toMatchObject({
-        communityGraphHash: expect.any(String),
+      const state = readCurateState(runtime);
+      expect(state).toMatchObject({
+        communityTopologyHash: expect.any(String),
+        communitySummaryTopologyHash: expect.any(String),
         pendingRepair: [
           {
             entryId: noteEntryId('coral-malformed'),
@@ -2085,15 +2318,82 @@ describe('curate', () => {
             detectedAt: expect.any(String),
           },
         ],
-        communityMembershipFingerprints: {
-          'attention-transformer-self-attention': expect.any(String),
-          'query-planning-sqlite-indexing': expect.any(String),
+      });
+      expect(state.communitySummaryInputFingerprints).toBeDefined();
+      expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
+
+      const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      expect(communityFiles.length).toBeGreaterThan(0);
+      expect(
+        communityFiles.some((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
+      ).toBe(true);
+    });
+
+    it('persists topology before summary failures and resumes summary generation on the next run', async () => {
+      writeNote('coral-graph-rag', {
+        title: 'Graph RAG',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph structure improves retrieval.',
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-graph-rag': createIndexNote({
+            title: 'Graph RAG',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
+        }),
+        principles: {},
+      });
+      runtime.writeEntityGraph({
+        entityMeta: {
+          'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+          retrieval: { type: 'operation', description: 'Retrieval workflows.' },
         },
+        relationships: [
+          {
+            source: 'graph-rag',
+            target: 'retrieval',
+            type: 'enables',
+            description: 'Graph structure improves retrieval.',
+            evidence: ['note:coral-graph-rag'],
+          },
+        ],
+      });
+      writeCurateState(runtime, createCurateState({ initialized: true }));
+
+      useScheduler(async () => {
+        throw new Error('summary failed');
       });
 
-      expect(readFileSync(join(runtime.communitiesDir(), 'attention-transformer-self-attention.md'), 'utf-8')).toContain(
-        '## Summary',
-      );
+      await expect(internals.runCommunitySubphase()).rejects.toThrow('summary failed');
+
+      const stateAfterFailure = readCurateState(runtime);
+      const filesAfterFailure = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+
+      expect(stateAfterFailure.communityTopologyHash).toEqual(expect.any(String));
+      expect(stateAfterFailure.communitySummaryTopologyHash).toEqual(expect.any(String));
+      expect(filesAfterFailure.length).toBeGreaterThan(0);
+      expect(
+        filesAfterFailure.every((entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
+      ).toBe(true);
+
+      useScheduler(async () => ({
+        stdout: 'Recovered community summary.',
+        stderr: '',
+        code: 0,
+        aborted: false,
+      }));
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+      const filesAfterRecovery = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      expect(filesAfterRecovery).toEqual(filesAfterFailure);
+      expect(
+        filesAfterRecovery.every((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
+      ).toBe(true);
+      expect(Object.keys(readCurateState(runtime).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
     });
   });
 

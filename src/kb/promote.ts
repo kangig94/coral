@@ -5,7 +5,12 @@ import { memoPathFromContext } from './paths.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from './validation.js';
-import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
+import {
+  buildNoteIndexEntry,
+  commitIndexUpdate,
+  recordContentAndMetadataMutation,
+  writeFileAtomic,
+} from './mutation-helpers.js';
 import type { KbRuntime } from './contracts.js';
 
 export async function promote(
@@ -41,7 +46,7 @@ export async function promote(
 
     const memoContent = readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
-    const entrySeq = rt.recordMutationCommitted().mutationSeq;
+    const entrySeq = recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.').contentSeq;
     const createdAt = nowIsoString();
     const noteMeta = {
       tags: [domain],
@@ -56,17 +61,17 @@ export async function promote(
 
     writeFileAtomic(notePath, noteContent);
 
-    commitIndexUpdate(
-      rt,
-      (index) => {
-        setEntry(index, noteEntryId(note), buildNoteIndexEntry({
+    commitIndexUpdate(rt, (index) => {
+      setEntry(
+        index,
+        noteEntryId(note),
+        buildNoteIndexEntry({
           slug: note,
           title,
           ...noteMeta,
-        }));
-      },
-      'KB text snapshot is stale after kb_promote.',
-    );
+        }),
+      );
+    });
 
     rmSync(memoPath, { force: true });
     return { path: notePath };

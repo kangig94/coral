@@ -112,7 +112,10 @@ function writeManifest(snapshotDir: string, manifest: VectorManifest): void {
   writeFileAtomic(vectorManifestPath(snapshotDir), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function buildDesiredManifest(textSnapshot: KbVectorTextSnapshot, specId: string): {
+function buildDesiredManifest(
+  textSnapshot: KbVectorTextSnapshot,
+  specId: string,
+): {
   manifest: VectorManifest;
   entries: Map<string, VectorSnapshotEntry>;
 } {
@@ -187,7 +190,10 @@ function diffManifest(
       currentEntry === undefined ||
       currentEntry.entryKind !== desiredEntry.entryKind ||
       currentEntry.contentHash !== desiredEntry.contentHash ||
-      !arraysEqual(currentEntry.chunkIds, desiredEntry.chunks.map((chunk) => chunk.id))
+      !arraysEqual(
+        currentEntry.chunkIds,
+        desiredEntry.chunks.map((chunk) => chunk.id),
+      )
     ) {
       changedEntries.push(desiredEntry);
     }
@@ -203,7 +209,7 @@ function buildResult(state: KbIndexState, specId: string): EnsureVectorIndexResu
   const vectorStatus = state.vector.bySpec[specId] ?? null;
   const isFresh =
     vectorStatus !== null &&
-    vectorStatus.indexedSeq === state.mutationSeq &&
+    vectorStatus.indexedSeq === state.contentSeq &&
     vectorStatus.staleReason === undefined &&
     vectorStatus.activeSnapshotId !== undefined;
 
@@ -217,12 +223,12 @@ function buildResult(state: KbIndexState, specId: string): EnsureVectorIndexResu
 
 function isFreshVectorStatus(
   status: KbVectorSpecState | null,
-  mutationSeq: number,
+  contentSeq: number,
   activeSnapshotId: string | null,
 ): status is KbVectorSpecState {
   return (
     status !== null &&
-    status.indexedSeq === mutationSeq &&
+    status.indexedSeq === contentSeq &&
     status.staleReason === undefined &&
     status.activeSnapshotId === activeSnapshotId
   );
@@ -337,21 +343,23 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
     };
   }
 
-  let startSeq = 0;
+  let startContentSeq = 0;
   let textSnapshot: KbVectorTextSnapshot | null = null;
   let currentVectorStatus: KbVectorSpecState | null = null;
   let activeSnapshotId: string | null = null;
   let currentManifest: VectorManifest | null = null;
 
   await kb.withMutationLock(async () => {
-    const currentState = kb.readIndexState();
-    startSeq = currentState.mutationSeq;
-    textSnapshot = await kb.ensureTextArtifactsFreshUnderLock(startSeq);
+    textSnapshot = await kb.ensureTextArtifactsFreshUnderLock();
     const stateAfterTextRefresh = kb.readIndexState();
+    startContentSeq = stateAfterTextRefresh.contentSeq;
     currentVectorStatus = stateAfterTextRefresh.vector.bySpec[desiredSpec.specId] ?? null;
-    activeSnapshotId = readActiveSnapshotId(kb.runtimeDir, desiredSpec.specId) ?? currentVectorStatus?.activeSnapshotId ?? null;
+    activeSnapshotId =
+      readActiveSnapshotId(kb.runtimeDir, desiredSpec.specId) ?? currentVectorStatus?.activeSnapshotId ?? null;
     currentManifest =
-      activeSnapshotId === null ? null : readManifest(vectorSnapshotDir(kb.runtimeDir, desiredSpec.specId, activeSnapshotId));
+      activeSnapshotId === null
+        ? null
+        : readManifest(vectorSnapshotDir(kb.runtimeDir, desiredSpec.specId, activeSnapshotId));
   });
 
   if (textSnapshot === null) {
@@ -362,12 +370,10 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
   const activeHandle = kb.getActiveVectorHandleInfo();
   const vectorStatus = currentVectorStatus;
   const alreadyActive =
-    activeHandle !== null &&
-    activeHandle.specId === desiredSpec.specId &&
-    activeHandle.snapshotId === activeSnapshotId;
+    activeHandle !== null && activeHandle.specId === desiredSpec.specId && activeHandle.snapshotId === activeSnapshotId;
   const stateAfterCapture = kb.readIndexState();
   const isCurrentVectorFresh =
-    isFreshVectorStatus(vectorStatus, startSeq, activeSnapshotId) &&
+    isFreshVectorStatus(vectorStatus, startContentSeq, activeSnapshotId) &&
     activeSnapshotId !== null &&
     currentManifest !== null &&
     manifestMatches(manifest, currentManifest) &&
@@ -380,7 +386,7 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
     const reusedSnapshotId = activeSnapshotId;
     try {
       await kb.withMutationLock(async () => {
-        if (kb.readIndexState().mutationSeq !== startSeq) {
+        if (kb.readIndexState().contentSeq !== startContentSeq) {
           kb.recordVectorSyncFailure(
             desiredSpec.specId,
             'KB vector index freshness changed during reuse.',
@@ -393,7 +399,7 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
         if (liveHandle?.specId !== desiredSpec.specId || liveHandle.snapshotId !== reusedSnapshotId) {
           await kb.activateVectorSnapshot(desiredSpec.specId, reusedSnapshotId);
         }
-        kb.recordVectorSyncSuccess(desiredSpec.specId, startSeq, reusedSnapshotId);
+        kb.recordVectorSyncSuccess(desiredSpec.specId, startContentSeq, reusedSnapshotId);
       });
     } catch (error: unknown) {
       kb.recordVectorSyncFailure(
@@ -429,7 +435,7 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
 
   try {
     await kb.withMutationLock(async () => {
-      if (kb.readIndexState().mutationSeq !== startSeq) {
+      if (kb.readIndexState().contentSeq !== startContentSeq) {
         kb.recordVectorSyncFailure(
           desiredSpec.specId,
           'KB vector index freshness changed during rebuild.',
@@ -444,7 +450,7 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
       renameSync(stagedSnapshot!.stagingDir, finalSnapshotDir);
       writeActiveSnapshotId(kb.runtimeDir, desiredSpec.specId, stagedSnapshot!.snapshotId);
       await kb.activateVectorSnapshot(desiredSpec.specId, stagedSnapshot!.snapshotId);
-      kb.recordVectorSyncSuccess(desiredSpec.specId, startSeq, stagedSnapshot!.snapshotId);
+      kb.recordVectorSyncSuccess(desiredSpec.specId, startContentSeq, stagedSnapshot!.snapshotId);
     });
   } catch (error: unknown) {
     kb.recordVectorSyncFailure(

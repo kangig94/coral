@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from './types.js';
-import { commitIndexUpdate } from './mutation-helpers.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from './mutation-helpers.js';
 import type { KbRuntime } from './contracts.js';
 import { assertNoteSlug } from './validation.js';
 
@@ -18,15 +18,11 @@ export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ d
       }
       throw error;
     }
-    rt.recordMutationCommitted();
+    recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_delete.');
 
-    commitIndexUpdate(
-      rt,
-      (index) => {
-        deleteEntry(index, noteEntryId(note));
-      },
-      'KB text snapshot is stale after kb_delete.',
-    );
+    commitIndexUpdate(rt, (index) => {
+      deleteEntry(index, noteEntryId(note));
+    });
 
     return { deleted: notePath };
   });

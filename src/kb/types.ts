@@ -2,6 +2,53 @@ import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validat
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
+export const ENTITY_TYPES = [
+  'technology',
+  'pattern',
+  'concept',
+  'library',
+  'component',
+  'domain',
+  'operation',
+  'quality',
+] as const;
+
+export type EntityType = (typeof ENTITY_TYPES)[number];
+
+export interface EntityMeta {
+  type: EntityType;
+  description: string;
+  aliases?: string[];
+}
+
+export const RELATIONSHIP_TYPES = [
+  'enables',
+  'requires',
+  'constrains',
+  'implements',
+  'specializes',
+  'conflicts-with',
+  'precedes',
+  'composes',
+  'abstracts',
+  'replaces',
+] as const;
+
+export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number];
+
+export interface EntityRelationship {
+  source: string;
+  target: string;
+  type: RelationshipType;
+  description: string;
+  evidence: string[];
+}
+
+export interface EntityGraph {
+  entityMeta: Record<string, EntityMeta>;
+  relationships: EntityRelationship[];
+}
+
 export interface KbResult {
   note: string;
   kind: 'note' | 'source' | 'community';
@@ -10,6 +57,7 @@ export interface KbResult {
   tags: string[];
   principles: string[];
   snippet?: string;
+  communityContext?: string[];
 }
 
 export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}`;
@@ -56,6 +104,9 @@ export type SourceEntry = KbSourceFrontmatter & {
 export interface CommunityFrontmatter {
   createdAt: string;
   updatedAt: string;
+  level: number;
+  parent?: string;
+  children?: string[];
 }
 
 export type CommunityEntry = CommunityFrontmatter & {
@@ -65,6 +116,7 @@ export type CommunityEntry = CommunityFrontmatter & {
   level: number;
   members: string[];
   parent?: string;
+  children?: string[];
   summary?: string;
 };
 
@@ -74,6 +126,8 @@ export type CuratableEntry = NoteEntry | SourceEntry;
 export interface KbIndex {
   entries: Record<string, EntryRecord>;
   principles: Record<string, string>;
+  entityMeta?: Record<string, EntityMeta>;
+  relationships?: EntityRelationship[];
 }
 
 export interface KbSearchResponse {
@@ -88,6 +142,9 @@ export type ReindexResult = {
   communities: number;
   principles: number;
   tags: number;
+  entities?: number;
+  relationships?: number;
+  entityCoverage?: number;
   duration_ms: number;
   mode: 'text' | 'hybrid';
   warning?: string;
@@ -131,6 +188,7 @@ export type KbReindexCommunityRecord = CommunityFrontmatter & {
   level: number;
   members: string[];
   parent?: string;
+  children?: string[];
   summary?: string;
 };
 
@@ -170,6 +228,9 @@ export type KbReadResult = {
   tags: string[];
   principles: string[];
   members?: string[];
+  level?: number;
+  parent?: string;
+  children?: string[];
   summary?: string;
   updatedAt?: string;
   rawContent?: string;

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate.js';
 import type { KbRuntime } from '../contracts.js';
-import { readCurateState } from '../curate-state.js';
+import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '../curate-state.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { reindex } from '../reindex.js';
 import { createKbRuntime } from '../runtime.js';
@@ -332,6 +332,7 @@ describe('curate AC6/AC8', () => {
     });
 
     const assignments: Array<{ entry: string; tags: string[]; related: string[] }> = [];
+    const entries: Record<string, { kind: 'source'; slug: string; title: string; type: string; tags: string[]; importedAt: string; related: string[]; entrySeq: number }> = {};
     for (let index = 1; index <= 10; index += 1) {
       const slug = `sqlite-source-${String(index).padStart(2, '0')}`;
       writeSource(runtime, slug, {
@@ -340,12 +341,48 @@ describe('curate AC6/AC8', () => {
         entrySeq: index,
         body: `Reference body ${index}.`,
       });
+      entries[sourceEntryId(slug)] = {
+        kind: 'source',
+        slug,
+        title: `SQLite Source ${index}`,
+        type: 'spec',
+        tags: ['database'],
+        importedAt: DEFAULT_IMPORTED_AT,
+        related: [],
+        entrySeq: index,
+      };
       assignments.push({
         entry: sourceEntryId(slug),
         tags: ['database', 'curated'],
         related: [],
       });
     }
+
+    runtime.writeIndex({ entries, principles: {} });
+    runtime.writeIndexState({
+      contentSeq: 10,
+      metadataSeq: 10,
+      mutationSeq: 10,
+      textIndexedSeq: 10,
+      vector: { bySpec: {} },
+    });
+    writeCurateState(runtime, {
+      processedThrough: null,
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+      lastRunDay: null,
+      lastAttemptedThrough: null,
+      retryNotBefore: null,
+      activeClaim: null,
+      pendingDiscoveries: [],
+      pendingRepair: null,
+      communityTopologyHash: undefined,
+      communitySummaryTopologyHash: undefined,
+      communitySummaryInputFingerprints: undefined,
+      consecutiveFailures: 0,
+      initialized: true,
+      migrationVersion: CURATE_STATE_MIGRATION_VERSION,
+    });
 
     useScheduler(async () => ({
       stdout: JSON.stringify(assignments),

@@ -27,9 +27,8 @@ export type KbLoadedSource = {
   body: string;
 };
 
-export type KbLoadedCommunity = {
+export type KbLoadedCommunity = CommunityFrontmatter & {
   raw: string;
-  frontmatter: CommunityFrontmatter;
   title: string;
   body: string;
 };
@@ -62,9 +61,10 @@ export function loadKbSource(sourcePath: string): KbLoadedSource {
 
 export function loadKbCommunity(communityPath: string): KbLoadedCommunity {
   const raw = readFileSync(communityPath, 'utf-8');
+  const frontmatter = parseCommunityFrontmatter(raw);
   return {
+    ...frontmatter,
     raw,
-    frontmatter: parseCommunityFrontmatter(raw),
     title: extractTitle(raw),
     body: extractBody(raw),
   };
@@ -125,7 +125,7 @@ function readCommunityEntry(community: string): KbReadResult | null {
     return null;
   }
 
-  const { frontmatter, title, body } = loadKbCommunity(communityPath);
+  const { title, body, level, parent, children, updatedAt } = loadKbCommunity(communityPath);
   const members = parseMembersFromBody(body);
   const summary = parseSummaryFromBody(body);
   return {
@@ -136,8 +136,11 @@ function readCommunityEntry(community: string): KbReadResult | null {
     tags: [],
     principles: [],
     members,
+    level,
+    ...(parent === undefined ? {} : { parent }),
+    ...(children === undefined ? {} : { children }),
     ...(summary === undefined ? {} : { summary }),
-    updatedAt: frontmatter.updatedAt,
+    updatedAt,
   };
 }
 

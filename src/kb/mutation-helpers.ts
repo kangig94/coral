@@ -1,9 +1,11 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage, isNoEntryError } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/mcp-utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { KbIndexState, KbRuntime } from './contracts.js';
+import type { KbIndexMutationLane, KbIndexState, KbRuntime } from './contracts.js';
 import {
+  type EntityMeta,
+  type EntityRelationship,
   isCommunityEntry,
   isNoteEntry,
   isSourceEntry,
@@ -73,6 +75,9 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
   if (meta.parent !== undefined) {
     entry.parent = meta.parent;
   }
+  if (meta.children !== undefined) {
+    entry.children = [...meta.children];
+  }
   if (meta.summary !== undefined) {
     entry.summary = meta.summary;
   }
@@ -99,12 +104,41 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
     return {
       entries: {},
       principles: {},
+      entityMeta: {},
+      relationships: [],
     };
   }
 
   return {
-    entries: Object.fromEntries(Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)])),
+    entries: Object.fromEntries(
+      Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)]),
+    ),
     principles: { ...index.principles },
+    ...(index.entityMeta === undefined ? {} : { entityMeta: cloneEntityMetaRecord(index.entityMeta) }),
+    ...(index.relationships === undefined ? {} : { relationships: index.relationships.map(cloneEntityRelationship) }),
+  };
+}
+
+function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
+  return Object.fromEntries(
+    Object.entries(entityMeta).map(([entity, meta]) => [
+      entity,
+      {
+        type: meta.type,
+        description: meta.description,
+        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
+      },
+    ]),
+  );
+}
+
+function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {
+  return {
+    source: relationship.source,
+    target: relationship.target,
+    type: relationship.type,
+    description: relationship.description,
+    evidence: [...relationship.evidence],
   };
 }
 
@@ -125,19 +159,40 @@ function cloneEntryRecord(entry: EntryRecord): EntryRecord {
 }
 
 /**
- * Clone the current index, apply the updater, write it back, and mark text stale.
+ * Clone the current index, apply the updater, and write it back.
  * If no index exists on disk, updater receives an empty index.
  * @precondition Caller already holds `rt.withMutationLock()`.
  */
 export function commitIndexUpdate(
-  rt: Pick<KbRuntime, 'readIndex' | 'writeIndex' | 'invalidateTextSnapshot'>,
+  rt: Pick<KbRuntime, 'readIndex' | 'writeIndex'>,
   updater: (index: KbIndex) => void,
-  reason: string,
 ): void {
   const nextIndex = cloneKbIndex(rt.readIndex());
   updater(nextIndex);
   rt.writeIndex(nextIndex);
-  markTextIndexStale(rt.invalidateTextSnapshot, reason);
+}
+
+function recordMutation(
+  rt: Pick<KbRuntime, 'recordMutationCommitted'>,
+  lane: KbIndexMutationLane,
+  reason: string,
+): KbIndexState {
+  return rt.recordMutationCommitted(lane, reason);
+}
+
+export function recordContentMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
+  return recordMutation(rt, 'content', reason);
+}
+
+export function recordMetadataMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
+  return recordMutation(rt, 'metadata', reason);
+}
+
+export function recordContentAndMetadataMutation(
+  rt: Pick<KbRuntime, 'recordMutationCommitted'>,
+  reason: string,
+): KbIndexState {
+  return recordMutation(rt, 'both', reason);
 }
 
 export function markTextIndexStale(invalidate: (reason: string) => KbIndexState, reason: string): void {

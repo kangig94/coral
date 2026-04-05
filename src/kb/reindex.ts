@@ -9,11 +9,14 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
 
   const textResult = await kb.withMutationLock(async () => {
     runEntrySeqUpgradeGuard(kb);
-    const startSeq = kb.readIndexState().mutationSeq;
+    const startState = kb.readIndexState();
     let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
 
     try {
-      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(kb, startSeq);
+      rebuildResult = await rebuildTextArtifactsAndPersistRepairState(kb, {
+        contentSeq: startState.contentSeq,
+        metadataSeq: startState.metadataSeq,
+      });
     } catch (error: unknown) {
       if (error instanceof TextSnapshotRebuildError) {
         return {

@@ -1,11 +1,23 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isNoEntryError } from '../shared/mcp-utils.js';
 import { parseSourceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
-import { buildSourceIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
+import {
+  buildSourceIndexEntry,
+  commitIndexUpdate,
+  recordContentAndMetadataMutation,
+  writeFileAtomic,
+} from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
 import type { KbRuntime } from './contracts.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';
-import { deleteEntry, isSourceEntry, setEntry, sourceEntryId, type KbSourceDeleteInput, type KbSourceListResult } from './types.js';
+import {
+  deleteEntry,
+  isSourceEntry,
+  setEntry,
+  sourceEntryId,
+  type KbSourceDeleteInput,
+  type KbSourceListResult,
+} from './types.js';
 import { compareLocale, assertSourceSlug } from './validation.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
@@ -50,7 +62,10 @@ export async function persistPreparedSource(
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
       const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
       const parsedMeta = parseSourceFrontmatter(renderedSource);
-      const entrySeq = kb.recordMutationCommitted().mutationSeq;
+      const entrySeq = recordContentAndMetadataMutation(
+        kb,
+        'KB text snapshot is stale after kb_source_import.',
+      ).contentSeq;
       const persistedMeta = {
         ...parsedMeta,
         entrySeq,
@@ -59,16 +74,16 @@ export async function persistPreparedSource(
 
       writeFileAtomic(filePath, persistedSource);
 
-      commitIndexUpdate(
-        kb,
-        (index) => {
-          setEntry(index, sourceEntryId(normalizedSlug), buildSourceIndexEntry({
+      commitIndexUpdate(kb, (index) => {
+        setEntry(
+          index,
+          sourceEntryId(normalizedSlug),
+          buildSourceIndexEntry({
             slug: normalizedSlug,
             ...persistedMeta,
-          }));
-        },
-        'KB text snapshot is stale after kb_source_import.',
-      );
+          }),
+        );
+      });
     } finally {
       rmSync(stagedCandidate, { force: true });
     }
@@ -91,14 +106,10 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
       throw error;
     }
 
-    rt.recordMutationCommitted();
-    commitIndexUpdate(
-      rt,
-      (index) => {
-        deleteEntry(index, sourceEntryId(slug));
-      },
-      'KB text snapshot is stale after kb_source_delete.',
-    );
+    recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_source_delete.');
+    commitIndexUpdate(rt, (index) => {
+      deleteEntry(index, sourceEntryId(slug));
+    });
 
     return { deleted: sourcePath };
   });

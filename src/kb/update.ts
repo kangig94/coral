@@ -4,7 +4,7 @@ import { loadKbNote } from './read.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from './types.js';
 import { assertNonEmptyText, assertNoteSlug } from './validation.js';
-import { buildNoteIndexEntry, commitIndexUpdate, writeFileAtomic } from './mutation-helpers.js';
+import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from './mutation-helpers.js';
 import type { KbRuntime } from './contracts.js';
 
 export async function applyNoteUpdateLocked(
@@ -25,19 +25,19 @@ export async function applyNoteUpdateLocked(
   const nextFrontmatter = { ...frontmatter, updatedAt };
 
   writeFileAtomic(notePath, serializeNote(nextFrontmatter, nextTitle, nextContent));
-  rt.recordMutationCommitted();
+  recordContentMutation(rt, 'KB text snapshot is stale after kb_update.');
 
-  commitIndexUpdate(
-    rt,
-    (index) => {
-      setEntry(index, noteEntryId(input.note), buildNoteIndexEntry({
+  commitIndexUpdate(rt, (index) => {
+    setEntry(
+      index,
+      noteEntryId(input.note),
+      buildNoteIndexEntry({
         slug: input.note,
         title: nextTitle,
         ...nextFrontmatter,
-      }));
-    },
-    'KB text snapshot is stale after kb_update.',
-  );
+      }),
+    );
+  });
 
   return { path: notePath };
 }
