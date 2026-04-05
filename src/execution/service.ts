@@ -740,18 +740,16 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    pool: LaunchPool = 'default',
-    projectRoot?: string,
-    parentWorkflowJobId?: string,
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string } = {},
   ): LaunchDecision {
+    const pool = opts.pool ?? 'default';
     this.abortRegistry.register(jobId);
 
-    // Write durable launch record before queue admission / execution
     this.progressStore.writeLaunchRecord(jobId, {
       jobId,
       sessionId,
       provider: provider.name,
-      projectRoot: projectRoot ?? request.cwd ?? '',
+      projectRoot: opts.projectRoot ?? request.cwd ?? '',
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       pool,
@@ -769,7 +767,7 @@ export class ExecutionService implements RecoveryCapableService {
         instruction: request.instruction,
         coralEnv: request.coralEnv,
       },
-      parentWorkflowJobId,
+      parentWorkflowJobId: opts.parentWorkflowJobId,
       createdAt: new Date().toISOString(),
     });
 
@@ -819,16 +817,11 @@ export class ExecutionService implements RecoveryCapableService {
       coralEnv: ctx.coralEnv,
     };
 
-    return this.launchProviderJob(
-      provider,
-      session.sessionId,
-      admitted.jobId,
-      request,
-      admitted.admission,
+    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
       pool,
-      ctx.projectRoot,
-      input.parentWorkflowJobId,
-    );
+      projectRoot: ctx.projectRoot,
+      parentWorkflowJobId: input.parentWorkflowJobId,
+    });
   }
 
   async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
@@ -881,16 +874,11 @@ export class ExecutionService implements RecoveryCapableService {
       coralEnv: ctx.coralEnv,
     };
 
-    return this.launchProviderJob(
-      provider,
-      session.sessionId,
-      admitted.jobId,
-      request,
-      admitted.admission,
+    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
       pool,
-      ctx.projectRoot,
-      input.parentWorkflowJobId,
-    );
+      projectRoot: ctx.projectRoot,
+      parentWorkflowJobId: input.parentWorkflowJobId,
+    });
   }
 
   async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
@@ -951,15 +939,9 @@ export class ExecutionService implements RecoveryCapableService {
         coralEnv: ctx.coralEnv,
       };
 
-      return this.launchProviderJob(
-        provider,
-        newSession.sessionId,
-        admitted.jobId,
-        request,
-        admitted.admission,
-        'default',
-        ctx.projectRoot,
-      );
+      return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
+        projectRoot: ctx.projectRoot,
+      });
     } finally {
       this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
     }
