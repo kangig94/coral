@@ -22,6 +22,7 @@ export function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-writ
 export function buildCodexProviderServerSpec(
   projectRoot: string,
   env?: Record<string, string>,
+  clientVersion?: string,
 ): ProviderServerSpec {
   return {
     provider: 'codex',
@@ -29,6 +30,10 @@ export function buildCodexProviderServerSpec(
     args: ['app-server'],
     cwd: projectRoot,
     env,
+    initializeRequest: {
+      method: 'initialize',
+      params: { clientInfo: { name: 'coral', version: clientVersion ?? 'unknown' } },
+    },
   };
 }
 

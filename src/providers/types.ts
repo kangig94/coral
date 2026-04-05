@@ -17,6 +17,11 @@ export interface ProviderServerSpec {
   cwd: string;
   env?: Record<string, string>;
   shared?: boolean;
+  /** If set, engine sends this JSON-RPC request immediately after spawn and awaits the response before returning the lease. */
+  initializeRequest?: {
+    method: string;
+    params: Record<string, unknown>;
+  };
   shutdownCapability?: {
     method: string;
     timeoutMs: number;

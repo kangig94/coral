@@ -51,6 +51,7 @@ function cloneSpec(spec: ProviderServerSpec): ProviderServerSpec {
     ...spec,
     args: [...spec.args],
     ...(spec.env ? { env: { ...spec.env } } : {}),
+    ...(spec.initializeRequest ? { initializeRequest: { ...spec.initializeRequest, params: { ...spec.initializeRequest.params } } } : {}),
     ...(spec.shutdownCapability ? { shutdownCapability: { ...spec.shutdownCapability } } : {}),
   };
 }
@@ -255,6 +256,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
       args: entry.spec.args,
       cwd: entry.spec.cwd,
       extraEnv: entry.spec.env,
+      initializeRequest: entry.spec.initializeRequest,
     });
 
     try {

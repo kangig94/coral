@@ -597,6 +597,10 @@ export class LaunchCoordinator {
       },
     };
 
+    if (options.initializeRequest) {
+      await rpc.request(options.initializeRequest.method, options.initializeRequest.params);
+    }
+
     return {
       pid,
       child,
@@ -982,6 +986,11 @@ export type SpawnProviderServerOptions = {
   args: string[];
   cwd?: string;
   extraEnv?: Record<string, string>;
+  /** If set, send this JSON-RPC request immediately after spawn and await the response before returning the handle. */
+  initializeRequest?: {
+    method: string;
+    params: Record<string, unknown>;
+  };
 };
 
 // ── Durable wrapper spawn ─────────────────────────────────────────────────────
