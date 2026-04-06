@@ -422,11 +422,10 @@ Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expre
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `expression` | string | Yes | Pipeline DSL expression (min 1 char). See grammar below. |
-| `init_prompt` | string | Yes | Initial prompt fed to the first step (min 1 char). |
+| `start_prompt` | string | Yes | Start prompt fed to the first step (min 1 char). |
 | `context` | string | No | Shared context prepended to every atom's prompt in every step. |
 | `provider` | string | No | Default provider for atoms without `@provider` suffix. `claude` (default) or `codex`. |
 | `work_dir` | string | No | Working directory for spawned atoms. Overrides the caller's project root. |
-| `atoms` | object | No | Per-atom config: `{ atomName: { effort?, instruction? } }`. See Atoms below. |
 
 ### DSL Grammar
 
@@ -447,16 +446,6 @@ prompt_lit = ( "'" text "'" | '"' text '"' ) ( "@" provider )?
 - **Mixed parallel**: `(architect@claude, 'analyze this'@codex)` → agent refs and prompt literals can be mixed in a parallel step
 
 Agent names: `[a-z][a-z0-9-]*`. Provider: `codex` or `claude`. Namespace: `[a-z][a-z0-9-]*` (v1 only allows `coral`). Prompt literals use single or double quotes; the `@provider` suffix is optional (defaults to the `provider` parameter).
-
-### Atoms
-
-`atoms` keys must match atom names in the expression. Each atom config accepts:
-- `effort` (string) — `low`, `medium`, `high`, `xhigh`
-- `instruction` (string) — appended to the atom's prompt after pipeline data
-
-Unknown keys are rejected.
-Atoms config applies to ALL occurrences of that atom name across steps (global matching).
-Per-occurrence atom overrides are intentionally out of scope in v1; use distinct atom names when different per-step config is required.
 
 ### Output
 
@@ -502,23 +491,18 @@ Use `wait({ jobs: [job] })` then `result.content ?? Read(result.path)` for the p
 
 ### Examples
 
-```
+```bash
 # Simple sequential: architect reviews, resolver synthesizes
-workflow({ expression: "architect -> resolver", init_prompt: "Review auth.ts" })
+coral workflow "architect -> resolver" "Review auth.ts"
 
 # Parallel review with synthesis
-workflow({
-  expression: "(architect, critic) -> resolver",
-  init_prompt: "Analyze the login flow",
-  provider: "codex",
-  atoms: { architect: { effort: "high" }, critic: { instruction: "Focus on edge cases." } }
-})
+coral workflow "(architect, critic) -> resolver" "Analyze the login flow" -p codex
 
 # Mixed providers: codex for analysis, claude for writing
-workflow({
-  expression: "scanner@codex -> architect@claude",
-  init_prompt: "Map and review the API layer"
-})
+coral workflow "scanner@codex -> architect@claude" "Map and review the API layer"
+
+# Using flags instead of positional args
+coral workflow -e "architect -> resolver" -s "Review auth.ts" -c "Security focus"
 ```
 
 ---

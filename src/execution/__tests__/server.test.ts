@@ -780,7 +780,6 @@ describe('execution backend server', () => {
     expect(body.some((tool) => tool.name === 'claude')).toBe(true);
     expect(body.some((tool) => tool.name === 'wait')).toBe(true);
     expect(body.some((tool) => tool.name === 'abort')).toBe(true);
-    expect(body.some((tool) => tool.name === 'workflow')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_seed')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_start')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
@@ -1190,37 +1189,6 @@ describe('execution backend server', () => {
       detail: { jobs: ['job-foreign'] },
     });
     expect(fakeService.abort).not.toHaveBeenCalled();
-  });
-
-  it('routes workflow tool calls through handleWorkflow', async () => {
-    const fakeService = createFakeExecutionService();
-    const backend = await startBackendServer({
-      createExecutionService: () => fakeService as never,
-    });
-
-    const response = await fetch(`${backend.baseUrl}/tool`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
-      },
-      body: JSON.stringify({
-        name: 'workflow',
-        args: { expression: 'architect', init_prompt: 'hello' },
-        context: { projectRoot: '/tmp/project', coralEnv: {} },
-      }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'workflow-job',
-        session: 'workflow-session',
-      },
-    });
-    expect(fakeService.executeWorkflow).toHaveBeenCalledTimes(1);
   });
 
   it('routes bypass_exec with bypassPermissions true', async () => {
@@ -2753,10 +2721,6 @@ describe('execution backend server', () => {
       {
         name: 'coral dispatch',
         request: { name: 'codex', args: { op: 'coral:architect', prompt: 'hello' } },
-      },
-      {
-        name: 'workflow',
-        request: { name: 'workflow', args: { expression: 'architect', init_prompt: 'hello' } },
       },
     ])('returns a domain error while the launch fence is active for $name', async ({ request }) => {
       const fenced = await startFencedToolServer();

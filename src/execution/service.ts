@@ -1991,12 +1991,10 @@ export class ExecutionService implements RecoveryCapableService {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void executePipeline(ast, input.init_prompt, providerName, this, ctx, {
-      atoms: input.atoms,
+    void executePipeline(ast, input.start_prompt, providerName, this, ctx, {
       context: input.context,
       workDir,
       signal,
-      staleTimeoutMs: input.stale_timeout_seconds * 1000,
       onProgress: (message) => {
         this.progressStore.appendProgress(jobId, sessionId, message);
       },
@@ -2058,10 +2056,8 @@ export class ExecutionService implements RecoveryCapableService {
     providerName: string,
     ctx: CallerContext,
     options: {
-      atoms?: Record<string, { instruction?: string }>;
       context?: string;
       workDir?: string;
-      staleTimeoutMs?: number;
     },
   ): void {
     const checkpoint = this.progressStore.readWorkflowCheckpoint(jobId);
@@ -2071,11 +2067,9 @@ export class ExecutionService implements RecoveryCapableService {
     if (!signal) return;
 
     void resumePipeline(checkpoint, ast, providerName, this, ctx, {
-      atoms: options.atoms,
       context: options.context,
       workDir: options.workDir,
       signal,
-      staleTimeoutMs: options.staleTimeoutMs ?? 0,
       workflowJobId: jobId,
       progressStore: this.progressStore,
       onProgress: (message) => {

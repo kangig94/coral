@@ -12,7 +12,6 @@ import type { AbortResult } from './abort-registry.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
-import { handleWorkflow } from '../workflow/handler.js';
 import type { CurateHandle } from '../kb/curate.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
@@ -273,22 +272,6 @@ export function getToolDescriptors(
         required: ['jobs'],
       },
     },
-    {
-      name: 'workflow',
-      description: 'Execute a workflow pipeline across one or more Coral atoms.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          expression: { type: 'string', description: 'Pipeline DSL expression' },
-          init_prompt: { type: 'string', description: 'Initial prompt fed to the first step' },
-          context: { type: 'string', description: 'Shared context prepended to every atom prompt in every step' },
-          provider: { type: 'string', description: 'Default provider for atoms (any registered provider)' },
-          work_dir: { type: 'string', description: 'Working directory for spawned atoms' },
-          owner: { type: 'string', description: 'Session owner ID for memo isolation' },
-        },
-        required: ['expression', 'init_prompt'],
-      },
-    },
   ];
 }
 
@@ -317,16 +300,6 @@ export async function routeToolCall(
 
     if (request.name === 'wait') {
       return domainError('use_sse', 'Use POST /wait/stream for wait operations');
-    }
-
-    if (request.name === 'workflow') {
-      const svc = helpers.getExecutionService(request.context);
-      try {
-        const decision = await handleWorkflow(request.args, svc, request.context, providerRegistry);
-        return launchDecisionToDomain(decision);
-      } catch (error: unknown) {
-        return invalidRequest(errorMessage(error, 'Invalid workflow request'));
-      }
     }
 
     const discussResult = await handleDiscussToolCall(request, helpers);

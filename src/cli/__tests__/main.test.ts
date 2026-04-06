@@ -103,59 +103,26 @@ describe('cli main — wait --jobs validation', () => {
   });
 });
 
-describe('cli main — workflow --input-json merge', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-test-'));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('reads expression and init_prompt from --input-json stdin', () => {
-    const { stderr } = runCli(['workflow', '--input-json', '-', '--detach'], {
-      env: { HOME: tmpDir },
-      input: JSON.stringify({
-        expression: '(architect, critic)',
-        init_prompt: 'test',
-      }),
-    });
-
-    expect(stderr).not.toContain('--expression is required');
-    expect(stderr).not.toContain('--init-prompt is required');
-  });
-
-  it('exits 1 with validation error when expression is missing', () => {
-    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
-      input: JSON.stringify({ init_prompt: 'test' }),
-    });
+describe('cli main — workflow positional and flag args', () => {
+  it('exits 1 when expression is missing', () => {
+    const { stderr, status } = runCli(['workflow']);
 
     expect(status).toBe(1);
-    expect(stderr).toContain('--expression is required');
+    expect(stderr).toContain('expression is required');
   });
 
-  it('exits 1 with validation error when init-prompt is missing', () => {
-    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
-      input: JSON.stringify({ expression: '(architect)' }),
-    });
+  it('exits 1 when start prompt is missing', () => {
+    const { stderr, status } = runCli(['workflow', 'architect']);
 
     expect(status).toBe(1);
-    expect(stderr).toContain('--init-prompt is required');
+    expect(stderr).toContain('start prompt is required');
   });
 
-  it('accepts explicit flags alongside --input-json stdin', () => {
-    const { stderr } = runCli(['workflow', '--expression', 'from-flag', '--input-json', '-', '--detach'], {
-      env: { HOME: tmpDir },
-      input: JSON.stringify({
-        expression: 'from-json',
-        init_prompt: 'from-json',
-      }),
-    });
+  it('exits 1 when only -e flag is provided without start prompt', () => {
+    const { stderr, status } = runCli(['workflow', '-e', 'architect']);
 
-    expect(stderr).not.toContain('--expression is required');
-    expect(stderr).not.toContain('--init-prompt is required');
+    expect(status).toBe(1);
+    expect(stderr).toContain('start prompt is required');
   });
 });
 

@@ -1551,9 +1551,8 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        init_prompt: 'seed',
+        start_prompt: 'seed',
         provider: 'codex',
-        stale_timeout_seconds: 0,
       },
       ctx,
     );
@@ -1631,9 +1630,8 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        init_prompt: 'seed',
+        start_prompt: 'seed',
         provider: 'codex',
-        stale_timeout_seconds: 0,
       },
       ctx,
       workDir,
@@ -1675,9 +1673,8 @@ describe('ExecutionService', () => {
       parseExpression('architect'),
       {
         expression: 'architect',
-        init_prompt: 'seed',
+        start_prompt: 'seed',
         provider: 'codex',
-        stale_timeout_seconds: 0,
       },
       ctx,
     );
@@ -1720,9 +1717,8 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        init_prompt: 'seed',
+        start_prompt: 'seed',
         provider: 'codex',
-        stale_timeout_seconds: 0,
       },
       ctx,
     );
@@ -1786,9 +1782,8 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        init_prompt: 'seed',
+        start_prompt: 'seed',
         provider: 'codex',
-        stale_timeout_seconds: 0,
       },
       ctx,
     );

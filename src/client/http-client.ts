@@ -40,12 +40,10 @@ interface ProviderCoralDispatchOptions {
 }
 
 interface WorkflowOptions {
-  init_prompt: string;
+  start_prompt: string;
   context?: string;
   provider?: string;
   work_dir?: string;
-  stale_timeout_seconds?: number;
-  atoms?: Record<string, { instruction?: string }>;
   owner?: string;
 }
 

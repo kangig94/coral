@@ -13,11 +13,10 @@ export const BOOTSTRAP_TIMEOUT_MS = 2_000;
 export const SIBLING_DRAIN_TIMEOUT_MS = 15_000;
 
 const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
+const DEFAULT_STALE_TIMEOUT_MS = 900_000;
 const MAX_STALE_RECOVERY_RETRIES = 2;
 const STALE_ABORT_TIMEOUT_MS = 30_000;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
-
-type WorkflowAtoms = Record<string, { instruction?: string }>;
 
 export type StepDetail = {
   stepIndex: number;
@@ -44,7 +43,6 @@ type LaunchContext = {
   defaultProviderName: string;
   executionSvc: WorkflowExecutionPort;
   ctx: CallerContext;
-  atoms?: WorkflowAtoms;
   signal?: AbortSignal;
   completedStepDetails: StepDetail[];
   /** Parent workflow job ID — persisted in atom launch records for restart recovery. */
@@ -238,14 +236,6 @@ function stripElapsedPrefix(message: string): string {
   return message.slice(closeBracket + 2);
 }
 
-function readAtomConfig(stepIndex: number, atomName: string, rawConfig: unknown): { instruction?: string } {
-  if (rawConfig === null || rawConfig === undefined) return {};
-  if (typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
-    throw new Error(`Step ${stepIndex}, atom '${atomName}' atoms config must be an object`);
-  }
-  return rawConfig as { instruction?: string };
-}
-
 function atomTagName(atom: PipeAtom): string {
   return atom.kind === 'prompt' ? 'step-result' : atom.agent;
 }
@@ -329,7 +319,6 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     defaultProviderName,
     executionSvc,
     ctx,
-    atoms,
     signal,
     completedStepDetails,
   } = context;
@@ -347,9 +336,8 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
     }
 
-    const config = readAtomConfig(stepIndex, atom.agent, atoms?.[atom.agent]);
     coralName = atom.agent;
-    atomPrompt = [sharedContext, stepPrompt, config.instruction].filter(Boolean).join('\n\n');
+    atomPrompt = [sharedContext, stepPrompt].filter(Boolean).join('\n\n');
   } else {
     coralName = 'workflow-literal';
     // First-step prompt literals use the literal as the instruction body; shared
@@ -818,7 +806,6 @@ async function launchStepAtoms(
   executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
-    atoms?: WorkflowAtoms;
     context?: string;
     workDir?: string;
     signal?: AbortSignal;
@@ -842,7 +829,6 @@ async function launchStepAtoms(
           defaultProviderName,
           executionSvc,
           ctx,
-          atoms: options.atoms,
           signal: options.signal,
           completedStepDetails: options.completedStepDetails,
           workflowJobId: options.workflowJobId,
@@ -997,7 +983,6 @@ export async function resumePipeline(
   executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
-    atoms?: WorkflowAtoms;
     context?: string;
     workDir?: string;
     signal?: AbortSignal;
@@ -1009,7 +994,7 @@ export async function resumePipeline(
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
-  const staleTimeoutMs = options.staleTimeoutMs ?? 0;
+  const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
 
   // Reconstruct state from checkpoint
@@ -1123,7 +1108,6 @@ export async function resumePipeline(
         executionSvc,
         ctx,
         {
-          atoms: options.atoms,
           context: options.context,
           workDir: options.workDir,
           signal: options.signal,
@@ -1179,7 +1163,6 @@ export async function executePipeline(
   executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   options: {
-    atoms?: WorkflowAtoms;
     context?: string;
     workDir?: string;
     signal?: AbortSignal;
@@ -1191,7 +1174,7 @@ export async function executePipeline(
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
-  const staleTimeoutMs = options.staleTimeoutMs ?? 0;
+  const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
   const stepDetails: StepDetail[] = [];
   let stepPrompt = initialPrompt;
@@ -1222,7 +1205,6 @@ export async function executePipeline(
         executionSvc,
         ctx,
         {
-          atoms: options.atoms,
           context: options.context,
           workDir: options.workDir,
           signal: options.signal,

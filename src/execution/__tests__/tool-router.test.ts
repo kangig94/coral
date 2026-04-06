@@ -104,41 +104,6 @@ describe('tool router domain contract', () => {
     });
   });
 
-  it('normalizes rejected workflow launch decisions into domain errors', async () => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
-    const service = createExecutionService();
-
-    const result = await routeToolCall(
-      createRequest(projectRoot, 'workflow', {
-        expression: 'architect@missing-provider',
-        init_prompt: 'hello',
-        provider: 'codex',
-      }),
-      createHelpers(service),
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      code: 'unknown_provider',
-      message: 'Unknown provider: missing-provider',
-    });
-  });
-
-  it.each([
-    [{ expression: 'architect' }, /init_prompt/i],
-    [{ expression: 'architect ->', init_prompt: 'hello' }, /Expected step expression after "->"/],
-    [{ expression: '(architect, architect)', init_prompt: 'hello' }, /Duplicate atom/],
-  ])('normalizes workflow validation failures for %j', async (args, message) => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
-    const service = createExecutionService();
-
-    const result = await routeToolCall(createRequest(projectRoot, 'workflow', args), createHelpers(service));
-
-    const error = expectError(result, 'invalid_request');
-    expect(error.message).toMatch(message);
-    expect(service.executeWorkflow).not.toHaveBeenCalled();
-  });
-
   it.each([
     [{ op: 'coral:architect', prompt: 'hello', owner: 123 }, /owner/i],
     [{ op: 'coral:architect', prompt: 'hello', owner: 'bad owner' }, /Owner must be token-safe/],

@@ -178,19 +178,18 @@ Provider-agnostic: monitors any job regardless of whether it was launched by cod
 ### `workflow` Tool
 
 ```
-workflow({ expression: "(architect, critic) -> resolver", init_prompt, provider })
+workflow({ expression: "(architect, critic) -> resolver", start_prompt, provider })
         │
         ▼
 handleWorkflow()                              workflow/handler.ts
         │
         ├─ parseExpression(expression) → AST: PipeAtom[][]
         ├─ normalizeAst(ast, defaultProvider)
-        ├─ validateAtoms / validateNamespaces / validateParallelDuplicates
-        ├─ stale_timeout_seconds default = 900 (0 disables stale recovery)
+        ├─ validateNamespaces / validateParallelDuplicates
         └─ ExecutionService.executeWorkflow(ast, input, ctx)
                 │
                 ▼
-        executePipeline(ast, init_prompt, providerName, service, ctx, ...)
+        executePipeline(ast, start_prompt, providerName, service, ctx, ...)
                 │
                 ▼
         For each step:
@@ -201,7 +200,7 @@ handleWorkflow()                              workflow/handler.ts
         │               Re-enters ExecutionService (recursive)
         ├─ waitForAllAtoms:
         │   ├─ forward atom progress ("atom <agent>: <message>") into workflow progress stream
-        │   ├─ detect stale atoms (no activity for stale_timeout_seconds)
+        │   ├─ detect stale atoms (no activity for 900s default timeout)
         │   └─ abort + resume stale atoms (max 2 retries) before failing workflow
         └─ Format XML output → pass as next step's prompt
 ```
@@ -312,9 +311,9 @@ User → /coral:discuss "AI ethics in healthcare"
 ### 5. Workflow Pipeline Execution
 
 ```
-User/Skill → workflow({ expression: "(architect, critic) -> resolver", init_prompt: "..." })
-           → AX router calls handleWorkflow(args, service, ctx)
-           → Schema validation + AST parsing + atoms/namespace validation + stale_timeout_seconds
+User/Skill → workflow({ expression: "(architect, critic) -> resolver", start_prompt: "..." })
+           → handleWorkflow(args, service, ctx)
+           → Schema validation + AST parsing + namespace validation
            → ExecutionService.executeWorkflow fires background handler:
               Step 1: Promise.all → launchAtomWithRetry(architect) + launchAtomWithRetry(critic)
                 → service.coralDispatch(codex, "architect", { prompt: "..." })

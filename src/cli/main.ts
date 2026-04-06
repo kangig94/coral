@@ -103,13 +103,10 @@ type AbortOptions = {
 
 type WorkflowOptions = {
   expression?: string;
-  initPrompt?: string;
+  startPrompt?: string;
   context?: string;
   provider?: string;
   workDir?: string;
-  staleTimeoutSeconds?: string;
-  inputJson?: string;
-  atoms?: string;
   detach?: boolean;
   owner?: string;
 };
@@ -622,43 +619,35 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
   const workflowCommand = program.command('workflow');
   workflowCommand
     .description('Execute a workflow pipeline')
-    .option('--expression <expr>', 'Pipeline DSL expression')
-    .option('--init-prompt <text>', 'Initial prompt')
-    .option('--context <text>', 'Shared context')
-    .option('--provider <name>', 'Provider name (registered provider)')
-    .option('--work-dir <path>', 'Working directory')
-    .option('--stale-timeout-seconds <seconds>', 'Stale job timeout')
-    .option('--input-json <source>', 'JSON payload from stdin (use -)')
-    .option('--atoms <json>', 'Atoms JSON object (replaces atoms from stdin)')
-    .option('--owner <id>', 'Session owner ID for memo isolation')
+    .argument('[expression]', 'Pipeline DSL expression')
+    .argument('[prompt]', 'Start prompt for the first step')
+    .option('-e, --expression <expr>', 'Pipeline DSL expression (flag alternative)')
+    .option('-s, --start-prompt <text>', 'Start prompt (flag alternative)')
+    .option('-c, --context <text>', 'Shared context prepended to every step')
+    .option('-p, --provider <name>', 'Provider name (registered provider)')
+    .option('-w, --work-dir <path>', 'Working directory')
+    .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
-    .action(async (opts: WorkflowOptions) => {
+    .action(async (posExpression: string | undefined, posPrompt: string | undefined, opts: WorkflowOptions) => {
       const outputFormat = getOutputFormat(workflowCommand);
 
       try {
-        const base: JsonObject = await parseInputJson(opts.inputJson);
-        const { expression: baseExpression, init_prompt: baseInitPrompt, ...basePayload } = base;
-        const expression = opts.expression ?? (typeof baseExpression === 'string' ? baseExpression : undefined);
-        const initPrompt = opts.initPrompt ?? (typeof baseInitPrompt === 'string' ? baseInitPrompt : undefined);
+        const expression = opts.expression ?? posExpression;
+        const startPrompt = opts.startPrompt ?? posPrompt;
 
         if (!expression) {
-          throw new Error('--expression is required');
+          throw new Error('expression is required (positional or -e)');
         }
-        if (!initPrompt) {
-          throw new Error('--init-prompt is required');
+        if (!startPrompt) {
+          throw new Error('start prompt is required (positional or -s)');
         }
 
         const payload = {
-          ...basePayload,
           ...(opts.context !== undefined ? { context: opts.context } : {}),
           ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
           ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
-          ...(opts.staleTimeoutSeconds !== undefined
-            ? { stale_timeout_seconds: parseIntegerFlag('--stale-timeout-seconds', opts.staleTimeoutSeconds) }
-            : {}),
-          ...(opts.atoms !== undefined ? { atoms: JSON.parse(opts.atoms) } : {}),
           ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
-          init_prompt: initPrompt,
+          start_prompt: startPrompt,
         };
 
         const client = makeClient(process.cwd());
