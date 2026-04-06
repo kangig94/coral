@@ -46,10 +46,10 @@ import {
 import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import type { BackendIdentity, MutableBackendRuntimeState } from './backend-contracts.js';
+import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import type { CreateKbSubsystemFn, ExecutionServiceLike, KbSubsystem } from './tool-router.js';
+import type { CreateKbSubsystemFn, KbSubsystem } from './tool-router.js';
 
 // ---------------------------------------------------------------------------
 // Constants

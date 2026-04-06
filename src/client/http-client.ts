@@ -59,6 +59,15 @@ function isCallerContext(value: unknown): value is CallerContext {
   );
 }
 
+function isBackendRecoveringResult(value: unknown): value is Extract<ToolDomainResult, { ok: false }> {
+  return (
+    isRecord(value) &&
+    value.ok === false &&
+    value.code === 'backend_recovering' &&
+    typeof value.message === 'string'
+  );
+}
+
 function throwBackendCommunicationError(error: unknown): never {
   if (error instanceof Error) throw error;
   throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
@@ -98,7 +107,11 @@ export class BackendClient {
 
   async resume(session: string, prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
     const { context, ...args } = options;
-    return this.proxyToolCall('codex', { op: 'resume', session, prompt, ...args }, this.resolveContext(context));
+    return this.postDedicatedToolRoute(
+      '/provider/codex',
+      { op: 'resume', session, prompt, ...args },
+      this.resolveContext(context),
+    );
   }
 
   async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
@@ -121,12 +134,16 @@ export class BackendClient {
 
     if (!options) throw new Error('Workflow options are required');
 
-    return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
+    return this.postDedicatedToolRoute('/workflow', { expression, ...options }, this.resolveContext(callerContext));
   }
 
   async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<ToolDomainResult> {
     const { context, ...args } = options;
-    return this.proxyToolCall(provider, { op: 'exec', prompt, ...args }, this.resolveContext(context));
+    return this.postDedicatedToolRoute(
+      `/provider/${encodeURIComponent(provider)}`,
+      { op: 'exec', prompt, ...args },
+      this.resolveContext(context),
+    );
   }
 
   async providerFork(
@@ -142,11 +159,19 @@ export class BackendClient {
       request.prompt = prompt;
     }
 
-    return this.proxyToolCall(provider, request, this.resolveContext(context));
+    return this.postDedicatedToolRoute(
+      `/provider/${encodeURIComponent(provider)}`,
+      request,
+      this.resolveContext(context),
+    );
   }
 
   async providerList(provider: string, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall(provider, { op: 'list' }, this.resolveContext(context));
+    return this.postDedicatedToolRoute(
+      `/provider/${encodeURIComponent(provider)}`,
+      { op: 'list' },
+      this.resolveContext(context),
+    );
   }
 
   async providerCoralDispatch(
@@ -156,7 +181,11 @@ export class BackendClient {
     options: ProviderCoralDispatchOptions = {},
   ): Promise<ToolDomainResult> {
     const { context, ...args } = options;
-    return this.proxyToolCall(provider, { op: `coral:${agentName}`, prompt, ...args }, this.resolveContext(context));
+    return this.postDedicatedToolRoute(
+      `/provider/${encodeURIComponent(provider)}`,
+      { op: `coral:${agentName}`, prompt, ...args },
+      this.resolveContext(context),
+    );
   }
 
   async discussSeed(
@@ -210,7 +239,7 @@ export class BackendClient {
   }
 
   async abortJobs(jobIds: string[], context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/abort', { jobs: jobIds }, this.resolveContext(context));
   }
 
   async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<ToolDomainResult> {
@@ -343,16 +372,64 @@ export class BackendClient {
     return this.ensureBackendHandle(pluginRoot);
   }
 
+  private buildCallerContext(ctx: CallerContext): CallerContext {
+    return {
+      projectRoot: ctx.projectRoot,
+      pluginRoot: ctx.pluginRoot,
+      coralEnv: ctx.coralEnv,
+    };
+  }
+
+  private async postDedicatedToolRoute(
+    path: string,
+    args: Record<string, unknown>,
+    ctx: CallerContext,
+  ): Promise<ToolDomainResult> {
+    const { port, host, token } = await this.resolveBackendHandle(ctx);
+    const body = JSON.stringify({
+      context: this.buildCallerContext(ctx),
+      args,
+    });
+
+    try {
+      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`http://${host}:${port}${path}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': token,
+          },
+          body,
+          signal,
+        });
+
+        const responseBody = await parseJsonResponse(response);
+
+        if (response.ok) {
+          return responseBody as ToolDomainResult;
+        }
+
+        if (response.status === 503 && isBackendRecoveringResult(responseBody)) {
+          return responseBody;
+        }
+
+        throw new BackendToolHttpError(
+          describeHttpError(response.status, response.statusText),
+          response.status,
+          responseBody,
+        );
+      });
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
   private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult> {
     const { port, host, token } = await this.resolveBackendHandle(ctx);
     const body = JSON.stringify({
       name,
       args,
-      context: {
-        projectRoot: ctx.projectRoot,
-        pluginRoot: ctx.pluginRoot,
-        coralEnv: ctx.coralEnv,
-      },
+      context: this.buildCallerContext(ctx),
     });
 
     try {

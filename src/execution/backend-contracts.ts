@@ -15,8 +15,10 @@ import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from './request-context.js';
 import type { SessionIndex } from './session-index.js';
 import type { LifecycleState } from './server-types.js';
-import type { ExecutionServiceLike, KbSubsystem, RouteToolCallFn, ScopeCheckResult } from './tool-router.js';
+import type { ExecutionService } from './service.js';
+import type { KbSubsystem, RouteToolCallFn } from './tool-router.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 
 // ---------------------------------------------------------------------------
 // BackendIdentity — immutable config/identity for a backend instance
@@ -57,6 +59,17 @@ export interface MutableBackendRuntimeState extends ReadonlyBackendRuntimeState 
 // HttpHandlerDeps — everything the HTTP handler needs at request-time
 // ---------------------------------------------------------------------------
 
+export type ExecutionServiceLike = Pick<
+  ExecutionService,
+  'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream' | 'waitStreamOnce'
+>;
+
+export type ScopeCheckResult = {
+  valid: string[];
+  missing: string[];
+  mismatch: string[];
+};
+
 export interface HttpHandlerDeps {
   // Identity / config
   readonly identity: BackendIdentity;
@@ -80,6 +93,7 @@ export interface HttpHandlerDeps {
   // Request-time control ports
   readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
   readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  readonly providerRegistry?: ProviderRegistry;
   readonly abortJobs: (jobIds: string[]) => AbortResult;
   readonly scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
   readonly routeToolCall: RouteToolCallFn;

@@ -42,13 +42,17 @@ import {
   routeToolCall,
   getToolDescriptors,
   type CreateKbSubsystemFn,
-  type ExecutionServiceLike,
   type KbSubsystem,
   type RouteToolCallFn,
-  type ScopeCheckResult,
 } from './tool-router.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
-import type { EventStreamHandlers, HttpHandlerDeps, MutableBackendRuntimeState } from './backend-contracts.js';
+import type {
+  EventStreamHandlers,
+  ExecutionServiceLike,
+  HttpHandlerDeps,
+  MutableBackendRuntimeState,
+  ScopeCheckResult,
+} from './backend-contracts.js';
 import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -152,7 +156,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
   const routeToolCallFn =
     options.routeToolCallFn ??
-    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem, providerRegistry));
+    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const recoverOrphanedJobsFn =
     options.recoverOrphanedJobsFn ??
@@ -429,6 +433,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     },
     getExecutionService,
     getDiscussContext,
+    providerRegistry,
     abortJobs,
     scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
     routeToolCall: routeToolCallFn,

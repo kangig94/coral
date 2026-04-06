@@ -22,10 +22,41 @@ type ListToolsHandler = () => Promise<{ tools: unknown[] }>;
 const mockState = vi.hoisted(() => ({
   handlers: new Map<unknown, RegisteredHandler>(),
   ensureBackend: vi.fn(),
+  fetchBackendToolDescriptors: vi.fn(),
   proxyToolCall: vi.fn(),
   streamWait: vi.fn(),
   handleBackendToolCall: vi.fn(),
-  buildToolList: vi.fn((tools: unknown) => tools ?? []),
+  buildToolList: vi.fn((tools: unknown) => {
+    const waitTool = {
+      name: 'wait',
+      description: 'Wait for launched jobs and stream progress until completion or timeout.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
+          timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
+          cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
+        },
+        required: ['jobs'],
+      },
+    };
+    const backendTool = {
+      name: 'backend',
+      description: 'Inspect or gracefully shut down the Coral backend daemon.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: { type: 'string', enum: ['status', 'shutdown'], description: 'Backend operation to run.' },
+        },
+        required: ['op'],
+      },
+    };
+    const remoteTools = Array.isArray(tools) ? tools.filter((tool) => {
+      if (typeof tool !== 'object' || tool === null || !('name' in tool)) return false;
+      return tool.name !== 'wait' && tool.name !== 'backend';
+    }) : [];
+    return [...remoteTools, waitTool, backendTool];
+  }),
   readFileSync: vi.fn(),
   connect: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
@@ -52,6 +83,7 @@ vi.mock('node:fs', () => ({
 
 vi.mock('../backend-client.js', () => ({
   ensureBackend: mockState.ensureBackend,
+  fetchBackendToolDescriptors: mockState.fetchBackendToolDescriptors,
   proxyToolCall: mockState.proxyToolCall,
   streamWait: mockState.streamWait,
 }));
@@ -161,6 +193,7 @@ function requireSignalHandler(handlers: Map<string, () => void>, signal: string)
 describe('bridge wait handler', { retry: 2 }, () => {
   beforeEach(() => {
     mockState.ensureBackend.mockReset();
+    mockState.fetchBackendToolDescriptors.mockReset();
     mockState.proxyToolCall.mockReset();
     mockState.streamWait.mockReset();
     mockState.handleBackendToolCall.mockReset();
@@ -171,6 +204,7 @@ describe('bridge wait handler', { retry: 2 }, () => {
     mockState.connect.mockResolvedValue(undefined);
     mockState.close.mockResolvedValue(undefined);
     mockState.ensureBackend.mockResolvedValue({ host: '127.0.0.1', port: 4100, token: 'backend-token' });
+    mockState.fetchBackendToolDescriptors.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -556,25 +590,22 @@ describe('bridge wait handler', { retry: 2 }, () => {
   });
 
   it('ListTools does not advertise inline on the wait schema', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [
-        {
-          name: 'wait',
-          description: 'Wait for jobs',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              jobs: { type: 'array' },
-              timeout_seconds: { type: 'number' },
-              cursor: { type: 'string' },
-              inline: { type: 'boolean' },
-            },
-            required: ['jobs'],
+    mockState.fetchBackendToolDescriptors.mockResolvedValueOnce([
+      {
+        name: 'wait',
+        description: 'Wait for jobs',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jobs: { type: 'array' },
+            timeout_seconds: { type: 'number' },
+            cursor: { type: 'string' },
+            inline: { type: 'boolean' },
           },
+          required: ['jobs'],
         },
-      ],
-    }));
+      },
+    ]);
 
     const result = await invokeListTools();
     const waitTool = result.tools.find((tool) =>

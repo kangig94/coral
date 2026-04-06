@@ -116,6 +116,8 @@ export interface CoralInput {
   sessionId?: string;
   cwd?: string;
   effort?: EffortLevel;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
   /** Parent workflow job ID for atom launches. */
   parentWorkflowJobId?: string;
 }
@@ -1594,7 +1596,8 @@ export class ExecutionService implements RecoveryCapableService {
           model,
           cwd,
           effort,
-          bypassPermissions: true,
+          bypassPermissions: input.bypassPermissions ?? true,
+          systemPrompt: input.systemPrompt,
           instruction,
           parentWorkflowJobId: input.parentWorkflowJobId,
         },
@@ -1610,7 +1613,8 @@ export class ExecutionService implements RecoveryCapableService {
         model,
         cwd,
         effort,
-        bypassPermissions: true,
+        bypassPermissions: input.bypassPermissions ?? true,
+        systemPrompt: input.systemPrompt,
         instruction,
         parentWorkflowJobId: input.parentWorkflowJobId,
       },

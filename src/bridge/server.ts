@@ -7,12 +7,11 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { ensureBackend, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
+import { ensureBackend, fetchBackendToolDescriptors, proxyToolCall, streamWait, type WaitCursorRef } from './backend-client.js';
 import { buildToolList, handleBackendToolCall } from './backend-tool.js';
 import { errorMessage, isRecord, isTransientStreamError, jsonResult, mcpError, textResult, type McpResult } from '../shared/mcp-utils.js';
 import { waitInputSchema, MAX_INLINE } from '../shared/schemas.js';
 import { domainToMcp } from '../execution/tool-response.js';
-import type { ToolDescriptor } from './bridge-types.js';
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
 const version = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
@@ -29,46 +28,12 @@ type ProgressNotification = {
   };
 };
 
-function waitToolDescriptor(tool: ToolDescriptor): ToolDescriptor {
-  return {
-    ...tool,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        jobs: { type: 'array', items: { type: 'string' }, description: 'Job IDs to monitor (from exec/fork response)' },
-        timeout_seconds: { type: 'number', description: 'Max wait time in seconds (1-1200, default 600)' },
-        cursor: { type: 'string', description: 'Opaque stream cursor returned by the previous wait call' },
-      },
-      required: ['jobs'],
-    },
-  };
-}
-
 function fitsInlineWaitPayload(payload: Record<string, unknown>): boolean {
   return JSON.stringify(jsonResult(payload)).length <= MAX_INLINE;
 }
 
-async function fetchTools(): Promise<ToolDescriptor[]> {
-  const { port, host, token } = await ensureBackend(pluginRoot);
-  const response = await fetch(`http://${host}:${port}/tools`, {
-    headers: { 'X-Coral-Backend-Token': token },
-  });
-  if (!response.ok) {
-    throw new Error(`Backend request failed: ${response.status} ${response.statusText}`);
-  }
-
-  const body: unknown = await response.json();
-  if (!Array.isArray(body)) return [];
-
-  return body
-    .filter((tool): tool is ToolDescriptor => (
-      isRecord(tool)
-      && typeof tool.name === 'string'
-      && typeof tool.description === 'string'
-      && isRecord(tool.inputSchema)
-      && !tool.name.startsWith('kb_')
-    ))
-    .map((tool) => (tool.name === 'wait' ? waitToolDescriptor(tool) : tool));
+async function fetchTools() {
+  return fetchBackendToolDescriptors(pluginRoot);
 }
 
 function sendProgress(

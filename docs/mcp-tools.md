@@ -1,10 +1,19 @@
 # MCP Tools
 
-Coral exposes one MCP server plus a backend HTTP server:
+Coral exposes one MCP server (`ax`) backed by one local HTTP daemon. MCP clients still see a single tool catalog, but execution is now split between bridge-local handlers, dedicated backend routes, and the generic `/tool` proxy.
 
-- **`ax` (Agent Execution)**: tools (`codex`, `claude`, `kb_search`, `kb_promote`, `kb_update`, `kb_delete`, `kb_reindex`, `wait`, `abort`, `workflow`, `backend`, plus discuss tools) for Codex/Claude CLI session management, KB operations, backend control, pipeline orchestration, and discuss session control. Prefix: `mcp__plugin_coral_ax__`
+| Tool family | Advertised by | Execution path |
+|---|---|---|
+| Provider tools (`codex`, `claude`, future registered providers) | Backend `GET /tools` | Bridge/CLI -> `POST /provider/:name` |
+| `workflow` | Backend `GET /tools` | Bridge/CLI -> `POST /workflow` |
+| `abort` | Backend `GET /tools` | Bridge/CLI -> `POST /abort` |
+| `discuss_*` and `kb_*` | Backend `GET /tools` | Bridge/CLI -> `POST /tool` -> `routeToolCall()` |
+| `wait` | Bridge-local | Bridge -> `POST /wait/stream` |
+| `backend` | Bridge-local | Handled in the bridge only |
 
-> **Note**: The `dc` MCP server and Agent Teams-based discuss tools (`discuss`, `discuss_lead`) have been removed. Discuss sessions are now controlled via backend tools (`discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, `discuss_abort`) exposed through the `ax` bridge. The doc sections below on `discuss_lead` ops describe the legacy architecture.
+`GET /tools` is the source of truth for every backend-routed descriptor: live provider descriptors plus discuss, KB, `workflow`, and `abort`. The bridge appends the bridge-local `wait` and `backend` descriptors before returning MCP `ListTools`.
+
+Provider operations, workflow launches, and job aborts are no longer handled by the generic `/tool` route. `/tool` now exists only for `discuss_*` and `kb_*`.
 
 All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/schemas.ts`, `src/providers/claude/schemas.ts`, `src/discuss/schemas.ts`). Model names only allow the `[a-zA-Z0-9][a-zA-Z0-9._-]*` pattern (flag injection prevention).
 
@@ -16,11 +25,18 @@ All tool inputs are validated at runtime with Zod schemas (`src/providers/codex/
 
 Single entry point for all Codex execution. Use the required `op` discriminator.
 
+Routing note: Codex is advertised by backend `GET /tools`, but execution goes through the dedicated `POST /provider/codex` endpoint, not `/tool`. Public discovery exposes the provider contract (`exec`, `list`, `fork`, and `coral:*`; resume is `exec` + `session`) and intentionally does not expose internal-only launch fields such as `bypass_exec`, `bypass_permissions`, or `system_prompt`.
+
 ### Input Envelope
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
+| `prompt` | string | No | Prompt for `exec` and `coral:*`; optional follow-up prompt for `fork`. |
+| `session` | string | No | Resume target for `exec`, or source session for `fork`. |
+| `work_dir` | string | No | Working directory override. |
+| `model` | string | No | Optional model override. |
+| `owner` | string | No | Owner identifier used by `coral:*` dispatch. |
 
 ---
 
@@ -175,6 +191,28 @@ if state == "running":
 
 Do NOT pass `job` as the `session` parameter on subsequent exec calls.
 
+## CLI Examples
+
+CLI provider commands use subcommands instead of the MCP `op` discriminator, but they hit the same `POST /provider/:name` endpoints.
+
+```bash
+# Launch a new Codex job and return the launch decision immediately
+coral codex exec --prompt "Review auth.ts" -d
+
+# Resume by reusing the same session ID (public MCP equivalent: op=exec + session)
+coral codex exec --session <session-id> --prompt "Continue from the previous response" -d
+
+# Fork an existing session on a provider that supports headless fork
+coral claude fork --session <session-id> --prompt "Try an alternative approach" -d
+
+# Dispatch through a Coral agent
+coral codex coral architect --prompt "Review auth.ts" -d
+
+# List sessions for any provider
+coral codex list
+coral claude list
+```
+
 ---
 
 # Claude Tools (`ax`)
@@ -183,11 +221,18 @@ Do NOT pass `job` as the `session` parameter on subsequent exec calls.
 
 Single entry point for Claude CLI execution. Use the required `op` discriminator.
 
+Routing note: Claude is advertised by backend `GET /tools`, but execution goes through `POST /provider/claude`, not `/tool`. The public MCP descriptor matches Codex: `exec`, `list`, `fork`, and `coral:*`, with resume represented as `exec` plus `session`.
+
 ### Input Envelope
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `op` | string | Yes | `exec`, `list`, `fork`, or `coral:<agent-name>` |
+| `prompt` | string | No | Prompt for `exec` and `coral:*`; optional follow-up prompt for `fork`. |
+| `session` | string | No | Resume target for `exec`, or source session for `fork`. |
+| `work_dir` | string | No | Working directory override. |
+| `model` | string | No | Optional model override. |
+| `owner` | string | No | Owner identifier used by `coral:*` dispatch. |
 
 ### Official Input Schema
 
@@ -198,10 +243,12 @@ Single entry point for Claude CLI execution. Use the required `op` discriminator
   "inputSchema": {
     "type": "object",
     "properties": {
-      "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation" },
+      "op": { "type": "string", "description": "Operation: exec/list/fork, or coral:<agent-name> for agent delegation. Resume is exec plus session." },
       "prompt": { "type": "string", "description": "Prompt to send (exec required)" },
       "session": { "type": "string", "description": "Session ID for resume (exec with existing session)" },
-      "work_dir": { "type": "string", "description": "Working directory for execution" }
+      "work_dir": { "type": "string", "description": "Working directory for execution" },
+      "model": { "type": "string", "description": "Optional model override" },
+      "owner": { "type": "string", "description": "Owner identifier used by coral:* dispatch" }
     },
     "required": ["op"]
   }
@@ -285,6 +332,8 @@ If CLI JSON output does not include `session_id`, the run is marked non-resumabl
 ## wait
 
 Provider-agnostic wait for background jobs from any AX adapter. Wait returns when the first requested job completes, errors, or timeout elapses.
+
+Routing note: `wait` is bridge-local. The backend does not advertise it in `GET /tools`; the bridge appends the descriptor and proxies the call to `POST /wait/stream`.
 
 ### Input Schema
 
@@ -392,6 +441,8 @@ This is a normal accepted launch outcome, not an error. The job auto-dispatches 
 
 Provider-agnostic abort for active jobs. Works for codex, claude, and workflow jobs.
 
+Routing note: `abort` is advertised by backend `GET /tools`, but bridge and CLI callers send it to the dedicated `POST /abort` endpoint. It no longer executes through `/tool`.
+
 ### Input Schema
 
 | Parameter | Type | Required | Description |
@@ -409,6 +460,12 @@ Provider-agnostic abort for active jobs. Works for codex, claude, and workflow j
 
 `notFound` lists jobs that already finished or were never active — not an error condition.
 
+### CLI Example
+
+```bash
+coral abort --jobs job-uuid-1,job-uuid-2
+```
+
 ---
 
 # Workflow Tool (`ax`)
@@ -416,6 +473,8 @@ Provider-agnostic abort for active jobs. Works for codex, claude, and workflow j
 ## workflow
 
 Deterministic multi-agent pipeline executor. Chains coral agents via a DSL expression without LLM mediation between steps. Each step's output becomes the next step's prompt.
+
+Routing note: `workflow` is advertised by backend `GET /tools`, but bridge and CLI callers launch it through the dedicated `POST /workflow` endpoint. It no longer executes through `/tool`.
 
 ### Input Schema
 
@@ -511,7 +570,7 @@ coral workflow -e "architect -> resolver" -s "Review auth.ts" -c "Security focus
 
 ## backend
 
-Bridge-local backend control tool. It is intercepted in the AX bridge and is never proxied through the backend `/tool` route.
+Bridge-local backend control tool. The backend does not advertise it in `GET /tools`; the bridge appends the descriptor and handles it locally without calling `/tool`.
 
 ### Input Schema
 
@@ -569,7 +628,16 @@ Behavior notes:
 
 # Knowledge Base Tools (`ax`)
 
-These built-in tools are the supported interface for KB search and note mutations. Agents still write memos directly under the active project's `memo/` directory, then use KB tools for search, promotion, updates, deletes, and reindexing.
+These built-in tools are still routed through `POST /tool`, and backend `GET /tools` advertises the full KB surface: `kb_search`, `kb_principles`, `kb_read`, `kb_promote`, `kb_update`, `kb_delete`, `kb_source_import`, `kb_source_list`, `kb_source_delete`, `kb_memo`, `kb_memo_list`, `kb_memo_delete`, `kb_memo_purge`, and `kb_reindex`.
+
+Agents still write memos directly under the active project's `memo/` directory, then use KB tools for search, promotion, updates, deletes, source management, memo management, principle lookup, and reindexing.
+
+Additional KB operations:
+
+- `kb_principles`: list or search indexed KB principles.
+- `kb_read`: read a KB note, source, community, memo, or principle entry by slug.
+- `kb_source_import`, `kb_source_list`, `kb_source_delete`: manage imported KB sources.
+- `kb_memo_list`, `kb_memo_delete`, `kb_memo_purge`: inspect and clean up scoped project memos.
 
 ## kb_search
 
@@ -579,6 +647,7 @@ Searches KB note filename, principles, tags, title, and content with Orama BM25 
 |---|---|---|---|
 | `query` | string | Yes | Text query for BM25 search |
 | `top_k` | integer | No | Max results to return (default `20`) |
+| `scope` | string | No | Limit results to `notes`, `sources`, `communities`, or `all` (default). |
 
 Returns `{ results, mode, warning? }`. Each result has `{ note, title, matchedBy, tags, principles, snippet?, communityContext? }` where `note` is a slug directly usable in `kb_update` and `kb_delete`. `communityContext` is an array of community summaries when results span a community's members. `mode` is `'text'` for Orama BM25 only and `'hybrid'` when text search is fused with vector and/or entity graph ranking.
 
@@ -590,6 +659,7 @@ Writes a memo with auto-generated timestamp, path, and frontmatter. The project 
 |---|---|---|---|
 | `topic` | string | Yes | Kebab-case topic slug (e.g. `orama-threshold`) |
 | `content` | string | Yes | Memo body text (one paragraph + context) |
+| `owner` | string | Yes | Token-safe owner/session identifier. |
 
 Returns `{ filename, path }`.
 
@@ -602,8 +672,6 @@ Promotes a memo into a new KB note. Promotion is create-only: if the destination
 | `memo` | string | Yes | Memo filename (e.g. `20260325-topic.md`), not a full path |
 | `title` | string | Yes | Note title written as the H1 |
 | `content` | string | Yes | Note body, typically `## Rule`, `## Why`, `## Pattern` |
-| `tags` | string[] | Yes | Frontmatter tags |
-| `principles` | string[] | Yes | Principle names |
 | `domain` | string | Yes | Filename prefix |
 | `topic` | string | Yes | Filename suffix |
 
@@ -618,8 +686,6 @@ Partially updates an existing KB note by note slug.
 | `note` | string | Yes | Note slug without path or extension (e.g. `rendering-guiding-contracts`) |
 | `title` | string | No | Replacement H1 title |
 | `content` | string | No | Replacement body |
-| `tags` | string[] | No | Replacement frontmatter tags |
-| `principles` | string[] | No | Replacement frontmatter principles |
 
 ## kb_delete
 
@@ -635,203 +701,134 @@ Rebuilds the derived KB text-search index from the markdown vault. The response 
 
 ---
 
-# Discuss Tools (`dc`)
+# Discuss Tools (`ax`)
 
-The discuss MCP server manages moderated multi-agent discussion sessions. Sessions are stored under `~/.coral/projects/{source-slug}/discuss/`, with shared source discovery tracked in `~/.coral/discuss-sources.json`. State mutations are serialized inside the backend with promise-chain locks keyed by source/session.
+Discuss tools remain MCP tools routed through `POST /tool`. There is no separate `dc` server: backend `GET /tools` advertises `discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, and `discuss_abort`, and backend `routeToolCall()` dispatches them.
 
-Session IDs follow the format `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix). Legacy format `YYYYMMDD-HHmmss-xxxx` is also accepted.
+Sessions are stored under `~/.coral/projects/{source-slug}/discuss/`, with shared source discovery tracked in `~/.coral/discuss-sources.json`.
 
----
+## discuss_seed
 
-## discuss (agent tool)
-
-Agent-facing MCP tool for participant actions only:
-
-| Operation | Input |
-|---|---|
-| `bid` | `session`, `agent_name`, `score` (0-100), `thought` (required) |
-| `speak` | `session`, `agent_name`, `content` |
-
-`bid` returns one of:
-
-- `{ action: 'speak' }` - you won, deliver your speech
-- `{ action: 'listen'; speaker; content }` - another agent won (includes epoch summaries with `speaker: null`)
-- `{ action: 'session_ended'; reason; content }` - discussion is over
-
-`speak` records speech and returns the updated status/step on success.
-
----
-
-## discuss_lead (moderator tool)
-
-Moderator-only MCP tool for control and lifecycle:
-
-| Operation | Input |
-|---|---|
-| `_1_seed` | `controversy_axes`, `n`, optional `seed`, optional `demographics` (see [Persona Seeding Algorithm](#persona-seeding-algorithm-_1_seed)) |
-| `_2_create` | `topic`, `agents` |
-| `_3_step` | `session`, `timeout_seconds` (1-120), optional `force_stop` |
-| `_4_transcript` | `session`, `mode`, optional `last_n` |
-| `_5_epoch` | `session`, `summary` |
-| `_6_state` | `session` |
-| `_7_end` | `session`, optional `force`, optional `reason` |
-| `_8_synthesize` | `session`, `synthesis` |
-
-`_3_step` is a mode-specific blocking call:
-
-- **setup**: moves setup → bidding under lock; returns `{ status: 'setup', phase: 'not_ready' }` if participants not yet registered.
-- **bidding**: waits for all bids (blocking via `waitForCondition(allBidsIn)`), then resolves winner under lock. Returns one of:
-  - `{ status: 'bidding', phase: 'bidding', pending_bidders, hold_count }` - still collecting bids
-  - `{ status: 'bidding', phase: 'resolved', winner }` - winner selected
-  - `{ status: 'bidding', phase: 'epoch_transition', epoch }` - auto-transitioned to new epoch
-  - `{ status: 'bidding', phase: 'ended', reason }` - discussion ended (`all_below_threshold`, `max_epochs_reached`, `all_blocked`, `no_participants`)
-  - `{ status: 'bidding', phase: 'expelled', agents, hint }` - agents expelled for timeout
-- **speaking**: waits for speech delivery (blocking via `waitForCondition(speechDelivered)`). Returns one of:
-  - `{ status: 'speaking', phase: 'speech_done', speaker, content }` - speech delivered
-  - `{ status: 'speaking', phase: 'speech_pending', elapsed }` - still waiting
-  - `{ status: 'speaking', phase: 'speech_timeout', speaker }` - speaker timed out
-  - `{ status: 'ended', phase: 'ended', reason }` - session ended during wait
-
-`_7_end` finalizes sessions and is idempotent for already-ended sessions. `_8_synthesize` records synthesis text for ended sessions only (`not_ended` otherwise) and no-ops on duplicate synthesis writes.
-
----
-
-## Persona Seeding Algorithm (`_1_seed`)
-
-`_1_seed` generates maximally diverse persona position assignments using **k-DPP (Determinantal Point Process)** sampling, then optional demographics-based origin assignment. Reference: Kulesza & Taskar (2012), "Determinantal Point Processes for Machine Learning".
-
-### Input
+Generate seeded persona assignments from controversy axes.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `controversy_axes` | array | Yes | 1–10 axes, each with 1–10 unique positions. Axis names must be unique. |
-| `n` | integer | Yes | Number of persona assignments to generate (1–8) |
-| `seed` | integer \| null | No | RNG seed for reproducibility. `null` = random seed. |
-| `demographics.origin_weights` | object | No | Finite positive origin weights, keyed by origin label (e.g., country code, institution type) |
-| `demographics.outlier_ratio` | number | No | Fraction of outliers from low-weight pool (`0` to `0.5`, default `0.2`). |
+| `controversy_axes` | array | Yes | Array of `{ axis, positions[] }` pairs. |
+| `n` | integer | Yes | Number of assignments to generate (`1-20`). |
+| `seed` | integer | Yes | Deterministic RNG seed. |
+| `demographics` | object | No | Optional `{ origin_weights, outlier_ratio? }` weighting metadata. |
 
-### Pipeline
+Returns seeded assignments with tone metadata and optional demographics hints. Behavior notes:
 
-1. **Pool generation**: Cartesian product of all axis positions. Each element is a position tuple (one position per axis). Pool size = product of all axis sizes.
+- Cartesian-product pools larger than `256` are auto-subsampled before selection.
+- Estimated pools larger than `100000` return `pool_too_large`.
+- Degenerate single-position pools with `n > 1` return `pool_degenerate`.
 
-2. **Validation & subsampling**:
-   - Estimated pool size > 100,000 → error `pool_too_large` (guard against materializing huge products)
-   - `pool_size > 256` → **auto-subsample**: shuffle pool with seeded RNG, take first 256 items. Result includes `subsampled: true` and `original_pool_size`.
-   - `pool_size = 1` and `n > 1` → error `pool_degenerate` (hint: all axes have single position)
+## discuss_start
 
-3. **RNG**: mulberry32 PRNG seeded with the provided or auto-generated seed. Deterministic — same seed always produces the same assignments.
+Start a backend-managed discussion session.
 
-4. **Selection** (uniqueCount = min(n, pool_size)):
-   - `uniqueCount = 0` → empty
-   - `uniqueCount = 1` → uniform random pick
-   - `uniqueCount = pool_size` → take all (no sampling needed)
-   - Otherwise → **k-DPP sampling**:
-     - **σ** = √(axes_count / 2) — Gaussian RBF bandwidth
-     - **Kernel**: L[i][j] = exp(-hamming(i,j)² / 2σ²) — similarity matrix over pool
-     - **Eigendecompose**: Jacobi rotation on the symmetric kernel
-     - **Phase A**: ESP (elementary symmetric polynomial) backward sampling selects k eigenvectors
-     - **Phase B**: Sequential item sampling from selected eigenvector subspace with Gram-Schmidt orthogonalization
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `topic` | string | Yes | Discussion topic. |
+| `agents` | array | Yes | Array of `{ name, persona, participation?, provider?, model? }`. At least 2 agents required. |
+| `config.min_bid_delay_ms` | integer | No | Optional minimum delay before bids are released. |
 
-5. **Reuse** (when `n > pool_size`): Extra slots assigned by largest Hamming distance from the selected set, cycling through ranked reuse order. Each reused assignment carries `shared_position_with: <source_slot_index>`.
+Returns `{ session }`. The backend assigns a UUID session ID, persists the initial state, opens the first bidding phase, and resumes the control loop.
 
-6. **Tone assignment**: 2×2×2 = 8 combinations of `{formality, evidence, pace}` shuffled via seeded RNG and assigned cyclically:
-  - `formality`: `formal` | `conversational`
-  - `evidence`: `data-driven` | `narrative`
-  - `pace`: `concise` | `detailed`
+## discuss_watch
 
-7. **Demographics layer** (optional, second RNG stage): When `demographics` is provided, assigns `suggested_origin` and `is_outlier` per slot using weighted pools split by `outlier_ratio` (default `0.2`, clamped to `0–0.5`).
+Read the current watch projection for a session.
 
-### Output
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Discussion session ID. |
+| `cursor` | integer | No | Resume from this event offset. Omit for full current history. |
+
+Returns the `WatchState` projection:
 
 ```json
 {
-  "ok": true,
-  "value": {
-    "seed_used": 3141592653,
-    "sigma_used": 1.0,
-    "pool_size": 256,
-    "subsampled": true,
-    "original_pool_size": 3125,
-    "assignments": [
-      {
-        "positions": { "stance": "pro", "priority": "cost" },
-        "tone": { "formality": "formal", "evidence": "data-driven", "pace": "concise" },
-        "suggested_origin": "DE",
-        "is_outlier": false,
-        "persona_seed": 1827364590
-      },
-      {
-        "positions": { "stance": "con", "priority": "quality" },
-        "tone": { "formality": "conversational", "evidence": "narrative", "pace": "detailed" },
-        "suggested_origin": "US",
-        "is_outlier": true,
-        "persona_seed": 3049182736,
-        "shared_position_with": 0
-      }
-    ]
-  }
+  "session": "session-uuid",
+  "status": "bidding",
+  "topic": "AI ethics in healthcare",
+  "epoch": 1,
+  "step": 3,
+  "events": [],
+  "cursor": 12
 }
 ```
 
-### Error Responses
+When `cursor` is provided, `events` only includes items newer than that offset.
 
-| Error | Condition | Recovery |
-|---|---|---|
-| `pool_too_large` | Estimated pool > 100,000 (OOM guard, not materialized) | Reduce positions on largest axis or merge axes, retry |
-| `pool_degenerate` | Pool = 1, n > 1 | Add a second position to at least one axis, retry |
+## discuss_participate
 
-### Moderator Setup Workflow
+Submit either a manual bid or a manual speech for an active participant.
 
-The moderator (`discuss-lead`) uses `_1_seed` within a 3-phase setup:
+Bid payload:
 
-**Phase 1 — Controversy Analysis** (LLM inline, before `_1_seed` call):
-- Extract 3–4 controversy axes from the topic, each with 2–3 positions
-- **Pool budget**: keep product of all axis sizes ≤ 81 (e.g., 3×3×3×3 = 81). If product exceeds 81, trim the largest axis to 2 positions or merge axes. This is a recommended guideline — the hard limit is 256.
-- Assign agent names with `dc-` prefix (e.g., `dc-architect`)
-- Assign distinct `name_culture` per agent (e.g., Korean, Nigerian, Brazilian)
-- If debate topic: prepend `{ axis: "stance", positions: ["pro", "con"] }` as the first axis
-- Generate `n` persona briefs: 1–2 sentence background differentiation per slot
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Discussion session ID. |
+| `agent_name` | string | Yes | Participant name. |
+| `score` | integer | Yes | Bid score (`0-100`). |
+| `thought` | string | Yes | Bid rationale. |
 
-**Phase 2 — DPP Seeding** (`_1_seed` MCP call):
-- Call `_1_seed({ controversy_axes, n, demographics, seed: null })`
-- Result: `assignments[i].positions` (axis → position map), `assignments[i].tone` ({ formality, evidence, pace }), `assignments[i].persona_seed` (uint32), `assignments[i].suggested_origin`, `assignments[i].is_outlier` (if demographics provided)
-- Pool > 256 is auto-subsampled (no action needed). Response includes `subsampled: true`, `original_pool_size`.
-- On `pool_too_large` (> 100,000): reduce positions on largest axis, retry
-- On `pool_degenerate`: add a second position to at least one axis, retry
+Speech payload:
 
-**Phase 3 — Merge & Spawn** (parallel persona generation):
-- For each slot, spawn `persona-generator` with: `role`, `topic`, `team_roles`, `name_culture`, `positions` (from assignments), `tone` (from assignments), `brief` (from Phase 1), `devil_advocate` (if stance imbalance), `shared_position_with` (if reused slot)
-- **Stance imbalance check**: if stance axis exists, count pro vs con. If imbalanced, set `devil_advocate: true` for one agent on overrepresented side.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Discussion session ID. |
+| `agent_name` | string | Yes | Participant name. |
+| `content` | string | Yes | Speech text. |
+
+Returns a bid/speech status object. Common responses are:
+
+- `{ action: 'listen', speaker, content }`
+- `{ action: 'speech_recorded' }`
+- `{ action: 'not_your_turn', current_speaker }`
+- `{ action: 'session_ended', reason?, content? }`
+
+## discuss_abort
+
+Force-end a live discussion session.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `session` | string | Yes | Discussion session ID. |
+
+Returns `{ ok: true, session }` on success.
 
 ---
 
-# Discuss ↔ Provider Integration
+# Routing Contract
 
-All tools (codex, claude, discuss, kb, workflow) are served through a single MCP server (`ax`), which proxies to the persistent backend daemon via HTTP.
+All tools still appear through the single `ax` MCP server, but the bridge is now endpoint-aware instead of sending every tool through `/tool`.
 
 ## Coupling Points
 
-The coupling is through the **backend tool router**, not separate MCP servers:
-
 | Component | Role |
 |-----------|------|
-| `src/execution/tool-router.ts` | Routes discuss_* and kb_* tool calls from the backend's `routeToolCall()` |
+| `src/bridge/server.ts` + `src/bridge/backend-client.ts` | Fetch backend descriptors, append bridge-local `wait` and `backend`, and route provider/workflow/abort calls to dedicated endpoints |
+| `src/execution/http-handler.ts` | Owns `/provider/:name`, `/workflow`, `/abort`, `/tool`, and `/wait/stream` |
+| `src/execution/tool-router.ts` | Routes only `discuss_*` and `kb_*` calls from `/tool` |
 | `src/execution/discuss/operations.ts` | Primary discuss runtime entry — uses `ExecutionService` to launch provider turns |
-| `codex({ op: "coral:<agent>" })` | Direct Codex/Claude agent delegation path that reads `agents/<agent>.md` and prepends it to prompts |
+| `codex({ op: "coral:<agent>" })` / `claude({ op: "coral:<agent>" })` | Direct provider agent delegation path over `POST /provider/:name` |
 
-The discuss system uses provider turns (codex/claude) for agent speech/bids but does not call provider tools directly — it delegates through `ExecutionService`.
+The discuss system uses provider turns (codex/claude) through `ExecutionService`; it does not invoke provider tools through MCP.
 
 ## Session Naming Convention
 
-- Discuss session IDs: `yymmdd-HHmm-xxxx` (managed by backend)
-- Discuss session dirs: `{session_id}-{topic_slug}` (managed by backend)
-- Codex sessions: `session-{timestamp}` or user-provided name (managed by backend)
+- Discuss session IDs: backend-generated UUIDs
+- Discuss data: `~/.coral/projects/{source-slug}/discuss/`
+- Provider sessions: provider-specific session IDs tracked in the Coral session registry
 
-These namespaces do not overlap. Collision risk is between discuss sessions only (mitigated by 4-char random suffix per timestamp-minute).
+These namespaces do not overlap.
 
 ## Contract
 
-1. **Discuss uses providers through ExecutionService** — not direct CLI calls
-2. **Provider tools have no awareness of discuss sessions** — session isolation is maintained
-3. **Agent delegation is explicit** — Codex/Claude delegation uses `codex/claude({ op: "coral:<agent>" })`; no hook bridge is involved
-4. **All tools share the same backend daemon** — tool input/output contracts must be preserved across all tool types
+1. Backend `GET /tools` owns descriptors for providers, discuss, KB, `workflow`, and `abort`.
+2. The bridge appends only `wait` and `backend`.
+3. `/tool` only handles `discuss_*` and `kb_*`.
+4. Provider tools, `workflow`, and `abort` use dedicated HTTP endpoints.
+5. `wait` stays bridge-local and streams through `/wait/stream`.

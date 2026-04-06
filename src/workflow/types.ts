@@ -26,6 +26,8 @@ export interface CoralDispatchInput {
   sessionId?: string;
   cwd?: string;
   effort?: string;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
   parentWorkflowJobId?: string;
 }
 

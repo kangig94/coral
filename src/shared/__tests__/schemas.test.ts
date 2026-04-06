@@ -4,6 +4,7 @@ import {
   internalProviderFieldsShape,
   sharedExecSchema,
   sharedForkSchema,
+  sharedListSchema,
   sharedResumeSchema,
   waitInputSchema,
 } from '../schemas.js';
@@ -57,6 +58,11 @@ describe('shared schemas', () => {
         op: 'fork',
       }),
     ).toThrow();
+  });
+
+  it('sharedListSchema accepts only the list op', () => {
+    expect(sharedListSchema.parse({ op: 'list' })).toEqual({ op: 'list' });
+    expect(() => sharedListSchema.parse({ op: 'list', prompt: 'extra' })).toThrow();
   });
 
   it('waitInputSchema rejects empty jobs array', () => {

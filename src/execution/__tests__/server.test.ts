@@ -776,12 +776,16 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(Array.isArray(body)).toBe(true);
+    expect(body.some((tool) => tool.name === 'codex')).toBe(true);
+    expect(body.some((tool) => tool.name === 'claude')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_seed')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_start')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_abort')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_watch')).toBe(true);
     expect(body.some((tool) => tool.name === 'discuss_participate')).toBe(true);
-    expect(body.every((tool) => !String(tool.name).startsWith('kb_'))).toBe(true);
+    expect(body.some((tool) => tool.name === 'kb_search')).toBe(true);
+    expect(body.some((tool) => tool.name === 'workflow')).toBe(true);
+    expect(body.some((tool) => tool.name === 'abort')).toBe(true);
     const watchTool = body.find((tool: { name?: string }) => tool.name === 'discuss_watch') as
       | { inputSchema?: { properties?: { cursor?: unknown } } }
       | undefined;
@@ -789,6 +793,11 @@ describe('execution backend server', () => {
       type: 'integer',
       minimum: 0,
     });
+    const providerTool = body.find((tool: { name?: string }) => tool.name === 'codex') as
+      | { inputSchema?: { properties?: Record<string, unknown> } }
+      | undefined;
+    expect(providerTool?.inputSchema?.properties).not.toHaveProperty('bypass_permissions');
+    expect(providerTool?.inputSchema?.properties).not.toHaveProperty('system_prompt');
   });
 
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
@@ -2433,6 +2442,11 @@ describe('execution backend server', () => {
     async function startFencedToolServer(routeToolCall = vi.fn(async () => domainSuccess({ allowed: true }))) {
       const { createHttpHandler } = await import('../http-handler.js');
       const { runtimeState } = createRuntimeStateMock();
+      const providerRegistry = new ProviderRegistry();
+      providerRegistry.register({
+        name: 'codex',
+        execute: vi.fn(async () => ({ content: 'ok' })),
+      });
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(true);
 
@@ -2459,6 +2473,7 @@ describe('execution backend server', () => {
         requestDrain: () => {},
         getExecutionService: () => createFakeExecutionService() as never,
         getDiscussContext: () => ({}) as never,
+        providerRegistry,
         abortJobs: () => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
         routeToolCall,
@@ -2490,13 +2505,67 @@ describe('execution backend server', () => {
     it.each([
       {
         name: 'direct provider exec',
-        request: { name: 'codex', args: { op: 'exec', prompt: 'hello' } },
+        path: '/provider/codex',
+        args: { op: 'exec', prompt: 'hello' },
       },
       {
         name: 'coral dispatch',
-        request: { name: 'codex', args: { op: 'coral:architect', prompt: 'hello' } },
+        path: '/provider/codex',
+        args: { op: 'coral:architect', prompt: 'hello' },
       },
-    ])('returns a domain error while the launch fence is active for $name', async ({ request }) => {
+      {
+        name: 'workflow launch',
+        path: '/workflow',
+        args: { expression: 'architect', start_prompt: 'hello' },
+      },
+    ])('returns a domain error while the launch fence is active for $name', async ({ path, args }) => {
+      const fenced = await startFencedToolServer();
+
+      try {
+        const response = await fetch(`${fenced.baseUrl}${path}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            args,
+            context: { projectRoot: '/tmp/project', coralEnv: {} },
+          }),
+        });
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({
+          ok: false,
+          code: 'backend_recovering',
+          message: 'recovering — retry after 500ms',
+        });
+        expect(fenced.routeToolCall).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve, reject) => fenced.server.close((error) => (error ? reject(error) : resolve())));
+      }
+    });
+
+    it.each([
+      {
+        name: 'discuss_start',
+        args: {
+          topic: 'Should we ship?',
+          agents: [
+            { name: 'alpha', persona: '# Alpha' },
+            { name: 'beta', persona: '# Beta' },
+          ],
+        },
+      },
+      {
+        name: 'discuss_participate',
+        args: {
+          session: 'session-1',
+          agent_name: 'alpha',
+          content: 'Ship it.',
+        },
+      },
+    ])('returns a domain error on /tool while the discuss launch fence is active for $name', async ({ name, args }) => {
       const fenced = await startFencedToolServer();
 
       try {
@@ -2507,7 +2576,8 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            ...request,
+            name,
+            args,
             context: { projectRoot: '/tmp/project', coralEnv: {} },
           }),
         });
@@ -2525,7 +2595,7 @@ describe('execution backend server', () => {
     });
 
     it('allows non-work-admitting tool calls to pass through while the launch fence is active', async () => {
-      const routeToolCall = vi.fn(async () => domainSuccess({ sessions: [] }));
+      const routeToolCall = vi.fn(async () => domainSuccess({ session: 'session-1', events: [] }));
       const fenced = await startFencedToolServer(routeToolCall);
 
       try {
@@ -2536,8 +2606,8 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            name: 'codex',
-            args: { op: 'list' },
+            name: 'discuss_watch',
+            args: { session: 'session-1' },
             context: { projectRoot: '/tmp/project', coralEnv: {} },
           }),
         });
@@ -2545,7 +2615,7 @@ describe('execution backend server', () => {
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({
           ok: true,
-          data: { sessions: [] },
+          data: { session: 'session-1', events: [] },
         });
         expect(routeToolCall).toHaveBeenCalledTimes(1);
       } finally {

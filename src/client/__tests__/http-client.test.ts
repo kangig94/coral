@@ -142,7 +142,72 @@ describe('client http-client', () => {
     );
   });
 
-  it('returns structured domain errors from parsed /tool failures', async () => {
+  it.each([
+    {
+      method: 'providerExec',
+      invoke: (client: BackendClient) => client.providerExec('codex', 'hello', { model: 'gpt-5' }),
+      path: '/provider/codex',
+      args: { op: 'exec', prompt: 'hello', model: 'gpt-5' },
+    },
+    {
+      method: 'resume',
+      invoke: (client: BackendClient) => client.resume('session-1', 'continue', { model: 'gpt-5' }),
+      path: '/provider/codex',
+      args: { op: 'resume', session: 'session-1', prompt: 'continue', model: 'gpt-5' },
+    },
+    {
+      method: 'workflow',
+      invoke: (client: BackendClient) =>
+        client.workflow('architect', {
+          start_prompt: 'start here',
+          provider: 'codex',
+          work_dir: '/tmp/workflow',
+        }),
+      path: '/workflow',
+      args: {
+        expression: 'architect',
+        start_prompt: 'start here',
+        provider: 'codex',
+        work_dir: '/tmp/workflow',
+      },
+    },
+    {
+      method: 'abortJobs',
+      invoke: (client: BackendClient) => client.abortJobs(['job-1']),
+      path: '/abort',
+      args: { jobs: ['job-1'] },
+    },
+  ])('routes $method through the dedicated backend endpoint', async ({ invoke, path, args }) => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, data: { ok: true } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(invoke(client)).resolves.toEqual({ ok: true, data: { ok: true } });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://127.0.0.1:4100${path}`,
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': 'backend-token',
+        },
+        body: JSON.stringify({
+          context: defaultContext,
+          args,
+        }),
+      }),
+    );
+  });
+
+  it('returns structured domain errors from parsed dedicated-route failures', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
@@ -158,7 +223,7 @@ describe('client http-client', () => {
 
     await expect(client.abortJobs(['job-1'])).resolves.toEqual(errorBody);
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:4100/tool',
+      'http://127.0.0.1:4100/abort',
       expect.objectContaining({
         method: 'POST',
         headers: {
@@ -166,9 +231,44 @@ describe('client http-client', () => {
           'X-Coral-Backend-Token': 'backend-token',
         },
         body: JSON.stringify({
-          name: 'abort',
-          args: { jobs: ['job-1'] },
           context: defaultContext,
+          args: { jobs: ['job-1'] },
+        }),
+      }),
+    );
+  });
+
+  it('treats structured dedicated-route recovery responses as domain errors', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+    const errorBody = {
+      ok: false,
+      code: 'backend_recovering',
+      message: 'recovering — retry after 500ms',
+    } as const;
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(errorBody), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(client.providerExec('codex', 'hello')).resolves.toEqual(errorBody);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/provider/codex',
+      expect.objectContaining({
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': 'backend-token',
+        },
+        body: JSON.stringify({
+          context: defaultContext,
+          args: { op: 'exec', prompt: 'hello' },
         }),
       }),
     );

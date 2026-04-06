@@ -121,20 +121,20 @@ describe('bridge backend-tool', { retry: 2 }, () => {
     });
   });
 
-  it('buildToolList appends the backend tool to discovered tools', async () => {
-    const { backendToolDescriptor, buildToolList } = await loadBackendToolModule();
+  it('buildToolList appends wait and backend tools to discovered tools', async () => {
+    const { waitToolDescriptor, backendToolDescriptor, buildToolList } = await loadBackendToolModule();
     const remoteTools = [{
       name: 'codex',
       description: 'Execute a prompt with Codex CLI.',
       inputSchema: { type: 'object' },
     }];
 
-    expect(buildToolList(remoteTools)).toEqual([...remoteTools, backendToolDescriptor]);
+    expect(buildToolList(remoteTools)).toEqual([...remoteTools, waitToolDescriptor, backendToolDescriptor]);
   });
 
-  it('buildToolList returns the backend tool when discovery is unavailable', async () => {
-    const { backendToolDescriptor, buildToolList } = await loadBackendToolModule();
+  it('buildToolList returns wait and backend tools when discovery is unavailable', async () => {
+    const { waitToolDescriptor, backendToolDescriptor, buildToolList } = await loadBackendToolModule();
 
-    expect(buildToolList(null)).toEqual([backendToolDescriptor]);
+    expect(buildToolList(null)).toEqual([waitToolDescriptor, backendToolDescriptor]);
   });
 });

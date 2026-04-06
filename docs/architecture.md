@@ -22,7 +22,8 @@
 │  │        workflow + backend                                   │ │        │
 │  │ codex/claude: exec/list/fork + coral:<name> dispatch        │ │        │
 │  │ discuss_*: backend-managed discuss lifecycle tools          │ │        │
-│  │ wait/abort/workflow/backend: proxy or bridge-local helpers  │ │        │
+│  │ wait/backend: bridge-local; provider/workflow/abort use     │ │        │
+│  │ dedicated backend routes; discuss/kb stay on /tool          │ │        │
 │  │                                                             │ │        │
 │  │ Thin MCP stdio proxy -> HTTP backend daemon                 │ │        │
 │  └──────────────────────────────┬──────────────────────────────┘ │        │
@@ -61,7 +62,10 @@
 │  └── Routes:                                                              │
 │      GET  /health         → version, instanceId, uptime                   │
 │      GET  /tools          → tool descriptors for MCP ListTools            │
-│      POST /tool           → routeToolCall() → ExecutionService            │
+│      POST /provider/:name → provider execution + list                     │
+│      POST /workflow       → workflow launch                               │
+│      POST /abort          → job abort with scope checks                   │
+│      POST /tool           → routeToolCall() → discuss_* + kb_* only      │
 │      POST /wait/stream    → SSE progress/terminal/timeout events          │
 │      GET  /api/discuss    → persisted/live discuss summaries              │
 │      GET  /api/discuss/detail → projected control or audit detail         │
@@ -82,14 +86,24 @@
 
 ## AX Internal Dispatch
 
-How the AX MCP server routes tool calls internally. The MCP stdio proxy (`src/bridge/server.ts`) forwards all non-wait calls to the backend daemon via HTTP. The backend's `routeToolCall()` function is the top-level router: provider lookup, optional coral dispatch, then provider execution.
+How the AX MCP server routes tool calls internally. The bridge is now endpoint-aware:
+
+- `wait` is bridge-local and streams through `POST /wait/stream`
+- `backend` is bridge-local and never touches the backend router
+- provider tools go to `POST /provider/:name`
+- `workflow` goes to `POST /workflow`
+- `abort` goes to `POST /abort`
+- `discuss_*` and `kb_*` go to `POST /tool`, which is the only route that still uses `routeToolCall()`
+
+Backend `GET /tools` is the source of truth for provider descriptors plus discuss, KB, `workflow`, and `abort`. The bridge appends the bridge-local `wait` and `backend` descriptors for MCP `ListTools`.
 
 ### MCP Proxy Layer
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Claude Code (Host)                                              │
-│  MCP tool call: codex / claude / wait / abort / workflow         │
+│  MCP tool call: provider / discuss_* / kb_* / wait / abort /     │
+│                 workflow / backend                               │
 └─────────────────────────────┬────────────────────────────────────┘
                               │ stdio (JSON-RPC)
                               ▼
@@ -98,19 +112,23 @@ How the AX MCP server routes tool calls internally. The MCP stdio proxy (`src/br
 │                                                                  │
 │  name === "wait"    ? → streamWait() via POST /wait/stream (SSE) │
 │  name === "backend" ? → handleBackendToolCall() (bridge-local)   │
-│  otherwise          → proxyToolCall() via POST /tool             │
+│  provider name      ? → POST /provider/:name                     │
+│  name === "workflow"? → POST /workflow                           │
+│  name === "abort"   ? → POST /abort                              │
+│  discuss_* / kb_*   ? → POST /tool                               │
+│  fallback           ? → POST /tool                               │
 └─────────────────────────────┬────────────────────────────────────┘
                               │ HTTP (127.0.0.1)
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  execution/server.ts — Backend daemon                            │
 │                                                                  │
-│  POST /tool → routeToolCall(request, helpers)                    │
-│                                                                  │
-│  name === "abort"    → helpers.abortJobs(jobIds)                 │
-│  name === "workflow" → handleWorkflow() via ExecutionService     │
-│  provider in registry? YES → ExecutionService.{start,resume,...} │
-│                        NO  → 404 unknown tool                    │
+│  POST /provider/:name → live registry validation                 │
+│                        → ExecutionService.{start,resume,fork,    │
+│                          coralDispatch,list}                     │
+│  POST /workflow       → handleWorkflow() → executeWorkflow()     │
+│  POST /abort          → scope check → ExecutionService.abort()   │
+│  POST /tool           → routeToolCall() → discuss_* / kb_* only  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,9 +138,15 @@ How the AX MCP server routes tool calls internally. The MCP stdio proxy (`src/br
 <provider>({ op, ... })
         │
         ▼
-execution/server.ts routeToolCall()
+src/bridge/backend-client.ts resolveToolRoute()
         │
-        ├─ getNewProvider(name) from providers/registry.ts
+        ├─ provider name discovered from backend /tools catalog
+        └─ POST /provider/:name
+                │
+                ▼
+execution/http-handler.ts handleProviderRequest()
+        │
+        ├─ validate :name against live providers/registry.ts
         ├─ op starts with "coral:" ?
         │   YES → ExecutionService.coralDispatch()
         │         ├─ resolveCoralContent(name) from execution/resolver.ts
@@ -143,6 +167,25 @@ provider adapter (`providers/<name>/adapter.ts`)
 `coral:` resolution is centralized in `execution/resolver.ts`; provider adapters only implement provider-specific injection:
 - Codex: prepends coral content to prompt with `\n\n---\n\n`, forces `bypass: true`
 - Claude: uses coral content as `--append-system-prompt`, forces `bypass: true`
+
+### `/tool` Route (Discuss + KB Only)
+
+```
+discuss_* / kb_*
+        │
+        ▼
+src/bridge/backend-client.ts resolveToolRoute()
+        │
+        └─ POST /tool
+                │
+                ▼
+execution/http-handler.ts
+        │
+        └─ routeToolCall(request, helpers, kbSubsystem)
+                │
+                ├─ discuss_* → handleDiscussToolCall()
+                └─ kb_*      → handleKbToolCall()
+```
 
 ### `wait` Tool
 
@@ -181,6 +224,12 @@ Provider-agnostic: monitors any job regardless of whether it was launched by cod
 workflow({ expression: "(architect, critic) -> resolver", start_prompt, provider })
         │
         ▼
+POST /workflow
+        │
+        ▼
+execution/http-handler.ts handleWorkflowRequest()
+        │
+        ▼
 handleWorkflow()                              workflow/handler.ts
         │
         ├─ parseExpression(expression) → AST: PipeAtom[][]
@@ -212,33 +261,24 @@ handleWorkflow()                              workflow/handler.ts
                     │  MCP Client  │
                     └──────┬───────┘
                            │ stdio (JSON-RPC)
-              ┌────────────┼─────────────┬──────────┬──────────┐
-              ▼            ▼             ▼          ▼          ▼          ▼
-          "codex"      "claude"       "wait"    "abort"   "workflow" "backend"
-              │            │             │          │          │          │
-              └────────┬───┘             │          │          │          │
-                       │                 │          │          │          │
-         src/bridge/server.ts (MCP proxy)│          │          │          │
-              │                          │          │          │ (bridge-local,no HTTP)
-              ▼                          ▼          ▼          ▼          │
+              ┌───────────────┬─────────────┬──────────┬──────────┬──────────┬──────────┐
+              ▼               ▼             ▼          ▼          ▼          ▼
+        provider tool    discuss_* / kb_*  "wait"    "abort"  "workflow" "backend"
+              │               │             │          │          │          │
+              │               │             │          │          │          │
+              ▼               ▼             ▼          ▼          ▼          │
+         POST /provider/:name POST /tool    POST /wait/stream POST /abort POST /workflow
+              │               │             │          │          │          │
+              ▼               ▼             ▼          ▼          ▼          ▼
          ┌───────────────────────────────────────────────────────────────┐
-         │  HTTP → execution/server.ts (backend daemon)                  │
+         │  execution/server.ts (backend daemon)                         │
          │                                                               │
-         │  routeToolCall()                                              │
-         │  ├─ provider op → ExecutionService                            │
-         │  │   ├─ coral:<name> → coralDispatch()                        │
-         │  │   │               → resolver + instruction                 │
-         │  │   │               → start() or resume()                    │
-         │  │   └─ exec/resume/fork/list → direct                        │
-         │  │                      ↓                                     │
-         │  │               Provider.execute()                           │
-         │  │               → spawn CLI (background)                     │
-         │  │               → write progress to <os-tmpdir>/coral-jobs/  │
-         │  │                                                            │
-         │  ├─ abort → abortJobs() / ExecutionService.abort()            │
-         │  ├─ workflow → executeWorkflow → executePipeline              │
-         │  └─ wait → SSE stream from waitStream()                       │
-         │           → poll <os-tmpdir>/coral-jobs/ for events           │
+         │  /provider/:name → ExecutionService.{start,resume,fork,       │
+         │                    coralDispatch,list}                        │
+         │  /tool           → routeToolCall() → discuss_* / kb_* only    │
+         │  /abort          → scope check + ExecutionService.abort()      │
+         │  /workflow       → executeWorkflow → executePipeline           │
+         │  /wait/stream    → waitStream() SSE                            │
          └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -296,22 +336,23 @@ User → /codex skill analyzes intent
 
 ```
 User → /coral:discuss "AI ethics in healthcare"
-     → Skill calls discuss_seed({ controversy_axes, n, seed }) → persona assignments
+     → Skill calls discuss_seed({ controversy_axes, n, seed }) via POST /tool → persona assignments
      → Spawns persona-generator agents in parallel (Task tool) → full personas
-     → Skill calls discuss_start({ topic, agents }) → session_id
-     → Backend resolves DiscussContext, appends session.created + bidding.opened
+     → Skill calls discuss_start({ topic, agents }) via POST /tool → session_id
+     → Backend routeToolCall() resolves DiscussContext, appends session.created + bidding.opened
      → Collects initial bids → control loop drives rounds:
         → Provider turns via ExecutionService → commit event batches
         → eventBus emits discuss:updated after every batch
-     → User/observer: discuss_watch (poll events), discuss_participate (bid/speak)
+     → User/observer: discuss_watch / discuss_participate via POST /tool
      → /api/discuss + /api/discuss/detail read projected snapshots
-     → discuss_abort appends a durable terminal event
+     → discuss_abort via POST /tool appends a durable terminal event
 ```
 
 ### 5. Workflow Pipeline Execution
 
 ```
 User/Skill → workflow({ expression: "(architect, critic) -> resolver", start_prompt: "..." })
+           → bridge/client sends POST /workflow
            → handleWorkflow(args, service, ctx)
            → Schema validation + AST parsing + namespace validation
            → ExecutionService.executeWorkflow fires background handler:
@@ -331,12 +372,14 @@ User/Skill → workflow({ expression: "(architect, critic) -> resolver", start_p
 ### 6. Session-based Conversation (Codex)
 
 ```
-User → codex({ op: "exec", name: "review", prompt: "analyze auth.ts" })
+User → codex({ op: "exec", prompt: "analyze auth.ts" })
+     → bridge/client sends POST /provider/codex
      → launch returns job ID + session ID immediately
      → completion stores conversationRef in SessionManager under <uuid>.json (atomic write)
      → codex({ op: "exec", session: "<uuid>", prompt: "follow-up question" })
+     → bridge/client sends POST /provider/codex with exec + session
      → ExecutionService routes to resume() via SessionManager lookup
-     → codex exec resume CONVERSATION_REF executed
+     → provider adapter executes resume against the stored conversationRef
      → lastUsedAt updated
 ```
 
@@ -440,7 +483,7 @@ coral/
 │   │   ├── server-types.ts  #   Leaf types: LifecycleState, BackendServerInfo
 │   │   ├── lifecycle.ts     #   Singleton startup/shutdown state machine
 │   │   ├── service.ts       #   ExecutionService: launch/wait/abort/workflow
-│   │   ├── tool-router.ts   #   Top-level tool dispatch (ToolDomainResult)
+│   │   ├── tool-router.ts   #   Discuss/KB tool dispatch (ToolDomainResult)
 │   │   ├── tool-response.ts #   Unified domain result contract
 │   │   ├── engine.ts        #   LaunchCoordinator + CLI spawn/queue/child lifecycle
 │   │   ├── event-bus.ts     #   TypedEventBus class (backend-local, no singleton)
@@ -523,7 +566,7 @@ Cross-cutting: `shared/types.ts` provides contracts across all layers. `client/i
 
 | Category | Count | Location | Description |
 |----------|-------|----------|-------------|
-| MCP Tools | 10+ | `src/execution/tool-router.ts` | codex, claude, discuss_*, kb_*, wait, abort, workflow, backend |
+| MCP Tools | 10+ | `src/bridge/server.ts`, `src/bridge/backend-client.ts`, `src/execution/http-handler.ts`, `src/execution/tool-router.ts` | Mixed routing: providers via `/provider/:name`, discuss/KB via `/tool`, `workflow` via `/workflow`, `abort` via `/abort`, bridge-local `wait` + `backend` |
 | Hooks | 13 scripts | `hooks/` | Lifecycle injection, KB reminders, backend warm-start, HUD updates |
 | Skills | 14 directories | `skills/` | Slash commands: plan, discuss, codex, ralph, analyze, init-project, etc. |
 | Agents | 10 definitions | `agents/` | Protocol definitions for Claude-native and Codex-delegated agents |
@@ -545,7 +588,8 @@ activate (SessionStart hooks fire)
     │
     ▼
 run (MCP tool calls via ax proxy → backend daemon)
-    ├── Tool routing: provider tools, discuss, kb, workflow
+    ├── Tool routing: provider → /provider/:name; workflow → /workflow;
+    │               abort → /abort; discuss/kb → /tool; wait/backend local
     ├── CLI spawn: Codex/Claude subprocesses via engine queue
     └── Session persistence: atomic writes to ~/.claude/coral/
     │

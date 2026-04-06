@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
+import { ensureBackend, withAbortTimeout, type BackendHandle } from '../client/backend-lifecycle.js';
 import { isBackendHealth } from '../client/backend-health.js';
 import { readBackendInfo } from '../infra/backend-info.js';
 import { collectCoralEnv, isProcessAlive, isRecord } from '../shared/mcp-utils.js';
@@ -16,6 +16,7 @@ import {
 } from '../shared/sse-parser.js';
 import type { WaitStreamEvent } from '../shared/types.js';
 import type { ToolDomainResult } from '../execution/tool-response.js';
+import type { ToolDescriptor } from './bridge-types.js';
 
 export { ensureBackend } from '../client/backend-lifecycle.js';
 
@@ -40,8 +41,219 @@ export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
 
+type ToolCatalog = {
+  pluginRoot: string;
+  instanceId: string;
+  tools: ToolDescriptor[];
+  providerNames: Set<string>;
+};
+
+type ToolRoute =
+  | { kind: 'tool'; path: '/tool'; body: string; backend: BackendHandle }
+  | { kind: 'provider'; path: string; body: string; backend: BackendHandle }
+  | { kind: 'workflow'; path: '/workflow'; body: string; backend: BackendHandle }
+  | { kind: 'abort'; path: '/abort'; body: string; backend: BackendHandle };
+
+const DIRECT_BUILTIN_TOOL_NAMES = new Set(['workflow', 'abort']);
+let toolCatalogCache: ToolCatalog | null = null;
+
 function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
   return isRecord(value) && value.error === 'backend_shutting_down';
+}
+
+function isBackendRecoveringResult(value: unknown): value is Extract<ToolDomainResult, { ok: false }> {
+  return (
+    isRecord(value) &&
+    value.ok === false &&
+    value.code === 'backend_recovering' &&
+    typeof value.message === 'string'
+  );
+}
+
+function isToolDescriptor(value: unknown): value is ToolDescriptor {
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    isRecord(value.inputSchema)
+  );
+}
+
+function isCataloguedNonProviderToolName(name: string): boolean {
+  return name.startsWith('discuss_') || name.startsWith('kb_') || DIRECT_BUILTIN_TOOL_NAMES.has(name);
+}
+
+function buildCallerContext(ctx: { projectRoot: string; pluginRoot: string }) {
+  return {
+    projectRoot: ctx.projectRoot,
+    pluginRoot: ctx.pluginRoot,
+    coralEnv: collectCoralEnv(),
+  };
+}
+
+function buildToolCatalog(pluginRoot: string, instanceId: string, payload: unknown): ToolCatalog {
+  const tools = Array.isArray(payload) ? payload.filter(isToolDescriptor) : [];
+  const providerNames = new Set(
+    tools
+      .map((tool) => tool.name)
+      .filter((name) => !isCataloguedNonProviderToolName(name)),
+  );
+  return { pluginRoot, instanceId, tools, providerNames };
+}
+
+async function loadToolCatalog(
+  pluginRoot: string,
+  options: {
+    backend?: BackendHandle;
+    forceRefresh?: boolean;
+  } = {},
+): Promise<{ catalog: ToolCatalog; backend: BackendHandle }> {
+  const backend = options.backend ?? await ensureBackend(pluginRoot);
+  if (
+    !options.forceRefresh &&
+    toolCatalogCache &&
+    toolCatalogCache.pluginRoot === pluginRoot &&
+    toolCatalogCache.instanceId === backend.instanceId
+  ) {
+    return { catalog: toolCatalogCache, backend };
+  }
+
+  const response = await withAbortTimeout(TOOL_TIMEOUT_MS, (signal) =>
+    fetch(`http://${backend.host}:${backend.port}/tools`, {
+      method: 'GET',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+      signal,
+    }),
+  );
+
+  if (!response.ok) {
+    throw new Error(describeHttpError(response.status, response.statusText));
+  }
+
+  const catalog = buildToolCatalog(pluginRoot, backend.instanceId, await parseJsonResponse(response));
+  toolCatalogCache = catalog;
+  return { catalog, backend };
+}
+
+export async function fetchBackendToolDescriptors(pluginRoot: string): Promise<ToolDescriptor[]> {
+  const { catalog } = await loadToolCatalog(pluginRoot);
+  return catalog.tools;
+}
+
+function buildToolRouteBody(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: { projectRoot: string; pluginRoot: string },
+): string {
+  return JSON.stringify({
+    name,
+    args,
+    context: buildCallerContext(ctx),
+  });
+}
+
+function buildDedicatedRouteBody(
+  args: Record<string, unknown>,
+  ctx: { projectRoot: string; pluginRoot: string },
+): string {
+  return JSON.stringify({
+    context: buildCallerContext(ctx),
+    args,
+  });
+}
+
+async function resolveToolRoute(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: { projectRoot: string; pluginRoot: string },
+  options: {
+    backend?: BackendHandle;
+    refreshOnMiss?: boolean;
+    forceCatalogRefresh?: boolean;
+  } = {},
+): Promise<ToolRoute> {
+  if (name === 'workflow') {
+    const backend = options.backend ?? await ensureBackend(ctx.pluginRoot);
+    return {
+      kind: 'workflow',
+      path: '/workflow',
+      body: buildDedicatedRouteBody(args, ctx),
+      backend,
+    };
+  }
+
+  if (name === 'abort') {
+    const backend = options.backend ?? await ensureBackend(ctx.pluginRoot);
+    return {
+      kind: 'abort',
+      path: '/abort',
+      body: buildDedicatedRouteBody(args, ctx),
+      backend,
+    };
+  }
+
+  if (name.startsWith('discuss_') || name.startsWith('kb_')) {
+    const backend = options.backend ?? await ensureBackend(ctx.pluginRoot);
+    return {
+      kind: 'tool',
+      path: '/tool',
+      body: buildToolRouteBody(name, args, ctx),
+      backend,
+    };
+  }
+
+  const { catalog, backend } = await loadToolCatalog(ctx.pluginRoot, {
+    backend: options.backend,
+    forceRefresh: options.forceCatalogRefresh,
+  });
+
+  if (catalog.providerNames.has(name)) {
+    return {
+      kind: 'provider',
+      path: `/provider/${encodeURIComponent(name)}`,
+      body: buildDedicatedRouteBody(args, ctx),
+      backend,
+    };
+  }
+
+  if (options.refreshOnMiss ?? true) {
+    return resolveToolRoute(name, args, ctx, {
+      refreshOnMiss: false,
+      forceCatalogRefresh: true,
+    });
+  }
+
+  return {
+    kind: 'tool',
+    path: '/tool',
+    body: buildToolRouteBody(name, args, ctx),
+    backend,
+  };
+}
+
+async function postToolRoute(route: ToolRoute): Promise<ToolDomainResult> {
+  return withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+    const response = await fetch(`http://${route.backend.host}:${route.backend.port}${route.path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': route.backend.token,
+      },
+      body: route.body,
+      signal,
+    });
+
+    const responseBody = await parseJsonResponse(response);
+    if (response.ok) {
+      return responseBody as ToolDomainResult;
+    }
+
+    if (response.status === 503 && isBackendRecoveringResult(responseBody)) {
+      return responseBody;
+    }
+
+    throw new Error(describeHttpError(response.status, response.statusText));
+  });
 }
 
 function throwBackendCommunicationError(error: unknown): never {
@@ -133,36 +345,28 @@ export async function proxyToolCall(
   args: Record<string, unknown>,
   ctx: { projectRoot: string; pluginRoot: string },
 ): Promise<ToolDomainResult> {
-  const { port, host, token } = await ensureBackend(ctx.pluginRoot);
-  const coralEnv = collectCoralEnv();
-  const body = JSON.stringify({
-    name,
-    args,
-    context: {
-      projectRoot: ctx.projectRoot,
-      pluginRoot: ctx.pluginRoot,
-      coralEnv,
-    },
-  });
-
   try {
-    return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://${host}:${port}/tool`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': token,
-        },
-        body,
-        signal,
+    const route = await resolveToolRoute(name, args, ctx);
+    const result = await postToolRoute(route);
+
+    if (
+      route.kind === 'provider' &&
+      !result.ok &&
+      (result.code === 'not_found' || result.code === 'unknown_provider')
+    ) {
+      const refreshedRoute = await resolveToolRoute(name, args, ctx, {
+        refreshOnMiss: false,
+        forceCatalogRefresh: true,
       });
-
-      if (!response.ok) {
-        throw new Error(describeHttpError(response.status, response.statusText));
+      if (refreshedRoute.kind !== 'provider') {
+        return await postToolRoute(refreshedRoute);
       }
+      if (refreshedRoute.backend.instanceId !== route.backend.instanceId || refreshedRoute.path !== route.path) {
+        return await postToolRoute(refreshedRoute);
+      }
+    }
 
-      return (await parseJsonResponse(response)) as ToolDomainResult;
-    });
+    return result;
   } catch (error) {
     throwBackendCommunicationError(error);
   }

@@ -3,9 +3,22 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/mcp-utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../execution/request-context.js';
+import { ZodError } from 'zod';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema, type WorkflowInput } from './schemas.js';
 import type { PipelineAST } from './types.js';
+
+export class WorkflowInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowInputError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function isWorkflowInputFailure(error: unknown): error is WorkflowInputError | ZodError {
+  return error instanceof WorkflowInputError || error instanceof ZodError;
+}
 
 interface WorkflowService {
   executeWorkflow(
@@ -93,10 +106,14 @@ export async function handleWorkflow(
   providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const ast = normalizeAst(parseExpression(input.expression), input.provider);
-
-  validateNamespaces(ast);
-  validateParallelDuplicates(ast);
+  let ast: PipelineAST;
+  try {
+    ast = normalizeAst(parseExpression(input.expression), input.provider);
+    validateNamespaces(ast);
+    validateParallelDuplicates(ast);
+  } catch (error: unknown) {
+    throw new WorkflowInputError(error instanceof Error ? error.message : String(error));
+  }
 
   const unknownProviders = findUnknownProviders(ast, input.provider, providerRegistry);
   if (unknownProviders.length > 0) {

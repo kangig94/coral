@@ -8,8 +8,10 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { ZodError } from 'zod';
 import { collectCoralEnv, isRecord, nowIsoString } from '../shared/mcp-utils.js';
 import { resolveProjectSource } from '../infra/paths.js';
+import { abortInputSchema, coralAgentOpSchema, internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedListSchema, sharedResumeSchema } from '../shared/schemas.js';
 import type { CallerContext, ToolRequest } from './request-context.js';
 import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
 import { belongsToNamespace } from '../shared/types.js';
@@ -17,8 +19,8 @@ import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
 import type { DiscussView } from '../discuss/views.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
-import { domainError, domainToHttp } from './tool-response.js';
-import { isWorkAdmittingToolRequest } from './tool-router.js';
+import { domainError, domainSuccess, domainToHttp, launchDecisionToDomain, type ToolDomainResult } from './tool-response.js';
+import { handleWorkflow as launchWorkflow, isWorkflowInputFailure } from '../workflow/handler.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -36,6 +38,11 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
 }
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+const BACKEND_RECOVERING_RESULT = domainError('backend_recovering', 'recovering — retry after 500ms');
+const providerExecRouteSchema = sharedExecSchema.extend(internalProviderFieldsShape);
+const providerResumeRouteSchema = sharedResumeSchema.extend(internalProviderFieldsShape);
+const providerForkRouteSchema = sharedForkSchema.extend(internalProviderFieldsShape);
+const providerCoralRouteSchema = coralAgentOpSchema.extend(internalProviderFieldsShape);
 
 export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -84,9 +91,13 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-export function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolRequest | null {
+type ParsedContextualArgsRequest = {
+  context: CallerContext;
+  args: Record<string, unknown>;
+};
+
+function parseContextualArgsRequest(body: unknown, resolvedPluginRoot: string): ParsedContextualArgsRequest | null {
   if (!isRecord(body)) return null;
-  if (typeof body.name !== 'string') return null;
   if (!isRecord(body.args) || !isRecord(body.context)) return null;
   if (typeof body.context.projectRoot !== 'string' || body.context.projectRoot.length === 0) return null;
   if (
@@ -110,10 +121,17 @@ export function parseToolRequest(body: unknown, resolvedPluginRoot: string): Too
     pluginRoot: resolvedPluginRoot,
     coralEnv,
   };
+  return { context, args: body.args };
+}
+
+export function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolRequest | null {
+  if (!isRecord(body) || typeof body.name !== 'string') return null;
+  const parsed = parseContextualArgsRequest(body, resolvedPluginRoot);
+  if (!parsed) return null;
   return {
     name: body.name,
-    args: body.args,
-    context,
+    args: parsed.args,
+    context: parsed.context,
   };
 }
 
@@ -243,6 +261,34 @@ export function parseDiscussView(raw: string | null): DiscussView | null {
     return 'audit';
   }
   return null;
+}
+
+function sendDomainResult(res: ServerResponse, result: ToolDomainResult): void {
+  const response = domainToHttp(result);
+  sendJson(res, response.statusCode, response.body);
+}
+
+function isDiscussLaunchFenceRequest(request: ToolRequest): boolean {
+  return request.name === 'discuss_start' || request.name === 'discuss_participate';
+}
+
+function isProviderLaunchOp(op: string): boolean {
+  return op === 'exec' || op === 'resume' || op === 'fork' || op === 'bypass_exec' || op.startsWith('coral:');
+}
+
+function invalidRequestResult(message = 'invalid request'): ToolDomainResult {
+  return domainError('invalid_request', message);
+}
+
+function withOwnerContext(ctx: CallerContext, owner: string | undefined): CallerContext {
+  if (!owner) return ctx;
+  return {
+    ...ctx,
+    coralEnv: {
+      ...ctx.coralEnv,
+      CORAL_OWNER: owner,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +448,231 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   });
 }
 
+async function handleProviderRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  providerName: string,
+): Promise<void> {
+  let request: ParsedContextualArgsRequest | null;
+  try {
+    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_json' });
+    return;
+  }
+
+  if (!request) {
+    sendDomainResult(res, invalidRequestResult());
+    return;
+  }
+
+  if (!deps.providerRegistry?.get(providerName)) {
+    sendDomainResult(res, domainError('unknown_provider', `Unknown provider: ${providerName}`));
+    return;
+  }
+
+  const op = typeof request.args.op === 'string' ? request.args.op : null;
+  if (deps.runtimeState.getLaunchFenceActive() && op !== null && isProviderLaunchOp(op)) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
+    return;
+  }
+
+  const executionService = deps.getExecutionService(request.context);
+
+  try {
+    if (op === 'list') {
+      sharedListSchema.parse(request.args);
+      sendDomainResult(res, domainSuccess(executionService.list(providerName)));
+      return;
+    }
+
+    if (op === 'exec' || op === 'bypass_exec') {
+      const parsed = providerExecRouteSchema.parse(request.args);
+      const systemPrompt = parsed.system_prompt;
+
+      if (parsed.session) {
+        const decision = await executionService.resume(
+          providerName,
+          {
+            sessionId: parsed.session,
+            prompt: parsed.prompt,
+            model: parsed.model,
+            cwd: parsed.work_dir,
+            bypassPermissions: parsed.bypass_permissions ?? true,
+            systemPrompt,
+          },
+          request.context,
+        );
+        sendDomainResult(res, launchDecisionToDomain(decision));
+        return;
+      }
+
+      const decision = await executionService.start(
+        providerName,
+        {
+          prompt: parsed.prompt,
+          model: parsed.model,
+          cwd: parsed.work_dir,
+          bypassPermissions: parsed.op === 'bypass_exec' ? parsed.bypass_permissions ?? true : parsed.bypass_permissions ?? false,
+          systemPrompt,
+        },
+        request.context,
+      );
+      sendDomainResult(res, launchDecisionToDomain(decision));
+      return;
+    }
+
+    if (op === 'resume') {
+      const parsed = providerResumeRouteSchema.parse(request.args);
+      const decision = await executionService.resume(
+        providerName,
+        {
+          sessionId: parsed.session,
+          prompt: parsed.prompt,
+          model: parsed.model,
+          cwd: parsed.work_dir,
+          bypassPermissions: parsed.bypass_permissions ?? true,
+          systemPrompt: parsed.system_prompt,
+        },
+        request.context,
+      );
+      sendDomainResult(res, launchDecisionToDomain(decision));
+      return;
+    }
+
+    if (op === 'fork') {
+      const parsed = providerForkRouteSchema.parse(request.args);
+      const decision = await executionService.fork(
+        providerName,
+        {
+          sessionId: parsed.session,
+          prompt: parsed.prompt,
+          model: parsed.model,
+          cwd: parsed.work_dir,
+          bypassPermissions: parsed.bypass_permissions ?? true,
+          systemPrompt: parsed.system_prompt,
+        },
+        request.context,
+      );
+      sendDomainResult(res, launchDecisionToDomain(decision));
+      return;
+    }
+
+    if (op !== null && op.startsWith('coral:')) {
+      const parsed = providerCoralRouteSchema.parse(request.args);
+      const decision = await executionService.coralDispatch(
+        providerName,
+        parsed.op.slice('coral:'.length),
+        {
+          prompt: parsed.prompt,
+          sessionId: parsed.session,
+          cwd: parsed.work_dir,
+          bypassPermissions: parsed.bypass_permissions ?? true,
+          systemPrompt: parsed.system_prompt,
+        },
+        withOwnerContext(request.context, parsed.owner),
+      );
+      sendDomainResult(res, launchDecisionToDomain(decision));
+      return;
+    }
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      sendDomainResult(res, invalidRequestResult(error.message));
+      return;
+    }
+    throw error;
+  }
+
+  sendDomainResult(res, invalidRequestResult('Invalid provider op'));
+}
+
+async function handleWorkflowRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedContextualArgsRequest | null;
+  try {
+    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_json' });
+    return;
+  }
+
+  if (!request) {
+    sendDomainResult(res, invalidRequestResult());
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
+    return;
+  }
+
+  try {
+    const decision = await launchWorkflow(
+      request.args,
+      deps.getExecutionService(request.context),
+      request.context,
+      deps.providerRegistry,
+    );
+    sendDomainResult(res, launchDecisionToDomain(decision));
+    return;
+  } catch (error: unknown) {
+    if (isWorkflowInputFailure(error)) {
+      sendDomainResult(res, invalidRequestResult(error.message));
+      return;
+    }
+    throw error;
+  }
+}
+
+async function handleAbortRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedContextualArgsRequest | null;
+  try {
+    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_json' });
+    return;
+  }
+
+  if (!request) {
+    sendDomainResult(res, invalidRequestResult());
+    return;
+  }
+
+  let args: { jobs: string[] };
+  try {
+    args = abortInputSchema.parse(request.args);
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      sendDomainResult(res, invalidRequestResult(error.message));
+      return;
+    }
+    throw error;
+  }
+
+  const scopeCheck = deps.scopeCheckJobs(args.jobs, request.context.projectRoot);
+  if (scopeCheck.mismatch.length > 0) {
+    sendDomainResult(
+      res,
+      domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+    );
+    return;
+  }
+  if (scopeCheck.missing.length === args.jobs.length) {
+    sendDomainResult(res, domainError('jobs_not_found', 'Requested jobs were not found', { jobs: args.jobs }));
+    return;
+  }
+
+  sendDomainResult(res, domainSuccess(deps.abortJobs(args.jobs)));
+}
+
 // ---------------------------------------------------------------------------
 // Main request dispatcher
 // ---------------------------------------------------------------------------
@@ -494,6 +765,27 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       return;
     }
 
+    if (req.method === 'POST' && req.url) {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const pathname = parsedUrl.pathname;
+      const providerMatch = pathname.match(/^\/provider\/([^/]+)$/);
+
+      if (providerMatch) {
+        await handleProviderRequest(req, res, deps, providerMatch[1]);
+        return;
+      }
+
+      if (pathname === '/workflow') {
+        await handleWorkflowRequest(req, res, deps);
+        return;
+      }
+
+      if (pathname === '/abort') {
+        await handleAbortRequest(req, res, deps);
+        return;
+      }
+    }
+
     if (req.method === 'POST' && req.url === '/tool') {
       let request: ToolRequest | null;
       try {
@@ -508,26 +800,19 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       }
 
       // Launch fence: block new launches while recovery adoption is in progress
-      if (runtimeState.getLaunchFenceActive()) {
-        if (isWorkAdmittingToolRequest(request)) {
-          const response = domainToHttp(domainError('backend_recovering', 'recovering — retry after 500ms'));
-          sendJson(res, response.statusCode, response.body);
-          return;
-        }
+      if (runtimeState.getLaunchFenceActive() && isDiscussLaunchFenceRequest(request)) {
+        sendDomainResult(res, BACKEND_RECOVERING_RESULT);
+        return;
       }
 
       const result = await deps.routeToolCall(
         request,
         {
-          getExecutionService: deps.getExecutionService,
           getDiscussContext: deps.getDiscussContext,
-          abortJobs: deps.abortJobs,
-          scopeCheckJobs: deps.scopeCheckJobs,
         },
         runtimeState.getKbSubsystem(),
       );
-      const response = domainToHttp(result);
-      sendJson(res, response.statusCode, response.body);
+      sendDomainResult(res, result);
       return;
     }
 
