@@ -80,63 +80,16 @@ describe('tool router domain contract', () => {
     }
   });
 
-  it('normalizes rejected provider launch decisions into domain errors', async () => {
+  it('returns not_found for removed provider tools', async () => {
     projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
-    const rejected = {
-      status: 'rejected',
-      phase: 'preflight',
-      code: 'busy',
-      message: 'Session is already running a job',
-    } satisfies LaunchDecision;
-    const service = createExecutionService({
-      start: vi.fn(async () => rejected),
-    });
+    const service = createExecutionService();
 
     const result = await routeToolCall(
       createRequest(projectRoot, 'codex', { op: 'exec', prompt: 'hello' }),
       createHelpers(service),
     );
 
-    expect(result).toEqual({
-      ok: false,
-      code: 'busy',
-      message: 'Session is already running a job',
-    });
-  });
-
-  it.each([
-    [{ op: 'coral:architect', prompt: 'hello', owner: 123 }, /owner/i],
-    [{ op: 'coral:architect', prompt: 'hello', owner: 'bad owner' }, /Owner must be token-safe/],
-    [{ op: 'coral:architect', prompt: '' }, /Prompt is required/],
-    [{ op: 'coral:Bad', prompt: 'hello' }, /Op must be coral/],
-  ])('normalizes malformed coral requests for %j', async (args, message) => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
-    const service = createExecutionService();
-
-    const result = await routeToolCall(createRequest(projectRoot, 'codex', args), createHelpers(service));
-
-    const error = expectError(result, 'invalid_request');
-    expect(error.message).toMatch(message);
-    expect(service.coralDispatch).not.toHaveBeenCalled();
-  });
-
-  it('normalizes unresolved coral targets into invalid_request domain errors', async () => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'coral-tool-router-'));
-    const service = createExecutionService({
-      coralDispatch: vi.fn(async () => {
-        throw new Error(
-          'Coral content not found: missing (expected agents/missing.md or skills/missing/SKILL.md)',
-        );
-      }),
-    });
-
-    const result = await routeToolCall(
-      createRequest(projectRoot, 'codex', { op: 'coral:missing', prompt: 'hello' }),
-      createHelpers(service),
-    );
-
-    const error = expectError(result, 'invalid_request');
-    expect(error.message).toContain('Coral content not found: missing');
+    expectError(result, 'not_found');
   });
 
   it.each([
