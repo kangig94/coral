@@ -167,7 +167,8 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
       **Changes Applied**: [what was edited, with rationale for each change]
 
-      **Continue Decision** (`--deep` only): **{Verdict}** — {Rationale}
+      **Continue Decision** (`--deep`): **{Verdict}** — {Rationale} (from resolver)
+      **Continue Decision** (non-deep): **{Continue|Exit}** — Round {N}, highest severity = {X}. Rule: {cite exit condition rule that applies}.
 
     **4d. Exit Condition**
 
@@ -180,7 +181,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then Step 3. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
 
-    **Otherwise**: Scan the Round Summary **Severity column**. CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b).
+    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then Step 3. LOW/none → Step 3. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
 
     **Step 3 — Completion gate** (`--deep` only, otherwise exit phase):
 
