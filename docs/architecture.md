@@ -35,39 +35,45 @@ bridge/coral-backend.cjs
 
 ## Backend HTTP Surface
 
-| Route | Purpose |
-| --- | --- |
-| `GET /health` | Backend health, namespace, bundle hash, subsystem status |
-| `POST /provider/:name` | Provider operations: `exec`, `resume`, `fork`, `list`, `coral:<agent>` |
-| `POST /workflow` | Workflow launch |
-| `POST /abort` | Abort one or more jobs |
-| `POST /wait/stream` | SSE job monitoring used by `coral-cli wait` and follow mode |
-| `POST /discuss/:action` | Discuss actions: `seed`, `start`, `watch`, `participate`, `abort` |
-| `POST /kb/:action` | KB actions: search, read, mutate, memo, source, reindex, principles |
-| `POST /admin/shutdown` | Graceful backend drain and exit |
-| `GET /events/stream` | Backend-local event stream for live observers |
-| `GET /api/jobs` / `GET /api/jobs/:jobId` | Job summaries and detailed progress history |
-| `GET /api/sessions` | Persisted provider sessions for the current namespace |
-| `GET /api/discuss` / `GET /api/discuss/detail` | Discuss summaries and detail views |
+Resource-oriented API. Sessions and jobs are first-class resources. Each endpoint has its own strict Zod schema. Request bodies are direct JSON — no `{ context, args }` envelope. `pluginRoot` is server-authoritative.
+
+| Route | Status | Purpose |
+| --- | --- | --- |
+| `POST /sessions` | 201 | Create session (with optional `agent` for coral dispatch) |
+| `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
+| `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
+| `GET /sessions` | 200 | List sessions (flat, namespace-scoped by stored `backendNamespace`) |
+| `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
+| `POST /jobs/abort` | 200 | Abort one or more jobs |
+| `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
+| `POST /discuss/:action` | 2xx | Discuss actions: `seed`, `start`, `watch`, `participate`, `abort` |
+| `POST /kb/:action` | 2xx | KB actions: search, read, mutate, memo, source, reindex, principles |
+| `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
+| `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
+| `GET /events/stream` | 200 | Backend-local event stream for live observers |
+| `GET /api/jobs` / `GET /api/jobs/:id` | 200 | Job summaries and detailed progress history |
+| `GET /api/discuss` / `GET /api/discuss/detail` | 200 | Discuss summaries and detail views |
+
+Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / legacy session), 503 (recovering / busy).
 
 ## Primary Execution Flows
 
-### Provider execution
+### Session lifecycle
 
 1. `coral-cli codex -i ...` or `coral-cli codex <agent> -i ...`
-2. `src/client/http-client.ts` posts to `POST /provider/:name`
-3. `src/execution/http-handler.ts` validates the payload and calls `ExecutionService`
-4. `src/execution/service.ts` launches or resumes the provider through the registry
+2. `src/client/http-client.ts` calls `createSession()` → `POST /sessions`
+3. `src/execution/http-handler.ts` parses the direct body, builds `CallerContext` server-side
+4. `src/execution/service.ts` resolves agent (if specified), persists session profile, launches provider
 5. Provider adapters in `src/providers/*` spawn the real CLI/runtime and emit progress
-6. `ProgressStore` and `SessionManager` persist job/session state
+6. `ProgressStore` and `SessionManager` persist job/session state with authoritative provenance
 
-`coral:<agent>` dispatch is resolved by `src/execution/resolver.ts` and converted into a provider instruction by `src/execution/instruction.ts`.
+Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()` which resolves provider from the stored session, merges omitted fields from the stored profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
 
 ### Wait / follow
 
-1. Detached launches return `{ job, session, ... }`
+1. Detached launches return `{ session, job, launchState }` (201 or 202)
 2. `coral-cli wait --jobs "<ids>" --output-format json [--embed]` calls `streamWait()`
-3. `POST /wait/stream` yields SSE events from `ExecutionService.waitStream()`
+3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
 4. Terminal events always include `result.path`; `result.content` is optional inline enrichment
 
 ### Workflow

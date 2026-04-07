@@ -28,14 +28,14 @@ Key modules and their roles in the current Coral runtime.
 | --- | --- |
 | `server.ts` | Backend server composition, subsystem wiring, lifecycle ownership |
 | `http-handler.ts` | HTTP route parsing and request handling |
-| `service.ts` | `ExecutionService`: provider launch/resume/fork, `coralDispatch`, workflow delegation, wait handling |
+| `service.ts` | `ExecutionService`: session create (with optional agent), `resumeBySessionId`/`forkBySessionId` (provider-less continuation), workflow delegation, wait handling |
 | `engine.ts` | `LaunchCoordinator`: child-process tracking, queues, timeouts, process cleanup |
 | `lifecycle.ts` | Startup, recovery, shutdown, drain handling |
 | `host-manager.ts` | Provider host runtime management |
 | `event-bus.ts` | Typed backend event bus |
 | `progress-store.ts` | Job status/progress/result persistence |
-| `session-manager.ts` | Persisted provider sessions |
-| `session-index.ts` | Namespace-aware session indexing |
+| `session-manager.ts` | Persisted provider sessions with agent profile storage and cross-shard `getById()` |
+| `session-index.ts` | Namespace-aware session indexing (authoritative on stored `backendNamespace`) |
 | `resolver.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
 | `instruction.ts` | Converts resolved content into provider instructions |
 | `tool-response.ts` | Shared domain result contract used by HTTP routes |
