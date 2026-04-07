@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { BackendStatusFull, ShutdownResult } from '../../client/backend-helpers.js';
+import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/types.js';
 import type { AbortResult } from '../../execution/abort-registry.js';
-import type { ListResult } from '../../execution/service.js';
-import type { LaunchDecision, WaitStreamEvent } from '../../shared/types.js';
+import type { WaitStreamEvent } from '../../shared/types.js';
 import {
+  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatDiscussAbort,
@@ -36,23 +37,16 @@ import {
 } from '../format.js';
 
 const runningDecision = {
-  status: 'running',
+  launchState: 'running',
   job: 'job-1',
   session: 'session-1',
-} satisfies LaunchDecision;
+} satisfies AcceptedLaunchResponse;
 
 const queuedDecision = {
-  status: 'queued',
+  launchState: 'queued',
   job: 'job-2',
   session: 'session-2',
-} satisfies LaunchDecision;
-
-const rejectedDecision = {
-  status: 'rejected',
-  phase: 'preflight',
-  code: 'bad_request',
-  message: 'Missing prompt',
-} satisfies LaunchDecision;
+} satisfies AcceptedLaunchResponse;
 
 const abortOnlyResult = {
   aborted: ['job-1', 'job-2'],
@@ -78,12 +72,9 @@ const listResult = {
       state: 'ready',
       model: 'gpt-5',
       cwd: '/tmp/project',
-      createdAt: '2026-03-14T00:00:00.000Z',
-      lastUsedAt: '2026-03-14T00:00:00.000Z',
-      version: 1,
     },
   ],
-} satisfies ListResult;
+} satisfies SessionListResult;
 
 const aggregatedListResult = {
   sessions: [
@@ -94,9 +85,6 @@ const aggregatedListResult = {
       state: 'ready',
       model: 'gpt-5',
       cwd: '/tmp/codex',
-      createdAt: '2026-03-14T00:00:00.000Z',
-      lastUsedAt: '2026-03-14T00:00:00.000Z',
-      version: 1,
     },
     {
       sessionId: 'session-2',
@@ -105,12 +93,9 @@ const aggregatedListResult = {
       state: 'non_resumable',
       model: 'sonnet',
       cwd: '/tmp/claude',
-      createdAt: '2026-03-15T00:00:00.000Z',
-      lastUsedAt: '2026-03-15T00:00:00.000Z',
-      version: 1,
     },
   ],
-} satisfies ListResult;
+} satisfies SessionListResult;
 
 const personaSeedResult = {
   seed_used: 7,
@@ -212,10 +197,6 @@ describe('cli format', () => {
 
     it('formats a queued decision', () => {
       expect(formatLaunchDecision(queuedDecision)).toBe('Job job-2 queued (session session-2)');
-    });
-
-    it('formats a rejected decision', () => {
-      expect(formatLaunchDecision(rejectedDecision)).toBe('Rejected [bad_request]: Missing prompt');
     });
   });
 

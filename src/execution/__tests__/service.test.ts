@@ -18,6 +18,7 @@ import type {
 } from '../../shared/types.js';
 
 import type { Provider } from '../../providers/types.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
@@ -409,6 +410,19 @@ function createClaimedJob(
     progressStore,
     sessionManager,
   };
+}
+
+function realizePluginRoot(ctx: CallerContext): string {
+  mkdirSync(ctx.pluginRoot, { recursive: true });
+  return pluginRootNamespace(ctx.pluginRoot);
+}
+
+function createScopedContext(name: string): CallerContext {
+  const projectRoot = join(mockState.tmpHome, name);
+  mkdirSync(projectRoot, { recursive: true });
+  const pluginRoot = join(projectRoot, 'plugin');
+  mkdirSync(pluginRoot, { recursive: true });
+  return { projectRoot, pluginRoot, coralEnv: {} };
 }
 
 describe('ExecutionService', () => {
@@ -979,6 +993,52 @@ describe('ExecutionService', () => {
     });
   });
 
+  it('start resolves agent metadata before allocation and persists the agent profile', async () => {
+    realizePluginRoot(ctx);
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveCoralContent.mockReturnValue({
+      type: 'agent',
+      content: '---\nmodel: gpt-5.4\neffort: high\n---\nArchitect instruction',
+      path: '/tmp/architect.md',
+    });
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    expect(mockState.resolveCoralContent).toHaveBeenCalledWith('architect');
+    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+
+    expect(request).toMatchObject({
+      action: 'exec',
+      name: 'architect',
+      model: 'gpt-5.4',
+      instruction: {
+        content: 'Architect instruction',
+        channel: 'system',
+      },
+    });
+    expect(request.effort).toBeUndefined();
+    expect(session).toMatchObject({
+      name: 'architect',
+      model: 'gpt-5.4',
+      agentName: 'architect',
+      bypassPermissions: false,
+      instruction: {
+        content: 'Architect instruction',
+        channel: 'system',
+      },
+    });
+  });
+
   // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
   describe('queue admission', { retry: 2 }, () => {
     it('start returns queued when provider launch slots are full', async () => {
@@ -1021,6 +1081,142 @@ describe('ExecutionService', () => {
       if (decision.status === 'rejected') {
         expect(decision.message).toContain('Session not found: missing');
       }
+    });
+
+    it('resumeBySessionId continues the stored provider after a global session lookup', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+      });
+    });
+
+    it('resumeBySessionId rejects missing sessions', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: 'missing', prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_not_found',
+      });
+    });
+
+    it('resumeBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'legacy_session_unsupported',
+      });
+    });
+
+    it('resumeBySessionId rejects sessions outside the current scope', async () => {
+      const otherCtx = createScopedContext('other-project');
+      const foreignMgr = new SessionManager(otherCtx.projectRoot);
+      const foreignEntry = foreignMgr.allocate({
+        provider: 'codex',
+        name: 'foreign',
+        model: 'gpt-5',
+        cwd: otherCtx.projectRoot,
+        projectRoot: otherCtx.projectRoot,
+        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+      });
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: foreignEntry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'scope_mismatch',
+      });
+    });
+
+    it('resume inherits stored continuation profile fields when the input omits them', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBe('high');
     });
 
     it('resume rejects when the session already has an active job', async () => {
@@ -1131,6 +1327,127 @@ describe('ExecutionService', () => {
         expect(decision.session).not.toBe(source.sessionId);
         expect(mgr.get('codex', decision.session)?.name).toMatch(/^fork-/);
       }
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(source.sessionId, 'thread-1');
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const child = mgr.get('codex', decision.session);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+
+      expect(child).toMatchObject({
+        model: 'gpt-5.1',
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      expect(request).toMatchObject({
+        action: 'fork',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBe('high');
+    });
+
+    it('forkBySessionId rejects missing sessions', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: 'missing', prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_not_found',
+      });
+    });
+
+    it('forkBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot);
+      const source = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'legacy_session_unsupported',
+      });
+    });
+
+    it('forkBySessionId rejects sessions outside the current scope', async () => {
+      const otherCtx = createScopedContext('fork-foreign-project');
+      const foreignMgr = new SessionManager(otherCtx.projectRoot);
+      const foreignEntry = foreignMgr.allocate({
+        provider: 'codex',
+        name: 'foreign',
+        model: 'gpt-5',
+        cwd: otherCtx.projectRoot,
+        projectRoot: otherCtx.projectRoot,
+        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+      });
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: foreignEntry.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'scope_mismatch',
+      });
     });
 
     it('abort aborts the correct jobs', async () => {

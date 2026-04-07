@@ -1,11 +1,10 @@
 import { MAX_INLINE } from '../shared/schemas.js';
 import { isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
-import type { BackendToolHttpError } from '../client/http-client.js';
+import type { AcceptedLaunchResponse, BackendToolHttpError } from '../client/http-client.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import type { AbortResult } from '../execution/abort-registry.js';
-import type { ListResult } from '../execution/service.js';
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 
 export type DiscussStartResult = {
   session: string;
@@ -30,6 +29,17 @@ type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
 type WaitTimeoutEvent = Extract<WaitStreamEvent, { type: 'timeout' }>;
+
+export type SessionListResult = {
+  sessions: Array<{
+    provider?: string;
+    sessionId: string;
+    state?: string;
+    name?: string;
+    model?: string;
+    cwd?: string;
+  }>;
+};
 
 export type WaitRenderContext = {
   isTTY: boolean;
@@ -156,17 +166,8 @@ function pickTerminalPreviewSource(result: TerminalResult): string {
   return '(empty result)';
 }
 
-export function formatLaunchDecision(result: LaunchDecision): string {
-  switch (result.status) {
-    case 'running':
-      return `Job ${result.job} running (session ${result.session})`;
-    case 'queued':
-      return `Job ${result.job} queued (session ${result.session})`;
-    case 'rejected':
-      return `Rejected [${result.code}]: ${result.message}`;
-    default:
-      return assertNever(result);
-  }
+export function formatLaunchDecision(result: AcceptedLaunchResponse): string {
+  return `Job ${result.job} ${result.launchState} (session ${result.session})`;
 }
 
 export function formatAbortResult(result: AbortResult): string {
@@ -176,7 +177,7 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-export function formatProviderList(result: ListResult, options: { includeProvider?: boolean } = {}): string {
+export function formatProviderList(result: SessionListResult, options: { includeProvider?: boolean } = {}): string {
   if (result.sessions.length === 0) {
     return 'No sessions';
   }
@@ -187,12 +188,12 @@ export function formatProviderList(result: ListResult, options: { includeProvide
       ? [
           session.provider || '-',
           session.sessionId,
-          session.state,
+          session.state || '-',
           session.name || '-',
           session.model || '-',
           session.cwd || '-',
         ]
-      : [session.sessionId, session.state, session.name || '-', session.model || '-', session.cwd || '-'],
+      : [session.sessionId, session.state || '-', session.name || '-', session.model || '-', session.cwd || '-'],
   );
 
   return formatTable(

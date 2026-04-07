@@ -1,8 +1,9 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
+import type { AcceptedLaunchResponse } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
   formatError,
   formatLaunchDecision,
@@ -20,7 +21,7 @@ const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
-type FollowLaunchDecision = Extract<LaunchDecision, { status: 'running' | 'queued' }>;
+type FollowLaunchDecision = AcceptedLaunchResponse;
 
 type LaunchAndFollowOptions = {
   launchResult: FollowLaunchDecision;
@@ -37,7 +38,7 @@ function toLaunchEvent(decision: FollowLaunchDecision): Extract<CliStreamEvent, 
     type: 'launch',
     jobId: decision.job,
     sessionId: decision.session,
-    status: decision.status,
+    status: decision.launchState,
   };
 }
 

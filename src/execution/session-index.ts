@@ -2,7 +2,6 @@ import { readdirSync, type Dirent } from 'node:fs';
 import { basename, join } from 'node:path';
 import { sessionBase } from '../infra/paths.js';
 import { readSessionEntryLenient, type LenientSessionEntry } from '../shared/session-entry.js';
-import { belongsToNamespace } from '../shared/types.js';
 import type { ProgressStore } from './progress-store.js';
 import { SessionManager } from './session-manager.js';
 
@@ -55,16 +54,12 @@ export class SessionIndex {
     this.clearStale(shardHash, sessionId);
   }
 
-  listForNamespace(namespace: string, progressStore: ProgressStore): SessionIndexRow[] {
+  listForNamespace(namespace: string, _progressStore: ProgressStore): SessionIndexRow[] {
     this.refreshIndex();
 
     const results: SessionIndexRow[] = [];
     for (const [shardHash, sessions] of this.index) {
-      const filtered = [...sessions.values()].filter((session) => {
-        if (!session.activeJobId) return true;
-        const status = progressStore.readStatus(session.activeJobId);
-        return status !== null && belongsToNamespace(status, namespace);
-      });
+      const filtered = [...sessions.values()].filter((session) => session.backendNamespace === namespace);
       if (filtered.length > 0) {
         results.push({ shardHash, sessions: filtered });
       }

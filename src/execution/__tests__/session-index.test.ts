@@ -41,7 +41,14 @@ describe('execution SessionIndex', () => {
 
   it('hydrates shards leniently and skips corrupt entries', () => {
     const projectRoot = createProjectRoot('hydrate-project');
-    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    const session = new SessionManager(projectRoot).allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-hydrate',
+    });
     const [shardDir] = SessionManager.listShards();
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
@@ -56,6 +63,7 @@ describe('execution SessionIndex', () => {
             sessionId: session.sessionId,
             provider: 'codex',
             projectRoot,
+            backendNamespace: 'ns-hydrate',
             provenanceState: 'authoritative',
             version: 1,
           }),
@@ -67,7 +75,14 @@ describe('execution SessionIndex', () => {
   it('lazily rereads invalidated sessions on listing', () => {
     const projectRoot = createProjectRoot('invalidate-project');
     const manager = new SessionManager(projectRoot);
-    const session = manager.allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    const session = manager.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-invalidate',
+    });
     const [shardDir] = SessionManager.listShards();
 
     const index = new SessionIndex();
@@ -92,7 +107,14 @@ describe('execution SessionIndex', () => {
 
   it('deletes rows when reread finds a corrupt file', () => {
     const projectRoot = createProjectRoot('delete-project');
-    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    const session = new SessionManager(projectRoot).allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-delete',
+    });
     const [shardDir] = SessionManager.listShards();
 
     const index = new SessionIndex();
@@ -104,17 +126,61 @@ describe('execution SessionIndex', () => {
     expect(index.listAll()).toEqual([]);
   });
 
-  it('filters namespace-visible sessions using activeJobId and progress status', () => {
+  it('filters namespace-visible sessions by stored backendNamespace', () => {
     const projectRoot = createProjectRoot('namespace-project');
     const manager = new SessionManager(projectRoot);
-    const visible = manager.allocate('codex', 'visible', 'gpt-5', projectRoot, projectRoot);
-    const foreign = manager.allocate('codex', 'foreign', 'gpt-5', projectRoot, projectRoot);
-    const orphaned = manager.allocate('codex', 'orphaned', 'gpt-5', projectRoot, projectRoot);
-    const idle = manager.allocate('codex', 'idle', 'gpt-5', projectRoot, projectRoot);
+    const visible = manager.allocate({
+      provider: 'codex',
+      name: 'visible',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-visible',
+    });
+    const foreign = manager.allocate({
+      provider: 'codex',
+      name: 'foreign',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-foreign',
+    });
+    const legacy = manager.allocate({
+      provider: 'codex',
+      name: 'legacy-seed',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-temp',
+    });
+    const authoritativeIdle = manager.allocate({
+      provider: 'codex',
+      name: 'idle',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: 'ns-visible',
+    });
 
     manager.claimForJobSync(visible.sessionId, 'job-visible');
     manager.claimForJobSync(foreign.sessionId, 'job-foreign');
-    manager.claimForJobSync(orphaned.sessionId, 'job-orphaned');
+    manager.claimForJobSync(legacy.sessionId, 'job-legacy');
+
+    const [shardDir] = SessionManager.listShards();
+    writeFileSync(
+      join(shardDir, `${legacy.sessionId}.json`),
+      JSON.stringify(
+        {
+          ...legacy,
+          activeJobId: 'job-legacy',
+          backendNamespace: undefined,
+          version: legacy.version,
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
 
     const progressStore = new ProgressStore();
     progressStore.initJob({
@@ -129,28 +195,60 @@ describe('execution SessionIndex', () => {
       sessionId: foreign.sessionId,
       provider: 'codex',
       projectRoot,
-      backendNamespace: 'ns-foreign',
+      backendNamespace: 'ns-visible',
+    });
+    progressStore.initJob({
+      jobId: 'job-legacy',
+      sessionId: legacy.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-visible',
     });
 
     const index = new SessionIndex();
     index.hydrate(SessionManager.listShards());
 
+    expect(
+      index
+        .listAll()
+        .flatMap((row) => row.sessions)
+        .find((session) => session.sessionId === legacy.sessionId),
+    ).toMatchObject({
+      sessionId: legacy.sessionId,
+      provenanceState: 'legacy_unresolved',
+    });
+
     const visibleSessions = index.listForNamespace('ns-visible', progressStore);
     expect(visibleSessions).toHaveLength(1);
     expect(visibleSessions[0]?.sessions.map((session) => session.sessionId).sort()).toEqual(
-      [idle.sessionId, visible.sessionId].sort(),
+      [authoritativeIdle.sessionId, visible.sessionId].sort(),
     );
+    expect(visibleSessions[0]?.sessions.every((session) => session.backendNamespace === 'ns-visible')).toBe(true);
   });
 
   it('hydrates shards created after startup on demand', () => {
     const projectRootA = createProjectRoot('shard-a');
-    const sessionA = new SessionManager(projectRootA).allocate('codex', 'alpha', 'gpt-5', projectRootA, projectRootA);
+    const sessionA = new SessionManager(projectRootA).allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: projectRootA,
+      projectRoot: projectRootA,
+      backendNamespace: 'ns-a',
+    });
 
     const index = new SessionIndex();
     index.hydrate(SessionManager.listShards());
 
     const projectRootB = createProjectRoot('shard-b');
-    const sessionB = new SessionManager(projectRootB).allocate('codex', 'beta', 'gpt-5', projectRootB, projectRootB);
+    const sessionB = new SessionManager(projectRootB).allocate({
+      provider: 'codex',
+      name: 'beta',
+      model: 'gpt-5',
+      cwd: projectRootB,
+      projectRoot: projectRootB,
+      backendNamespace: 'ns-b',
+    });
 
     // Simulate event-driven shard discovery (refreshIndex no longer scans unconditionally)
     // Find the new shard by diffing listShards against known shards

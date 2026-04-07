@@ -11,7 +11,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
 import { collectCoralEnv, isRecord, nowIsoString } from '../shared/utils.js';
 import { resolveProjectSource } from '../infra/paths.js';
-import { abortInputSchema, coralAgentOpSchema, internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedListSchema, sharedResumeSchema } from '../shared/schemas.js';
+import {
+  jobAbortSchema,
+  jobWaitSchema,
+  sessionCreateSchema,
+  sessionForkSchema,
+  sessionMessageSchema,
+  workflowRequestSchema,
+} from '../shared/schemas.js';
 import type { CallerContext } from './request-context.js';
 import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
 import { belongsToNamespace } from '../shared/types.js';
@@ -42,7 +49,12 @@ import {
   handleKbSourceList,
   handleKbUpdate,
 } from './kb-tools.js';
-import { domainError, domainSuccess, domainToHttp, launchDecisionToDomain, type ToolDomainResult } from './tool-response.js';
+import {
+  domainError,
+  domainResultToHttp,
+  launchToHttp,
+  type ToolDomainResult,
+} from './tool-response.js';
 import { handleWorkflow as launchWorkflow, isWorkflowInputFailure } from '../workflow/handler.js';
 
 // ---------------------------------------------------------------------------
@@ -61,11 +73,10 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
 }
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
-const BACKEND_RECOVERING_RESULT = domainError('backend_recovering', 'recovering — retry after 500ms');
-const providerExecRouteSchema = sharedExecSchema.extend(internalProviderFieldsShape);
-const providerResumeRouteSchema = sharedResumeSchema.extend(internalProviderFieldsShape);
-const providerForkRouteSchema = sharedForkSchema.extend(internalProviderFieldsShape);
-const providerCoralRouteSchema = coralAgentOpSchema.extend(internalProviderFieldsShape);
+const BACKEND_RECOVERING_RESPONSE = {
+  code: 'backend_recovering',
+  message: 'recovering — retry after 500ms',
+};
 
 export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -114,37 +125,49 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-type ParsedContextualArgsRequest = {
-  context: CallerContext;
+type ParsedDirectBody = {
+  ctx: CallerContext;
   args: Record<string, unknown>;
 };
 
-function parseContextualArgsRequest(body: unknown, resolvedPluginRoot: string): ParsedContextualArgsRequest | null {
-  if (!isRecord(body)) return null;
-  if (!isRecord(body.args) || !isRecord(body.context)) return null;
-  if (typeof body.context.projectRoot !== 'string' || body.context.projectRoot.length === 0) return null;
-  if (
-    'pluginRoot' in body.context &&
-    body.context.pluginRoot !== undefined &&
-    typeof body.context.pluginRoot !== 'string'
-  ) {
+function buildControllerEnv(body: Record<string, unknown>): Record<string, string> {
+  const env = collectCoralEnv();
+  if (typeof body.owner === 'string') {
+    env.CORAL_OWNER = body.owner;
+  }
+  if (typeof body.effort === 'string') {
+    env.CORAL_EFFORT = body.effort;
+  }
+  if (typeof body.claudeModelCap === 'string') {
+    env.CORAL_CLAUDE_MODEL_CAP = body.claudeModelCap;
+  }
+  return env;
+}
+
+function buildCallerContext(body: Record<string, unknown>, pluginRoot: string): CallerContext | null {
+  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
     return null;
   }
-  if (!isRecord(body.context.coralEnv)) return null;
-  const RESERVED_CORAL_ENV_KEYS = new Set(['CORAL_CHILD']);
-  const coralEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(body.context.coralEnv)) {
-    if (typeof value !== 'string') return null;
-    if (!key.startsWith('CORAL_')) continue;
-    if (RESERVED_CORAL_ENV_KEYS.has(key)) continue;
-    coralEnv[key] = value;
-  }
-  const context: CallerContext = {
-    projectRoot: body.context.projectRoot,
-    pluginRoot: resolvedPluginRoot,
-    coralEnv,
+  return {
+    projectRoot: body.projectRoot,
+    pluginRoot,
+    coralEnv: buildControllerEnv(body),
   };
-  return { context, args: body.args };
+}
+
+function parseDirectBody(body: unknown, resolvedPluginRoot: string): ParsedDirectBody | null {
+  if (!isRecord(body)) return null;
+  if ('owner' in body && body.owner !== undefined && typeof body.owner !== 'string') return null;
+  if ('effort' in body && body.effort !== undefined && typeof body.effort !== 'string') return null;
+  if ('claudeModelCap' in body && body.claudeModelCap !== undefined && typeof body.claudeModelCap !== 'string') {
+    return null;
+  }
+
+  const ctx = buildCallerContext(body, resolvedPluginRoot);
+  if (!ctx) return null;
+
+  const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } = body;
+  return { ctx, args };
 }
 
 // ---------------------------------------------------------------------------
@@ -178,33 +201,9 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
 // Request parsers
 // ---------------------------------------------------------------------------
 
-type ParsedWaitRequest = WaitRequest & { projectRoot: string };
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string' && item.length > 0);
-}
-
 function isWaitCursor(value: unknown): value is WaitCursor {
   if (!isRecord(value) || !isRecord(value.jobs)) return false;
   return Object.values(value.jobs).every((eventId) => Number.isInteger(eventId) && (eventId as number) >= 0);
-}
-
-function parseWaitRequest(body: unknown): ParsedWaitRequest | null {
-  if (!isRecord(body)) return null;
-  if (!isStringArray(body.jobIds)) return null;
-  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) return null;
-  if ('timeoutSeconds' in body && body.timeoutSeconds !== undefined && typeof body.timeoutSeconds !== 'number') {
-    return null;
-  }
-  if ('cursor' in body && body.cursor !== undefined && !isWaitCursor(body.cursor)) {
-    return null;
-  }
-  return {
-    jobIds: body.jobIds,
-    timeoutSeconds: typeof body.timeoutSeconds === 'number' ? body.timeoutSeconds : undefined,
-    cursor: isWaitCursor(body.cursor) ? body.cursor : undefined,
-    projectRoot: body.projectRoot,
-  };
 }
 
 function parseLastEventIdCursor(raw: string | undefined): WaitCursor | null {
@@ -275,36 +274,8 @@ export function parseDiscussView(raw: string | null): DiscussView | null {
   return null;
 }
 
-function sendDomainResult(res: ServerResponse, result: ToolDomainResult): void {
-  const response = domainToHttp(result);
-  sendJson(res, response.statusCode, response.body);
-}
-
-function isProviderLaunchOp(op: string): boolean {
-  return op === 'exec' || op === 'resume' || op === 'fork' || op.startsWith('coral:');
-}
-
 function invalidRequestResult(message = 'invalid request'): ToolDomainResult {
   return domainError('invalid_request', message);
-}
-
-function withOwnerContext(ctx: CallerContext, owner: string | undefined): CallerContext {
-  if (!owner) return ctx;
-  return {
-    ...ctx,
-    coralEnv: {
-      ...ctx.coralEnv,
-      CORAL_OWNER: owner,
-    },
-  };
-}
-
-function toLegacyDiscussToolName(action: string): string {
-  return `discuss_${action.replaceAll('-', '_')}`;
-}
-
-function toLegacyKbToolName(action: string): string {
-  return `kb_${action.replaceAll('-', '_')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -312,10 +283,15 @@ function toLegacyKbToolName(action: string): string {
 // ---------------------------------------------------------------------------
 
 async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
-  const body = await readJsonBody(req);
-  const parsed = parseWaitRequest(body);
-  if (!parsed) {
-    sendJson(res, 400, { error: 'invalid_request' });
+  let parsed: ReturnType<typeof jobWaitSchema.parse>;
+  try {
+    parsed = jobWaitSchema.parse(await readJsonBody(req));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      sendJson(res, 400, { code: 'invalid_request', message: error.message });
+      return;
+    }
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
     return;
   }
 
@@ -324,17 +300,25 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     : req.headers['last-event-id'];
   const headerCursor = parseLastEventIdCursor(lastEventIdHeader);
   if (lastEventIdHeader && !headerCursor) {
-    sendJson(res, 400, { error: 'invalid_request' });
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid Last-Event-ID cursor' });
     return;
   }
 
   const scopeCheck = deps.scopeCheckJobs(parsed.jobIds, parsed.projectRoot);
   if (scopeCheck.mismatch.length > 0) {
-    sendJson(res, 403, { error: 'scope_mismatch' });
+    sendJson(res, 403, {
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: scopeCheck.mismatch },
+    });
     return;
   }
   if (scopeCheck.missing.length === parsed.jobIds.length) {
-    sendJson(res, 404, { error: 'jobs_not_found' });
+    sendJson(res, 404, {
+      code: 'jobs_not_found',
+      message: 'Requested jobs were not found',
+      detail: { jobs: scopeCheck.missing },
+    });
     return;
   }
 
@@ -348,11 +332,11 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     ...parsed,
     cursor: inputCursor,
   };
-  const ctx: CallerContext = {
-    projectRoot: parsed.projectRoot,
-    pluginRoot: deps.identity.pluginRoot,
-    coralEnv: {},
-  };
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  if (!ctx) {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Project root is required' });
+    return;
+  }
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream');
@@ -464,229 +448,225 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   });
 }
 
-async function handleProviderRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-  providerName: string,
-): Promise<void> {
-  let request: ParsedContextualArgsRequest | null;
+async function handleSessionCreate(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
+  let parsed: ReturnType<typeof sessionCreateSchema.parse>;
   try {
-    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
-  } catch {
-    sendJson(res, 400, { error: 'invalid_json' });
-    return;
-  }
-
-  if (!request) {
-    sendDomainResult(res, invalidRequestResult());
-    return;
-  }
-
-  if (!deps.providerRegistry?.get(providerName)) {
-    sendDomainResult(res, domainError('unknown_provider', `Unknown provider: ${providerName}`));
-    return;
-  }
-
-  const op = typeof request.args.op === 'string' ? request.args.op : null;
-  if (deps.runtimeState.getLaunchFenceActive() && op !== null && isProviderLaunchOp(op)) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
-    return;
-  }
-
-  const executionService = deps.getExecutionService(request.context);
-
-  try {
-    if (op === 'list') {
-      sharedListSchema.parse(request.args);
-      sendDomainResult(res, domainSuccess(executionService.list(providerName)));
-      return;
-    }
-
-    if (op === 'exec') {
-      const parsed = providerExecRouteSchema.parse(request.args);
-      const systemPrompt = parsed.system_prompt;
-
-      if (parsed.session) {
-        const decision = await executionService.resume(
-          providerName,
-          {
-            sessionId: parsed.session,
-            prompt: parsed.prompt,
-            model: parsed.model,
-            cwd: parsed.work_dir,
-            bypassPermissions: parsed.bypass_permissions ?? true,
-            systemPrompt,
-          },
-          request.context,
-        );
-        sendDomainResult(res, launchDecisionToDomain(decision));
-        return;
-      }
-
-      const decision = await executionService.start(
-        providerName,
-        {
-          prompt: parsed.prompt,
-          model: parsed.model,
-          cwd: parsed.work_dir,
-          bypassPermissions: parsed.bypass_permissions ?? false,
-          systemPrompt,
-        },
-        request.context,
-      );
-      sendDomainResult(res, launchDecisionToDomain(decision));
-      return;
-    }
-
-    if (op === 'resume') {
-      const parsed = providerResumeRouteSchema.parse(request.args);
-      const decision = await executionService.resume(
-        providerName,
-        {
-          sessionId: parsed.session,
-          prompt: parsed.prompt,
-          model: parsed.model,
-          cwd: parsed.work_dir,
-          bypassPermissions: parsed.bypass_permissions ?? true,
-          systemPrompt: parsed.system_prompt,
-        },
-        request.context,
-      );
-      sendDomainResult(res, launchDecisionToDomain(decision));
-      return;
-    }
-
-    if (op === 'fork') {
-      const parsed = providerForkRouteSchema.parse(request.args);
-      const decision = await executionService.fork(
-        providerName,
-        {
-          sessionId: parsed.session,
-          prompt: parsed.prompt,
-          model: parsed.model,
-          cwd: parsed.work_dir,
-          bypassPermissions: parsed.bypass_permissions ?? true,
-          systemPrompt: parsed.system_prompt,
-        },
-        request.context,
-      );
-      sendDomainResult(res, launchDecisionToDomain(decision));
-      return;
-    }
-
-    if (op !== null && op.startsWith('coral:')) {
-      const parsed = providerCoralRouteSchema.parse(request.args);
-      const decision = await executionService.coralDispatch(
-        providerName,
-        parsed.op.slice('coral:'.length),
-        {
-          prompt: parsed.prompt,
-          sessionId: parsed.session,
-          cwd: parsed.work_dir,
-          bypassPermissions: parsed.bypass_permissions ?? true,
-          systemPrompt: parsed.system_prompt,
-        },
-        withOwnerContext(request.context, parsed.owner),
-      );
-      sendDomainResult(res, launchDecisionToDomain(decision));
-      return;
-    }
+    parsed = sessionCreateSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      sendDomainResult(res, invalidRequestResult(error.message));
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
       return;
     }
-    throw error;
-  }
-
-  sendDomainResult(res, invalidRequestResult('Invalid provider op'));
-}
-
-async function handleWorkflowRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-): Promise<void> {
-  let request: ParsedContextualArgsRequest | null;
-  try {
-    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
-  } catch {
-    sendJson(res, 400, { error: 'invalid_json' });
-    return;
-  }
-
-  if (!request) {
-    sendDomainResult(res, invalidRequestResult());
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
     return;
   }
 
   if (deps.runtimeState.getLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  if (!ctx) {
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
+    return;
+  }
+
+  const decision = await deps.getExecutionService(ctx).start(
+    parsed.provider,
+    {
+      prompt: parsed.prompt,
+      agent: parsed.agent,
+      model: parsed.model,
+      cwd: parsed.workDir,
+      bypassPermissions: parsed.bypassPermissions,
+      systemPrompt: parsed.systemPrompt,
+    },
+    ctx,
+  );
+  const response = launchToHttp(decision, 201);
+  sendJson(res, response.statusCode, response.body);
+}
+
+async function handleSessionMessage(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+): Promise<void> {
+  let parsed: ReturnType<typeof sessionMessageSchema.parse>;
+  try {
+    parsed = sessionMessageSchema.parse(await readJsonBody(req));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  if (!ctx) {
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
+    return;
+  }
+
+  const decision = await deps.getExecutionService(ctx).resumeBySessionId(
+    {
+      sessionId,
+      prompt: parsed.prompt,
+      model: parsed.model,
+      cwd: parsed.workDir,
+      bypassPermissions: parsed.bypassPermissions,
+      systemPrompt: parsed.systemPrompt,
+    },
+    ctx,
+  );
+  const response = launchToHttp(decision, 202);
+  sendJson(res, response.statusCode, response.body);
+}
+
+async function handleSessionFork(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+): Promise<void> {
+  let parsed: ReturnType<typeof sessionForkSchema.parse>;
+  try {
+    parsed = sessionForkSchema.parse(await readJsonBody(req));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  if (!ctx) {
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
+    return;
+  }
+
+  const decision = await deps.getExecutionService(ctx).forkBySessionId(
+    {
+      sessionId,
+      prompt: parsed.prompt,
+      model: parsed.model,
+      cwd: parsed.workDir,
+      bypassPermissions: parsed.bypassPermissions,
+      systemPrompt: parsed.systemPrompt,
+    },
+    ctx,
+  );
+  const response = launchToHttp(decision, 201);
+  sendJson(res, response.statusCode, response.body);
+}
+
+async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
+  let parsed: ReturnType<typeof workflowRequestSchema.parse>;
+  try {
+    parsed = workflowRequestSchema.parse(await readJsonBody(req));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  if (!ctx) {
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
     return;
   }
 
   try {
     const decision = await launchWorkflow(
-      request.args,
-      deps.getExecutionService(request.context),
-      request.context,
+      {
+        expression: parsed.expression,
+        start_prompt: parsed.startPrompt,
+        ...(parsed.context !== undefined ? { context: parsed.context } : {}),
+        ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
+        ...(parsed.workDir !== undefined ? { work_dir: parsed.workDir } : {}),
+        ...(parsed.owner !== undefined ? { owner: parsed.owner } : {}),
+      },
+      deps.getExecutionService(ctx),
+      ctx,
       deps.providerRegistry,
     );
-    sendDomainResult(res, launchDecisionToDomain(decision));
+    const response = launchToHttp(decision, 202);
+    sendJson(res, response.statusCode, response.body);
     return;
   } catch (error: unknown) {
     if (isWorkflowInputFailure(error)) {
-      sendDomainResult(res, invalidRequestResult(error.message));
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
       return;
     }
     throw error;
   }
 }
 
-async function handleAbortRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-): Promise<void> {
-  let request: ParsedContextualArgsRequest | null;
+async function handleAbortRequest(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
+  let args: ReturnType<typeof jobAbortSchema.parse>;
   try {
-    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
-  } catch {
-    sendJson(res, 400, { error: 'invalid_json' });
-    return;
-  }
-
-  if (!request) {
-    sendDomainResult(res, invalidRequestResult());
-    return;
-  }
-
-  let args: { jobs: string[] };
-  try {
-    args = abortInputSchema.parse(request.args);
+    args = jobAbortSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      sendDomainResult(res, invalidRequestResult(error.message));
+      const response = domainResultToHttp(invalidRequestResult(error.message));
+      sendJson(res, response.statusCode, response.body);
       return;
     }
-    throw error;
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
   }
 
-  const scopeCheck = deps.scopeCheckJobs(args.jobs, request.context.projectRoot);
+  const scopeCheck = deps.scopeCheckJobs(args.jobs, args.projectRoot);
   if (scopeCheck.mismatch.length > 0) {
-    sendDomainResult(
-      res,
+    const response = domainResultToHttp(
       domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
     );
+    sendJson(res, response.statusCode, response.body);
     return;
   }
   if (scopeCheck.missing.length === args.jobs.length) {
-    sendDomainResult(res, domainError('jobs_not_found', 'Requested jobs were not found', { jobs: args.jobs }));
+    sendJson(res, 404, {
+      code: 'jobs_not_found',
+      message: 'Requested jobs were not found',
+      detail: { jobs: args.jobs },
+    });
     return;
   }
 
-  sendDomainResult(res, domainSuccess(deps.abortJobs(args.jobs)));
+  sendJson(res, 200, deps.abortJobs(args.jobs));
 }
 
 async function handleDiscussRequest(
@@ -695,21 +675,22 @@ async function handleDiscussRequest(
   deps: HttpHandlerDeps,
   action: string,
 ): Promise<void> {
-  let request: ParsedContextualArgsRequest | null;
+  let request: ParsedDirectBody | null;
   try {
-    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { error: 'invalid_json' });
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
     return;
   }
 
   if (!request) {
-    sendDomainResult(res, invalidRequestResult());
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
     return;
   }
 
   if (deps.runtimeState.getLaunchFenceActive() && (action === 'start' || action === 'participate')) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
     return;
   }
 
@@ -723,23 +704,27 @@ async function handleDiscussRequest(
       result = handleDiscussSeed(request.args);
       break;
     case 'start':
-      result = await handleDiscussStart(request.args, request.context, helpers);
+      result = await handleDiscussStart(request.args, request.ctx, helpers);
       break;
     case 'abort':
-      result = await handleDiscussAbort(request.args, request.context, helpers);
+      result = await handleDiscussAbort(request.args, request.ctx, helpers);
       break;
     case 'watch':
-      result = handleDiscussWatch(request.args, request.context, helpers);
+      result = handleDiscussWatch(request.args, request.ctx, helpers);
       break;
     case 'participate':
-      result = await handleDiscussParticipate(request.args, request.context, helpers);
+      result = await handleDiscussParticipate(request.args, request.ctx, helpers);
       break;
     default:
-      sendDomainResult(res, domainError('not_found', `Unknown tool: ${toLegacyDiscussToolName(action)}`));
+      {
+        const response = domainResultToHttp(domainError('not_found', `Unknown discuss action: ${action}`));
+        sendJson(res, response.statusCode, response.body);
+      }
       return;
   }
 
-  sendDomainResult(res, result);
+  const response = domainResultToHttp(result);
+  sendJson(res, response.statusCode, response.body);
 }
 
 async function handleKbRequest(
@@ -748,22 +733,26 @@ async function handleKbRequest(
   deps: HttpHandlerDeps,
   action: string,
 ): Promise<void> {
-  let request: ParsedContextualArgsRequest | null;
+  let request: ParsedDirectBody | null;
   try {
-    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { error: 'invalid_json' });
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
     return;
   }
 
   if (!request) {
-    sendDomainResult(res, invalidRequestResult());
+    const response = domainResultToHttp(invalidRequestResult());
+    sendJson(res, response.statusCode, response.body);
     return;
   }
 
   const kbSubsystem = deps.runtimeState.getKbSubsystem();
   if (!kbSubsystem) {
-    sendDomainResult(res, domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.'));
+    const response = domainResultToHttp(
+      domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.'),
+    );
+    sendJson(res, response.statusCode, response.body);
     return;
   }
 
@@ -773,10 +762,10 @@ async function handleKbRequest(
       result = await handleKbSearch(request.args, kbSubsystem);
       break;
     case 'read':
-      result = handleKbRead(request.args, request.context);
+      result = handleKbRead(request.args, request.ctx);
       break;
     case 'promote':
-      result = await handleKbPromote(request.args, kbSubsystem, request.context);
+      result = await handleKbPromote(request.args, kbSubsystem, request.ctx);
       break;
     case 'update':
       result = await handleKbUpdate(request.args, kbSubsystem);
@@ -800,25 +789,26 @@ async function handleKbRequest(
       result = await handleKbPrinciples(request.args, kbSubsystem);
       break;
     case 'memo':
-      result = handleKbMemo(request.args, request.context);
+      result = handleKbMemo(request.args, request.ctx);
       break;
     case 'memo-list':
-      result = handleKbMemoList(request.args, request.context);
+      result = handleKbMemoList(request.args, request.ctx);
       break;
     case 'memo-delete':
-      result = handleKbMemoDelete(request.args, request.context);
+      result = handleKbMemoDelete(request.args, request.ctx);
       break;
     case 'memo-purge':
-      result = handleKbMemoPurge(request.args, request.context);
+      result = handleKbMemoPurge(request.args, request.ctx);
       break;
     default: {
-      const name = toLegacyKbToolName(action);
-      sendDomainResult(res, domainError('unknown_tool', `Unknown tool: ${name}`, { name }));
+      const response = domainResultToHttp(domainError('unknown_tool', `Unknown KB action: ${action}`));
+      sendJson(res, response.statusCode, response.body);
       return;
     }
   }
 
-  sendDomainResult(res, result);
+  const response = domainResultToHttp(result);
+  sendJson(res, response.statusCode, response.body);
 }
 
 // ---------------------------------------------------------------------------
@@ -903,7 +893,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       idleTimer.endRequest();
     });
 
-    if (req.method === 'POST' && req.url === '/wait/stream') {
+    if (req.method === 'POST' && req.url === '/jobs/wait') {
       await handleWaitStream(req, res, deps);
       return;
     }
@@ -911,10 +901,21 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     if (req.method === 'POST' && req.url) {
       const parsedUrl = new URL(req.url, 'http://localhost');
       const pathname = parsedUrl.pathname;
-      const providerMatch = pathname.match(/^\/provider\/([^/]+)$/);
 
-      if (providerMatch) {
-        await handleProviderRequest(req, res, deps, providerMatch[1]);
+      if (pathname === '/sessions') {
+        await handleSessionCreate(req, res, deps);
+        return;
+      }
+
+      const sessionMessageMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+      if (sessionMessageMatch) {
+        await handleSessionMessage(req, res, deps, sessionMessageMatch[1]);
+        return;
+      }
+
+      const sessionForkMatch = pathname.match(/^\/sessions\/([^/]+)\/forks$/);
+      if (sessionForkMatch) {
+        await handleSessionFork(req, res, deps, sessionForkMatch[1]);
         return;
       }
 
@@ -923,7 +924,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         return;
       }
 
-      if (pathname === '/abort') {
+      if (pathname === '/jobs/abort') {
         await handleAbortRequest(req, res, deps);
         return;
       }
@@ -961,16 +962,19 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         req.resume();
         const detail = getJobDetail(progressStore, jobDetailMatch[1], identity.namespace);
         if (!detail) {
-          sendJson(res, 404, { error: 'job_not_found' });
+          sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${jobDetailMatch[1]}` });
           return;
         }
         sendJson(res, 200, detail);
         return;
       }
 
-      if (pathname === '/api/sessions') {
+      if (pathname === '/sessions') {
         req.resume();
-        sendJson(res, 200, { sessions: sessionIndex.listForNamespace(identity.namespace, progressStore) });
+        const sessions = sessionIndex
+          .listForNamespace(identity.namespace, progressStore)
+          .flatMap((row) => row.sessions);
+        sendJson(res, 200, { sessions });
         return;
       }
 

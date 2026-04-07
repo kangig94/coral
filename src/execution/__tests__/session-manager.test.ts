@@ -41,7 +41,12 @@ describe('execution SessionManager', () => {
   it('allocate creates an entry with state pending', () => {
     const { mgr, workDir } = setup('allocate-pending');
 
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+    });
 
     expect(entry.state).toBe('pending');
     expect(entry.version).toBe(1);
@@ -59,7 +64,13 @@ describe('execution SessionManager', () => {
   it('allocate persists projectRoot when provided', () => {
     const { mgr, workDir } = setup('alloc-with-root');
 
-    const entry = mgr.allocate('codex', 'beta', 'gpt-5', workDir, '/my/project');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'beta',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: '/my/project',
+    });
 
     expect(entry.projectRoot).toBe('/my/project');
     expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
@@ -68,9 +79,51 @@ describe('execution SessionManager', () => {
   it('allocate omits projectRoot when not provided', () => {
     const { mgr, workDir } = setup('alloc-no-root');
 
-    const entry = mgr.allocate('codex', 'gamma', 'gpt-5', workDir);
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'gamma',
+      model: 'gpt-5',
+      cwd: workDir,
+    });
 
     expect(entry.projectRoot).toBeUndefined();
+  });
+
+  it('allocate persists backend provenance and stored profile fields', () => {
+    const { mgr, workDir } = setup('alloc-with-profile');
+
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'delta',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: '/my/project',
+      backendNamespace: 'ns-local',
+      agentName: 'debugger',
+      instruction: { content: 'Follow the debugger playbook.', channel: 'system' },
+      bypassPermissions: true,
+      systemPrompt: 'You are debugging.',
+      controllerProfile: {
+        owner: 'team-a',
+        effort: 'high',
+        claudeModelCap: 'sonnet',
+      },
+    });
+
+    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+      sessionId: entry.sessionId,
+      projectRoot: '/my/project',
+      backendNamespace: 'ns-local',
+      agentName: 'debugger',
+      instruction: { content: 'Follow the debugger playbook.', channel: 'system' },
+      bypassPermissions: true,
+      systemPrompt: 'You are debugging.',
+      controllerProfile: {
+        owner: 'team-a',
+        effort: 'high',
+        claudeModelCap: 'sonnet',
+      },
+    });
   });
 
   it('session:updated payload includes projectRoot when present', () => {
@@ -78,7 +131,14 @@ describe('execution SessionManager', () => {
     const emitted: unknown[] = [];
     eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
-    mgr.allocate('codex', 'delta', 'gpt-5', workDir, '/proj/root');
+    mgr.allocate({
+      provider: 'codex',
+      name: 'epsilon',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: '/proj/root',
+      backendNamespace: 'ns-local',
+    });
 
     expect(emitted).toHaveLength(1);
     expect((emitted[0] as { projectRoot?: string }).projectRoot).toBe('/proj/root');
@@ -89,7 +149,12 @@ describe('execution SessionManager', () => {
     const emitted: unknown[] = [];
     eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
 
-    mgr.allocate('codex', 'epsilon', 'gpt-5', workDir);
+    mgr.allocate({
+      provider: 'codex',
+      name: 'zeta',
+      model: 'gpt-5',
+      cwd: workDir,
+    });
 
     expect(emitted).toHaveLength(1);
     expect((emitted[0] as { projectRoot?: string }).projectRoot).toBeUndefined();
@@ -100,7 +165,12 @@ describe('execution SessionManager', () => {
     const updated = vi.fn();
     eventBus.on('session:updated', updated);
 
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+    });
     const shardHash = basename(resolveSessionDir(tmpHome));
 
     expect(updated).toHaveBeenCalledWith({
@@ -314,6 +384,47 @@ describe('execution SessionManager', () => {
       name: 'alpha',
     });
   });
+
+  it('getById finds a session across shards and refreshes cached reads after writes', () => {
+    const alpha = setup('lookup-shard-a');
+    const beta = setup('lookup-shard-b');
+    const sessionA = alpha.mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: alpha.workDir,
+      projectRoot: alpha.workDir,
+      backendNamespace: 'ns-a',
+    });
+    const sessionB = beta.mgr.allocate({
+      provider: 'claude',
+      name: 'beta',
+      model: 'sonnet',
+      cwd: beta.workDir,
+      projectRoot: beta.workDir,
+      backendNamespace: 'ns-b',
+    });
+
+    expect(SessionManager.getById(sessionA.sessionId)).toMatchObject({
+      sessionId: sessionA.sessionId,
+      provider: 'codex',
+      backendNamespace: 'ns-a',
+    });
+    expect(SessionManager.getById(sessionB.sessionId)).toMatchObject({
+      sessionId: sessionB.sessionId,
+      provider: 'claude',
+      backendNamespace: 'ns-b',
+    });
+
+    beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
+
+    expect(SessionManager.getById(sessionB.sessionId)).toMatchObject({
+      sessionId: sessionB.sessionId,
+      state: 'ready',
+      conversationRef: 'thread-2',
+    });
+    expect(SessionManager.getById('missing-session-id')).toBeNull();
+  });
 });
 
 function resolveSessionDir(baseDir: string): string {
@@ -326,6 +437,7 @@ function resolveSessionDir(baseDir: string): string {
 describe('SessionManager adversarial', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'red-sm-home-'));
+    eventBus = new TypedEventBus();
   });
 
   afterEach(() => {

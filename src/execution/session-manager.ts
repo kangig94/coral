@@ -5,7 +5,12 @@ import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
 import { backendLog } from '../shared/backend-log.js';
 import { acquireDirectoryLock } from '../shared/fs-lock.js';
 import { isValidSessionEntry } from '../shared/session-entry.js';
-import type { ProviderContinuityBlob, SessionEntry } from '../shared/types.js';
+import type {
+  ProviderContinuityBlob,
+  ProviderInstruction,
+  SessionControllerProfile,
+  SessionEntry,
+} from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/utils.js';
 import { TypedEventBus } from './event-bus.js';
 
@@ -13,6 +18,26 @@ export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
   | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
   | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
+
+export type SessionAllocateOptions = {
+  provider: string;
+  name: string;
+  model: string;
+  cwd: string;
+  projectRoot?: string;
+  backendNamespace?: string;
+  agentName?: string;
+  instruction?: ProviderInstruction;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+  controllerProfile?: SessionControllerProfile;
+};
+
+type CachedSessionLookup = {
+  shardDir: string;
+  shardStamp: number;
+  entry: SessionEntry;
+};
 
 function toSessionNamespace(dir: string): string {
   try {
@@ -28,12 +53,12 @@ function toSessionNamespace(dir: string): string {
 function isValidEntry(value: unknown): value is SessionEntry {
   if (!isValidSessionEntry(value)) return false;
   if (!providerIdentPattern.test(value.provider)) return false;
-  const raw = value as unknown as Record<string, unknown>;
-  return raw.projectRoot === undefined || typeof raw.projectRoot === 'string';
+  return true;
 }
 
 export class SessionManager {
   private static readonly shardStamps = new Map<string, number>();
+  private static readonly sessionLookupCache = new Map<string, CachedSessionLookup>();
   private readonly sessionDir: string;
   private readonly eventBus: TypedEventBus;
   private readonly cache = new Map<string, SessionEntry>();
@@ -66,6 +91,32 @@ export class SessionManager {
     }
   }
 
+  static getById(sessionId: string): SessionEntry | null {
+    const cached = SessionManager.sessionLookupCache.get(sessionId);
+    if (cached) {
+      const currentStamp = SessionManager.ensureShardStamp(cached.shardDir);
+      if (currentStamp === cached.shardStamp) {
+        return { ...cached.entry };
+      }
+
+      const refreshed = SessionManager.openShard(cached.shardDir).readEntry(sessionId, { forceFresh: true });
+      if (refreshed !== null) {
+        return refreshed;
+      }
+
+      SessionManager.clearLookupCache(sessionId, cached.shardDir);
+    }
+
+    for (const shardDir of SessionManager.listShards()) {
+      const entry = SessionManager.openShard(shardDir).readEntry(sessionId, { forceFresh: true });
+      if (entry !== null) {
+        return entry;
+      }
+    }
+
+    return null;
+  }
+
   private sessionPath(sessionId: string): string {
     return join(this.sessionDir, `${sessionId}.json`);
   }
@@ -87,6 +138,21 @@ export class SessionManager {
     return next;
   }
 
+  private static cacheLookupEntry(shardDir: string, entry: SessionEntry): void {
+    SessionManager.sessionLookupCache.set(entry.sessionId, {
+      shardDir,
+      shardStamp: SessionManager.ensureShardStamp(shardDir),
+      entry: { ...entry },
+    });
+  }
+
+  private static clearLookupCache(sessionId: string, shardDir?: string): void {
+    const cached = SessionManager.sessionLookupCache.get(sessionId);
+    if (!cached) return;
+    if (shardDir !== undefined && cached.shardDir !== shardDir) return;
+    SessionManager.sessionLookupCache.delete(sessionId);
+  }
+
   private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
     return acquireDirectoryLock(this.lockPath(sessionId), timeoutMs);
   }
@@ -103,6 +169,7 @@ export class SessionManager {
   private populateCache(sessionId: string, entry: SessionEntry): void {
     this.cache.set(sessionId, { ...entry });
     this.knownSessionIds.add(sessionId);
+    SessionManager.cacheLookupEntry(this.sessionDir, entry);
   }
 
   private readEntry(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
@@ -121,10 +188,12 @@ export class SessionManager {
         return { ...parsed };
       }
       this.cache.delete(sessionId);
+      SessionManager.clearLookupCache(sessionId, this.sessionDir);
       backendLog.warn(`Session file ${sessionId}.json has unexpected shape, skipping`);
       return null;
     } catch (error: unknown) {
       this.cache.delete(sessionId);
+      SessionManager.clearLookupCache(sessionId, this.sessionDir);
       if (isNoEntryError(error)) {
         this.knownSessionIds.delete(sessionId);
         return null;
@@ -161,16 +230,40 @@ export class SessionManager {
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
-  allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry {
+  allocate(options: SessionAllocateOptions): SessionEntry;
+  allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry;
+  allocate(
+    optionsOrProvider: SessionAllocateOptions | string,
+    name?: string,
+    model?: string,
+    cwd?: string,
+    projectRoot?: string,
+  ): SessionEntry {
+    const options =
+      typeof optionsOrProvider === 'string'
+        ? {
+            provider: optionsOrProvider,
+            name: name ?? `session-${Date.now()}`,
+            model: model ?? 'unknown',
+            cwd: cwd ?? '',
+            ...(projectRoot !== undefined ? { projectRoot } : {}),
+          }
+        : optionsOrProvider;
     const now = nowIsoString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
-      provider,
-      name,
+      provider: options.provider,
+      name: options.name,
       state: 'pending',
-      model,
-      cwd,
-      ...(projectRoot !== undefined ? { projectRoot } : {}),
+      model: options.model,
+      cwd: options.cwd,
+      ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}),
+      ...(options.backendNamespace !== undefined ? { backendNamespace: options.backendNamespace } : {}),
+      ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
+      ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
+      ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
+      ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
+      ...(options.controllerProfile !== undefined ? { controllerProfile: options.controllerProfile } : {}),
       createdAt: now,
       lastUsedAt: now,
       version: 0,

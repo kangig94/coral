@@ -5,7 +5,7 @@
  */
 
 import { z } from 'zod';
-import { providerOpSchema, coralAgentOpSchema } from '../../shared/schemas.js';
+import { providerOpSchema, coralAgentOpSchema } from '../../shared/provider-compat-schemas.js';
 
 export const codexOpSchema = providerOpSchema;
 

@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '../main.js';
 
 const mockState = vi.hoisted(() => ({
-  providerExec: vi.fn(),
-  providerAgentDispatch: vi.fn(),
-  providerList: vi.fn(),
+  createSession: vi.fn(),
+  sendMessage: vi.fn(),
+  listSessions: vi.fn(),
   workflow: vi.fn(),
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
@@ -38,17 +38,17 @@ vi.mock('../../client/http-client.js', () => {
     statusCode: number;
     body: unknown;
 
-    constructor(statusCode: number, body: unknown) {
-      super(`HTTP ${statusCode}`);
+    constructor(message: string, statusCode: number, body: unknown) {
+      super(message);
       this.statusCode = statusCode;
       this.body = body;
     }
   }
 
   class BackendClient {
-    providerExec = mockState.providerExec;
-    providerAgentDispatch = mockState.providerAgentDispatch;
-    providerList = mockState.providerList;
+    createSession = mockState.createSession;
+    sendMessage = mockState.sendMessage;
+    listSessions = mockState.listSessions;
     workflow = mockState.workflow;
     abortJobs = mockState.abortJobs;
     discussSeed = mockState.discussSeed;
@@ -117,9 +117,9 @@ describe('cli main routing', () => {
     originalArgv = [...process.argv];
     process.exitCode = undefined;
 
-    mockState.providerExec.mockReset();
-    mockState.providerAgentDispatch.mockReset();
-    mockState.providerList.mockReset();
+    mockState.createSession.mockReset();
+    mockState.sendMessage.mockReset();
+    mockState.listSessions.mockReset();
     mockState.workflow.mockReset();
     mockState.abortJobs.mockReset();
     mockState.launchAndFollow.mockReset();
@@ -193,13 +193,10 @@ describe('cli main routing', () => {
 
     writeFileSync(inputFile, 'prompt from file');
     try {
-      mockState.providerExec.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          status: 'running',
-          job: 'job-1',
-          session: 'session-1',
-        },
+      mockState.sendMessage.mockResolvedValueOnce({
+        launchState: 'running',
+        job: 'job-1',
+        session: 'session-1',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(7);
 
@@ -222,16 +219,15 @@ describe('cli main routing', () => {
         'json',
       ]);
 
-      expect(mockState.providerExec).toHaveBeenCalledWith('codex', 'prompt from file', {
-        session: 'session-1',
-        work_dir: '/tmp/work',
+      expect(mockState.sendMessage).toHaveBeenCalledWith('session-1', 'prompt from file', {
+        workDir: '/tmp/work',
         model: 'gpt-5',
         owner: 'owner-1',
-        bypass_permissions: true,
+        bypassPermissions: true,
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
-          status: 'running',
+          launchState: 'running',
           job: 'job-1',
           session: 'session-1',
         },
@@ -255,13 +251,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const missingInput = join(tmpdir(), `coral-missing-input-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
 
-    mockState.providerExec.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'job-raw-text',
-        session: 'session-raw-text',
-      },
+    mockState.sendMessage.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-raw-text',
+      session: 'session-raw-text',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -275,9 +268,7 @@ describe('cli main routing', () => {
       'session-raw-text',
     ]);
 
-    expect(mockState.providerExec).toHaveBeenCalledWith('codex', missingInput, {
-      session: 'session-raw-text',
-    });
+    expect(mockState.sendMessage).toHaveBeenCalledWith('session-raw-text', missingInput, {});
   });
 
   it.each([
@@ -288,13 +279,10 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerAgentDispatch.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'job-1',
-        session: 'session-1',
-      },
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-1',
+      session: 'session-1',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -305,8 +293,6 @@ describe('cli main routing', () => {
       agent,
       '-i',
       'hi',
-      '-s',
-      'session-1',
       '-w',
       '/tmp/work',
       '-m',
@@ -316,12 +302,12 @@ describe('cli main routing', () => {
       '-b',
     ]);
 
-    expect(mockState.providerAgentDispatch).toHaveBeenCalledWith('codex', expectedOp, 'hi', {
-      session: 'session-1',
-      work_dir: '/tmp/work',
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      agent: expectedOp,
+      workDir: '/tmp/work',
       model: 'gpt-5',
       owner: 'owner-1',
-      bypass_permissions: true,
+      bypassPermissions: true,
     });
   });
 
@@ -329,38 +315,32 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerAgentDispatch.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'job-claude',
-        session: 'session-claude',
-      },
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-claude',
+      session: 'session-claude',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
     await program.parseAsync(['node', 'coral-cli', 'claude', 'debugger', '-i', 'hi']);
 
-    expect(mockState.providerAgentDispatch).toHaveBeenCalledWith('claude', 'coral:debugger', 'hi', {});
+    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', { agent: 'coral:debugger' });
   });
 
   it('keeps detach launches on the one-shot path and honors -f json', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerExec.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'job-1',
-        session: 'session-1',
-      },
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-1',
+      session: 'session-1',
     });
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi', '--detach', '-f', 'json']);
 
     expect(JSON.parse(stdout.trim())).toEqual({
-      status: 'running',
+      launchState: 'running',
       job: 'job-1',
       session: 'session-1',
     });
@@ -372,16 +352,15 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerExec.mockResolvedValueOnce({
-      ok: false,
-      code: 'bad_request',
-      message: 'Missing prompt',
-    });
+    const { BackendToolHttpError } = await import('../../client/http-client.js');
+    mockState.createSession.mockRejectedValueOnce(
+      new BackendToolHttpError('HTTP 400', 400, { code: 'bad_request', message: 'Missing prompt' }),
+    );
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
     expect(stdout).toBe('');
-    expect(stderr).toBe('Missing prompt\n');
+    expect(stderr).toBe('HTTP 400: {"code":"bad_request","message":"Missing prompt"}\n');
     expect(process.exitCode).toBe(1);
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
@@ -394,8 +373,8 @@ describe('cli main routing', () => {
 
     expect(stderr).toContain('coral-cli list --provider codex');
     expect(stderr).not.toContain('input is required');
-    expect(mockState.providerExec).not.toHaveBeenCalled();
-    expect(mockState.providerAgentDispatch).not.toHaveBeenCalled();
+    expect(mockState.createSession).not.toHaveBeenCalled();
+    expect(mockState.sendMessage).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
 
@@ -403,29 +382,7 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerList.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        sessions: [
-          {
-            sessionId: 'session-1',
-            provider: 'codex',
-            name: 'alpha',
-            state: 'ready',
-            model: 'gpt-5',
-            cwd: '/tmp/project',
-            createdAt: '2026-03-14T00:00:00.000Z',
-            lastUsedAt: '2026-03-14T00:00:00.000Z',
-            version: 1,
-          },
-        ],
-      },
-    });
-
-    await program.parseAsync(['node', 'coral-cli', 'list', '--provider', 'codex', '-f', 'json']);
-
-    expect(mockState.providerList).toHaveBeenCalledWith('codex');
-    expect(JSON.parse(stdout.trim())).toEqual({
+    mockState.listSessions.mockResolvedValueOnce({
       sessions: [
         {
           sessionId: 'session-1',
@@ -437,6 +394,23 @@ describe('cli main routing', () => {
           createdAt: '2026-03-14T00:00:00.000Z',
           lastUsedAt: '2026-03-14T00:00:00.000Z',
           version: 1,
+          provenanceState: 'authoritative',
+        },
+      ],
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'list', '--provider', 'codex', '-f', 'json']);
+
+    expect(mockState.listSessions).toHaveBeenCalledWith();
+    expect(JSON.parse(stdout.trim())).toEqual({
+      sessions: [
+        {
+          sessionId: 'session-1',
+          provider: 'codex',
+          name: 'alpha',
+          state: 'ready',
+          model: 'gpt-5',
+          cwd: '/tmp/project',
         },
       ],
     });
@@ -446,41 +420,44 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.providerList
+    mockState.listSessions
       .mockResolvedValueOnce({
-        ok: true,
-        data: {
-          sessions: [
-            {
-              sessionId: 'session-1',
-              provider: 'codex',
-              name: 'alpha',
-              state: 'ready',
-              model: 'gpt-5',
-              cwd: '/tmp/codex',
-              createdAt: '2026-03-14T00:00:00.000Z',
-              lastUsedAt: '2026-03-14T00:00:00.000Z',
-              version: 1,
-            },
-          ],
-        },
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        data: {
-          sessions: [],
-        },
+        sessions: [
+          {
+            sessionId: 'session-1',
+            provider: 'codex',
+            name: 'alpha',
+            state: 'ready',
+            model: 'gpt-5',
+            cwd: '/tmp/codex',
+            createdAt: '2026-03-14T00:00:00.000Z',
+            lastUsedAt: '2026-03-14T00:00:00.000Z',
+            version: 1,
+            provenanceState: 'authoritative',
+          },
+          {
+            sessionId: 'session-2',
+            provider: 'claude',
+            name: 'beta',
+            state: 'ready',
+            model: 'sonnet',
+            cwd: '/tmp/claude',
+            createdAt: '2026-03-15T00:00:00.000Z',
+            lastUsedAt: '2026-03-15T00:00:00.000Z',
+            version: 1,
+            provenanceState: 'authoritative',
+          },
+        ],
       });
 
     await program.parseAsync(['node', 'coral-cli', 'list']);
 
-    expect(mockState.providerList).toHaveBeenCalledTimes(2);
-    expect(mockState.providerList).toHaveBeenCalledWith('codex');
-    expect(mockState.providerList).toHaveBeenCalledWith('claude');
+    expect(mockState.listSessions).toHaveBeenCalledTimes(1);
     expect(stdout).toContain('PROVIDER');
     expect(stdout).toContain('codex');
+    expect(stdout).toContain('claude');
     expect(stdout).toContain('session-1');
-    expect(stdout).not.toContain('session-2');
+    expect(stdout).toContain('session-2');
   });
 
   it('routes workflow launches into launchAndFollow by default', async () => {
@@ -493,12 +470,9 @@ describe('cli main routing', () => {
     writeFileSync(contextFile, 'workflow context');
     try {
       mockState.workflow.mockResolvedValueOnce({
-        ok: true,
-        data: {
-          status: 'queued',
-          job: 'job-2',
-          session: 'session-2',
-        },
+        launchState: 'queued',
+        job: 'job-2',
+        session: 'session-2',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -522,15 +496,15 @@ describe('cli main routing', () => {
       ]);
 
       expect(mockState.workflow).toHaveBeenCalledWith('(architect)', {
-        start_prompt: 'workflow start',
+        startPrompt: 'workflow start',
         context: 'workflow context',
         provider: 'codex',
-        work_dir: '/tmp/workflow',
+        workDir: '/tmp/workflow',
         owner: 'owner-1',
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
-          status: 'queued',
+          launchState: 'queued',
           job: 'job-2',
           session: 'session-2',
         },

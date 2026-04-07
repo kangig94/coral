@@ -44,22 +44,13 @@ import {
 } from '../workflow/pipe-executor.js';
 import type { WorkflowInput } from '../workflow/schemas.js';
 import type { PipelineAST } from '../workflow/types.js';
-import {
-  CliBusyError,
-  LaunchCoordinator,
-  type AdmissionResult,
-  type LaunchPool,
-  type QueuedHandle,
-} from './engine.js';
+import { CliBusyError, LaunchCoordinator, type AdmissionResult, type LaunchPool, type QueuedHandle } from './engine.js';
 import { AbortRegistry, type AbortResult } from './abort-registry.js';
 import { buildCoralInstruction } from './instruction.js';
 import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
-import { SessionManager } from './session-manager.js';
+import { SessionManager, type SessionAllocateOptions } from './session-manager.js';
 import { TypedEventBus } from './event-bus.js';
-import {
-  type ProviderHostManager,
-  type ProviderServerAttachment,
-} from './host-manager.js';
+import { type ProviderHostManager, type ProviderServerAttachment } from './host-manager.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 
 import type { CallerContext } from './request-context.js';
@@ -69,6 +60,7 @@ declare const __PLUGIN_ROOT__: string;
 
 export interface ExecInput {
   prompt: string;
+  agent?: string;
   name?: string;
   model?: string;
   pool?: LaunchPool;
@@ -133,6 +125,23 @@ const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
+type ResolvedAgentLaunchProfile = {
+  agentName: string;
+  name: string;
+  model?: string;
+  instruction: ProviderInstruction;
+};
+type EffectiveContinuationProfile = {
+  model: string;
+  cwd: string;
+  effort?: string;
+  bypassPermissions: boolean;
+  systemPrompt?: string;
+  instruction?: ProviderInstruction;
+  controllerProfile?: SessionAllocateOptions['controllerProfile'];
+  coralEnv: Record<string, string>;
+  agentName?: string;
+};
 
 type InterruptedAppServerReason = 'restart' | 'handoff';
 type InterruptedProbeOutcome = 'verified' | 'missing' | 'unavailable' | 'waiting';
@@ -143,8 +152,10 @@ type InterruptedAppServerFinalization = {
 };
 
 const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
-const APP_SERVER_RESTART_NOTICE = 'Backend restarted during the app-server turn. The interrupted turn was not replayed.';
-const APP_SERVER_HANDOFF_NOTICE = 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+const APP_SERVER_RESTART_NOTICE =
+  'Backend restarted during the app-server turn. The interrupted turn was not replayed.';
+const APP_SERVER_HANDOFF_NOTICE =
+  'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
 const APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE =
   'The job ended before a resumable conversation checkpoint for this turn was written.';
 const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation reference.';
@@ -155,6 +166,62 @@ const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
 
 function joinNotice(...parts: Array<string | undefined>): string {
   return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
+}
+
+function buildSessionControllerProfile(
+  coralEnv: Record<string, string>,
+): SessionAllocateOptions['controllerProfile'] | undefined {
+  const owner = coralEnv.CORAL_OWNER;
+  const effort = coralEnv.CORAL_EFFORT;
+  const claudeModelCap = coralEnv.CORAL_CLAUDE_MODEL_CAP;
+
+  if (owner === undefined && effort === undefined && claudeModelCap === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...(owner !== undefined ? { owner } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(claudeModelCap !== undefined ? { claudeModelCap } : {}),
+  };
+}
+
+function resolveAgentLaunchProfile(agentName: string): ResolvedAgentLaunchProfile {
+  const { content } = resolveCoralContent(agentName);
+  const meta = parseAgentMeta(content);
+  const instruction = buildCoralInstruction(stripAgentMetadata(content));
+
+  return {
+    agentName,
+    name: agentName,
+    model: meta.model,
+    instruction,
+  };
+}
+
+function buildEffectiveCoralEnv(
+  coralEnv: Record<string, string>,
+  options: {
+    effort?: string;
+    controllerProfile?: SessionAllocateOptions['controllerProfile'];
+  } = {},
+): Record<string, string> {
+  const merged = { ...coralEnv };
+  const storedProfile = options.controllerProfile;
+
+  if (storedProfile?.owner !== undefined && merged.CORAL_OWNER === undefined) {
+    merged.CORAL_OWNER = storedProfile.owner;
+  }
+  if (storedProfile?.claudeModelCap !== undefined && merged.CORAL_CLAUDE_MODEL_CAP === undefined) {
+    merged.CORAL_CLAUDE_MODEL_CAP = storedProfile.claudeModelCap;
+  }
+  if (options.effort !== undefined) {
+    merged.CORAL_EFFORT = options.effort;
+  } else if (storedProfile?.effort !== undefined && merged.CORAL_EFFORT === undefined) {
+    merged.CORAL_EFFORT = storedProfile.effort;
+  }
+
+  return merged;
 }
 
 function buildInterruptedAppServerReport(options: {
@@ -330,10 +397,7 @@ type LaunchOrchestratorDeps = {
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
-  checkpointRecovery: (
-    jobId: string,
-    update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta },
-  ) => void;
+  checkpointRecovery: (jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }) => void;
   finalizeProviderSession: (
     providerName: string,
     request: ProviderRequest,
@@ -620,12 +684,7 @@ class LaunchOrchestrator {
     await this.deps.finalizeProviderSession(providerName, request, sessionId, jobId, result);
   }
 
-  private handleProviderJobError(
-    jobId: string,
-    sessionId: string,
-    signal: AbortSignal,
-    error: unknown,
-  ): void {
+  private handleProviderJobError(jobId: string, sessionId: string, signal: AbortSignal, error: unknown): void {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
       return;
@@ -980,15 +1039,9 @@ export interface RecoveryCapableService {
     runtimeRecord: AppServerRuntimeRecord,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void>;
-  adoptRunningJob(
-    launchRecord: PersistedLaunchRecord,
-    runtimeRecord: PersistedRuntimeRecord,
-  ): { cleanup: () => void };
+  adoptRunningJob(launchRecord: PersistedLaunchRecord, runtimeRecord: PersistedRuntimeRecord): { cleanup: () => void };
   recoverQueuedJob(launchRecord: PersistedLaunchRecord): string;
-  interruptAppServerJob(
-    launchRecord: PersistedLaunchRecord,
-    runtimeRecord: AppServerRuntimeRecord,
-  ): Promise<void>;
+  interruptAppServerJob(launchRecord: PersistedLaunchRecord, runtimeRecord: AppServerRuntimeRecord): Promise<void>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
@@ -1138,8 +1191,7 @@ export class ExecutionService implements RecoveryCapableService {
       return;
     }
 
-    const baseNotice =
-      options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
+    const baseNotice = options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
     const provider = this.providerRegistry.get(launchRecord.provider);
     const session =
       this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
@@ -1200,7 +1252,9 @@ export class ExecutionService implements RecoveryCapableService {
                   serverGeneration: runtimeRecord.providerMeta.serverGeneration,
                 })
               : null;
-          const lease = liveServer ? this.createAttachedProviderServerLease(liveServer) : await this.acquireServer(spec);
+          const lease = liveServer
+            ? this.createAttachedProviderServerLease(liveServer)
+            : await this.acquireServer(spec);
           try {
             const probeResult = await provider.appServer.probe(lease, continuity);
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
@@ -1256,8 +1310,7 @@ export class ExecutionService implements RecoveryCapableService {
 
     let reportConversationRef: string | undefined;
     if (probeOutcome === 'verified') {
-      reportConversationRef =
-        mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
+      reportConversationRef = mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
     }
 
     const interruptedReport = buildInterruptedAppServerReport({
@@ -1365,12 +1418,190 @@ export class ExecutionService implements RecoveryCapableService {
         provider: providerName,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
-        providerContinuity:
-          update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
+        providerContinuity: update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
         recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
       },
     };
     this.progressStore.writeRuntimeRecord(jobId, record);
+  }
+
+  private resolveSessionByIdForContinuation(
+    sessionId: string,
+    ctx: CallerContext,
+  ): { providerName: string; session: SessionEntry } | LaunchDecision {
+    const session = SessionManager.getById(sessionId);
+    if (!session) {
+      return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
+    }
+    if (session.backendNamespace === undefined || session.projectRoot === undefined) {
+      return rejectLaunch(
+        'legacy_session_unsupported',
+        `Session ${sessionId} is missing stored backend scope metadata and cannot be continued by session id.`,
+      );
+    }
+    if (session.backendNamespace !== this.backendNamespace || session.projectRoot !== ctx.projectRoot) {
+      return rejectLaunch(
+        'scope_mismatch',
+        `Session ${sessionId} does not belong to this backend namespace and project scope.`,
+      );
+    }
+
+    return {
+      providerName: session.provider,
+      session,
+    };
+  }
+
+  private buildContinuationProfile(
+    input: Pick<ResumeInput | ForkInput, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
+    session: SessionEntry,
+    ctx: CallerContext,
+  ): EffectiveContinuationProfile {
+    const coralEnv = buildEffectiveCoralEnv(ctx.coralEnv, {
+      effort: input.effort,
+      controllerProfile: session.controllerProfile,
+    });
+
+    return {
+      model: input.model ?? session.model,
+      cwd: input.cwd ?? session.cwd,
+      effort: coralEnv.CORAL_EFFORT,
+      bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
+      systemPrompt: input.systemPrompt ?? session.systemPrompt,
+      instruction: input.instruction ?? session.instruction,
+      controllerProfile: buildSessionControllerProfile(coralEnv),
+      coralEnv,
+      agentName: session.agentName,
+    };
+  }
+
+  private async resumeResolved(
+    providerName: string,
+    provider: Provider,
+    session: SessionEntry,
+    input: ResumeInput,
+    ctx: CallerContext,
+  ): Promise<LaunchDecision> {
+    const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
+    if (session.state === 'non_resumable') {
+      return rejectLaunch(
+        'non_resumable',
+        `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
+      );
+    }
+    if (session.activeJobId) {
+      return rejectLaunch('session_busy', busyMessage);
+    }
+    const expectedVersion = session.version;
+    const pool = input.pool ?? 'default';
+
+    const preflightError = await runProviderPreflight(provider);
+    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+
+    const admitted = await this.claimAndAdmitJob(
+      session,
+      providerName,
+      ctx.projectRoot,
+      busyMessage,
+      expectedVersion,
+      pool,
+    );
+    if ('status' in admitted) return admitted;
+
+    const continuation = this.buildContinuationProfile(input, session, ctx);
+    const request: ProviderRequest = {
+      action: 'resume',
+      sessionId: session.sessionId,
+      prompt: input.prompt,
+      conversationRef: session.conversationRef,
+      model: continuation.model,
+      cwd: continuation.cwd,
+      effort: continuation.effort,
+      bypassPermissions: continuation.bypassPermissions,
+      systemPrompt: continuation.systemPrompt,
+      instruction: continuation.instruction,
+      coralEnv: continuation.coralEnv,
+    };
+
+    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
+      pool,
+      projectRoot: ctx.projectRoot,
+      parentWorkflowJobId: input.parentWorkflowJobId,
+    });
+  }
+
+  private async forkResolved(
+    providerName: string,
+    provider: Provider,
+    sourceSession: SessionEntry,
+    input: ForkInput,
+    ctx: CallerContext,
+  ): Promise<LaunchDecision> {
+    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
+    if (sourceSession.activeJobId) {
+      return rejectLaunch('session_busy', sourceBusyMessage);
+    }
+    const sourceExpectedVersion = sourceSession.version;
+
+    const preflightError = await runProviderPreflight(provider);
+    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+
+    const sourceClaimId = randomUUID();
+    const sourceClaimed = await this.sessionManager.claimForJobAtomic(
+      sourceSession.sessionId,
+      sourceClaimId,
+      sourceExpectedVersion,
+    );
+    if (!sourceClaimed) {
+      return rejectLaunch('session_busy', sourceBusyMessage);
+    }
+
+    try {
+      const name = input.name ?? `fork-${Date.now()}`;
+      const continuation = this.buildContinuationProfile(input, sourceSession, ctx);
+      const newSession = this.sessionManager.allocate({
+        provider: providerName,
+        name,
+        model: continuation.model,
+        cwd: continuation.cwd,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: this.backendNamespace,
+        ...(continuation.agentName !== undefined ? { agentName: continuation.agentName } : {}),
+        ...(continuation.instruction !== undefined ? { instruction: continuation.instruction } : {}),
+        bypassPermissions: continuation.bypassPermissions,
+        ...(continuation.systemPrompt !== undefined ? { systemPrompt: continuation.systemPrompt } : {}),
+        ...(continuation.controllerProfile !== undefined ? { controllerProfile: continuation.controllerProfile } : {}),
+      });
+      const admitted = await this.claimAndAdmitJob(
+        newSession,
+        providerName,
+        ctx.projectRoot,
+        'New fork session already has an active job',
+        newSession.version,
+      );
+      if ('status' in admitted) return admitted;
+
+      const request: ProviderRequest = {
+        action: 'fork',
+        sessionId: newSession.sessionId,
+        name: input.name,
+        prompt: input.prompt ?? '',
+        conversationRef: sourceSession.conversationRef,
+        model: continuation.model,
+        cwd: continuation.cwd,
+        effort: continuation.effort,
+        bypassPermissions: continuation.bypassPermissions,
+        systemPrompt: continuation.systemPrompt,
+        instruction: continuation.instruction,
+        coralEnv: continuation.coralEnv,
+      };
+
+      return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
+        projectRoot: ctx.projectRoot,
+      });
+    } finally {
+      this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
+    }
   }
 
   private async claimAndAdmitJob(
@@ -1411,12 +1642,30 @@ export class ExecutionService implements RecoveryCapableService {
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
+    const resolvedAgent = input.agent ? resolveAgentLaunchProfile(input.agent) : null;
+    const effectiveCoralEnv = buildEffectiveCoralEnv(ctx.coralEnv, { effort: input.effort });
     const cwd = input.cwd ?? ctx.projectRoot;
-    const name = input.name ?? `session-${Date.now()}`;
-    const model = input.model ?? 'unknown';
+    const requestName = resolvedAgent?.name ?? input.name;
+    const name = requestName ?? `session-${Date.now()}`;
+    const model = input.model ?? resolvedAgent?.model ?? 'unknown';
     const pool = input.pool ?? 'default';
+    const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
+    const instruction = resolvedAgent?.instruction ?? input.instruction;
+    const bypassPermissions = input.bypassPermissions ?? false;
 
-    const session = this.sessionManager.allocate(providerName, name, model, cwd, ctx.projectRoot);
+    const session = this.sessionManager.allocate({
+      provider: providerName,
+      name,
+      model,
+      cwd,
+      projectRoot: ctx.projectRoot,
+      backendNamespace: this.backendNamespace,
+      ...(resolvedAgent !== null ? { agentName: resolvedAgent.agentName } : {}),
+      ...(instruction !== undefined ? { instruction } : {}),
+      bypassPermissions,
+      ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+      ...(controllerProfile !== undefined ? { controllerProfile } : {}),
+    });
     const admitted = await this.claimAndAdmitJob(
       session,
       providerName,
@@ -1430,15 +1679,15 @@ export class ExecutionService implements RecoveryCapableService {
     const request: ProviderRequest = {
       action: 'exec',
       sessionId: session.sessionId,
-      name: input.name,
+      name: requestName,
       prompt: input.prompt,
-      model: input.model,
+      model,
       cwd,
-      effort: input.effort,
-      bypassPermissions: input.bypassPermissions ?? false,
+      effort: effectiveCoralEnv.CORAL_EFFORT,
+      bypassPermissions,
       systemPrompt: input.systemPrompt,
-      instruction: input.instruction,
-      coralEnv: ctx.coralEnv,
+      instruction,
+      coralEnv: effectiveCoralEnv,
     };
 
     return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
@@ -1452,123 +1701,46 @@ export class ExecutionService implements RecoveryCapableService {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const session = this.sessionManager.get(providerName, input.sessionId);
     if (!session)
       return rejectLaunch(
         'session_not_found',
         `Session not found: ${input.sessionId}. Use exec to start a new session.`,
       );
-    if (session.state === 'non_resumable') {
-      return rejectLaunch(
-        'non_resumable',
-        `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
-      );
-    }
-    if (session.activeJobId) {
-      return rejectLaunch('session_busy', busyMessage);
-    }
-    const expectedVersion = session.version;
-    const pool = input.pool ?? 'default';
-
-    const preflightError = await runProviderPreflight(provider);
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
-
-    const admitted = await this.claimAndAdmitJob(
-      session,
-      providerName,
-      ctx.projectRoot,
-      busyMessage,
-      expectedVersion,
-      pool,
-    );
-    if ('status' in admitted) return admitted;
-
-    const request: ProviderRequest = {
-      action: 'resume',
-      sessionId: session.sessionId,
-      prompt: input.prompt,
-      conversationRef: session.conversationRef,
-      model: input.model,
-      cwd: input.cwd ?? session.cwd,
-      effort: input.effort,
-      bypassPermissions: input.bypassPermissions ?? false,
-      systemPrompt: input.systemPrompt,
-      instruction: input.instruction,
-      coralEnv: ctx.coralEnv,
-    };
-
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
-      pool,
-      projectRoot: ctx.projectRoot,
-      parentWorkflowJobId: input.parentWorkflowJobId,
-    });
+    return this.resumeResolved(providerName, provider, session, input, ctx);
   }
 
   async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     const sourceSession = this.sessionManager.get(providerName, input.sessionId);
     if (!sourceSession)
       return rejectLaunch(
         'session_not_found',
         `Session not found: ${input.sessionId}. Use exec to start a new session.`,
       );
-    if (sourceSession.activeJobId) {
-      return rejectLaunch('session_busy', sourceBusyMessage);
-    }
-    const sourceExpectedVersion = sourceSession.version;
+    return this.forkResolved(providerName, provider, sourceSession, input, ctx);
+  }
 
-    const preflightError = await runProviderPreflight(provider);
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+  async resumeBySessionId(input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    if ('status' in resolved) return resolved;
 
-    const sourceClaimId = randomUUID();
-    const sourceClaimed = await this.sessionManager.claimForJobAtomic(
-      sourceSession.sessionId,
-      sourceClaimId,
-      sourceExpectedVersion,
-    );
-    if (!sourceClaimed) {
-      return rejectLaunch('session_busy', sourceBusyMessage);
-    }
+    const provider = this.providerRegistry.get(resolved.providerName);
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
-    try {
-      const name = input.name ?? `fork-${Date.now()}`;
-      const model = input.model ?? sourceSession.model;
-      const cwd = input.cwd ?? sourceSession.cwd;
-      const newSession = this.sessionManager.allocate(providerName, name, model, cwd, ctx.projectRoot);
-      const admitted = await this.claimAndAdmitJob(
-        newSession,
-        providerName,
-        ctx.projectRoot,
-        'New fork session already has an active job',
-        newSession.version,
-      );
-      if ('status' in admitted) return admitted;
+    return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
+  }
 
-      const request: ProviderRequest = {
-        action: 'fork',
-        sessionId: newSession.sessionId,
-        name: input.name,
-        prompt: input.prompt ?? '',
-        conversationRef: sourceSession.conversationRef,
-        model: input.model,
-        cwd,
-        effort: input.effort,
-        bypassPermissions: input.bypassPermissions ?? false,
-        systemPrompt: input.systemPrompt,
-        instruction: input.instruction,
-        coralEnv: ctx.coralEnv,
-      };
+  async forkBySessionId(input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    if ('status' in resolved) return resolved;
 
-      return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
-        projectRoot: ctx.projectRoot,
-      });
-    } finally {
-      this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
-    }
+    const provider = this.providerRegistry.get(resolved.providerName);
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
+
+    return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
   }
 
   async coralDispatch(
@@ -1577,28 +1749,23 @@ export class ExecutionService implements RecoveryCapableService {
     input: CoralInput,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
-    const { content } = resolveCoralContent(coralName);
-    const meta = parseAgentMeta(content);
-    const stripped = stripAgentMetadata(content);
-    const instruction = buildCoralInstruction(stripped);
-
-    const model = meta.model;
     const effort = input.effort;
     const cwd = input.cwd ?? ctx.projectRoot;
 
     if (input.sessionId) {
+      const resolvedAgent = resolveAgentLaunchProfile(coralName);
       return this.resume(
         providerName,
         {
           sessionId: input.sessionId,
           prompt: input.prompt,
-          name: coralName,
-          model,
+          name: resolvedAgent.name,
+          model: resolvedAgent.model,
           cwd,
           effort,
           bypassPermissions: input.bypassPermissions ?? true,
           systemPrompt: input.systemPrompt,
-          instruction,
+          instruction: resolvedAgent.instruction,
           parentWorkflowJobId: input.parentWorkflowJobId,
         },
         ctx,
@@ -1609,13 +1776,11 @@ export class ExecutionService implements RecoveryCapableService {
       providerName,
       {
         prompt: input.prompt,
-        name: `${coralName}-${Date.now()}`,
-        model,
+        agent: coralName,
         cwd,
         effort,
         bypassPermissions: input.bypassPermissions ?? true,
         systemPrompt: input.systemPrompt,
-        instruction,
         parentWorkflowJobId: input.parentWorkflowJobId,
       },
       ctx,
@@ -1633,13 +1798,16 @@ export class ExecutionService implements RecoveryCapableService {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
-    const session = this.sessionManager.allocate(
-      providerName,
-      `workflow-${Date.now()}`,
-      'workflow',
-      ctx.projectRoot,
-      ctx.projectRoot,
-    );
+    const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
+    const session = this.sessionManager.allocate({
+      provider: providerName,
+      name: `workflow-${Date.now()}`,
+      model: 'workflow',
+      cwd: ctx.projectRoot,
+      projectRoot: ctx.projectRoot,
+      backendNamespace: this.backendNamespace,
+      ...(controllerProfile !== undefined ? { controllerProfile } : {}),
+    });
     // Workflow jobs bypass the admission queue: the workflow coordinator itself
     // does not occupy a child-process slot — only the individual atoms it launches do.
     const jobId = this.abortRegistry.register();

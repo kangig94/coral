@@ -61,7 +61,7 @@ export interface MutableBackendRuntimeState extends ReadonlyBackendRuntimeState 
 
 export type ExecutionServiceLike = Pick<
   ExecutionService,
-  'start' | 'resume' | 'fork' | 'coralDispatch' | 'executeWorkflow' | 'list' | 'abort' | 'waitStream' | 'waitStreamOnce'
+  'start' | 'resumeBySessionId' | 'forkBySessionId' | 'executeWorkflow' | 'abort' | 'waitStream' | 'waitStreamOnce'
 >;
 
 export type ScopeCheckResult = {

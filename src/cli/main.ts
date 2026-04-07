@@ -4,19 +4,24 @@ declare const __VERSION__: string;
 import { existsSync, readFileSync } from 'node:fs';
 import { Command, Option } from 'commander';
 
-import { BackendClient, BackendToolHttpError, type CallerContext } from '../client/http-client.js';
+import {
+  BackendClient,
+  BackendToolHttpError,
+  type AcceptedLaunchResponse,
+  type CallerContext,
+} from '../client/http-client.js';
 import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import { assertOwnerId, collectCoralEnv } from '../shared/utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { AbortResult } from '../execution/abort-registry.js';
-import type { ListResult } from '../execution/service.js';
 import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
-import type { LaunchDecision, WaitStreamEvent } from '../shared/types.js';
+import type { WaitStreamEvent } from '../shared/types.js';
 import {
   type DiscussAbortResult,
   type DiscussStartResult,
+  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatKbDelete,
@@ -292,23 +297,19 @@ function parseJobIds(raw: string): string[] {
   return jobIds;
 }
 
-export function isLaunchDecision(value: unknown): value is LaunchDecision {
-  if (!isJsonObject(value) || typeof value.status !== 'string') {
+export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
+  if (!isJsonObject(value) || typeof value.launchState !== 'string') {
     return false;
   }
 
-  if (value.status === 'running' || value.status === 'queued') {
-    return typeof value.job === 'string' && typeof value.session === 'string';
-  }
-
-  if (value.status === 'rejected') {
-    return value.phase === 'preflight' && typeof value.code === 'string' && typeof value.message === 'string';
-  }
-
-  return false;
+  return (
+    (value.launchState === 'running' || value.launchState === 'queued') &&
+    typeof value.job === 'string' &&
+    typeof value.session === 'string'
+  );
 }
 
-export function emitLaunchDecision(decision: LaunchDecision, outputFormat: 'text' | 'json'): void {
+export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse, outputFormat: 'text' | 'json'): void {
   const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
   process.stdout.write(text + '\n');
 }
@@ -333,13 +334,21 @@ async function handleLaunchResult(
     return;
   }
 
+  if (!isAcceptedLaunchResponse(normalized.output)) {
+    emitError(
+      new Error(`Expected accepted launch response, received: ${JSON.stringify(normalized.output)}`),
+      outputFormat,
+    );
+    return;
+  }
+
   if (detach) {
-    emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
+    emitAcceptedLaunchResponse(normalized.output, outputFormat);
     return;
   }
 
   process.exitCode = await launchAndFollow({
-    launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
+    launchResult: normalized.output,
     abortJob: async (jobId) => {
       await client.abortJobs([jobId]);
     },
@@ -439,18 +448,17 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
           const prompt = resolveInput(opts.input);
           const client = makeClient(process.cwd());
           const requestOptions = {
-            ...(opts.session !== undefined ? { session: opts.session } : {}),
-            ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
+            ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
             ...(opts.model !== undefined ? { model: opts.model } : {}),
             ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
-            ...(opts.bypassPermissions !== undefined ? { bypass_permissions: opts.bypassPermissions } : {}),
+            ...(opts.bypassPermissions !== undefined ? { bypassPermissions: opts.bypassPermissions } : {}),
           };
-          const result = agent
-            ? await client.providerAgentDispatch(providerName, buildAgentOp(agent), prompt, requestOptions)
-            : await client.providerExec(
+          const result = opts.session
+            ? await client.sendMessage(opts.session, prompt, requestOptions)
+            : await client.createSession(
                 providerName,
                 prompt,
-                requestOptions as Parameters<BackendClient['providerExec']>[2],
+                agent ? { agent: buildAgentOp(agent), ...requestOptions } : requestOptions,
               );
           await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
@@ -482,36 +490,27 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
 
       try {
         const client = makeClient(process.cwd());
-
-        if (opts.provider !== undefined) {
-          if (!getProviderNames(providerRegistry).includes(opts.provider)) {
-            throw new Error(`Unknown provider: ${opts.provider}`);
-          }
-          const result = await client.providerList(opts.provider);
-          emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
-          return;
+        if (opts.provider !== undefined && !getProviderNames(providerRegistry).includes(opts.provider)) {
+          throw new Error(`Unknown provider: ${opts.provider}`);
         }
 
-        const results = await Promise.all(
-          getProviderNames(providerRegistry).map(async (providerName) => {
-            const result = await client.providerList(providerName);
-            const normalized = normalizeResult(result);
-            if (normalized.isError) {
-              throw normalized.output;
-            }
-            return {
-              providerName,
-              sessions: (normalized.output as ListResult).sessions.map((session) => ({
-                ...session,
-                provider: providerName,
-              })),
-            };
-          }),
-        );
-        const merged: ListResult = {
-          sessions: results.flatMap((result) => result.sessions),
+        const result = await client.listSessions();
+        const providerFiltered = opts.provider === undefined
+          ? result.sessions
+          : result.sessions.filter((session) => session.provider === opts.provider);
+        const displayResult: SessionListResult = {
+          sessions: providerFiltered.map((session) => ({
+            provider: session.provider,
+            sessionId: session.sessionId,
+            state: session.state,
+            name: session.name,
+            model: session.model,
+            cwd: session.cwd,
+          })),
         };
-        emit(merged, outputFormat, (data) => formatProviderList(data as ListResult, { includeProvider: true }));
+        emit(displayResult, outputFormat, (data) =>
+          formatProviderList(data as SessionListResult, { includeProvider: opts.provider === undefined }),
+        );
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -623,9 +622,9 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         const payload = {
           ...(opts.context !== undefined ? { context: resolveInput(opts.context) } : {}),
           ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
-          ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
+          ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
           ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
-          start_prompt: resolveInput(opts.startPrompt),
+          startPrompt: resolveInput(opts.startPrompt),
         };
 
         const client = makeClient(process.cwd());

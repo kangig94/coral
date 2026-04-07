@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage, type Server as HttpServer } from 'node:http';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type { WaitStreamEvent } from '../../shared/types.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '../server.js';
@@ -69,23 +69,20 @@ function createDeferred<T = void>() {
 
 type FakeExecutionService = {
   start: ReturnType<typeof vi.fn>;
-  resume: ReturnType<typeof vi.fn>;
-  fork: ReturnType<typeof vi.fn>;
-  coralDispatch: ReturnType<typeof vi.fn>;
+  resumeBySessionId: ReturnType<typeof vi.fn>;
+  forkBySessionId: ReturnType<typeof vi.fn>;
   executeWorkflow: ReturnType<typeof vi.fn>;
-  list: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
+  waitStreamOnce: ReturnType<typeof vi.fn>;
 };
 
 function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {}): FakeExecutionService {
   return {
     start: vi.fn(),
-    resume: vi.fn(),
-    fork: vi.fn(),
-    coralDispatch: vi.fn(),
+    resumeBySessionId: vi.fn(),
+    forkBySessionId: vi.fn(),
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
-    list: vi.fn(() => ({ sessions: [] })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
       yield {
@@ -104,6 +101,10 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         result: { content: 'done' },
       };
     }),
+    waitStreamOnce: vi.fn(async () => ({
+      type: 'timeout',
+      runningJobIds: [],
+    })),
     ...overrides,
   };
 }
@@ -353,13 +354,6 @@ function parseToolData(result: ToolDomainResult): unknown {
     throw new Error(`Unexpected tool error: ${result.code}`);
   }
   return result.data;
-}
-
-function parseToolError(result: ToolDomainResult): Exclude<ToolDomainResult, { ok: true }> {
-  if (result.ok) {
-    throw new Error('Unexpected tool success');
-  }
-  return result;
 }
 
 describe('execution backend server', () => {
@@ -629,7 +623,7 @@ describe('execution backend server', () => {
     };
 
     const waitForService = async (projectRoot: string, jobId: string): Promise<void> => {
-      const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+      const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -866,15 +860,15 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        args: { query: 'test' },
-        context: { projectRoot: '/tmp/project', coralEnv: {} },
+        query: 'test',
+        projectRoot: '/tmp/project',
       }),
     });
 
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as ToolDomainResult;
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as Record<string, unknown>;
     // Mock KB subsystem has no real runtime, so the handler catches the error
-    expect(parseToolError(body)).toMatchObject({
+    expect(body).toMatchObject({
       code: 'kb_error',
     });
   });
@@ -968,14 +962,13 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        args: {},
-        context: { projectRoot, coralEnv: {} },
+        projectRoot,
       }),
     });
 
     expect(listResponse.status).toBe(200);
-    const listBody = (await listResponse.json()) as ToolDomainResult;
-    expect(parseToolData(listBody)).toEqual({
+    const listBody = (await listResponse.json()) as Record<string, unknown>;
+    expect(listBody).toEqual({
       memos: [
         { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
         { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
@@ -989,14 +982,14 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        args: { pattern: 'a*' },
-        context: { projectRoot, coralEnv: {} },
+        pattern: 'a*',
+        projectRoot,
       }),
     });
 
     expect(deleteResponse.status).toBe(200);
-    const deleteBody = (await deleteResponse.json()) as ToolDomainResult;
-    expect(parseToolData(deleteBody)).toEqual({
+    const deleteBody = (await deleteResponse.json()) as Record<string, unknown>;
+    expect(deleteBody).toEqual({
       deleted: ['a.md'],
       count: 1,
     });
@@ -1008,27 +1001,32 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        args: {},
-        context: { projectRoot, coralEnv: {} },
+        projectRoot,
       }),
     });
 
     expect(purgeResponse.status).toBe(200);
-    const purgeBody = (await purgeResponse.json()) as ToolDomainResult;
-    expect(parseToolData(purgeBody)).toEqual({ deleted: 1 });
+    const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
+    expect(purgeBody).toEqual({ deleted: 1 });
   });
 
-  describe('dedicated discuss and KB routes', () => {
-    function createHttpHandlerDeps(options: {
-      kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
-      launchFenceActive?: boolean;
-    } = {}) {
+  describe('resource-oriented HTTP routes', () => {
+    function createHttpHandlerDeps(
+      options: {
+        kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
+        launchFenceActive?: boolean;
+        executionService?: FakeExecutionService;
+        abortJobs?: HttpHandlerDeps['abortJobs'];
+        scopeCheckJobs?: HttpHandlerDeps['scopeCheckJobs'];
+      } = {},
+    ) {
       const { runtimeState } = createRuntimeStateMock();
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register({
         name: 'codex',
         execute: vi.fn(async () => ({ content: 'ok' })),
       });
+      const executionService = options.executionService ?? createFakeExecutionService();
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
       runtimeState.setKbSubsystem(options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem);
@@ -1053,11 +1051,11 @@ describe('execution backend server', () => {
         streamResponses: new Set(),
         isDrainRequested: () => false,
         requestDrain: () => {},
-        getExecutionService: () => createFakeExecutionService() as never,
+        getExecutionService: () => executionService as never,
         getDiscussContext: () => ({}) as never,
         providerRegistry,
-        abortJobs: () => ({ aborted: [], notFound: [] }),
-        scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
+        abortJobs: options.abortJobs ?? (() => ({ aborted: [], notFound: [] })),
+        scopeCheckJobs: options.scopeCheckJobs ?? (() => ({ valid: [], missing: [], mismatch: [] })),
         subscribeBackendEvents: () => {},
         unsubscribeBackendEvents: () => {},
         liveDiscussCount: () => 0,
@@ -1065,7 +1063,7 @@ describe('execution backend server', () => {
         loadDiscussDetail: () => null,
       };
 
-      return { deps, runtimeState };
+      return { deps, runtimeState, executionService };
     }
 
     async function startHttpHandlerServer(
@@ -1091,10 +1089,15 @@ describe('execution backend server', () => {
       };
     }
 
-    async function startMockedDedicatedRouteServer(options: {
-      kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
-      launchFenceActive?: boolean;
-    } = {}) {
+    async function startMockedRouteServer(
+      options: {
+        kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
+        launchFenceActive?: boolean;
+        executionService?: FakeExecutionService;
+        abortJobs?: HttpHandlerDeps['abortJobs'];
+        scopeCheckJobs?: HttpHandlerDeps['scopeCheckJobs'];
+      } = {},
+    ) {
       vi.resetModules();
 
       const discussTools = {
@@ -1126,14 +1129,28 @@ describe('execution backend server', () => {
       vi.doMock('../kb-tools.js', () => kbTools);
 
       const { createHttpHandler } = await import('../http-handler.js');
-      const { deps } = createHttpHandlerDeps(options);
-      const started = await startHttpHandlerServer(deps, createHttpHandler);
+      const created = createHttpHandlerDeps(options);
+      const started = await startHttpHandlerServer(created.deps, createHttpHandler);
       return {
         ...started,
-        deps,
+        ...created,
         discussTools,
         kbTools,
       };
+    }
+
+    async function withBaseCoralEnv<T>(fn: () => Promise<T>): Promise<T> {
+      const previous = process.env.CORAL_TEST_HTTP_BASE;
+      process.env.CORAL_TEST_HTTP_BASE = 'daemon-base';
+      try {
+        return await fn();
+      } finally {
+        if (previous === undefined) {
+          delete process.env.CORAL_TEST_HTTP_BASE;
+        } else {
+          process.env.CORAL_TEST_HTTP_BASE = previous;
+        }
+      }
     }
 
     afterEach(() => {
@@ -1171,56 +1188,54 @@ describe('execution backend server', () => {
         args: { session: 'session-1', agent_name: 'alpha', content: 'Ship it.' },
         handlerName: 'handleDiscussParticipate',
       },
-    ])('routes POST /discuss/$action through $handlerName', async ({ action, args, handlerName }) => {
-      const started = await startMockedDedicatedRouteServer();
-      const expectedContext = {
-        projectRoot: '/tmp/project',
-        pluginRoot: '/tmp/plugin',
-        coralEnv: { CORAL_OWNER: 'team-a' },
-      };
+    ])('routes POST /discuss/$action with direct bodies and server-built context', async ({ action, args, handlerName }) => {
+      await withBaseCoralEnv(async () => {
+        const started = await startMockedRouteServer();
 
-      try {
-        const response = await fetch(`${started.baseUrl}/discuss/${action}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            args,
-            context: {
-              projectRoot: '/tmp/project',
-              pluginRoot: '/ignored/plugin-root',
-              coralEnv: {
-                CORAL_OWNER: 'team-a',
-                CORAL_CHILD: 'ignore-me',
-                IGNORED: 'ignore-me-too',
-              },
+        try {
+          const response = await fetch(`${started.baseUrl}/discuss/${action}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
             },
-          }),
-        });
-
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({
-          ok: true,
-          data: { route: `discuss:${action}`, args },
-        });
-
-        const handler = started.discussTools[handlerName as keyof typeof started.discussTools];
-        const call = handler.mock.calls[0] as unknown[] | undefined;
-        expect(handler).toHaveBeenCalledTimes(1);
-        expect(call?.[0]).toEqual(args);
-        if (action !== 'seed') {
-          expect(call?.[1]).toEqual(expectedContext);
-        }
-        if (action === 'start' || action === 'abort' || action === 'watch' || action === 'participate') {
-          expect(call?.[2]).toMatchObject({
-            getDiscussContext: started.deps.getDiscussContext,
+            body: JSON.stringify({
+              ...args,
+              projectRoot: '/tmp/project',
+              owner: 'team-a',
+              effort: 'high',
+              claudeModelCap: 'sonnet',
+            }),
           });
+
+          expect(response.status).toBe(200);
+          expect(await response.json()).toEqual({ route: `discuss:${action}`, args });
+
+          const handler = started.discussTools[handlerName as keyof typeof started.discussTools];
+          const call = handler.mock.calls[0] as unknown[] | undefined;
+          expect(handler).toHaveBeenCalledTimes(1);
+          expect(call?.[0]).toEqual(args);
+          if (action !== 'seed') {
+            expect(call?.[1]).toMatchObject({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+              coralEnv: expect.objectContaining({
+                CORAL_TEST_HTTP_BASE: 'daemon-base',
+                CORAL_OWNER: 'team-a',
+                CORAL_EFFORT: 'high',
+                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+              }),
+            });
+          }
+          if (action === 'start' || action === 'abort' || action === 'watch' || action === 'participate') {
+            expect(call?.[2]).toMatchObject({
+              getDiscussContext: started.deps.getDiscussContext,
+            });
+          }
+        } finally {
+          await _closeHttpServer(started.server);
         }
-      } finally {
-        await _closeHttpServer(started.server);
-      }
+      });
     });
 
     it.each([
@@ -1287,91 +1302,105 @@ describe('execution backend server', () => {
       {
         action: 'memo',
         args: { topic: 'routing', content: 'memo', owner: 'owner-a' },
+        expectedArgs: { topic: 'routing', content: 'memo' },
         handlerName: 'handleKbMemo',
         callShape: 'args-context',
       },
       {
         action: 'memo-list',
         args: { owner: 'owner-a' },
+        expectedArgs: {},
         handlerName: 'handleKbMemoList',
         callShape: 'args-context',
       },
       {
         action: 'memo-delete',
         args: { pattern: '*', owner: 'owner-a' },
+        expectedArgs: { pattern: '*' },
         handlerName: 'handleKbMemoDelete',
         callShape: 'args-context',
       },
       {
         action: 'memo-purge',
         args: { owner: 'owner-a' },
+        expectedArgs: {},
         handlerName: 'handleKbMemoPurge',
         callShape: 'args-context',
       },
-    ])('routes POST /kb/$action through $handlerName', async ({ action, args, handlerName, callShape }) => {
-      const started = await startMockedDedicatedRouteServer();
-      const expectedContext = {
-        projectRoot: '/tmp/project',
-        pluginRoot: '/tmp/plugin',
-        coralEnv: { CORAL_OWNER: 'team-a' },
-      };
-      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+    ])(
+      'routes POST /kb/$action with direct bodies and stripped controller fields',
+      async ({ action, args, expectedArgs, handlerName, callShape }) => {
+      await withBaseCoralEnv(async () => {
+        const started = await startMockedRouteServer();
+        const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+        const effectiveArgs = expectedArgs ?? args;
 
-      try {
-        const response = await fetch(`${started.baseUrl}/kb/${action}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            args,
-            context: {
-              projectRoot: '/tmp/project',
-              pluginRoot: '/ignored/plugin-root',
-              coralEnv: {
-                CORAL_OWNER: 'team-a',
-                CORAL_CHILD: 'ignore-me',
-                IGNORED: 'ignore-me-too',
-              },
+        try {
+          const response = await fetch(`${started.baseUrl}/kb/${action}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
             },
-          }),
-        });
+            body: JSON.stringify({
+              ...args,
+              projectRoot: '/tmp/project',
+              owner: 'team-a',
+              effort: 'high',
+              claudeModelCap: 'sonnet',
+            }),
+          });
 
-        expect(response.status).toBe(200);
-        expect(await response.json()).toEqual({
-          ok: true,
-          data: { route: `kb:${action}`, args },
-        });
+          expect(response.status).toBe(200);
+          expect(await response.json()).toEqual({ route: `kb:${action}`, args: effectiveArgs });
 
-        const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
-        const call = handler.mock.calls[0] as unknown[] | undefined;
-        expect(handler).toHaveBeenCalledTimes(1);
-        expect(call?.[0]).toEqual(args);
-        switch (callShape) {
-          case 'args-kb':
-            expect(call?.[1]).toBe(kbSubsystem);
-            break;
-          case 'args-context':
-            expect(call?.[1]).toEqual(expectedContext);
-            break;
-          case 'args-kb-context':
-            expect(call?.[1]).toBe(kbSubsystem);
-            expect(call?.[2]).toEqual(expectedContext);
-            break;
-          default:
-            throw new Error(`Unexpected call shape: ${String(callShape)}`);
+          const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
+          const call = handler.mock.calls[0] as unknown[] | undefined;
+          expect(handler).toHaveBeenCalledTimes(1);
+          expect(call?.[0]).toEqual(effectiveArgs);
+          switch (callShape) {
+            case 'args-kb':
+              expect(call?.[1]).toBe(kbSubsystem);
+              break;
+            case 'args-context':
+              expect(call?.[1]).toMatchObject({
+                projectRoot: '/tmp/project',
+                pluginRoot: '/tmp/plugin',
+                coralEnv: expect.objectContaining({
+                  CORAL_TEST_HTTP_BASE: 'daemon-base',
+                  CORAL_OWNER: 'team-a',
+                  CORAL_EFFORT: 'high',
+                  CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+                }),
+              });
+              break;
+            case 'args-kb-context':
+              expect(call?.[1]).toBe(kbSubsystem);
+              expect(call?.[2]).toMatchObject({
+                projectRoot: '/tmp/project',
+                pluginRoot: '/tmp/plugin',
+                coralEnv: expect.objectContaining({
+                  CORAL_TEST_HTTP_BASE: 'daemon-base',
+                  CORAL_OWNER: 'team-a',
+                  CORAL_EFFORT: 'high',
+                  CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+                }),
+              });
+              break;
+            default:
+              throw new Error(`Unexpected call shape: ${String(callShape)}`);
+          }
+        } finally {
+          await _closeHttpServer(started.server);
         }
-      } finally {
-        await _closeHttpServer(started.server);
-      }
+      });
     });
 
     it.each([
       ['/discuss/seed', 'handleDiscussSeed'],
       ['/kb/search', 'handleKbSearch'],
     ])('rejects invalid JSON for %s before invoking the handler', async (path, handlerName) => {
-      const started = await startMockedDedicatedRouteServer();
+      const started = await startMockedRouteServer();
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
@@ -1384,7 +1413,10 @@ describe('execution backend server', () => {
         });
 
         expect(response.status).toBe(400);
-        expect(await response.json()).toEqual({ error: 'invalid_json' });
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: 'Invalid JSON body',
+        });
         if (path.startsWith('/discuss/')) {
           expect(started.discussTools[handlerName as keyof typeof started.discussTools]).not.toHaveBeenCalled();
         } else {
@@ -1396,9 +1428,9 @@ describe('execution backend server', () => {
     });
 
     it.each(['/discuss/seed', '/kb/search'])(
-      'rejects malformed contextual envelopes for %s before invoking route handlers',
+      'rejects malformed direct bodies for %s before invoking route handlers',
       async (path) => {
-        const started = await startMockedDedicatedRouteServer();
+        const started = await startMockedRouteServer();
 
         try {
           const response = await fetch(`${started.baseUrl}${path}`, {
@@ -1407,12 +1439,11 @@ describe('execution backend server', () => {
               'Content-Type': 'application/json',
               'X-Coral-Backend-Token': 'test-token',
             },
-            body: JSON.stringify({ args: {} }),
+            body: JSON.stringify({ query: 'contracts' }),
           });
 
-          expect(response.status).toBe(200);
+          expect(response.status).toBe(400);
           expect(await response.json()).toEqual({
-            ok: false,
             code: 'invalid_request',
             message: 'invalid request',
           });
@@ -1432,7 +1463,7 @@ describe('execution backend server', () => {
         handlerName: 'handleDiscussParticipate',
       },
     ])('returns 503 from /discuss/$action while the launch fence is active', async ({ action, args, handlerName }) => {
-      const started = await startMockedDedicatedRouteServer({ launchFenceActive: true });
+      const started = await startMockedRouteServer({ launchFenceActive: true });
 
       try {
         const response = await fetch(`${started.baseUrl}/discuss/${action}`, {
@@ -1442,14 +1473,13 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            args,
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
+            ...args,
+            projectRoot: '/tmp/project',
           }),
         });
 
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
-          ok: false,
           code: 'backend_recovering',
           message: 'recovering — retry after 500ms',
         });
@@ -1460,7 +1490,7 @@ describe('execution backend server', () => {
     });
 
     it('allows /discuss/watch through while the launch fence is active', async () => {
-      const started = await startMockedDedicatedRouteServer({ launchFenceActive: true });
+      const started = await startMockedRouteServer({ launchFenceActive: true });
 
       try {
         const response = await fetch(`${started.baseUrl}/discuss/watch`, {
@@ -1470,15 +1500,15 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            args: { session: 'session-1' },
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
+            session: 'session-1',
+            projectRoot: '/tmp/project',
           }),
         });
 
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({
-          ok: true,
-          data: { route: 'discuss:watch', args: { session: 'session-1' } },
+          route: 'discuss:watch',
+          args: { session: 'session-1' },
         });
         expect(started.discussTools.handleDiscussWatch).toHaveBeenCalledTimes(1);
       } finally {
@@ -1498,14 +1528,13 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            args: { query: 'contracts' },
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
+            query: 'contracts',
+            projectRoot: '/tmp/project',
           }),
         });
 
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
-          ok: false,
           code: 'kb_unavailable',
           message: 'Knowledge base is not available. Check backend health for details.',
         });
@@ -1532,14 +1561,13 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            args,
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
+            ...args,
+            projectRoot: '/tmp/project',
           }),
         });
 
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({
-          ok: false,
           code: 'invalid_request',
         });
       } finally {
@@ -1571,14 +1599,13 @@ describe('execution backend server', () => {
             'X-Coral-Backend-Token': 'test-token',
           },
           body: JSON.stringify({
-            args,
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
+            ...args,
+            projectRoot: '/tmp/project',
           }),
         });
 
-        expect(response.status).toBe(200);
+        expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({
-          ok: false,
           code: 'invalid_request',
         });
       } finally {
@@ -1586,7 +1613,7 @@ describe('execution backend server', () => {
       }
     });
 
-    it('returns dedicated-route unknown-action errors with legacy tool names', async () => {
+    it('returns unknown-action errors with raw action names', async () => {
       const { deps } = createHttpHandlerDeps();
       const started = await startHttpHandlerServer(deps);
 
@@ -1598,10 +1625,7 @@ describe('execution backend server', () => {
               'Content-Type': 'application/json',
               'X-Coral-Backend-Token': 'test-token',
             },
-            body: JSON.stringify({
-              args: {},
-              context: { projectRoot: '/tmp/project', coralEnv: {} },
-            }),
+            body: JSON.stringify({ projectRoot: '/tmp/project' }),
           }),
           fetch(`${started.baseUrl}/kb/missing-action`, {
             method: 'POST',
@@ -1609,27 +1633,318 @@ describe('execution backend server', () => {
               'Content-Type': 'application/json',
               'X-Coral-Backend-Token': 'test-token',
             },
-            body: JSON.stringify({
-              args: {},
-              context: { projectRoot: '/tmp/project', coralEnv: {} },
-            }),
+            body: JSON.stringify({ projectRoot: '/tmp/project' }),
           }),
         ]);
 
-        expect(discussResponse.status).toBe(200);
+        expect(discussResponse.status).toBe(404);
         expect(await discussResponse.json()).toEqual({
-          ok: false,
           code: 'not_found',
-          message: 'Unknown tool: discuss_missing_action',
+          message: 'Unknown discuss action: missing-action',
         });
 
-        expect(kbResponse.status).toBe(200);
+        expect(kbResponse.status).toBe(404);
         expect(await kbResponse.json()).toEqual({
-          ok: false,
           code: 'unknown_tool',
-          message: 'Unknown tool: kb_missing_action',
-          detail: { name: 'kb_missing_action' },
+          message: 'Unknown KB action: missing-action',
         });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('routes POST /sessions through service.start with accepted launch responses', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hello',
+              projectRoot: '/tmp/project',
+              agent: 'architect',
+              model: 'gpt-5',
+              workDir: '/tmp/work',
+              owner: 'team-a',
+              effort: 'high',
+              claudeModelCap: 'sonnet',
+              bypassPermissions: true,
+              systemPrompt: 'system',
+            }),
+          });
+
+          expect(response.status).toBe(201);
+          expect(await response.json()).toEqual({
+            session: 'session-start',
+            job: 'job-start',
+            launchState: 'running',
+          });
+          expect(fakeService.start).toHaveBeenCalledWith(
+            'codex',
+            {
+              prompt: 'hello',
+              agent: 'architect',
+              model: 'gpt-5',
+              cwd: '/tmp/work',
+              bypassPermissions: true,
+              systemPrompt: 'system',
+            },
+            expect.objectContaining({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+              coralEnv: expect.objectContaining({
+                CORAL_TEST_HTTP_BASE: 'daemon-base',
+                CORAL_OWNER: 'team-a',
+                CORAL_EFFORT: 'high',
+                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+              }),
+            }),
+          );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('routes POST /sessions/:id/messages through service.resumeBySessionId', async () => {
+      const fakeService = createFakeExecutionService({
+        resumeBySessionId: vi.fn(async () => ({ status: 'queued', job: 'job-message', session: 'session-1' })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/session-1/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'continue',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+            bypassPermissions: true,
+            systemPrompt: 'continue-system',
+          }),
+        });
+
+        expect(response.status).toBe(202);
+        expect(await response.json()).toEqual({
+          session: 'session-1',
+          job: 'job-message',
+          launchState: 'queued',
+        });
+        expect(fakeService.resumeBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId: 'session-1',
+            prompt: 'continue',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
+            bypassPermissions: true,
+            systemPrompt: 'continue-system',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('routes POST /sessions/:id/forks through service.forkBySessionId', async () => {
+      const fakeService = createFakeExecutionService({
+        forkBySessionId: vi.fn(async () => ({ status: 'running', job: 'job-fork', session: 'session-child' })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/session-parent/forks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'branch',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+            bypassPermissions: false,
+            systemPrompt: 'fork-system',
+          }),
+        });
+
+        expect(response.status).toBe(201);
+        expect(await response.json()).toEqual({
+          session: 'session-child',
+          job: 'job-fork',
+          launchState: 'running',
+        });
+        expect(fakeService.forkBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId: 'session-parent',
+            prompt: 'branch',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
+            bypassPermissions: false,
+            systemPrompt: 'fork-system',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('maps workflow camelCase request fields before calling executeWorkflow', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'codex',
+              workDir: '/tmp/workflow',
+              projectRoot: '/tmp/project',
+              owner: 'team-a',
+              claudeModelCap: 'sonnet',
+            }),
+          });
+
+          expect(response.status).toBe(202);
+          expect(await response.json()).toEqual({
+            session: 'workflow-session',
+            job: 'workflow-job',
+            launchState: 'running',
+          });
+          expect(fakeService.executeWorkflow).toHaveBeenCalledWith(
+            'codex',
+            expect.any(Array),
+            {
+              expression: 'architect',
+              start_prompt: 'Begin',
+              provider: 'codex',
+              work_dir: '/tmp/workflow',
+              owner: 'team-a',
+            },
+            expect.objectContaining({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+              coralEnv: expect.objectContaining({
+                CORAL_TEST_HTTP_BASE: 'daemon-base',
+                CORAL_OWNER: 'team-a',
+                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+              }),
+            }),
+            '/tmp/workflow',
+          );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('returns AbortResult directly from POST /jobs/abort and preserves partial misses', async () => {
+      const abortJobs = vi.fn((jobIds: string[]) => ({ aborted: jobIds.filter((job) => job === 'job-1'), notFound: ['job-2'] }));
+      const { deps } = createHttpHandlerDeps({
+        abortJobs,
+        scopeCheckJobs: () => ({ valid: ['job-1'], missing: ['job-2'], mismatch: [] }),
+      });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/abort`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            jobs: ['job-1', 'job-2'],
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          aborted: ['job-1'],
+          notFound: ['job-2'],
+        });
+        expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it.each([
+      {
+        name: 'scope mismatch',
+        scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: ['job-foreign'] }),
+        expectedStatus: 403,
+        expectedBody: {
+          code: 'scope_mismatch',
+          message: 'Jobs do not belong to this project',
+          detail: { jobs: ['job-foreign'] },
+        },
+      },
+      {
+        name: 'all missing',
+        scopeCheckJobs: () => ({ valid: [], missing: ['missing-job'], mismatch: [] }),
+        expectedStatus: 404,
+        expectedBody: {
+          code: 'jobs_not_found',
+          message: 'Requested jobs were not found',
+          detail: { jobs: ['missing-job'] },
+        },
+      },
+    ])('returns the new error contract from POST /jobs/abort for $name', async ({ scopeCheckJobs, expectedStatus, expectedBody }) => {
+      const { deps } = createHttpHandlerDeps({ scopeCheckJobs });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/abort`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            jobs: ['missing-job'],
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(expectedStatus);
+        expect(await response.json()).toEqual(expectedBody);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -1652,7 +1967,7 @@ describe('execution backend server', () => {
       progressStore,
     });
 
-    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1839,7 +2154,10 @@ describe('execution backend server', () => {
     });
 
     expect(missingResponse.status).toBe(404);
-    expect(await missingResponse.json()).toEqual({ error: 'job_not_found' });
+    expect(await missingResponse.json()).toEqual({
+      code: 'job_not_found',
+      message: 'Job not found: missing-job',
+    });
   });
 
   describe('/api/jobs phase filter', () => {
@@ -1965,40 +2283,113 @@ describe('execution backend server', () => {
     });
   });
 
-  it('lists persisted sessions by shard and skips corrupt entries', async () => {
+  it('lists only authoritative in-namespace sessions from /sessions and skips corrupt entries', async () => {
     const projectRoot = createProjectRoot('session-project');
-    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const foreignProjectRoot = createProjectRoot('foreign-session-project');
+    const visible = new SessionManager(projectRoot).allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+    });
+    new SessionManager(foreignProjectRoot).allocate({
+      provider: 'codex',
+      name: 'foreign',
+      model: 'gpt-5',
+      cwd: foreignProjectRoot,
+      projectRoot: foreignProjectRoot,
+      backendNamespace: foreignBackendNamespace,
+    });
+    new SessionManager(projectRoot).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
     const [shardDir] = SessionManager.listShards();
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
     const backend = await startBackendServer();
-    const response = await fetch(`${backend.baseUrl}/api/sessions`, {
+    const response = await fetch(`${backend.baseUrl}/sessions`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as {
-      sessions: Array<{ shardHash: string; sessions: Array<Record<string, unknown>> }>;
+      sessions: Array<Record<string, unknown>>;
     };
 
     expect(response.status).toBe(200);
     expect(body.sessions).toEqual([
-      {
-        shardHash: basename(shardDir),
-        sessions: [
-          expect.objectContaining({
-            sessionId: session.sessionId,
-            provider: 'codex',
-            state: 'pending',
-            version: 1,
-          }),
-        ],
-      },
+      expect.objectContaining({
+        sessionId: visible.sessionId,
+        provider: 'codex',
+        state: 'pending',
+        backendNamespace: testBackendNamespace,
+        provenanceState: 'authoritative',
+      }),
     ]);
   });
 
-  it('returns 400 when /wait/stream omits or empties projectRoot', async () => {
+  it('maps provider-less continuation errors on the new session routes', async () => {
+    const projectRoot = createProjectRoot('continuation-project');
+    const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
+    const foreign = new SessionManager(foreignProjectRoot).allocate({
+      provider: 'codex',
+      name: 'foreign',
+      model: 'gpt-5',
+      cwd: foreignProjectRoot,
+      projectRoot: foreignProjectRoot,
+      backendNamespace: testBackendNamespace,
+    });
+    const legacy = new SessionManager(projectRoot).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
+
+    const backend = await startBackendServer();
+    const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
+      fetch(`${backend.baseUrl}/sessions/missing-session/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          prompt: 'continue',
+          projectRoot,
+        }),
+      }),
+      fetch(`${backend.baseUrl}/sessions/${foreign.sessionId}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          prompt: 'continue',
+          projectRoot,
+        }),
+      }),
+      fetch(`${backend.baseUrl}/sessions/${legacy.sessionId}/forks`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+        },
+        body: JSON.stringify({
+          prompt: 'branch',
+          projectRoot,
+        }),
+      }),
+    ]);
+
+    expect(missingResponse.status).toBe(404);
+    expect(await missingResponse.json()).toMatchObject({ code: 'session_not_found' });
+
+    expect(mismatchResponse.status).toBe(403);
+    expect(await mismatchResponse.json()).toMatchObject({ code: 'scope_mismatch' });
+
+    expect(legacyResponse.status).toBe(409);
+    expect(await legacyResponse.json()).toMatchObject({ code: 'legacy_session_unsupported' });
+  });
+
+  it('returns 400 when /jobs/wait omits or empties projectRoot', async () => {
     const backend = await startBackendServer();
 
-    const missingResponse = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const missingResponse = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2010,7 +2401,7 @@ describe('execution backend server', () => {
       }),
     });
 
-    const emptyResponse = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const emptyResponse = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2024,12 +2415,12 @@ describe('execution backend server', () => {
     });
 
     expect(missingResponse.status).toBe(400);
-    expect(await missingResponse.json()).toEqual({ error: 'invalid_request' });
+    expect(await missingResponse.json()).toMatchObject({ code: 'invalid_request' });
     expect(emptyResponse.status).toBe(400);
-    expect(await emptyResponse.json()).toEqual({ error: 'invalid_request' });
+    expect(await emptyResponse.json()).toMatchObject({ code: 'invalid_request' });
   });
 
-  it('returns 403 before streaming when /wait/stream includes cross-project jobs', async () => {
+  it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore();
     createdJobIds.add('job-foreign');
@@ -2046,7 +2437,7 @@ describe('execution backend server', () => {
       progressStore,
     });
 
-    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2060,17 +2451,21 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({ error: 'scope_mismatch' });
+    expect(await response.json()).toEqual({
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: ['job-foreign'] },
+    });
     expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when /wait/stream receives only missing jobs', async () => {
+  it('returns 404 when /jobs/wait receives only missing jobs', async () => {
     const fakeService = createFakeExecutionService();
     const backend = await startBackendServer({
       createExecutionService: () => fakeService as never,
     });
 
-    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2084,7 +2479,11 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'jobs_not_found' });
+    expect(await response.json()).toEqual({
+      code: 'jobs_not_found',
+      message: 'Requested jobs were not found',
+      detail: { jobs: ['missing-job'] },
+    });
     expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 
@@ -2156,7 +2555,7 @@ describe('execution backend server', () => {
     new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
-    const response = await fetch(`${backend.baseUrl}/wait/stream`, {
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -3045,21 +3444,26 @@ describe('execution backend server', () => {
 
     it.each([
       {
-        name: 'direct provider exec',
-        path: '/provider/codex',
-        args: { op: 'exec', prompt: 'hello' },
+        name: 'session create',
+        path: '/sessions',
+        body: { provider: 'codex', prompt: 'hello', projectRoot: '/tmp/project' },
       },
       {
-        name: 'coral dispatch',
-        path: '/provider/codex',
-        args: { op: 'coral:architect', prompt: 'hello' },
+        name: 'session message',
+        path: '/sessions/session-1/messages',
+        body: { prompt: 'hello', projectRoot: '/tmp/project' },
+      },
+      {
+        name: 'session fork',
+        path: '/sessions/session-1/forks',
+        body: { prompt: 'hello', projectRoot: '/tmp/project' },
       },
       {
         name: 'workflow launch',
         path: '/workflow',
-        args: { expression: 'architect', start_prompt: 'hello' },
+        body: { expression: 'architect', startPrompt: 'hello', provider: 'codex', projectRoot: '/tmp/project' },
       },
-    ])('returns a domain error while the launch fence is active for $name', async ({ path, args }) => {
+    ])('returns a 503 while the launch fence is active for $name', async ({ path, body }) => {
       const fenced = await startFencedToolServer();
 
       try {
@@ -3069,15 +3473,11 @@ describe('execution backend server', () => {
             'Content-Type': 'application/json',
             'X-Coral-Backend-Token': 'test-token',
           },
-          body: JSON.stringify({
-            args,
-            context: { projectRoot: '/tmp/project', coralEnv: {} },
-          }),
+          body: JSON.stringify(body),
         });
 
         expect(response.status).toBe(503);
         expect(await response.json()).toEqual({
-          ok: false,
           code: 'backend_recovering',
           message: 'recovering — retry after 500ms',
         });

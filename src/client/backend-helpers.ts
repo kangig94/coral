@@ -11,7 +11,6 @@ import {
   parseWaitStreamEvent,
   WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
-import type { ToolDomainResult } from '../execution/tool-response.js';
 import type { WaitStreamEvent } from '../shared/types.js';
 
 export type BackendStatus = {
@@ -44,15 +43,6 @@ function throwBackendCommunicationError(error: unknown): never {
 
 export function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
   return isRecord(value) && value.error === 'backend_shutting_down';
-}
-
-export function isBackendRecoveringResult(value: unknown): value is Extract<ToolDomainResult, { ok: false }> {
-  return (
-    isRecord(value) &&
-    value.ok === false &&
-    value.code === 'backend_recovering' &&
-    typeof value.message === 'string'
-  );
 }
 
 export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
@@ -157,7 +147,7 @@ export async function* streamWait(
   }
 
   try {
-    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/wait/stream`, {
+    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
