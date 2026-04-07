@@ -1,7 +1,7 @@
 ---
 name: plan
-description: "Use when a task needs structured planning before implementation. Supports --deep and --codex flags."
-argument-hint: "[--deep] [--codex] [task description]"
+description: 'Use when a task needs structured planning before implementation. Supports --deep and --codex flags.'
+argument-hint: '[--deep] [--codex] [task description]'
 ---
 
 # Planning
@@ -10,26 +10,25 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Argument Routing
 
-| Argument | Mode |
-|----------|------|
-| `<prompt>` | Claude-native (default) |
-| `--codex` | Codex delegation (context from conversation) |
-| `--deep` | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), read HOW-COMPLETE, pass `--deep` to reviewers |
-| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step) |
+| Argument       | Mode                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `<prompt>`     | Claude-native (default)                                                                            |
+| `--codex`      | Codex delegation (context from conversation)                                                       |
+| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), read HOW-COMPLETE, pass `--deep` to reviewers |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
 
 Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
 
 <Planning_Protocol>
-  <Role>
-    You are the **Orchestrator**: write plans, dispatch reviewer workflows, synthesize feedback (or delegate to resolver in `--deep`), iterate until approval.
-    Treat reviewer feedback as collaborative input — engage with substance, not verdict.
-    Planning only — no source code, no EnterPlanMode, no implementation.
-  </Role>
-  <Protocol>
-    ### 1. Create Plan File
-    If invoked from preplan, `{topic}` is already defined. Otherwise, derive `{topic}` from the user's input as English kebab-case.
-    Write a stub plan file to `CORAL_PROJECT/plans/{topic}.md` **immediately** — before any research.
-    Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
+<Role>
+You are the **Orchestrator**: write plans, dispatch reviewer workflows, synthesize feedback (or delegate to resolver in `--deep`), iterate until approval.
+Treat reviewer feedback as collaborative input — engage with substance, not verdict.
+Planning only — no source code, no EnterPlanMode, no implementation.
+</Role>
+<Protocol> ### 1. Create Plan File
+If invoked from preplan, `{topic}` is already defined. Otherwise, derive `{topic}` from the user's input as English kebab-case.
+Write a stub plan file to `CORAL_PROJECT/plans/{topic}.md` **immediately** — before any research.
+Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not project-local.
 
     Stub structure (empty sections) — copy headings verbatim including parenthetical annotations:
       # [Plan Title]
@@ -129,17 +128,14 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     **4a. Workflow Dispatch**
 
     ```
-    workflow({
-      expression: "(architect, critic)" + (if --deep: " -> resolver"),
-      start_prompt: "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}",
-      context: (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes.",  // fixed — do not add dynamic content
-      work_dir: "{work_dir}",
-      provider: "{phase provider}"
-    })
+    expression = "(architect, critic)" or "(architect, critic) -> resolver" when --deep
+    startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
+    sharedContext = (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes."
+    launch = Bash(`coral-cli workflow "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d --output-format json`)
     ```
-    - **If `--deep`**: `wait({ jobs: [job] })` →
-      `{ start, end } = result.workflow.steps.find(s => s.agent === "resolver")` → `Read(result.path, start, end - start + 1)`.
-    - **Otherwise**: `wait({ jobs: [job] })` → use `result.content ?? Read(result.path)`.
+    - **If `--deep`**: `coral-cli wait --jobs "<job>" --output-format json` →
+      read the terminal JSON line, then `{ start, end } = event.result.workflow.steps.find(s => s.agent === "resolver")` → `Read(event.result.path, start, end - start + 1)`.
+    - **Otherwise**: `coral-cli wait --jobs "<job>" --output-format json --embed` → use `event.result.content ?? Read(event.result.path)`.
 
     **4b. Post-Round Processing**
 
@@ -147,8 +143,9 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     Read the updated plan file, then the resolver's synthesis report from the workflow result.
     Record Deferred/Diverged items.
     ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
+    ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision, revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
 
-    **Otherwise**: `result.content ?? Read(result.path)` is `<architect>…</architect>` + `<critic>…</critic>`.
+    **Otherwise**: the terminal JSON line from `coral-cli wait` yields `<architect>…</architect>` + `<critic>…</critic>` in `event.result.content`; if it is absent, read `event.result.path`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
     If findings invalidate the current approach, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round.
 
@@ -246,6 +243,7 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ### 5. Completion
     Delete all Phase Tasks created in step 4.
     Return: plan file path + final summary (see `<Output_Format>`).
+
   </Protocol>
   <Error_Handling>
     | Scenario | Action |
@@ -302,5 +300,6 @@ Strip `--codex`, `--deep`, and `--no-handoff` flags before passing the prompt to
     ]})
     ```
     If not skipped: `Skill({ skill: "coral:ralph", args: "[selected flags] <plan summary + context>" })`
-  </Output_Format>
+
+</Output_Format>
 </Planning_Protocol>

@@ -8,7 +8,7 @@ import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import { errorMessage, isRecord, nowIsoString } from '../../shared/mcp-utils.js';
+import { errorMessage, isRecord, nowIsoString } from '../../shared/utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {

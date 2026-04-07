@@ -24,7 +24,7 @@ import {
 } from '../shared/types.js';
 import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
 import type { ProviderCliRunner } from '../providers/runner-port.js';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type {
@@ -73,7 +73,7 @@ export interface ExecInput {
   model?: string;
   pool?: LaunchPool;
   cwd?: string;
-  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
+  /** Set only by coralDispatch (agent metadata). */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -89,7 +89,7 @@ export interface ResumeInput {
   model?: string;
   pool?: LaunchPool;
   cwd?: string;
-  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
+  /** Set only by coralDispatch (agent metadata). */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -104,7 +104,7 @@ export interface ForkInput {
   prompt?: string;
   model?: string;
   cwd?: string;
-  /** Set only by coralDispatch (agent metadata). MCP input never populates this. */
+  /** Set only by coralDispatch (agent metadata). */
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;

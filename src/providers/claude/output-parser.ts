@@ -1,4 +1,4 @@
-import { isRecord } from '../../shared/mcp-utils.js';
+import { isRecord } from '../../shared/utils.js';
 import type { ClaudeJsonOutput } from './types.js';
 
 export interface ParsedClaudeStreamOutput {

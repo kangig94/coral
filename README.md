@@ -4,6 +4,8 @@
 
 Claude Code already knows how to code. Coral teaches it how *you* work.
 
+Coral is a CLI-first plugin backed by a persistent HTTP daemon for orchestration, sessions, discussion, and knowledge-base workflows.
+
 ## Install
 
 **Requirements:** Node.js 18+
@@ -244,7 +246,6 @@ Set in `.claude/settings.json` (persists across sessions):
 ## Documentation
 
 - [Architecture](docs/architecture.md) — System structure and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools
 - [Core Modules](docs/core-modules.md) — TypeScript module details
 - [Agents](docs/agents.md) — Agent definitions and routing
 - [Hooks](docs/hooks.md) — Hook system and lifecycle events

@@ -1,6 +1,6 @@
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { isOwnerId } from '../shared/mcp-utils.js';
+import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../execution/request-context.js';
 import { ZodError } from 'zod';

@@ -31,7 +31,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist �
 
 - **Skills**: `coral-skill-vars.mjs` hook injects CORAL_PROJECT and CORAL_METHODS
   as additionalContext on UserPromptSubmit and PreToolUse(Skill).
-- **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` or `codex({ op: "coral:<name>" })`.
+- **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` or `coral-cli codex <name> -i ...`.
   The framework resolves agent files — do not read agent files directly from skills.
 - `coral:xxx` references are for Agent tool's `subagent_type` only — the framework resolves them.
   Do not use `coral:xxx` when the intent is to read a file.
@@ -49,21 +49,21 @@ plugin files from project files. Two read patterns and one spawn pattern exist �
 
 ## Plugin.json Sync
 
-- MCP tool declarations in `.claude-plugin/plugin.json` reference `.mcp.json` server config
+- `.claude-plugin/plugin.json` is host metadata only — do not rely on legacy host-side registration files
 - Agent declarations in plugin.json must match files in `agents/`
 - Skill declarations must match directories in `skills/`
-- When adding a new MCP tool: update server.ts, schemas.ts, and docs/mcp-tools.md
+- When adding a new CLI/backend surface: update command registration, schemas, and user-facing docs together
 
 ## Codex Delegation Pattern
 
 ```
-Caller invokes codex MCP:
-  -> codex({ op: "coral:<agent>", prompt, ... })
-  -> server validates op with coralAgentSchema
-  -> server reads agents/<agent>.md
-  -> server prepends agent content to prompt
-  -> launchJob(handleSessionCreate/handleSessionSend) → { job, ... }
-  -> wait({ jobs: [job] }) → result.content ?? Read(result.path)
+Caller invokes Coral CLI:
+  -> coral-cli codex <agent> -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json
+  -> CLI validates args and dispatches the provider launch
+  -> backend resolves agents/<agent>.md
+  -> launch returns { job, session, ... }
+  -> coral-cli wait --jobs "<job>" --output-format json --embed
+  -> use event.result.content ?? Read(event.result.path)
 ```
 
 `ensureMultiAgent()` runs in `codex-executor.ts` before Codex spawn. No SubagentStart hook is involved in Codex delegation.

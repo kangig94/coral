@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
-import { readBundleHash } from '../../shared/mcp-utils.js';
+import { readBundleHash } from '../../shared/utils.js';
 
 const tempRoots: string[] = [];
 

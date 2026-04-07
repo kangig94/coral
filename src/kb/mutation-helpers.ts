@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { KbIndexMutationLane, KbIndexState, KbRuntime } from './contracts.js';
 import {

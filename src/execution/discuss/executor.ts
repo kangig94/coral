@@ -6,7 +6,7 @@ import {
 import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import { isLivePhase } from '../../shared/types.js';
-import { errorMessage } from '../../shared/mcp-utils.js';
+import { errorMessage } from '../../shared/utils.js';
 import { readStatusRecord } from '../../client/readers.js';
 import type { CallerContext } from '../request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';

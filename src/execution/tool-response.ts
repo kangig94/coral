@@ -1,4 +1,4 @@
-import { isRecord, textResult, type McpResult } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 
 export type ToolDomainResult =
@@ -35,10 +35,6 @@ export function launchDecisionToDomain(decision: LaunchDecision): ToolDomainResu
   }
 
   return domainSuccess(decision);
-}
-
-export function domainToMcp(result: ToolDomainResult): McpResult {
-  return result.ok ? textResult(JSON.stringify(result.data)) : textResult(JSON.stringify(result), true);
 }
 
 export function domainToHttp(result: ToolDomainResult): { statusCode: number; body: unknown } {

@@ -1,4 +1,4 @@
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
 
 /**
  * Health metadata exposed by the Coral backend.

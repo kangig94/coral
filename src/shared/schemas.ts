@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { identPattern, providerIdentPattern } from './mcp-utils.js';
+import { identPattern, providerIdentPattern } from './utils.js';
 
 export const modelSchema = z
   .string()
@@ -71,8 +71,8 @@ const sharedProviderFieldsShape = {
 };
 
 /**
- * Internal-only fields accepted by the backend but never exposed in MCP inputSchema.
- * bypass_permissions: controlled by op (bypass_exec, fork, resume, coral:*) — not a user-facing flag.
+ * Internal-only fields accepted by the backend but not exposed in the provider input schema.
+ * bypass_permissions: set by CLI/internal callers, or implied by fork/resume/coral:* flows.
  * system_prompt: injected by coral:* dispatch or internal callers — not user-facing.
  */
 export const internalProviderFieldsShape = {
@@ -87,7 +87,7 @@ export const internalProviderFieldsShape = {
  * Providers extend this with extras (e.g. system_prompt for Claude).
  */
 export const sharedExecSchema = z.object({
-  op: z.enum(['exec', 'bypass_exec']),
+  op: z.literal('exec'),
   prompt: promptSchema,
   session: sessionRefSchema.optional(),
   ...sharedProviderFieldsShape,

@@ -6,7 +6,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
 import { buildChildEnv } from '../shared/child-env.js';
 import { readAppendedLines } from '../shared/file-tail.js';
-import { buildJsonRpcError } from '../shared/mcp-utils.js';
+import { buildJsonRpcError } from '../shared/utils.js';
 import {
   isDurableCliRuntime,
   type DurableCliRuntimeRecord,

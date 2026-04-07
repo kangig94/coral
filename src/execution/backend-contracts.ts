@@ -2,8 +2,8 @@
  * Dependency injection contracts for the decomposed backend server.
  *
  * These interfaces make the closure dependencies of the former monolithic
- * `createBackendServer()` explicit so that http-handler.ts, lifecycle.ts,
- * and tool-router.ts receive only what they need.
+ * `createBackendServer()` explicit so that http-handler.ts and lifecycle.ts
+ * receive only what they need.
  */
 
 import type { ServerResponse } from 'node:http';
@@ -16,7 +16,7 @@ import type { CallerContext } from './request-context.js';
 import type { SessionIndex } from './session-index.js';
 import type { LifecycleState } from './server-types.js';
 import type { ExecutionService } from './service.js';
-import type { KbSubsystem, RouteToolCallFn } from './tool-router.js';
+import type { KbSubsystem } from './kb-tools.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 
@@ -95,8 +95,6 @@ export interface HttpHandlerDeps {
   readonly providerRegistry?: ProviderRegistry;
   readonly abortJobs: (jobIds: string[]) => AbortResult;
   readonly scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
-  readonly routeToolCall: RouteToolCallFn;
-  readonly getToolDescriptors: () => unknown[];
 
   // Event-stream authority
   readonly subscribeBackendEvents: (handlers: EventStreamHandlers) => void;

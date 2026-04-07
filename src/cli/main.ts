@@ -5,9 +5,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { Command, Option } from 'commander';
 
 import { BackendClient, BackendToolHttpError, type CallerContext } from '../client/http-client.js';
-import { assertOwnerId, collectCoralEnv } from '../shared/mcp-utils.js';
+import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
+import { assertOwnerId, collectCoralEnv } from '../shared/utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
-import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../bridge/backend-client.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
 import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
@@ -66,28 +66,18 @@ function createCliProviderRegistry(): ProviderRegistry {
 }
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
-type ProviderExecOptions = {
-  prompt: string;
+type ProviderRunOptions = {
+  input?: string;
   session?: string;
   workDir?: string;
   model?: string;
-  detach?: boolean;
-};
-
-type ProviderForkOptions = {
-  session: string;
-  prompt?: string;
-  workDir?: string;
-  model?: string;
-  detach?: boolean;
-};
-
-type ProviderCoralOptions = {
-  prompt: string;
-  session?: string;
-  workDir?: string;
   owner?: string;
+  bypassPermissions?: boolean;
   detach?: boolean;
+};
+
+type ProviderListOptions = {
+  provider?: string;
 };
 
 type WaitOptions = {
@@ -177,6 +167,14 @@ function resolveFilePath(filePath: string): string {
     if (existsSync(withMd)) return withMd;
   }
   return filePath;
+}
+
+function resolveInput(value: string): string {
+  return existsSync(value) ? readFileSync(value, 'utf8') : value;
+}
+
+function buildAgentOp(agent: string): string {
+  return agent.includes(':') ? agent : `coral:${agent}`;
 }
 
 function makeClient(projectRoot: string): BackendClient {
@@ -413,111 +411,47 @@ function shapeWaitOutputRecord(event: WaitStreamEvent, cursor: string | null, em
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
-export function normalizeProviderArgv(
-  argv: readonly string[],
-  providerRegistry: ProviderRegistry = createCliProviderRegistry(),
-): string[] {
-  if (argv.length < 4) {
-    return argv.slice();
-  }
-
-  const [nodePath, scriptPath, provider, dispatchToken] = argv;
-
-  if (!getProviderNames(providerRegistry).includes(provider)) {
-    return argv.slice();
-  }
-
-  const match = /^coral:([a-z0-9][a-z0-9-]*)$/.exec(dispatchToken);
-  if (!match) {
-    return argv.slice();
-  }
-
-  return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
-}
-
 function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
     const provider = program.command(providerName).description(`${providerName} provider operations`);
-
-    const execCommand = provider.command('exec');
-    execCommand
-      .description('Execute a prompt')
-      .requiredOption('--prompt <text>', 'Prompt text')
-      .option('--session <id>', 'Resume session ID')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--model <model>', 'Model override')
+    provider
+      .argument('[agent]', 'Agent name (omit for raw execution)')
+      .option('-i, --input <text-or-file>', 'Prompt text or file path')
+      .option('-s, --session <id>', 'Session ID')
+      .option('-w, --work-dir <path>', 'Working directory')
+      .option('-m, --model <model>', 'Model override')
+      .option('-o, --owner <id>', 'Owner ID for memo isolation')
+      .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (opts: ProviderExecOptions) => {
-        const outputFormat = getOutputFormat(execCommand);
+      .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
+        const outputFormat = getOutputFormat(provider);
 
         try {
+          if (agent === 'list') {
+            throw new Error(
+              `Legacy "coral-cli ${providerName} list" has moved to "coral-cli list --provider ${providerName}"`,
+            );
+          }
+          if (opts.input === undefined) {
+            throw new Error('input is required (-i, --input)');
+          }
+
+          const prompt = resolveInput(opts.input);
           const client = makeClient(process.cwd());
-          const result = await client.providerExec(providerName, opts.prompt, {
-            session: opts.session,
-            work_dir: opts.workDir,
-            model: opts.model,
-          });
-          await handleLaunchResult(result, opts.detach, outputFormat, client);
-        } catch (error) {
-          emitError(error, outputFormat);
-        }
-      });
-
-    const forkCommand = provider.command('fork');
-    forkCommand
-      .description('Branch from an existing session, optionally continuing with a new prompt')
-      .requiredOption('--session <id>', 'Source session ID')
-      .option('--prompt <text>', 'Follow-up prompt')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--model <model>', 'Model override')
-      .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (opts: ProviderForkOptions) => {
-        const outputFormat = getOutputFormat(forkCommand);
-
-        try {
-          const client = makeClient(process.cwd());
-          const result = await client.providerFork(providerName, opts.session, opts.prompt, {
-            work_dir: opts.workDir,
-            model: opts.model,
-          });
-          await handleLaunchResult(result, opts.detach, outputFormat, client);
-        } catch (error) {
-          emitError(error, outputFormat);
-        }
-      });
-
-    const listCommand = provider.command('list');
-    listCommand.description('List sessions').action(async () => {
-      const outputFormat = getOutputFormat(listCommand);
-
-      try {
-        const client = makeClient(process.cwd());
-        const result = await client.providerList(providerName);
-        emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
-      } catch (error) {
-        emitError(error, outputFormat);
-      }
-    });
-
-    const coralCommand = provider.command('coral');
-    coralCommand
-      .description('Run a prompt through a named Coral agent (e.g. architect, critic)')
-      .argument('<agent>', 'Agent name')
-      .requiredOption('--prompt <text>', 'Prompt text')
-      .option('--session <id>', 'Optional session ID')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--owner <id>', 'Session owner ID for memo isolation')
-      .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (agent: string, opts: ProviderCoralOptions) => {
-        const outputFormat = getOutputFormat(coralCommand);
-
-        try {
-          const client = makeClient(process.cwd());
-          const result = await client.providerCoralDispatch(providerName, agent, opts.prompt, {
-            session: opts.session,
-            work_dir: opts.workDir,
-            owner: opts.owner,
-          });
+          const requestOptions = {
+            ...(opts.session !== undefined ? { session: opts.session } : {}),
+            ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
+            ...(opts.model !== undefined ? { model: opts.model } : {}),
+            ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
+            ...(opts.bypassPermissions !== undefined ? { bypass_permissions: opts.bypassPermissions } : {}),
+          };
+          const result = agent
+            ? await client.providerAgentDispatch(providerName, buildAgentOp(agent), prompt, requestOptions)
+            : await client.providerExec(
+                providerName,
+                prompt,
+                requestOptions as Parameters<BackendClient['providerExec']>[2],
+              );
           await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
           emitError(error, outputFormat);
@@ -533,9 +467,55 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
     .name('coral-cli')
     .version(typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0')
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
-  program.addOption(new Option('--output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
+  program.addOption(
+    new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'),
+  );
 
   registerProviderCommands(program, providerRegistry);
+
+  const listCommand = program.command('list');
+  listCommand
+    .description('List sessions')
+    .option('--provider <name>', 'Filter by provider')
+    .action(async (opts: ProviderListOptions) => {
+      const outputFormat = getOutputFormat(listCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+
+        if (opts.provider !== undefined) {
+          if (!getProviderNames(providerRegistry).includes(opts.provider)) {
+            throw new Error(`Unknown provider: ${opts.provider}`);
+          }
+          const result = await client.providerList(opts.provider);
+          emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
+          return;
+        }
+
+        const results = await Promise.all(
+          getProviderNames(providerRegistry).map(async (providerName) => {
+            const result = await client.providerList(providerName);
+            const normalized = normalizeResult(result);
+            if (normalized.isError) {
+              throw normalized.output;
+            }
+            return {
+              providerName,
+              sessions: (normalized.output as ListResult).sessions.map((session) => ({
+                ...session,
+                provider: providerName,
+              })),
+            };
+          }),
+        );
+        const merged: ListResult = {
+          sessions: results.flatMap((result) => result.sessions),
+        };
+        emit(merged, outputFormat, (data) => formatProviderList(data as ListResult, { includeProvider: true }));
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
 
   const waitCommand = program.command('wait');
   waitCommand
@@ -620,34 +600,32 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
   workflowCommand
     .description('Execute a workflow pipeline')
     .argument('[expression]', 'Pipeline DSL expression')
-    .argument('[prompt]', 'Start prompt for the first step')
     .option('-e, --expression <expr>', 'Pipeline DSL expression (flag alternative)')
-    .option('-s, --start-prompt <text>', 'Start prompt (flag alternative)')
-    .option('-c, --context <text>', 'Shared context prepended to every step')
+    .option('-s, --start-prompt <text-or-file>', 'Start prompt text or file path')
+    .option('-c, --context <text-or-file>', 'Shared context text or file path')
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
-    .action(async (posExpression: string | undefined, posPrompt: string | undefined, opts: WorkflowOptions) => {
+    .action(async (posExpression: string | undefined, opts: WorkflowOptions) => {
       const outputFormat = getOutputFormat(workflowCommand);
 
       try {
         const expression = opts.expression ?? posExpression;
-        const startPrompt = opts.startPrompt ?? posPrompt;
 
-        if (!expression) {
+        if (expression === undefined) {
           throw new Error('expression is required (positional or -e)');
         }
-        if (!startPrompt) {
-          throw new Error('start prompt is required (positional or -s)');
+        if (opts.startPrompt === undefined) {
+          throw new Error('start prompt is required (-s)');
         }
 
         const payload = {
-          ...(opts.context !== undefined ? { context: opts.context } : {}),
+          ...(opts.context !== undefined ? { context: resolveInput(opts.context) } : {}),
           ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
           ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
           ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
-          start_prompt: startPrompt,
+          start_prompt: resolveInput(opts.startPrompt),
         };
 
         const client = makeClient(process.cwd());
@@ -886,10 +864,8 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       const outputFormat = getOutputFormat(kbSourceImportCommand);
 
       try {
-        const prepared = await prepareSourceImport(
-          resolveFilePath(file),
-          opts.slug,
-          (line) => process.stderr.write(`${line}\n`),
+        const prepared = await prepareSourceImport(resolveFilePath(file), opts.slug, (line) =>
+          process.stderr.write(`${line}\n`),
         );
         const client = makeClient(process.cwd());
         const result = await client.kbSourceImport({

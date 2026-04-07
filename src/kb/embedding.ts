@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { backendLog } from '../shared/backend-log.js';
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
 import { kbRuntimeDir } from './paths.js';
 import { loadCoralEnv } from './env.js';
 import type { EmbeddingSpec } from './vector-store.js';

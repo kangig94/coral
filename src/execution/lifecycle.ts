@@ -11,7 +11,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { kbRoot } from '../infra/paths.js';
 import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
@@ -46,10 +46,10 @@ import {
 import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
+import type { KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import type { CreateKbSubsystemFn, KbSubsystem } from './tool-router.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +64,11 @@ export const OLD_FORMAT_NOTICE =
   'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
 export const GHOST_LAUNCH_NOTICE =
   'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
+
+export type CreateKbSubsystemFn = (options: {
+  pluginRoot: string;
+  spawnCli: SpawnCliFn;
+}) => Promise<KbSubsystem>;
 
 // ---------------------------------------------------------------------------
 // ShutdownMode / RecoveryClass

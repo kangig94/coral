@@ -6,8 +6,7 @@ import type * as MainMod from '../main.js';
 
 const mockState = vi.hoisted(() => ({
   providerExec: vi.fn(),
-  providerFork: vi.fn(),
-  providerCoralDispatch: vi.fn(),
+  providerAgentDispatch: vi.fn(),
   providerList: vi.fn(),
   workflow: vi.fn(),
   abortJobs: vi.fn(),
@@ -16,6 +15,11 @@ const mockState = vi.hoisted(() => ({
   getBackendStatusFull: vi.fn(),
   shutdownBackend: vi.fn(),
   streamWait: vi.fn(),
+  discussSeed: vi.fn(),
+  discussStart: vi.fn(),
+  discussWatch: vi.fn(),
+  discussParticipate: vi.fn(),
+  discussAbort: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
   kbMemo: vi.fn(),
@@ -43,16 +47,15 @@ vi.mock('../../client/http-client.js', () => {
 
   class BackendClient {
     providerExec = mockState.providerExec;
-    providerFork = mockState.providerFork;
-    providerCoralDispatch = mockState.providerCoralDispatch;
+    providerAgentDispatch = mockState.providerAgentDispatch;
     providerList = mockState.providerList;
     workflow = mockState.workflow;
     abortJobs = mockState.abortJobs;
-    discussSeed = vi.fn();
-    discussStart = vi.fn();
-    discussWatch = vi.fn();
-    discussParticipate = vi.fn();
-    discussAbort = vi.fn();
+    discussSeed = mockState.discussSeed;
+    discussStart = mockState.discussStart;
+    discussWatch = mockState.discussWatch;
+    discussParticipate = mockState.discussParticipate;
+    discussAbort = mockState.discussAbort;
     kbSearch = mockState.kbSearch;
     kbPrinciples = mockState.kbPrinciples;
     kbMemo = mockState.kbMemo;
@@ -75,7 +78,7 @@ vi.mock('../../client/backend-lifecycle.js', () => ({
   ensureBackend: mockState.ensureBackend,
 }));
 
-vi.mock('../../bridge/backend-client.js', () => ({
+vi.mock('../../client/backend-helpers.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
   shutdownBackend: mockState.shutdownBackend,
   streamWait: mockState.streamWait,
@@ -115,8 +118,7 @@ describe('cli main routing', () => {
     process.exitCode = undefined;
 
     mockState.providerExec.mockReset();
-    mockState.providerFork.mockReset();
-    mockState.providerCoralDispatch.mockReset();
+    mockState.providerAgentDispatch.mockReset();
     mockState.providerList.mockReset();
     mockState.workflow.mockReset();
     mockState.abortJobs.mockReset();
@@ -125,6 +127,11 @@ describe('cli main routing', () => {
     mockState.getBackendStatusFull.mockReset();
     mockState.shutdownBackend.mockReset();
     mockState.streamWait.mockReset();
+    mockState.discussSeed.mockReset();
+    mockState.discussStart.mockReset();
+    mockState.discussWatch.mockReset();
+    mockState.discussParticipate.mockReset();
+    mockState.discussAbort.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
     mockState.kbMemo.mockReset();
@@ -156,36 +163,188 @@ describe('cli main routing', () => {
     vi.resetModules();
   });
 
-  it('exposes a reusable program factory and exports normalizeProviderArgv', async () => {
-    const { buildProgram, normalizeProviderArgv } = await loadMainModule();
+  it('exposes a reusable program factory', async () => {
+    const { buildProgram } = await loadMainModule();
 
     const program = buildProgram();
 
     expect(program.name()).toBe('coral-cli');
-    expect(normalizeProviderArgv(['node', 'coral-cli', 'codex', 'coral:architect', '--prompt', 'hi'])).toEqual([
-      'node',
-      'coral-cli',
-      'codex',
-      'coral',
-      'architect',
-      '--prompt',
-      'hi',
-    ]);
+    expect(program.commands.find((command) => command.name() === 'list')).toBeDefined();
   });
 
-  it('adds --detach to exec, fork, coral, and workflow command help', async () => {
+  it('uses flattened provider commands with unified flags and workflow start-prompt help', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const codex = program.commands.find((command) => command.name() === 'codex');
     const workflow = program.commands.find((command) => command.name() === 'workflow');
 
-    expect(codex?.commands.find((command) => command.name() === 'exec')?.helpInformation()).toContain('--detach');
-    expect(codex?.commands.find((command) => command.name() === 'fork')?.helpInformation()).toContain('--detach');
-    expect(codex?.commands.find((command) => command.name() === 'coral')?.helpInformation()).toContain('--detach');
+    expect(codex?.commands).toHaveLength(0);
+    expect(codex?.helpInformation()).toContain('-i, --input');
+    expect(codex?.helpInformation()).toContain('-b, --bypass-permissions');
+    expect(codex?.helpInformation()).toContain('-d, --detach');
     expect(workflow?.helpInformation()).toContain('--detach');
+    expect(workflow?.helpInformation()).toContain('-s, --start-prompt');
   });
 
-  it('keeps detach launches on the one-shot path and honors global json output after the subcommand', async () => {
+  it('passes unified flags through raw provider launches and resolves -i file input', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const inputFile = join(tmpdir(), `coral-provider-input-${Date.now()}.txt`);
+
+    writeFileSync(inputFile, 'prompt from file');
+    try {
+      mockState.providerExec.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          status: 'running',
+          job: 'job-1',
+          session: 'session-1',
+        },
+      });
+      mockState.launchAndFollow.mockResolvedValueOnce(7);
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'codex',
+        '-i',
+        inputFile,
+        '-s',
+        'session-1',
+        '-w',
+        '/tmp/work',
+        '-m',
+        'gpt-5',
+        '-o',
+        'owner-1',
+        '-b',
+        '-f',
+        'json',
+      ]);
+
+      expect(mockState.providerExec).toHaveBeenCalledWith('codex', 'prompt from file', {
+        session: 'session-1',
+        work_dir: '/tmp/work',
+        model: 'gpt-5',
+        owner: 'owner-1',
+        bypass_permissions: true,
+      });
+      expect(mockState.launchAndFollow).toHaveBeenCalledWith({
+        launchResult: {
+          status: 'running',
+          job: 'job-1',
+          session: 'session-1',
+        },
+        abortJob: expect.any(Function),
+        pluginRoot: expect.any(String),
+        projectRoot: process.cwd(),
+        outputFormat: 'json',
+        isTTY: process.stdout.isTTY === true,
+        columns: process.stdout.columns ?? 80,
+      });
+      expect(process.exitCode).toBe(7);
+      expect(stdout).toBe('');
+      expect(stderr).toBe('');
+    } finally {
+      unlinkSync(inputFile);
+    }
+  });
+
+  it('treats a non-existent -i path as literal text for raw provider launches', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const missingInput = join(tmpdir(), `coral-missing-input-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
+
+    mockState.providerExec.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-raw-text',
+        session: 'session-raw-text',
+      },
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'codex',
+      '-i',
+      missingInput,
+      '-s',
+      'session-raw-text',
+    ]);
+
+    expect(mockState.providerExec).toHaveBeenCalledWith('codex', missingInput, {
+      session: 'session-raw-text',
+    });
+  });
+
+  it.each([
+    ['debugger', 'coral:debugger'],
+    ['coral:debugger', 'coral:debugger'],
+    ['other:agent', 'other:agent'],
+  ])('dispatches provider agent launches with full op preservation for %s', async (agent, expectedOp) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.providerAgentDispatch.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-1',
+        session: 'session-1',
+      },
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'codex',
+      agent,
+      '-i',
+      'hi',
+      '-s',
+      'session-1',
+      '-w',
+      '/tmp/work',
+      '-m',
+      'gpt-5',
+      '-o',
+      'owner-1',
+      '-b',
+    ]);
+
+    expect(mockState.providerAgentDispatch).toHaveBeenCalledWith('codex', expectedOp, 'hi', {
+      session: 'session-1',
+      work_dir: '/tmp/work',
+      model: 'gpt-5',
+      owner: 'owner-1',
+      bypass_permissions: true,
+    });
+  });
+
+  it('dispatches provider agent launches for the claude provider', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.providerAgentDispatch.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        status: 'running',
+        job: 'job-claude',
+        session: 'session-claude',
+      },
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'claude', 'debugger', '-i', 'hi']);
+
+    expect(mockState.providerAgentDispatch).toHaveBeenCalledWith('claude', 'coral:debugger', 'hi', {});
+  });
+
+  it('keeps detach launches on the one-shot path and honors -f json', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -198,17 +357,7 @@ describe('cli main routing', () => {
       },
     });
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'codex',
-      'exec',
-      '--prompt',
-      'hi',
-      '--detach',
-      '--output-format',
-      'json',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi', '--detach', '-f', 'json']);
 
     expect(JSON.parse(stdout.trim())).toEqual({
       status: 'running',
@@ -217,40 +366,6 @@ describe('cli main routing', () => {
     });
     expect(stderr).toBe('');
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
-  });
-
-  it('routes default exec launches into launchAndFollow', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    mockState.providerExec.mockResolvedValueOnce({
-      ok: true,
-      data: {
-        status: 'running',
-        job: 'job-1',
-        session: 'session-1',
-      },
-    });
-    mockState.launchAndFollow.mockResolvedValueOnce(7);
-
-    await program.parseAsync(['node', 'coral-cli', 'codex', 'exec', '--prompt', 'hi', '--output-format', 'json']);
-
-    expect(mockState.launchAndFollow).toHaveBeenCalledWith({
-      launchResult: {
-        status: 'running',
-        job: 'job-1',
-        session: 'session-1',
-      },
-      abortJob: expect.any(Function),
-      pluginRoot: expect.any(String),
-      projectRoot: process.cwd(),
-      outputFormat: 'json',
-      isTTY: process.stdout.isTTY === true,
-      columns: process.stdout.columns ?? 80,
-    });
-    expect(process.exitCode).toBe(7);
-    expect(stdout).toBe('');
-    expect(stderr).toBe('');
   });
 
   it('treats domain launch failures as tool errors and does not follow them', async () => {
@@ -263,7 +378,7 @@ describe('cli main routing', () => {
       message: 'Missing prompt',
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'codex', 'exec', '--prompt', 'hi']);
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
     expect(stdout).toBe('');
     expect(stderr).toBe('Missing prompt\n');
@@ -271,44 +386,204 @@ describe('cli main routing', () => {
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
 
-  it('routes workflow launches into launchAndFollow by default', async () => {
+  it('intercepts legacy provider list before input validation', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.workflow.mockResolvedValueOnce({
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'list']);
+
+    expect(stderr).toContain('coral-cli list --provider codex');
+    expect(stderr).not.toContain('input is required');
+    expect(mockState.providerExec).not.toHaveBeenCalled();
+    expect(mockState.providerAgentDispatch).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('lists sessions for a single provider via the top-level list command', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.providerList.mockResolvedValueOnce({
       ok: true,
       data: {
-        status: 'queued',
-        job: 'job-2',
-        session: 'session-2',
+        sessions: [
+          {
+            sessionId: 'session-1',
+            provider: 'codex',
+            name: 'alpha',
+            state: 'ready',
+            model: 'gpt-5',
+            cwd: '/tmp/project',
+            createdAt: '2026-03-14T00:00:00.000Z',
+            lastUsedAt: '2026-03-14T00:00:00.000Z',
+            version: 1,
+          },
+        ],
       },
     });
-    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'list', '--provider', 'codex', '-f', 'json']);
+
+    expect(mockState.providerList).toHaveBeenCalledWith('codex');
+    expect(JSON.parse(stdout.trim())).toEqual({
+      sessions: [
+        {
+          sessionId: 'session-1',
+          provider: 'codex',
+          name: 'alpha',
+          state: 'ready',
+          model: 'gpt-5',
+          cwd: '/tmp/project',
+          createdAt: '2026-03-14T00:00:00.000Z',
+          lastUsedAt: '2026-03-14T00:00:00.000Z',
+          version: 1,
+        },
+      ],
+    });
+  });
+
+  it('aggregates provider sessions at the top level and includes provider labels in text output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.providerList
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          sessions: [
+            {
+              sessionId: 'session-1',
+              provider: 'codex',
+              name: 'alpha',
+              state: 'ready',
+              model: 'gpt-5',
+              cwd: '/tmp/codex',
+              createdAt: '2026-03-14T00:00:00.000Z',
+              lastUsedAt: '2026-03-14T00:00:00.000Z',
+              version: 1,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          sessions: [],
+        },
+      });
+
+    await program.parseAsync(['node', 'coral-cli', 'list']);
+
+    expect(mockState.providerList).toHaveBeenCalledTimes(2);
+    expect(mockState.providerList).toHaveBeenCalledWith('codex');
+    expect(mockState.providerList).toHaveBeenCalledWith('claude');
+    expect(stdout).toContain('PROVIDER');
+    expect(stdout).toContain('codex');
+    expect(stdout).toContain('session-1');
+    expect(stdout).not.toContain('session-2');
+  });
+
+  it('routes workflow launches into launchAndFollow by default', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const promptFile = join(tmpdir(), `coral-workflow-prompt-${Date.now()}.txt`);
+    const contextFile = join(tmpdir(), `coral-workflow-context-${Date.now()}.txt`);
+
+    writeFileSync(promptFile, 'workflow start');
+    writeFileSync(contextFile, 'workflow context');
+    try {
+      mockState.workflow.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          status: 'queued',
+          job: 'job-2',
+          session: 'session-2',
+        },
+      });
+      mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'workflow',
+        '(architect)',
+        '-s',
+        promptFile,
+        '-c',
+        contextFile,
+        '-p',
+        'codex',
+        '-w',
+        '/tmp/workflow',
+        '-o',
+        'owner-1',
+        '-f',
+        'json',
+      ]);
+
+      expect(mockState.workflow).toHaveBeenCalledWith('(architect)', {
+        start_prompt: 'workflow start',
+        context: 'workflow context',
+        provider: 'codex',
+        work_dir: '/tmp/workflow',
+        owner: 'owner-1',
+      });
+      expect(mockState.launchAndFollow).toHaveBeenCalledWith({
+        launchResult: {
+          status: 'queued',
+          job: 'job-2',
+          session: 'session-2',
+        },
+        abortJob: expect.any(Function),
+        pluginRoot: expect.any(String),
+        projectRoot: process.cwd(),
+        outputFormat: 'json',
+        isTTY: process.stdout.isTTY === true,
+        columns: process.stdout.columns ?? 80,
+      });
+      expect(process.exitCode).toBe(0);
+    } finally {
+      unlinkSync(promptFile);
+      unlinkSync(contextFile);
+    }
+  });
+
+  it('treats discuss backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const errorBody = {
+      ok: false,
+      code: 'backend_recovering',
+      message: 'recovering — retry after 500ms',
+    };
+
+    mockState.discussStart.mockResolvedValueOnce(errorBody);
 
     await program.parseAsync([
       'node',
       'coral-cli',
-      'workflow',
-      '(architect)',
-      'hi',
+      'discuss',
+      'start',
+      '--topic',
+      'Bridge removal',
+      '--agent',
+      'name=alice,persona=Architect',
+      '--agent',
+      'name=bob,persona=Operator',
       '--output-format',
       'json',
     ]);
 
-    expect(mockState.launchAndFollow).toHaveBeenCalledWith({
-      launchResult: {
-        status: 'queued',
-        job: 'job-2',
-        session: 'session-2',
-      },
-      abortJob: expect.any(Function),
-      pluginRoot: expect.any(String),
-      projectRoot: process.cwd(),
-      outputFormat: 'json',
-      isTTY: process.stdout.isTTY === true,
-      columns: process.stdout.columns ?? 80,
+    expect(mockState.discussStart).toHaveBeenCalledWith({
+      topic: 'Bridge removal',
+      agents: [
+        { name: 'alice', persona: 'Architect' },
+        { name: 'bob', persona: 'Operator' },
+      ],
     });
-    expect(process.exitCode).toBe(0);
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual(errorBody);
+    expect(process.exitCode).toBe(1);
   });
 
   it('routes bare kb search without top_k so backend defaults apply', async () => {
@@ -338,6 +613,25 @@ describe('cli main routing', () => {
     expect(parsed.count).toBe(1);
     expect(parsed.results[0].note).toBe('cli-kb-tooling');
     expect(stderr).toBe('');
+  });
+
+  it('treats KB backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const errorBody = {
+      ok: false,
+      code: 'backend_recovering',
+      message: 'recovering — retry after 500ms',
+    };
+
+    mockState.kbSearch.mockResolvedValueOnce(errorBody);
+
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--output-format', 'json']);
+
+    expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual(errorBody);
+    expect(process.exitCode).toBe(1);
   });
 
   it('routes kb search with --top-k and preserves raw json output', async () => {

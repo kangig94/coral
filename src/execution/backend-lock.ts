@@ -2,7 +2,7 @@ import { readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { backendLockPath, pluginRootNamespace } from '../infra/paths.js';
 import { readBackendInfo } from '../infra/backend-info.js';
-import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/mcp-utils.js';
+import { isNoEntryError, isProcessAlive, tryExclusiveWrite } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export { backendLockPath } from '../infra/paths.js';

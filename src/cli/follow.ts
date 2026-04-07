@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { streamWait, type WaitCursorRef } from '../bridge/backend-client.js';
+import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
@@ -13,7 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { errorMessage, isTransientStreamError } from '../shared/mcp-utils.js';
+import { errorMessage, isTransientStreamError } from '../shared/utils.js';
 import type { CliStreamEvent } from './types.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;

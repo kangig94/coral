@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { errorMessage } from '../../shared/mcp-utils.js';
+import { errorMessage } from '../../shared/utils.js';
 
 import {
   makeEvent,

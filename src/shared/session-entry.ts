@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isNoEntryError, isRecord } from './mcp-utils.js';
+import { isNoEntryError, isRecord } from './utils.js';
 import type { SessionEntry } from './types.js';
 
 export type ProvenanceState = 'authoritative' | 'legacy_unresolved';

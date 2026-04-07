@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BackendStatusFull, ShutdownResult } from '../../bridge/backend-client.js';
+import type { BackendStatusFull, ShutdownResult } from '../../client/backend-helpers.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/types.js';
 import type { AbortResult } from '../../execution/abort-registry.js';
 import type { ListResult } from '../../execution/service.js';
@@ -80,6 +80,33 @@ const listResult = {
       cwd: '/tmp/project',
       createdAt: '2026-03-14T00:00:00.000Z',
       lastUsedAt: '2026-03-14T00:00:00.000Z',
+      version: 1,
+    },
+  ],
+} satisfies ListResult;
+
+const aggregatedListResult = {
+  sessions: [
+    {
+      sessionId: 'session-1',
+      provider: 'codex',
+      name: 'alpha',
+      state: 'ready',
+      model: 'gpt-5',
+      cwd: '/tmp/codex',
+      createdAt: '2026-03-14T00:00:00.000Z',
+      lastUsedAt: '2026-03-14T00:00:00.000Z',
+      version: 1,
+    },
+    {
+      sessionId: 'session-2',
+      provider: 'claude',
+      name: 'beta',
+      state: 'non_resumable',
+      model: 'sonnet',
+      cwd: '/tmp/claude',
+      createdAt: '2026-03-15T00:00:00.000Z',
+      lastUsedAt: '2026-03-15T00:00:00.000Z',
       version: 1,
     },
   ],
@@ -219,6 +246,16 @@ describe('cli format', () => {
       expect(formatted).toContain('session-1');
       expect(formatted).toContain('ready');
       expect(formatted).toContain('/tmp/project');
+    });
+
+    it('formats aggregated provider output with a provider column', () => {
+      const formatted = formatProviderList(aggregatedListResult, { includeProvider: true });
+
+      expect(formatted).toContain('PROVIDER');
+      expect(formatted).toContain('codex');
+      expect(formatted).toContain('claude');
+      expect(formatted).toContain('session-1');
+      expect(formatted).toContain('session-2');
     });
   });
 

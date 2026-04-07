@@ -5,7 +5,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { formatError, readBundleHash } from '../shared/mcp-utils.js';
+import { formatError, readBundleHash } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
@@ -38,13 +38,7 @@ import {
 import { readDiscussSources } from '../client/readers.js';
 import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
-import {
-  routeToolCall,
-  getToolDescriptors,
-  type CreateKbSubsystemFn,
-  type KbSubsystem,
-  type RouteToolCallFn,
-} from './tool-router.js';
+import type { KbSubsystem } from './kb-tools.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
 import type {
   EventStreamHandlers,
@@ -64,12 +58,11 @@ import {
   markJobsAsError,
   createLifecycle,
   StartupInterruptedError,
+  type CreateKbSubsystemFn,
   type LifecycleDeps,
   type LifecycleController,
 } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
-
-export { routeToolCall, getToolDescriptors };
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -89,7 +82,6 @@ type BackendServerOptions = {
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
-  routeToolCallFn?: RouteToolCallFn;
   closeServerFn?: (server: Server) => Promise<void>;
   recoverOrphanedJobsFn?: (namespace: string) => void;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
@@ -154,9 +146,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
-  const routeToolCallFn =
-    options.routeToolCallFn ??
-    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const recoverOrphanedJobsFn =
     options.recoverOrphanedJobsFn ??
@@ -213,7 +202,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     },
   };
 
-  // -- Service factories (shared between lifecycle, HTTP handler, tool router)
+  // -- Service factories (shared between lifecycle and the HTTP handler)
   function getExecutionService(ctx: CallerContext): ExecutionServiceLike {
     const key = ctx.projectRoot;
     const existing = services.get(key);
@@ -435,8 +424,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     providerRegistry,
     abortJobs,
     scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
-    routeToolCall: routeToolCallFn,
-    getToolDescriptors: () => getToolDescriptors(providerRegistry),
     subscribeBackendEvents: (handlers: EventStreamHandlers) => {
       eventBus.on('job:created', handlers.onJobCreated);
       eventBus.on('job:phase_changed', handlers.onPhaseChanged);

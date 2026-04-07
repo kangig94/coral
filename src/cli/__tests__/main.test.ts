@@ -36,6 +36,7 @@ describe('cli main — help and structure', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('codex');
     expect(stdout).toContain('claude');
+    expect(stdout).toContain('list');
     expect(stdout).toContain('wait');
     expect(stdout).toContain('abort');
     expect(stdout).toContain('workflow');
@@ -43,13 +44,22 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('discuss');
   });
 
-  it('shows provider subcommand help', () => {
+  it('shows flattened provider help', () => {
     const { stdout, status } = runCli(['codex', '--help']);
     expect(status).toBe(0);
-    expect(stdout).toContain('exec');
-    expect(stdout).toContain('fork');
-    expect(stdout).toContain('list');
-    expect(stdout).toContain('coral');
+    expect(stdout).toContain('[agent]');
+    expect(stdout).toContain('--input');
+    expect(stdout).toContain('--session');
+    expect(stdout).toContain('--owner');
+    expect(stdout).not.toContain('exec [options]');
+    expect(stdout).not.toContain('coral [options]');
+    expect(stdout).not.toContain('list [options]');
+  });
+
+  it('shows the bypass flag on provider help', () => {
+    const { stdout, status } = runCli(['codex', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('--bypass-permissions');
   });
 
   it('shows wait subcommand help', () => {
@@ -78,10 +88,10 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('shutdown');
   });
 
-  it('normalizes coral:<agent> syntax to coral <agent> form', () => {
+  it('accepts namespaced agent syntax directly on provider help', () => {
     const { stdout, status } = runCli(['codex', 'coral:architect', '--help']);
     expect(status).toBe(0);
-    expect(stdout).toContain('--prompt');
+    expect(stdout).toContain('--input');
   });
 });
 
@@ -92,6 +102,15 @@ describe('cli main — output format', () => {
     expect(stderr).toContain('output-format');
     expect(stderr).toContain('text');
     expect(stderr).toContain('json');
+  });
+
+  it('accepts the -f short flag for output format', () => {
+    const { stdout, status } = runCli(['backend', 'status', '-f', 'json'], {
+      env: { CORAL_BACKEND_DISABLE_AUTOSTART: '1' },
+    });
+
+    expect(status).toBe(0);
+    expect(() => JSON.parse(stdout)).not.toThrow();
   });
 });
 
@@ -104,6 +123,15 @@ describe('cli main — wait --jobs validation', () => {
 });
 
 describe('cli main — workflow positional and flag args', () => {
+  it('shows workflow help without a positional prompt argument', () => {
+    const { stdout, status } = runCli(['workflow', '--help']);
+
+    expect(status).toBe(0);
+    expect(stdout).toContain('[expression]');
+    expect(stdout).toContain('--start-prompt');
+    expect(stdout).not.toContain('[prompt]');
+  });
+
   it('exits 1 when expression is missing', () => {
     const { stderr, status } = runCli(['workflow']);
 
@@ -123,6 +151,13 @@ describe('cli main — workflow positional and flag args', () => {
 
     expect(status).toBe(1);
     expect(stderr).toContain('start prompt is required');
+  });
+
+  it('does not accept a positional workflow prompt anymore', () => {
+    const { stderr, status } = runCli(['workflow', 'architect', 'hi']);
+
+    expect(status).toBe(1);
+    expect(stderr).toContain('too many arguments');
   });
 });
 

@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
 
-import { buildJsonRpcError, isRecord } from '../../shared/mcp-utils.js';
+import { buildJsonRpcError, isRecord } from '../../shared/utils.js';
 import type { PermissionMode } from '../claude/control-protocol.js';
 import {
   AUTO_ALLOW_PERMISSION_MODES,

@@ -91,19 +91,19 @@
 ### Required Agents
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
-| mcp-guardian | 1 | opus | MCP protocol compliance, tool schema validation, error handling |
+| integration-guardian | 1 | opus | CLI/backend contract validation, JSON output stability, error handling |
 | hook-safety | 2 | sonnet | Hook timeout safety, side effect management, matcher correctness |
 | skill-quality | 2 | sonnet | SKILL.md quality, frontmatter correctness, reference resolution |
 
 ### Mandatory Concerns
-- **MCP protocol**: Tool schemas must match Zod validation, error responses follow protocol
+- **CLI/backend contract**: Documented commands, flags, and JSON output must match the implementation
 - **Hooks**: Timeouts must be reasonable, commands must handle failure gracefully
 - **Skills**: Frontmatter fields correct, instructions clear and unambiguous
 - **Agent definitions**: YAML frontmatter valid, model assignment appropriate
 
 ### Validation Checklist
 #### BLOCKING
-- [ ] MCP tools return valid JSON
+- [ ] Documented CLI commands return valid JSON with `--output-format json`
 - [ ] Hook scripts handle errors (don't crash the session)
 - [ ] Plugin.json and marketplace.json versions match package.json
 #### STRONG

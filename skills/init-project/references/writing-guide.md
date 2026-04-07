@@ -36,7 +36,7 @@ Include only when the agent genuinely needs them — not by default.
 
 4. **Consultation rules in `<Constraints>`** use concrete task types, not abstract categories.
    - BAD: "When changing important code"
-   - GOOD: "Consult mcp-guardian BEFORE modifying GPU memory allocation functions"
+   - GOOD: "Consult integration-guardian BEFORE modifying CLI launch flows or structured JSON output"
 
 5. **Tier 1 (safety) agents** should have richer `<Constraints>` with diagnostic-quality rows:
    | DO | DON'T |
@@ -66,8 +66,8 @@ Rules contain **principles** (stable, rarely change). Docs contain **facts** (ch
 | Dependency direction principle | Rules (design-philosophy) | "Code in layer Lx may only depend on L0..L(x-1)" |
 | Current module dependency graph | Docs (architecture.md) | `server.ts → server-handlers.ts → ...` |
 | Specific file list / line counts | Docs (core-modules.md) | "server.ts is 58 lines of wiring" |
-| Naming conventions | Rules (conventions) | "snake_case for MCP tools, camelCase for TypeScript" |
-| Current API surface | Docs (mcp-tools.md) | Tool parameter tables |
+| Naming conventions | Rules (conventions) | "kebab-case for CLI commands, camelCase for TypeScript" |
+| Current API surface | Docs (api-reference.md) | CLI flags and JSON contract tables |
 
 **Test**: If the content needs updating when you refactor code (without changing any principle), it belongs in docs - not rules.
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { kbRoot, projectDataDir, resolveProjectSource } from '../infra/paths.js';
-import { isOwnerId } from '../shared/mcp-utils.js';
+import { isOwnerId } from '../shared/utils.js';
 
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot: string = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');

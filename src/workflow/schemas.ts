@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { identPattern, providerIdentPattern } from '../shared/mcp-utils.js';
+import { identPattern, providerIdentPattern } from '../shared/utils.js';
 import { cwdSchema } from '../shared/schemas.js';
 
 export const workflowInputSchema = z

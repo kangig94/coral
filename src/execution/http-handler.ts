@@ -9,16 +9,39 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
-import { collectCoralEnv, isRecord, nowIsoString } from '../shared/mcp-utils.js';
+import { collectCoralEnv, isRecord, nowIsoString } from '../shared/utils.js';
 import { resolveProjectSource } from '../infra/paths.js';
 import { abortInputSchema, coralAgentOpSchema, internalProviderFieldsShape, sharedExecSchema, sharedForkSchema, sharedListSchema, sharedResumeSchema } from '../shared/schemas.js';
-import type { CallerContext, ToolRequest } from './request-context.js';
+import type { CallerContext } from './request-context.js';
 import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
 import { belongsToNamespace } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
 import type { DiscussView } from '../discuss/views.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
+import {
+  handleDiscussAbort,
+  handleDiscussParticipate,
+  handleDiscussSeed,
+  handleDiscussStart,
+  handleDiscussWatch,
+} from './discuss-tools.js';
+import {
+  handleKbDelete,
+  handleKbMemo,
+  handleKbMemoDelete,
+  handleKbMemoList,
+  handleKbMemoPurge,
+  handleKbPrinciples,
+  handleKbPromote,
+  handleKbRead,
+  handleKbReindex,
+  handleKbSearch,
+  handleKbSourceDelete,
+  handleKbSourceImport,
+  handleKbSourceList,
+  handleKbUpdate,
+} from './kb-tools.js';
 import { domainError, domainSuccess, domainToHttp, launchDecisionToDomain, type ToolDomainResult } from './tool-response.js';
 import { handleWorkflow as launchWorkflow, isWorkflowInputFailure } from '../workflow/handler.js';
 
@@ -122,17 +145,6 @@ function parseContextualArgsRequest(body: unknown, resolvedPluginRoot: string): 
     coralEnv,
   };
   return { context, args: body.args };
-}
-
-export function parseToolRequest(body: unknown, resolvedPluginRoot: string): ToolRequest | null {
-  if (!isRecord(body) || typeof body.name !== 'string') return null;
-  const parsed = parseContextualArgsRequest(body, resolvedPluginRoot);
-  if (!parsed) return null;
-  return {
-    name: body.name,
-    args: parsed.args,
-    context: parsed.context,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -268,12 +280,8 @@ function sendDomainResult(res: ServerResponse, result: ToolDomainResult): void {
   sendJson(res, response.statusCode, response.body);
 }
 
-function isDiscussLaunchFenceRequest(request: ToolRequest): boolean {
-  return request.name === 'discuss_start' || request.name === 'discuss_participate';
-}
-
 function isProviderLaunchOp(op: string): boolean {
-  return op === 'exec' || op === 'resume' || op === 'fork' || op === 'bypass_exec' || op.startsWith('coral:');
+  return op === 'exec' || op === 'resume' || op === 'fork' || op.startsWith('coral:');
 }
 
 function invalidRequestResult(message = 'invalid request'): ToolDomainResult {
@@ -289,6 +297,14 @@ function withOwnerContext(ctx: CallerContext, owner: string | undefined): Caller
       CORAL_OWNER: owner,
     },
   };
+}
+
+function toLegacyDiscussToolName(action: string): string {
+  return `discuss_${action.replaceAll('-', '_')}`;
+}
+
+function toLegacyKbToolName(action: string): string {
+  return `kb_${action.replaceAll('-', '_')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +503,7 @@ async function handleProviderRequest(
       return;
     }
 
-    if (op === 'exec' || op === 'bypass_exec') {
+    if (op === 'exec') {
       const parsed = providerExecRouteSchema.parse(request.args);
       const systemPrompt = parsed.system_prompt;
 
@@ -514,7 +530,7 @@ async function handleProviderRequest(
           prompt: parsed.prompt,
           model: parsed.model,
           cwd: parsed.work_dir,
-          bypassPermissions: parsed.op === 'bypass_exec' ? parsed.bypass_permissions ?? true : parsed.bypass_permissions ?? false,
+          bypassPermissions: parsed.bypass_permissions ?? false,
           systemPrompt,
         },
         request.context,
@@ -673,6 +689,138 @@ async function handleAbortRequest(
   sendDomainResult(res, domainSuccess(deps.abortJobs(args.jobs)));
 }
 
+async function handleDiscussRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  action: string,
+): Promise<void> {
+  let request: ParsedContextualArgsRequest | null;
+  try {
+    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_json' });
+    return;
+  }
+
+  if (!request) {
+    sendDomainResult(res, invalidRequestResult());
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive() && (action === 'start' || action === 'participate')) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESULT);
+    return;
+  }
+
+  const helpers = {
+    getDiscussContext: deps.getDiscussContext,
+  };
+
+  let result: ToolDomainResult;
+  switch (action) {
+    case 'seed':
+      result = handleDiscussSeed(request.args);
+      break;
+    case 'start':
+      result = await handleDiscussStart(request.args, request.context, helpers);
+      break;
+    case 'abort':
+      result = await handleDiscussAbort(request.args, request.context, helpers);
+      break;
+    case 'watch':
+      result = handleDiscussWatch(request.args, request.context, helpers);
+      break;
+    case 'participate':
+      result = await handleDiscussParticipate(request.args, request.context, helpers);
+      break;
+    default:
+      sendDomainResult(res, domainError('not_found', `Unknown tool: ${toLegacyDiscussToolName(action)}`));
+      return;
+  }
+
+  sendDomainResult(res, result);
+}
+
+async function handleKbRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  action: string,
+): Promise<void> {
+  let request: ParsedContextualArgsRequest | null;
+  try {
+    request = parseContextualArgsRequest(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { error: 'invalid_json' });
+    return;
+  }
+
+  if (!request) {
+    sendDomainResult(res, invalidRequestResult());
+    return;
+  }
+
+  const kbSubsystem = deps.runtimeState.getKbSubsystem();
+  if (!kbSubsystem) {
+    sendDomainResult(res, domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.'));
+    return;
+  }
+
+  let result: ToolDomainResult;
+  switch (action) {
+    case 'search':
+      result = await handleKbSearch(request.args, kbSubsystem);
+      break;
+    case 'read':
+      result = handleKbRead(request.args, request.context);
+      break;
+    case 'promote':
+      result = await handleKbPromote(request.args, kbSubsystem, request.context);
+      break;
+    case 'update':
+      result = await handleKbUpdate(request.args, kbSubsystem);
+      break;
+    case 'delete':
+      result = await handleKbDelete(request.args, kbSubsystem);
+      break;
+    case 'source-import':
+      result = await handleKbSourceImport(request.args, kbSubsystem);
+      break;
+    case 'source-list':
+      result = await handleKbSourceList(request.args, kbSubsystem);
+      break;
+    case 'source-delete':
+      result = await handleKbSourceDelete(request.args, kbSubsystem);
+      break;
+    case 'reindex':
+      result = await handleKbReindex(request.args, kbSubsystem);
+      break;
+    case 'principles':
+      result = await handleKbPrinciples(request.args, kbSubsystem);
+      break;
+    case 'memo':
+      result = handleKbMemo(request.args, request.context);
+      break;
+    case 'memo-list':
+      result = handleKbMemoList(request.args, request.context);
+      break;
+    case 'memo-delete':
+      result = handleKbMemoDelete(request.args, request.context);
+      break;
+    case 'memo-purge':
+      result = handleKbMemoPurge(request.args, request.context);
+      break;
+    default: {
+      const name = toLegacyKbToolName(action);
+      sendDomainResult(res, domainError('unknown_tool', `Unknown tool: ${name}`, { name }));
+      return;
+    }
+  }
+
+  sendDomainResult(res, result);
+}
+
 // ---------------------------------------------------------------------------
 // Main request dispatcher
 // ---------------------------------------------------------------------------
@@ -760,11 +908,6 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       return;
     }
 
-    if (req.method === 'GET' && req.url === '/tools') {
-      sendJson(res, 200, deps.getToolDescriptors());
-      return;
-    }
-
     if (req.method === 'POST' && req.url) {
       const parsedUrl = new URL(req.url, 'http://localhost');
       const pathname = parsedUrl.pathname;
@@ -784,36 +927,18 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         await handleAbortRequest(req, res, deps);
         return;
       }
-    }
 
-    if (req.method === 'POST' && req.url === '/tool') {
-      let request: ToolRequest | null;
-      try {
-        request = parseToolRequest(await readJsonBody(req), identity.pluginRoot);
-      } catch {
-        sendJson(res, 400, { error: 'invalid_json' });
-        return;
-      }
-      if (!request) {
-        sendJson(res, 400, { error: 'invalid_request' });
+      const discussMatch = pathname.match(/^\/discuss\/([^/]+)$/);
+      if (discussMatch) {
+        await handleDiscussRequest(req, res, deps, discussMatch[1]);
         return;
       }
 
-      // Launch fence: block new launches while recovery adoption is in progress
-      if (runtimeState.getLaunchFenceActive() && isDiscussLaunchFenceRequest(request)) {
-        sendDomainResult(res, BACKEND_RECOVERING_RESULT);
+      const kbMatch = pathname.match(/^\/kb\/([^/]+)$/);
+      if (kbMatch) {
+        await handleKbRequest(req, res, deps, kbMatch[1]);
         return;
       }
-
-      const result = await deps.routeToolCall(
-        request,
-        {
-          getDiscussContext: deps.getDiscussContext,
-        },
-        runtimeState.getKbSubsystem(),
-      );
-      sendDomainResult(res, result);
-      return;
     }
 
     if (req.method === 'GET' && req.url) {

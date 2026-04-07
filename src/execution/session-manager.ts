@@ -6,7 +6,7 @@ import { backendLog } from '../shared/backend-log.js';
 import { acquireDirectoryLock } from '../shared/fs-lock.js';
 import { isValidSessionEntry } from '../shared/session-entry.js';
 import type { ProviderContinuityBlob, SessionEntry } from '../shared/types.js';
-import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/mcp-utils.js';
+import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/utils.js';
 import { TypedEventBus } from './event-bus.js';
 
 export type SessionContinuityMutation =

@@ -10,9 +10,16 @@ import {
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
 import type { DiscussContext } from '../discuss/context.js';
+import {
+  handleDiscussAbort,
+  handleDiscussParticipate,
+  handleDiscussSeed,
+  handleDiscussStart,
+  handleDiscussWatch,
+} from '../discuss-tools.js';
 import { getSession } from '../discuss/registry.js';
-import { routeToolCall } from '../tool-router.js';
-import type { CallerContext, ExecutionService } from '../service.js';
+import type { CallerContext } from '../request-context.js';
+import type { ExecutionService } from '../service.js';
 import type { ToolDomainResult } from '../tool-response.js';
 import {
   DEFAULT_TOPIC,
@@ -60,6 +67,28 @@ function parseToolError(result: ToolDomainResult): Record<string, unknown> {
     return { error: result.code, message: result.message, ...(detail as Record<string, unknown>) };
   }
   return { error: result.code, message: result.message };
+}
+
+async function callDiscussTool(
+  request: {
+    name: 'discuss_seed' | 'discuss_start' | 'discuss_abort' | 'discuss_watch' | 'discuss_participate';
+    args: Record<string, unknown>;
+    context: CallerContext;
+  },
+  helpers: { getDiscussContext: (ctx: CallerContext) => DiscussContext },
+): Promise<ToolDomainResult> {
+  switch (request.name) {
+    case 'discuss_seed':
+      return handleDiscussSeed(request.args);
+    case 'discuss_start':
+      return handleDiscussStart(request.args, request.context, helpers);
+    case 'discuss_abort':
+      return handleDiscussAbort(request.args, request.context, helpers);
+    case 'discuss_watch':
+      return Promise.resolve(handleDiscussWatch(request.args, request.context, helpers));
+    case 'discuss_participate':
+      return handleDiscussParticipate(request.args, request.context, helpers);
+  }
 }
 
 async function createWatchToolFixture(sessionId = 'discuss-1') {
@@ -152,7 +181,7 @@ describe('execution discuss tools', () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const stores = new Map([[harness.projectRoot, harness.store]]);
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_start',
         args: {
@@ -182,7 +211,7 @@ describe('execution discuss tools', () => {
     const stores = new Map([[harness.projectRoot, harness.store]]);
     await persistSession({ ...harness, context }, { sessionId: 'discuss-1', recover: true });
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_abort',
         args: { session: 'discuss-1' },
@@ -204,7 +233,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch returns the committed watch history', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1' },
@@ -294,7 +323,7 @@ describe('execution discuss tools', () => {
       },
     );
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-epoch' },
@@ -339,7 +368,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=0 returns full history and cursor count', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 0 },
@@ -385,7 +414,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=N returns only incremental events', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 1 },
@@ -426,7 +455,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor equal to events length returns empty events and same cursor', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 2 },
@@ -461,7 +490,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor greater than events length returns invalid_cursor error', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 3 },
@@ -483,7 +512,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=-1 returns Zod validation error (invalid_request)', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: -1 },
@@ -502,7 +531,7 @@ describe('execution discuss tools', () => {
   it('discuss_watch with cursor=1.5 returns Zod validation error (invalid_request)', async () => {
     const { harness, registry, stores } = await createWatchToolFixture();
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'discuss-1', cursor: 1.5 },
@@ -552,7 +581,7 @@ describe('execution discuss tools', () => {
       },
     );
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_participate',
         args: {
@@ -670,7 +699,7 @@ describe('execution discuss tools', () => {
       },
     );
 
-    const validResult = await routeToolCall(
+    const validResult = await callDiscussTool(
       {
         name: 'discuss_participate',
         args: {
@@ -682,7 +711,7 @@ describe('execution discuss tools', () => {
       },
       createHelpers(registry, stores, harness.service),
     );
-    const invalidResult = await routeToolCall(
+    const invalidResult = await callDiscussTool(
       {
         name: 'discuss_participate',
         args: {
@@ -709,7 +738,7 @@ describe('execution discuss tools', () => {
     const registry = createDiscussContextRegistry();
     const stores = new Map([[harness.projectRoot, harness.store]]);
 
-    const result = await routeToolCall(
+    const result = await callDiscussTool(
       {
         name: 'discuss_watch',
         args: { session: 'missing' },
@@ -742,7 +771,7 @@ describe('execution discuss tools', () => {
         throw new Error('disk full');
       });
 
-      const result = await routeToolCall(
+      const result = await callDiscussTool(
         {
           name: 'discuss_abort',
           args: { session: 'sess-err' },
@@ -769,7 +798,7 @@ describe('execution discuss tools', () => {
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
 
-      const result = await routeToolCall(
+      const result = await callDiscussTool(
         {
           name: 'discuss_watch',
           args: { session: 'sess-err2' },
@@ -796,7 +825,7 @@ describe('execution discuss tools', () => {
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
 
-      const result = await routeToolCall(
+      const result = await callDiscussTool(
         {
           name: 'discuss_participate',
           args: { session: 'sess-err3', agent_name: 'tester', content: 'test' },

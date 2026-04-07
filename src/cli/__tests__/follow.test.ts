@@ -12,7 +12,7 @@ vi.mock('../../client/backend-lifecycle.js', () => ({
   ensureBackend: mockState.ensureBackend,
 }));
 
-vi.mock('../../bridge/backend-client.js', () => ({
+vi.mock('../../client/backend-helpers.js', () => ({
   streamWait: mockState.streamWait,
 }));
 

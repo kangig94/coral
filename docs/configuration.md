@@ -1,43 +1,43 @@
 # Configuration
 
-Environment variables, config files, and the plugin manifest.
+Environment variables, plugin metadata, hooks, and runtime state for the current Coral runtime.
 
 ## Environment Variables
 
 | Variable | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
-| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
-| `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`→`high`) |
-| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`). Requests for higher tiers are downgraded. |
-| `CORAL_EFFORT` | _(none)_ | Global effort override — if set, applies to any provider without its own `CORAL_<PROVIDER>_EFFORT` |
-| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (range: 1–10) |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum bid score (1–100) for floor eligibility. Stored per-session at creation time. |
-| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum epochs before discussion ends automatically (1–10). Stored per-session at creation time. |
-| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch (1–10). Stored per-session at creation time. |
-| `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed discuss sessions are eligible for pruning (0 = disabled) |
-| `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend daemon idle timeout in milliseconds (default 6 hours) |
-| `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral → ~/.coral/projects/{slug}/` symlink on session start and add it to `.gitignore` |
-| `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB storage path |
-| `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync with remote (`1` = auto fetch/rebase/push during curate). **Off by default** — KB notes may contain knowledge derived from proprietary codebases; only enable if the remote is authorized for that content. |
-| `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider (`gemini`, `openai`, `local`). If unset, vector search is disabled. |
-| `CORAL_EMBEDDING_API_KEY` | _(none)_ | API key for the chosen embedding provider (Gemini, OpenAI, Voyage) |
-| `CORAL_EMBEDDING_MODEL` | _(per provider)_ | Model override (default: `gemini-embedding-001` for Gemini) |
-| `CORAL_EMBEDDING_DIMS` | _(per provider)_ | Embedding dimensions override (default: 3072 for Gemini) |
-| `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom API endpoint (for Ollama or self-hosted providers) |
+| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort |
+| `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort |
+| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
+| `CORAL_EFFORT` | _(none)_ | Global effort override when provider-specific effort is unset |
+| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers |
+| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
+| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
+| `CORAL_DISCUSS_TTL_DAYS` | `0` | Auto-prune window for completed discuss sessions |
+| `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
+| `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
+| `CORAL_KB_PATH` | `~/.coral/kb` | KB storage override |
+| `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
+| `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
+| `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
+| `CORAL_EMBEDDING_MODEL` | _(provider default)_ | Embedding model override |
+| `CORAL_EMBEDDING_DIMS` | _(provider default)_ | Embedding dimensions override |
+| `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom embedding endpoint |
 
-### Usage - Shell
+### Shell Usage
 
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.4
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
-export CORAL_KB_PATH=/path/to/my-obsidian-vault
+export CORAL_KB_PATH=/path/to/my-kb
 ```
 
-### Usage - .claude/settings.json
+### `.claude/settings.json`
 
-Set environment variables in `.claude/settings.json` (project-level or global). This persists across sessions without shell exports.
+Project-level or global Claude Code settings can persist the same environment variables:
 
 ```json
 {
@@ -50,133 +50,109 @@ Set environment variables in `.claude/settings.json` (project-level or global). 
 }
 ```
 
-### ~/.coral/.env — Embedding Configuration
+### `~/.coral/.env`
 
-Embedding API keys should be stored in `~/.coral/.env`, not in `.claude/settings.json`. This file is user-local (not synced to git) and created with `0600` permissions.
+Embedding credentials should live in `~/.coral/.env`, not in repo settings:
 
 ```bash
-# ~/.coral/.env
 CORAL_EMBEDDING_PROVIDER=gemini
-CORAL_EMBEDDING_API_KEY=AIza...
+CORAL_EMBEDDING_API_KEY=...
 ```
 
-Priority: `process.env` (shell/settings.json) > `~/.coral/.env` > unconfigured (text-only search).
-
-Run `/coral:equip kb` to set up embedding — it guides through provider selection and writes `~/.coral/.env` automatically (API keys are never written by coral; add them manually).
+Priority is `process.env` / `.claude/settings.json` first, then `~/.coral/.env`, then unconfigured defaults.
 
 ## Config Files
 
-### .claude-plugin/plugin.json - Plugin Manifest
+### `.claude-plugin/plugin.json`
 
-Metadata for Claude Code to recognize the plugin.
+Claude Code plugin manifest. Relevant fields:
 
-| Field | Description |
-|---|---|
-| `name` | Plugin name (used as skill prefix: `coral:*`) |
-| `version` | Semantic version (auto-synced from `package.json` on build) |
-| `description` | Plugin description |
-| `author` | Author info |
+| Field | Purpose |
+| --- | --- |
+| `name` | Plugin name and slash-command prefix |
+| `version` | Synced from `package.json` during build |
+| `description` | Plugin description shown to the host |
+| `author` / `repository` / `homepage` / `license` | Package metadata |
+| `skills` | Relative path to the skill directory |
 
-Version is managed in `package.json` (single source of truth) and synced to `plugin.json` and `marketplace.json` automatically during `npm run build`. Never edit the version in `plugin.json` directly.
+The manifest is limited to plugin metadata and the skill path. Transport registration is not part of the manifest.
 
-### .mcp.json - MCP Server Registration
+### `hooks/hooks.json`
 
-Registers the MCP server with Claude Code. `ax` runs `bridge/coral-ax.cjs`, which proxies all tools (`codex`, `claude`, `abort`, `workflow`, `discuss`, `discuss_watch`) to the backend daemon (`bridge/coral-backend.cjs`) and intercepts bridge-local tools (`wait`, `backend`).
+Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, and Stop. See [Hooks](./hooks.md) for behavior details.
 
-### hooks/hooks.json - Hook Configuration
+## Runtime State Files
 
-Configures all 9 hooks: SessionStart (INJECT.md injection with `{{CORAL_PROJECTS}}`/`{{PROJECT_SOURCE}}` substitution + backend warm-start + HUD auto-update), SessionStart/compact (post-compaction KB promotion reminder), UserPromptSubmit (KB flag + ralph loop state + memo reminder), PreToolUse (KB flag + ralph loop state + CLI path resolution), PostToolUse (silent failure detector), PostToolUseFailure (KB lookup reminder), Stop (KB promotion gate + plan state cleanup), TeammateIdle (discuss idle guard).
+### Backend state
 
-See [Hooks documentation](./hooks.md) for details.
+| Path | Purpose |
+| --- | --- |
+| `~/.claude/coral/backend.json` | Backend connection info (host, port, token, namespace, bundle hash) |
+| `~/.claude/coral/backend.lock` | Singleton backend lock |
 
-### AX Session Files (Codex + Claude)
+### Session state
 
-**Location**: `~/.claude/coral/sessions/<project-hash>/<session-uuid>.json`
+`~/.claude/coral/sessions/<project-hash>/<session-uuid>.json`
 
-**Project hash**: `sha256(resolve(workingDirectory)).slice(0, 12)` — isolates sessions per project
+- Created by `SessionManager`
+- Scoped by normalized project root hash
+- Stores provider-aware `SessionEntry` records
+- Updated atomically on create, use, or delete
 
-**Creation**: Auto-created by `SessionManager` when a resumable session completes
+### Discuss state
 
-**Format**: Single provider-aware `SessionEntry` JSON object per file (`provider: "codex" | "claude"`)
+`~/.coral/projects/<source-slug>/discuss/<session-dir>/`
 
-**Updates**: Written atomically (`.tmp` + rename) on session create, use, or delete
+- `event-log.jsonl`: authoritative event stream
+- `state.json`: derived snapshot
+- `discovery.json` / `summary-index.json`: source-scoped indexes
 
-**Corruption handling**: Invalid JSON files are skipped with a warning; other sessions load normally
+### Job state
 
-### Discuss Session Directories
+`<os-tmpdir>/coral-jobs/<jobId>/`
 
-**Location**: `~/.coral/projects/{source-slug}/discuss/{session_dir}/`
+- `status.json`
+- `progress.jsonl`
+- `result.md`
 
-**Source slug**: canonical git source (`owner/repo` -> `owner-repo`) with `local/<dirname>` fallback
+## Runtime Dependencies
 
-**Session ID format**: `yymmdd-HHmm-xxxx` (compact timestamp + 4-char random suffix)
+| Package | Purpose |
+| --- | --- |
+| `zod` | Schema validation |
+| `@orama/orama` | Full-text search |
+| `graphology` | Graph data structures for KB community analysis |
+| `graphology-communities-louvain` | Community detection |
+| `mammoth` / `turndown` | Source import conversion |
+| `yaml` | YAML parsing |
+| `zod-to-json-schema` | Schema export helpers |
 
-**Directory name**: `{session_id}-{topic_slug}` (slug preserves CJK characters, truncated to 40 chars)
+## External Dependencies
 
-**Concurrency**: The backend serializes discuss mutations with in-process promise-chain locks keyed by source/session
-
-**Contents**:
-- `event-log.jsonl` — append-only authority log
-- `state.json` — derived discussion snapshot (atomic writes via `.tmp` + rename)
-
-**Parent directory metadata**:
-- `discovery.json` — source-scoped recovery index
-- `summary-index.json` — source-scoped listing index
-- `~/.coral/discuss-sources.json` — shared source registry used for discovery and recovery
-
-## Dependencies
-
-### Runtime Dependencies
-
-| Package | Version | Purpose |
-|---|---|---|
-| `@modelcontextprotocol/sdk` | ^1.26.0 | MCP server framework |
-| `zod` | ^3.23.8 | Schema validation (MCP SDK dependency + input validation) |
-| `@orama/orama` | ^3.1.18 | Full-text BM25 search engine |
-| `graphology` | ^0.26.0 | Graph data structure library (entity-relationship graph for community detection) |
-| `graphology-communities-louvain` | ^2.0.2 | Louvain community clustering with `detailed()` dendrogram for hierarchical communities |
-| `node-addon-api` | ^8.7.0 | N-API C++ addon headers (build-time) |
-
-### Dev Dependencies
-
-| Package | Version | Purpose |
-|---|---|---|
-| `typescript` | ^5.7.2 | TypeScript compiler |
-| `@types/node` | ^22.19.7 | Node.js type definitions |
-| `esbuild` | ^0.27.2 | Build bundler |
-| `vitest` | ^4.0.17 | Test framework |
-
-### External Dependencies
-
-| Tool | Purpose | Installation |
-|---|---|---|
-| Codex CLI v0.104+ | OpenAI model execution | `npm install -g @openai/codex` |
-| Node.js 18+ | Runtime | nvm, etc. |
-| cmake 3.21+ | C++ addon source build (fallback) | `uv tool install cmake` or system package |
+| Tool | Purpose |
+| --- | --- |
+| Codex CLI | Codex execution |
+| Claude CLI | Claude execution |
+| Node.js 18+ | Runtime |
+| `cmake` | Native KB addon fallback builds |
 
 ## File Role Summary
 
-```
-.claude-plugin/plugin.json  -> Claude Code recognizes the plugin
-.mcp.json                   -> Claude Code registers/starts the MCP server (ax)
-hooks/hooks.json            -> Claude Code configures all 10 hooks
-hooks/kb-lookup-reminder.mjs  -> PostToolUseFailure/PostToolUse KB hint script
-hooks/kb-memo-reminder.mjs    -> UserPromptSubmit memo reminder (60 min throttle)
-hooks/subagent-start.mjs      -> SubagentStart INJECT.md injection (read-only KB)
-hooks/kb-promote-gate.mjs -> Stop/Compact promotion script
-hooks/backend-warm-start.mjs  -> SessionStart backend warm-start hook
-hooks/hud-auto-update.mjs    -> SessionStart HUD auto-update hook
+```text
+.claude-plugin/plugin.json                     -> plugin manifest
+hooks/hooks.json                               -> hook registration
+bridge/coral-backend.cjs                       -> backend daemon bundle
+bridge/coral-cli.cjs                           -> CLI bundle
+bridge/coral-claude-appserver.cjs              -> Claude appserver helper bundle
+bridge/manifest.json                           -> backend bundle hash
 
-~/.claude/coral/sessions/<project-hash>/*.json  -> Runtime AX session files (Codex + Claude, auto-created)
-~/.claude/coral/backend.json                    -> Runtime backend connection info (auto-created)
-~/.claude/coral/backend.lock                    -> Runtime backend singleton lock (auto-created)
-~/.coral/data/kb/vec/coral-vec.node           -> Native vector search addon (installed by equip kb)
-~/.coral/data/kb/vec/specs/{specId}/           -> Per-spec immutable vector snapshots
-~/.coral/.env                                  -> Embedding provider config (API keys, created by user)
-<os-tmpdir>/coral-jobs/<jobId>/                  -> Runtime job directories (temporary, resolved by node:os tmpdir())
-~/.coral/discuss-sources.json                   -> Shared discuss source registry (auto-created)
-~/.coral/projects/<source-slug>/discuss/<session-dir>/  -> Runtime discuss session dirs (auto-created)
-
-bridge/coral-ax.cjs      -> Unified AX MCP server bundle (codex + claude + wait + abort + workflow + discuss + backend, committed)
-bridge/coral-backend.cjs  -> HTTP backend daemon bundle (committed)
+~/.claude/coral/backend.json                   -> live backend connection info
+~/.claude/coral/backend.lock                   -> backend singleton lock
+~/.claude/coral/sessions/<project-hash>/*.json -> persisted provider sessions
+<os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
+~/.coral/projects/<source-slug>/discuss/       -> discuss storage
+~/.coral/.env                                  -> embedding config
+~/.coral/data/kb/                              -> KB storage
 ```
+
+The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles.

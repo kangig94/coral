@@ -2,6 +2,8 @@
 
 Claude Code는 이미 코딩할 줄 압니다. Coral은 *당신의 방식대로* 일하도록 가르칩니다.
 
+Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 HTTP 데몬을 통해 처리됩니다.
+
 ## 설치
 
 **요구사항:** Node.js 18+
@@ -240,7 +242,6 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 ## 문서
 
 - [Architecture](docs/architecture.md) — 아키텍처 및 데이터 흐름
-- [MCP Tools](docs/mcp-tools.md) — MCP 도구 입출력 사양
 - [Core Modules](docs/core-modules.md) — TypeScript 모듈 상세
 - [Agents](docs/agents.md) — 에이전트 정의 및 라우팅
 - [Hooks](docs/hooks.md) — 훅 시스템 및 라이프사이클 이벤트

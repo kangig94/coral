@@ -1,102 +1,113 @@
 # Skills (Slash Commands)
 
-Slash commands provided by the Coral plugin. Each skill is defined in `skills/{name}/SKILL.md` - refer to those files for the full execution protocol.
+Slash commands provided by the Coral plugin. Each skill is defined in `skills/{name}/SKILL.md`.
 
 ## Methods
 
-Cross-cutting methodology files live in `methods/`. Agents and skills reference them via the `CORAL_METHODS` path alias. See [docs/methodology.md](./methodology.md) for the full connection architecture.
+Cross-cutting methodology files live in `methods/`. Agents and skills reference them through the `CORAL_METHODS` path alias.
 
 | Method | Consumers | Purpose |
-|--------|-----------|---------|
-| `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist + reasoning failure taxonomy |
-| `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer feedback synthesis (Adopt/Adapt/Defer/Diverge) |
-| `HOW-RESOLVE.md` | resolver | Constraint Collision resolution via TRIZ inventive principles |
-| `HOW-COMPLETE.md` | plan | Review loop exit evaluation (frame stability, counterexample coverage) |
-| `HOW-FALSIFY.md` | debugger, scanner | Competing hypothesis elimination via Vitanda (pure destruction) |
-| `HOW-CONFIDENCE.md` | debugger | GRADE-based evidence confidence grading (4 tiers, 2-phase algorithm) |
-| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence source chain (claim → source → identifier → verification) |
-| `HOW-ELICIT.md` | gap-finder, preplan | Multi-lens gap detection (HAZOP deviation + Pre-mortem + ABP assumptions) |
+| --- | --- | --- |
+| `HOW-REVIEW.md` | architect, critic | Adversarial review with counterexample checklist |
+| `HOW-SYNTHESIZE.md` | resolver, plan | Multi-reviewer synthesis |
+| `HOW-RESOLVE.md` | resolver | Constraint-collision resolution |
+| `HOW-COMPLETE.md` | plan | Exit evaluation |
+| `HOW-FALSIFY.md` | debugger, scanner | Hypothesis elimination |
+| `HOW-CONFIDENCE.md` | debugger | Evidence confidence grading |
+| `HOW-PROVENANCE.md` | architect, critic, debugger, scanner, gap-finder | Evidence chain tracking |
+| `HOW-ELICIT.md` | gap-finder, preplan | Multi-lens gap detection |
+
+## Skill Catalog
 
 | Skill | Description |
-|---|---|
-| `/coral:codex` | Single entry point for all Codex interactions - routes to scanner/gap-finder/ralph/review intent, or manages sessions directly |
-| `/coral:analyze` | Deep analysis and investigation with HOW methods always applied. Pass `--codex` to delegate to Codex CLI |
-| `/coral:preplan` | Structured problem-definition conversation before planning. Aligns understanding with the user before triggering coral:plan |
-| `/coral:plan` | Planning with parallel architect/critic review. Pass `--deep` for methodology-driven synthesis, `--codex` for cross-model Codex reviews |
-| `/coral:ralph` | Persistent execution loop with verification (sonnet). Flags: `--codex` (Codex delegation), `--team` (parallel AC execution via Agent Teams), `--red` (adversarial tests). All flags are combinable. |
-| `/coral:code-simplify` | Simplify and refine code for clarity, consistency, and maintainability |
-| `/coral:bugfix` | Systematic bug diagnosis, planning, and fix execution |
-| `/coral:equip` | Install MCP tools and native addons. `equip kb` installs the vector search addon and guides embedding provider setup |
-| `/coral:init-project` | Project initialization orchestrator - generates `.claude/` structure, agents, rules, docs |
-| `/coral:discuss` | Moderated multi-agent discussion via Agent Teams |
-| `/coral:bid` | Submit a bid or speech in an active `--user` discuss session |
-| `/coral:statusline` | Install or remove the coral HUD statusline |
+| --- | --- |
+| `/coral:codex` | Main Codex entrypoint: general runs, continuity, and delegated agent flows |
+| `/coral:analyze` | Deep analysis and investigation; `--codex` delegates through Codex CLI |
+| `/coral:preplan` | Structured problem-definition conversation before planning |
+| `/coral:plan` | Planning with architect/critic review; `--deep` enables methodology-driven synthesis; `--codex` adds Codex review rounds |
+| `/coral:ralph` | Persistent execution loop with verification; supports `--codex`, `--team`, and `--red` |
+| `/coral:code-simplify` | Code simplification and cleanup |
+| `/coral:bugfix` | Diagnosis, planning, and fix execution |
+| `/coral:equip` | Install Coral companion tooling and KB runtime helpers |
+| `/coral:init-project` | Generate project-specific Coral structure and docs |
+| `/coral:discuss` | Moderated multi-agent discussion |
+| `/coral:bid` | Submit a bid or speech into an active discuss session |
+| `/coral:statusline` | Install or remove the Coral HUD statusline |
 
-## --red Flag (Adversarial Testing)
+## Common CLI Launch Pattern
 
-`/coral:ralph --red <task>` spawns a red-attacker **before implementation begins**, running adversarial test generation in parallel with the main work:
+Many skills follow the same detached-launch pattern:
 
-1. Red-attacker spawns at step 2 (plan mode) or step 3 start (prompt mode) with plan file + AC as input
-2. Implementation proceeds in parallel — red-attacker works independently in a temp directory
-3. Post-implementation: wait for red-attacker, move staged tests into test directory, run full suite
-4. Fix loop: fix failures → re-run (max 3 iterations), then escalate
+```bash
+coral-cli codex -i "<prompt>" --work-dir "<path>" -d --output-format json
+coral-cli wait --jobs "<job>" --output-format json --embed
+```
 
-**Spawn method** (opposite model from main execution):
-- `--red` (Claude implements) → `codex({ op: "coral:red-attacker" })` (Codex tests)
-- `--red --codex` (Codex implements) → `Agent("coral:red-attacker")` (Claude tests)
-- `--red --team` → red-attacker joins as teammate in the worker team (Codex via `<Codex_Mode>`)
-- `--red --team --codex` → red-attacker joins as teammate (Claude, since workers use Codex)
+Rules:
 
-**Test file lifecycle**: red-attacker writes as `red-<target>.<ext>` (e.g., `red-auth.test.ts`). After tests pass, ralph triages — valid tests are merged into main test files and `red-` files are deleted; failing triage tests are discarded.
+1. Use detached JSON launches when a skill needs a durable `job` or `session`.
+2. Monitor with `coral-cli wait`.
+3. Prefer `event.result.content` when present.
+4. Fall back to `Read(event.result.path)` when inline content is absent.
 
-## /coral:codex - Session Commands
+## `--red` Flag
 
-`/coral:codex session <command>` manages named Codex sessions:
+`/coral:ralph --red <task>` runs adversarial testing in parallel with implementation.
 
-| Command | Example |
-|---|---|
-| `session create <name> <prompt>` | `/coral:codex session create review analyze auth.ts` |
-| `session send <name> <prompt>` | `/coral:codex session send review what about JWT?` |
-| `session list` | `/coral:codex session list` |
-| `session fork <name>` | `/coral:codex session fork review` |
+- `--red` with Claude implementation launches Codex-side red-attacker work through `coral-cli codex red-attacker -i ...`
+- `--red --codex` flips the implementation model and keeps the red-attacker on the opposite model for diversity
+- `--red --team` integrates the attacker into teammate orchestration
 
-Consecutive `/coral:codex` calls without `session` automatically continue the previous session. Say "new" to start fresh.
+Generated tests use `red-<target>.<ext>` staging names and are triaged before being merged into the main suite.
 
-## /coral:discuss - Moderated Discussion
+## `/coral:codex`
 
+The Codex skill is session-aware:
+
+- `session list` maps to `coral-cli list --provider codex --output-format json`
+- general requests use `coral-cli codex -i ...`
+- delegated agent requests use `coral-cli codex <agent> -i ...`
+- consecutive general requests reuse the previous `session` when available
+
+Codex session branching is intentionally unsupported. Skills and docs should not advertise branching or named-fork flows.
+
+## `/coral:discuss`
+
+Example usage:
 
 ```bash
 /coral:discuss "Should we adopt microservices?"
 /coral:discuss "AI ethics in healthcare" --hints stance:pro,con priority:safety,innovation
 ```
 
-The `--hints` flag provides controversy axis hints to the moderator. The moderator still performs its own topic analysis — hints are suggestions, not mandates.
+The underlying runtime uses:
 
-See [docs/discuss.md](./discuss.md) for the full discussion system design.
+- `coral-cli discuss seed`
+- `coral-cli discuss start`
+- `coral-cli discuss watch`
+- `coral-cli discuss participate`
+- `coral-cli discuss abort`
 
-## /coral:bid - Bid or Speak in Discussion
+See [Discuss](./discuss.md) for the event model and persistence rules.
 
-Requires an active `--user` discuss session (started via `/coral:discuss --user <topic>`).
+## `/coral:bid`
 
-```bash
-/coral:bid 50, I want to address the scalability concern   # bid with score + thought
-/coral:bid I think we should use a microservices approach   # deliver a speech
-```
-
-The first comma separates score from thought. If the left side is an integer 0-100, it's a bid; otherwise the entire string is treated as speech content.
-
-## /coral:init-project - Project Initialization
-
-Scans the current project and generates the complete `.claude/` structure:
+Requires an active `--user` discuss session:
 
 ```bash
-/coral:init-project
+/coral:bid 50, I want to address the scalability concern
+/coral:bid I think we should use a microservices approach
 ```
 
-Phases:
-1. **Scan**: Detect stack (languages, frameworks, test runner, build tool), identify domains
-2. **Plan**: Write plan following embedded protocol in `skills/plan/SKILL.md`, verify with reviewers
-3. **Execute**: Spawn ralph to generate all files per the plan
-4. **Report**: Summary of generated artifacts
+The first comma determines whether the input is parsed as a bid (`score, thought`) or as speech content.
 
-The init-project skill reads `agents/init-project.md` for its full execution protocol.
+## `/coral:init-project`
+
+`/coral:init-project` scans the current project and generates the Coral scaffolding:
+
+1. Scan the stack and project structure.
+2. Write and review a plan.
+3. Execute the plan through Coral protocols.
+4. Report the generated artifacts.
+
+The full protocol lives in `skills/init-project/SKILL.md`.

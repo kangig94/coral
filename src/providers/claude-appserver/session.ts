@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { buildChildEnv } from '../../shared/child-env.js';
 import { formatToolProgress, truncate } from '../../shared/format-progress.js';
-import { isRecord, raceTimeout } from '../../shared/mcp-utils.js';
+import { isRecord, raceTimeout } from '../../shared/utils.js';
 import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,

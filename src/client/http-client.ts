@@ -15,7 +15,7 @@ import type {
   KbSourcePersistInput,
   KbUpdateInput,
 } from '../kb/types.js';
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
 import { describeHttpError, HEALTH_TIMEOUT_MS, parseJsonResponse, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import type { ToolDomainResult } from '../execution/tool-response.js';
@@ -32,11 +32,13 @@ interface ProviderExecOptions extends ProviderToolOptions {
   session?: string;
 }
 
-interface ProviderCoralDispatchOptions {
+interface ProviderAgentDispatchOptions {
   context?: CallerContext;
   session?: string;
   work_dir?: string;
+  model?: string;
   owner?: string;
+  bypass_permissions?: boolean;
 }
 
 interface WorkflowOptions {
@@ -61,10 +63,7 @@ function isCallerContext(value: unknown): value is CallerContext {
 
 function isBackendRecoveringResult(value: unknown): value is Extract<ToolDomainResult, { ok: false }> {
   return (
-    isRecord(value) &&
-    value.ok === false &&
-    value.code === 'backend_recovering' &&
-    typeof value.message === 'string'
+    isRecord(value) && value.ok === false && value.code === 'backend_recovering' && typeof value.message === 'string'
   );
 }
 
@@ -174,16 +173,16 @@ export class BackendClient {
     );
   }
 
-  async providerCoralDispatch(
+  async providerAgentDispatch(
     provider: string,
-    agentName: string,
+    op: string,
     prompt: string,
-    options: ProviderCoralDispatchOptions = {},
+    options: ProviderAgentDispatchOptions = {},
   ): Promise<ToolDomainResult> {
     const { context, ...args } = options;
     return this.postDedicatedToolRoute(
       `/provider/${encodeURIComponent(provider)}`,
-      { op: `coral:${agentName}`, prompt, ...args },
+      { op, prompt, ...args },
       this.resolveContext(context),
     );
   }
@@ -197,7 +196,7 @@ export class BackendClient {
     },
     context?: CallerContext,
   ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_seed', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/discuss/seed', args, this.resolveContext(context));
   }
 
   async discussStart(
@@ -214,11 +213,11 @@ export class BackendClient {
     },
     context?: CallerContext,
   ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_start', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/discuss/start', args, this.resolveContext(context));
   }
 
   async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_watch', { session, cursor }, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/discuss/watch', { session, cursor }, this.resolveContext(context));
   }
 
   async discussParticipate(
@@ -231,11 +230,11 @@ export class BackendClient {
     },
     context?: CallerContext,
   ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_participate', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/discuss/participate', args, this.resolveContext(context));
   }
 
   async discussAbort(session: string, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_abort', { session }, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/discuss/abort', { session }, this.resolveContext(context));
   }
 
   async abortJobs(jobIds: string[], context?: CallerContext): Promise<ToolDomainResult> {
@@ -243,59 +242,59 @@ export class BackendClient {
   }
 
   async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_search', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/search', args, this.resolveContext(context));
   }
 
   async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_principles', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/principles', args, this.resolveContext(context));
   }
 
   async kbRead(args: KbReadInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_read', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/read', args, this.resolveContext(context));
   }
 
   async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_promote', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/promote', args, this.resolveContext(context));
   }
 
   async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_update', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/update', args, this.resolveContext(context));
   }
 
   async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/delete', args, this.resolveContext(context));
   }
 
   async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_import', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/source-import', args, this.resolveContext(context));
   }
 
   async kbSourceList(context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_list', {}, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/source-list', {}, this.resolveContext(context));
   }
 
   async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_delete', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/source-delete', args, this.resolveContext(context));
   }
 
   async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/memo', args, this.resolveContext(context));
   }
 
   async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_list', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/memo-list', args, this.resolveContext(context));
   }
 
   async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_delete', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/memo-delete', args, this.resolveContext(context));
   }
 
   async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_purge', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/memo-purge', args, this.resolveContext(context));
   }
 
   async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_reindex', args, this.resolveContext(context));
+    return this.postDedicatedToolRoute('/kb/reindex', args, this.resolveContext(context));
   }
 
   async health(): Promise<BackendHealth | null> {
@@ -336,28 +335,6 @@ export class BackendClient {
       return { ok: response.ok };
     } catch {
       return { ok: false };
-    }
-  }
-
-  async listTools(): Promise<unknown> {
-    const { port, host, token } = await this.resolveBackendHandle();
-
-    try {
-      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}/tools`, {
-          method: 'GET',
-          headers: { 'X-Coral-Backend-Token': token },
-          signal,
-        });
-
-        if (!response.ok) {
-          throw new Error(describeHttpError(response.status, response.statusText));
-        }
-
-        return parseJsonResponse(response);
-      });
-    } catch (error) {
-      throwBackendCommunicationError(error);
     }
   }
 
@@ -418,43 +395,6 @@ export class BackendClient {
           response.status,
           responseBody,
         );
-      });
-    } catch (error) {
-      throwBackendCommunicationError(error);
-    }
-  }
-
-  private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult> {
-    const { port, host, token } = await this.resolveBackendHandle(ctx);
-    const body = JSON.stringify({
-      name,
-      args,
-      context: this.buildCallerContext(ctx),
-    });
-
-    try {
-      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}/tool`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': token,
-          },
-          body,
-          signal,
-        });
-
-        const responseBody = await parseJsonResponse(response);
-
-        if (!response.ok) {
-          throw new BackendToolHttpError(
-            describeHttpError(response.status, response.statusText),
-            response.status,
-            responseBody,
-          );
-        }
-
-        return responseBody as ToolDomainResult;
       });
     } catch (error) {
       throwBackendCommunicationError(error);

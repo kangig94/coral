@@ -26,7 +26,7 @@ import {
   type TerminalResult,
   type WorkflowCheckpoint,
 } from '../shared/types.js';
-import { isNoEntryError, nowIsoString } from '../shared/mcp-utils.js';
+import { isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
 

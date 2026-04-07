@@ -1,7 +1,7 @@
 import { MAX_INLINE } from '../shared/schemas.js';
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
+import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
 import type { BackendToolHttpError } from '../client/http-client.js';
-import type { BackendStatusFull, ShutdownResult } from '../bridge/backend-client.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { ListResult } from '../execution/service.js';
@@ -176,27 +176,37 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-export function formatProviderList(result: ListResult): string {
+export function formatProviderList(result: ListResult, options: { includeProvider?: boolean } = {}): string {
   if (result.sessions.length === 0) {
     return 'No sessions';
   }
 
-  const rows = result.sessions.map((session) => [
-    session.sessionId,
-    session.state,
-    session.name || '-',
-    session.model || '-',
-    session.cwd || '-',
-  ]);
+  const includeProvider = options.includeProvider === true;
+  const rows = result.sessions.map((session) =>
+    includeProvider
+      ? [
+          session.provider || '-',
+          session.sessionId,
+          session.state,
+          session.name || '-',
+          session.model || '-',
+          session.cwd || '-',
+        ]
+      : [session.sessionId, session.state, session.name || '-', session.model || '-', session.cwd || '-'],
+  );
 
-  return formatTable(['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
+  return formatTable(
+    includeProvider
+      ? ['PROVIDER', 'SESSION', 'STATE', 'NAME', 'MODEL', 'CWD']
+      : ['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'],
+    rows,
+  );
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
   let subsampledLine: string | undefined;
   if (result.subsampled === true) {
-    const fromPool =
-      result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`;
+    const fromPool = result.original_pool_size === undefined ? '' : ` (from ${result.original_pool_size})`;
     subsampledLine = `Subsampled: yes${fromPool}`;
   } else if (result.subsampled === false) {
     subsampledLine = 'Subsampled: no';
@@ -353,7 +363,7 @@ export function formatKbRead(data: unknown): string {
   if (typeof data.updatedAt === 'string') {
     const ms = Date.now() - Date.parse(data.updatedAt);
     const days = Math.floor(ms / 86_400_000);
-    (data).age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
+    data.age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
   }
 
   return JSON.stringify(data);

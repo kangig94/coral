@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
-import { errorMessage, nowIsoString, readString } from '../../shared/mcp-utils.js';
+import { errorMessage, nowIsoString, readString } from '../../shared/utils.js';
 import {
   requireAppServerRuntime,
   requireConversationRef,

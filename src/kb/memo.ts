@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../infra/paths.js';
-import { isNoEntryError, unlinkIfExists } from '../shared/mcp-utils.js';
+import { isNoEntryError, unlinkIfExists } from '../shared/utils.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from './frontmatter.js';
 import type {
   KbMemoDeleteInput,

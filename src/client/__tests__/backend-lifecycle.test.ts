@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendLockPath, installationDir } from '../../infra/paths.js';
-import { tryExclusiveWrite } from '../../shared/mcp-utils.js';
+import { tryExclusiveWrite } from '../../shared/utils.js';
 
 const tempRoots: string[] = [];
 

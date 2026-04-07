@@ -1,8 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
-
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
@@ -59,18 +57,6 @@ export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
 /** Parse an optional non-empty string from an unknown value. */
 export function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-export function textResult(text: string, isError = false): McpResult {
-  return { content: [{ type: 'text' as const, text }], isError };
-}
-
-export function jsonResult(data: Record<string, unknown>): McpResult {
-  return textResult(JSON.stringify(data, null, 2));
-}
-
-export function mcpError(data: Record<string, unknown>): McpResult {
-  return textResult(JSON.stringify(data, null, 2), true);
 }
 
 export function isProcessAlive(pid: number): boolean {

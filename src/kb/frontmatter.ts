@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
-import { identPattern, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { identPattern, isRecord, isStringArray } from '../shared/utils.js';
 import {
   entryIdToVaultLink,
   parseKbEntryId,

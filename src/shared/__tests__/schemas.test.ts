@@ -33,7 +33,7 @@ describe('shared schemas', () => {
   it('internal fields are accepted when schema is extended', () => {
     const extended = sharedExecSchema.extend(internalProviderFieldsShape);
     const parsed = extended.parse({
-      op: 'bypass_exec',
+      op: 'exec',
       prompt: 'Internal call',
       bypass_permissions: true,
       system_prompt: 'Agent context',

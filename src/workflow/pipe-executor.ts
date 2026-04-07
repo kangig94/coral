@@ -6,7 +6,7 @@ import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } 
 import type { ProgressStore } from '../execution/progress-store.js';
 import type { PipeAtom, PipelineAST, WorkflowExecutionPort } from './types.js';
 import { truncate } from '../shared/format-progress.js';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;

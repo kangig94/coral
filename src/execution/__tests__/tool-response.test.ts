@@ -6,7 +6,6 @@ import {
   domainError,
   domainSuccess,
   domainToHttp,
-  domainToMcp,
   launchDecisionToDomain,
 } from '../tool-response.js';
 
@@ -75,24 +74,6 @@ describe('tool response domain helpers', () => {
       ok: false,
       code: 'invalid_request',
       message: 'Missing prompt',
-    });
-  });
-
-  it('converts domain results to MCP results for bridge boundaries', () => {
-    const success = domainToMcp(domainSuccess({ session: 'session-1' }));
-    const failure = domainToMcp(domainError('invalid_request', 'Missing prompt', { field: 'prompt' }));
-
-    expect(success).toEqual({
-      content: [{ type: 'text', text: '{"session":"session-1"}' }],
-      isError: false,
-    });
-
-    expect(failure.isError).toBe(true);
-    expect(JSON.parse(failure.content[0].text)).toEqual({
-      ok: false,
-      code: 'invalid_request',
-      message: 'Missing prompt',
-      detail: { field: 'prompt' },
     });
   });
 });
