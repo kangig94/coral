@@ -22,7 +22,7 @@ import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapp
 import { parseExpression } from '../../workflow/pipe-parser.js';
 import {
   LaunchCoordinator,
-  MAX_ACTIVE_SESSIONS,
+  MAX_WORKERS,
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../engine.js';
@@ -82,8 +82,8 @@ function getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
   return launchCoordinator.getActiveJobIds(pool);
 }
 
-function killAllChildren(): void {
-  launchCoordinator.killAllChildren();
+function terminateAll(): void {
+  launchCoordinator.terminateAll();
 }
 
 function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
@@ -349,7 +349,7 @@ async function occupyProviderSlots(
   providerName: string,
 ): Promise<string[]> {
   const decisions = await Promise.all(
-    Array.from({ length: MAX_ACTIVE_SESSIONS }, (_value, index) =>
+    Array.from({ length: MAX_WORKERS }, (_value, index) =>
       service.start(providerName, { prompt: `occupy-${index}` }, ctx),
     ),
   );
@@ -431,7 +431,7 @@ describe('ExecutionService', () => {
 
   afterEach(async () => {
     trackAllJobDirs();
-    killAllChildren();
+    terminateAll();
     for (const jobId of createdJobIds) {
       cancelQueued(jobId);
       releaseLaunch(jobId);

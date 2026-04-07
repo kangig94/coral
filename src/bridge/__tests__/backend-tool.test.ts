@@ -41,7 +41,7 @@ describe('bridge backend-tool', { retry: 2 }, () => {
       bundleHash: 'abc123',
       instanceId: 'backend-instance',
       uptimeMs: 10,
-      activeChildren: 1,
+      active: 1,
       activeJobs: 2,
       inflightRequests: 3,
     };

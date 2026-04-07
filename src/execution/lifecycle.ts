@@ -428,7 +428,7 @@ export type LifecycleDeps = {
   readonly recoverOrphanedJobsFn: (namespace: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
-  readonly killAllChildrenFn: () => void;
+  readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
 
   // KB subsystem factory
@@ -482,7 +482,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     recoverOrphanedJobsFn: _recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
-    killAllChildrenFn,
+    terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
     closeServerFn,
@@ -781,7 +781,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
         await providerHostManager.shutdown();
-        killAllChildrenFn();
+        terminateAllFn();
       } else {
         await finalizeLiveAppServerJobsForHandoff();
       }
@@ -1064,7 +1064,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
-          launchCoordinator.activeLaunchCount === 0 &&
+          launchCoordinator.active === 0 &&
           adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&

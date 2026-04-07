@@ -877,7 +877,7 @@ async function renderCoralLine() {
     }
     const data = await resp.json();
     const parts = [`\x1b[38;2;255;133;89mcoral${RESET}`];
-    if (data.activeChildren > 0) parts.push(`${MAGENTA}⚙ ${data.activeChildren}${RESET}`);
+    if (data.active > 0) parts.push(`${MAGENTA}⚙ ${data.active}${RESET}`);
     if (data.queueDepth > 0) parts.push(`${MAGENTA}⏳ ${data.queueDepth}${RESET}`);
     if (data.liveDiscuss > 0) parts.push(`${MAGENTA}💬 ${data.liveDiscuss}${RESET}`);
 

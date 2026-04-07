@@ -122,7 +122,7 @@ function makeBackendStatus(overrides: Partial<{
     instanceId: string;
     namespace: string;
     uptimeMs: number;
-  activeChildren: number;
+  active: number;
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;
@@ -134,7 +134,7 @@ function makeBackendStatus(overrides: Partial<{
     instanceId: 'backend-instance',
     namespace: actualPluginNamespace(),
     uptimeMs: 12_345,
-    activeChildren: 2,
+    active: 2,
     activeJobs: 3,
     inflightRequests: 1,
     queueDepth: 0,
@@ -204,7 +204,7 @@ describe('bridge backend-client', () => {
       bundleHash: status.bundleHash,
       instanceId: status.instanceId,
       uptimeMs: status.uptimeMs,
-      activeChildren: status.activeChildren,
+      active: status.active,
       activeJobs: status.activeJobs,
       inflightRequests: status.inflightRequests,
     });
@@ -228,7 +228,7 @@ describe('bridge backend-client', () => {
         bundleHash: status.bundleHash,
         instanceId: status.instanceId,
         uptimeMs: status.uptimeMs,
-        activeChildren: status.activeChildren,
+        active: status.active,
         activeJobs: status.activeJobs,
         inflightRequests: status.inflightRequests,
       },

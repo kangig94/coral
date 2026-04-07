@@ -94,7 +94,7 @@ type BackendServerOptions = {
   recoverOrphanedJobsFn?: (namespace: string) => void;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
-  killAllChildrenFn?: () => void;
+  terminateAllFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
@@ -173,7 +173,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     ((currentNamespace: string, message: string) => {
       markJobsAsError(progressStore, currentNamespace, message);
     });
-  const killAllChildrenFn = options.killAllChildrenFn ?? (() => launchCoordinator.killAllChildren());
+  const terminateAllFn = options.terminateAllFn ?? (() => launchCoordinator.terminateAll());
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
@@ -422,7 +422,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     idleTimer,
     progressStore,
     sessionIndex,
-    activeLaunchCount: () => launchCoordinator.activeLaunchCount,
+    activeLaunchCount: () => launchCoordinator.active,
     queueDepth: () => launchCoordinator.queueDepth(),
     streamResponses,
     isDrainRequested: () => drainRequested,
@@ -498,7 +498,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
-    killAllChildrenFn,
+    terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
     closeServerFn,

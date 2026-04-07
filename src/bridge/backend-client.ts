@@ -26,7 +26,7 @@ export type BackendStatus = {
   bundleHash: string;
   instanceId: string;
   uptimeMs: number;
-  activeChildren: number;
+  active: number;
   activeJobs: number;
   inflightRequests: number;
 } | {

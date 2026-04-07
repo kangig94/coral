@@ -19,13 +19,13 @@ const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
-export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
+export const MAX_WORKERS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_WORKERS, 10), 1), 10);
 export type LaunchPool = 'default' | 'discuss' | 'curate';
-export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(
-  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1),
+export const DISCUSS_MAX_WORKERS = Math.min(
+  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_WORKERS, 5), 1),
   10,
 );
-export const CURATE_MAX_ACTIVE_SESSIONS = 1;
+export const CURATE_MAX_WORKERS = 1;
 const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
@@ -141,23 +141,8 @@ export class LaunchCoordinator {
   private readonly queuedLaunchesCurate: QueuedLaunchEntry[] = [];
   private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 
-  get activeChildren(): ReadonlySet<ActiveChild> {
-    return this.activeChildrenSet;
-  }
-
-  get activeDurablePids(): ReadonlySet<number> {
-    return this.activeDurablePidsSet;
-  }
-
-  get activeChildCount(): number {
-    return this.activeChildrenSet.size;
-  }
-
-  get activeDurablePidCount(): number {
-    return this.activeDurablePidsSet.size;
-  }
-
-  get activeLaunchCount(): number {
+  /** Number of active launch permits across all pools. */
+  get active(): number {
     return this.activeLaunchesDefault.size + this.activeLaunchesDiscuss.size + this.activeLaunchesCurate.size;
   }
 
@@ -395,7 +380,7 @@ export class LaunchCoordinator {
     return this.queuedHandle(entry, pool);
   }
 
-  killAllChildren(): void {
+  terminateAll(): void {
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
     for (const { child } of this.activeChildrenSet) {
       gracefulKill(child);
@@ -791,12 +776,12 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
 
 function getActiveLimit(pool: LaunchPool): number {
   if (pool === 'discuss') {
-    return DISCUSS_MAX_ACTIVE_SESSIONS;
+    return DISCUSS_MAX_WORKERS;
   }
   if (pool === 'curate') {
-    return CURATE_MAX_ACTIVE_SESSIONS;
+    return CURATE_MAX_WORKERS;
   }
-  return MAX_ACTIVE_SESSIONS;
+  return MAX_WORKERS;
 }
 
 function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): void {
@@ -1134,7 +1119,7 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
   );
 
   // Fire-and-forget — wrapper survives backend exit.
-  // Not added to activeChildren; the wrapper manages its own lifecycle.
+  // Not added to active launch tracking; the wrapper manages its own lifecycle.
   wrapper.unref();
 
   // Poll for runtime.json existence with ~100ms intervals, 5s timeout.

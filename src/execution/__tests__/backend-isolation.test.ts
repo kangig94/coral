@@ -27,7 +27,7 @@ describe('backend isolation', () => {
     expect(coordB.getActiveJobIds()).toEqual(['job-b1']);
 
     // Kill all children on A — B's state is unaffected
-    coordA.killAllChildren();
+    coordA.terminateAll();
     coordA.releaseLaunch('job-a1');
     expect(coordA.getActiveJobIds()).toEqual([]);
     expect(coordB.getActiveJobIds()).toEqual(['job-b1']);
@@ -123,7 +123,7 @@ describe('backend isolation', () => {
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
 
     // Simulate full shutdown of backend A
-    coordA.killAllChildren();
+    coordA.terminateAll();
     coordA.releaseLaunch('job-a');
     busA.removeAllListeners();
     regA.contexts.clear();

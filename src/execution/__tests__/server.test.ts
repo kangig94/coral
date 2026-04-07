@@ -499,7 +499,7 @@ describe('execution backend server', () => {
       version: '9.9.9',
       bundleHash: 'testhash1234',
       instanceId: 'execution-backend-instance-1',
-      activeChildren: 0,
+      active: 0,
       activeJobs: 0,
       liveDiscuss: 0,
       inflightRequests: 0,
@@ -528,7 +528,7 @@ describe('execution backend server', () => {
     expect(subsystems.kbError).toBe('simulated KB init failure');
   });
 
-  it('includes active launches in activeChildren count', async () => {
+  it('includes active launches in active count', async () => {
     const launchCoordinator = new LaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
@@ -542,7 +542,7 @@ describe('execution backend server', () => {
       });
       const body = (await response.json()) as Record<string, unknown>;
 
-      expect(body.activeChildren).toBe(2);
+      expect(body.active).toBe(2);
     } finally {
       launchCoordinator.releaseLaunch('job-1');
       launchCoordinator.releaseLaunch('job-2');
@@ -1784,17 +1784,17 @@ describe('execution backend server', () => {
   describe('shutdown policy', () => {
     it('handoff shutdown preserves children and does not mark jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const killAllChildrenFn = vi.fn();
+      const terminateAllFn = vi.fn();
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
-        killAllChildrenFn,
+        terminateAllFn,
       });
 
       await backend.controller.shutdown('replaced');
       await backend.controller.waitForShutdown();
 
-      expect(killAllChildrenFn).not.toHaveBeenCalled();
+      expect(terminateAllFn).not.toHaveBeenCalled();
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
     });
 
@@ -1887,7 +1887,7 @@ describe('execution backend server', () => {
         recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: vi.fn(),
-        killAllChildrenFn: vi.fn(),
+        terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
@@ -1915,23 +1915,23 @@ describe('execution backend server', () => {
 
     it('hard shutdown kills children and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const killAllChildrenFn = vi.fn();
+      const terminateAllFn = vi.fn();
       const providerHostManager = createFakeProviderHostManager();
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
-        killAllChildrenFn,
+        terminateAllFn,
         providerHostManager: providerHostManager as never,
       });
 
       await backend.controller.shutdown('sigint');
       await backend.controller.waitForShutdown();
 
-      expect(killAllChildrenFn).toHaveBeenCalledTimes(1);
+      expect(terminateAllFn).toHaveBeenCalledTimes(1);
       expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
       expect(providerHostManager.shutdown).toHaveBeenCalledTimes(1);
       const hostShutdownOrder = providerHostManager.shutdown.mock.invocationCallOrder.at(0);
-      const childKillOrder = killAllChildrenFn.mock.invocationCallOrder.at(0);
+      const childKillOrder = terminateAllFn.mock.invocationCallOrder.at(0);
       expect(hostShutdownOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(childKillOrder ?? Number.POSITIVE_INFINITY);
     });
 
@@ -2155,7 +2155,7 @@ describe('execution backend server', () => {
         recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        killAllChildrenFn: () => {},
+        terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
@@ -2271,7 +2271,7 @@ describe('execution backend server', () => {
         recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        killAllChildrenFn: () => {},
+        terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},
@@ -2415,7 +2415,7 @@ describe('execution backend server', () => {
         recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        killAllChildrenFn: () => {},
+        terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         closeServerFn: async () => {},

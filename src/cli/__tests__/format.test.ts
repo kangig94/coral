@@ -304,14 +304,14 @@ describe('cli format', () => {
           bundleHash: 'bundle-hash',
           instanceId: 'instance-1',
           uptimeMs: 1234,
-          activeChildren: 2,
+          active: 2,
           activeJobs: 1,
           inflightRequests: 0,
         },
       } satisfies BackendStatusFull;
 
       expect(formatBackendStatus(status)).toBe(
-        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active children: 2\n' + 'Active jobs: 1',
+        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
       );
     });
 

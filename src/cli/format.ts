@@ -515,7 +515,7 @@ export function formatBackendStatus(result: BackendStatusFull): string {
         'Backend ok',
         `Version: ${result.health.version}`,
         `Uptime: ${result.health.uptimeMs}ms`,
-        `Active children: ${result.health.activeChildren}`,
+        `Active: ${result.health.active}`,
         `Active jobs: ${result.health.activeJobs}`,
       ]);
     case 'not_running':

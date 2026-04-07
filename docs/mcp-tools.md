@@ -588,7 +588,7 @@ Returns the current backend health payload when the daemon is running:
   "version": "0.4.3",
   "instanceId": "backend-instance",
   "uptime": 12345,
-  "activeChildren": 0,
+  "active": 0,
   "activeJobs": 0,
   "liveDiscuss": 0,
   "inflightRequests": 1
