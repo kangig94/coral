@@ -528,14 +528,13 @@ describe('execution backend server', () => {
     expect(subsystems.kbError).toBe('simulated KB init failure');
   });
 
-  it('includes durable pids in activeChildren count', async () => {
+  it('includes active launches in activeChildren count', async () => {
     const launchCoordinator = new LaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
-    // Simulate two durable processes via internal state (test-only bypass of ReadonlySet)
-    const durablePids = launchCoordinator.activeDurablePids as Set<number>;
-    durablePids.add(99901);
-    durablePids.add(99902);
+    // Simulate two active launches via restoreActiveLaunch
+    launchCoordinator.restoreActiveLaunch('job-1', 'codex');
+    launchCoordinator.restoreActiveLaunch('job-2', 'codex');
 
     try {
       const response = await fetch(`${backend.baseUrl}/health`, {
@@ -545,8 +544,8 @@ describe('execution backend server', () => {
 
       expect(body.activeChildren).toBe(2);
     } finally {
-      durablePids.delete(99901);
-      durablePids.delete(99902);
+      launchCoordinator.releaseLaunch('job-1');
+      launchCoordinator.releaseLaunch('job-2');
     }
   });
 
@@ -2465,8 +2464,7 @@ describe('execution backend server', () => {
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore(),
         sessionIndex: new SessionIndex(),
-        activeChildren: new Set(),
-        activeDurablePids: new Set(),
+        activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
         isDrainRequested: () => false,

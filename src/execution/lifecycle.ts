@@ -1064,7 +1064,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
-          launchCoordinator.activeChildren.size === 0 &&
+          launchCoordinator.activeLaunchCount === 0 &&
           adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&

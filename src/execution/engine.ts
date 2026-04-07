@@ -157,6 +157,10 @@ export class LaunchCoordinator {
     return this.activeDurablePidsSet.size;
   }
 
+  get activeLaunchCount(): number {
+    return this.activeLaunchesDefault.size + this.activeLaunchesDiscuss.size + this.activeLaunchesCurate.size;
+  }
+
   requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);

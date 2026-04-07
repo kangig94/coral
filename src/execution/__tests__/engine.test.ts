@@ -310,6 +310,22 @@ describe('recovery helpers', () => {
     vi.resetModules();
   });
 
+  it('activeLaunchCount sums all pool active maps', () => {
+    expect(coordinator.activeLaunchCount).toBe(0);
+
+    coordinator.restoreActiveLaunch('default-1', 'codex', 'default');
+    coordinator.restoreActiveLaunch('discuss-1', 'codex', 'discuss');
+    coordinator.restoreActiveLaunch('curate-1', 'codex', 'curate');
+    expect(coordinator.activeLaunchCount).toBe(3);
+
+    coordinator.releaseLaunch('default-1', 'default');
+    expect(coordinator.activeLaunchCount).toBe(2);
+
+    coordinator.releaseLaunch('discuss-1', 'discuss');
+    coordinator.releaseLaunch('curate-1', 'curate');
+    expect(coordinator.activeLaunchCount).toBe(0);
+  });
+
   it('restoreActiveLaunch inserts directly into active map', () => {
     coordinator.restoreActiveLaunch('job-1', 'codex', 'default');
     expect(coordinator.getActiveJobIds('default')).toContain('job-1');
