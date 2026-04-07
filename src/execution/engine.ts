@@ -73,11 +73,6 @@ export type ProviderServerHandle = {
   close: () => Promise<void>;
 };
 
-type ActiveChild = {
-  provider: string;
-  child: ChildProcess;
-};
-
 type ProviderServerEntry = {
   provider: string;
   child: ChildProcess;
@@ -130,8 +125,7 @@ export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<Cli
 export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
 
 export class LaunchCoordinator {
-  private readonly activeChildrenSet = new Set<ActiveChild>();
-  private readonly activeDurablePidsSet = new Set<number>();
+  private readonly cleanupHandles = new Map<symbol, () => void>();
   private nextProviderServerGeneration = 1;
   private readonly activeLaunchesDefault = new Map<string, string>();
   private readonly activeLaunchesDiscuss = new Map<string, string>();
@@ -243,8 +237,8 @@ export class LaunchCoordinator {
         shell: process.platform === 'win32',
         env: buildChildEnv(options.extraEnv),
       });
-      const entry: ActiveChild = { provider: options.provider, child };
-      this.activeChildrenSet.add(entry);
+      const cleanupKey = Symbol();
+      this.cleanupHandles.set(cleanupKey, () => gracefulKill(child));
 
       let lastOutputAt = Date.now();
       let lastTickAt = Date.now();
@@ -265,7 +259,7 @@ export class LaunchCoordinator {
           settled = true;
           clearInterval(idleChecker);
           gracefulKill(child);
-          this.activeChildrenSet.delete(entry);
+          this.cleanupHandles.delete(cleanupKey);
           if (internalPermitJobId) {
             this.releaseLaunch(internalPermitJobId, pool);
             internalPermitJobId = null;
@@ -284,7 +278,7 @@ export class LaunchCoordinator {
         if (settled) return false;
         settled = true;
         clearInterval(idleChecker);
-        this.activeChildrenSet.delete(entry);
+        this.cleanupHandles.delete(cleanupKey);
         if (internalPermitJobId) {
           this.releaseLaunch(internalPermitJobId, pool);
           internalPermitJobId = null;
@@ -382,16 +376,10 @@ export class LaunchCoordinator {
 
   terminateAll(): void {
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
-    for (const { child } of this.activeChildrenSet) {
-      gracefulKill(child);
+    for (const cleanup of this.cleanupHandles.values()) {
+      cleanup();
     }
-    this.activeChildrenSet.clear();
-    for (const pid of this.activeDurablePidsSet) {
-      safeKillPid(pid, 'SIGTERM');
-      const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
-      escalation.unref?.();
-    }
-    this.activeDurablePidsSet.clear();
+    this.cleanupHandles.clear();
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, string> {
@@ -642,6 +630,7 @@ export class LaunchCoordinator {
     let abortHandler: (() => void) | null = null;
     let killTimer: NodeJS.Timeout | null = null;
     let durablePid: number | null = null;
+    let cleanupKey: symbol | null = null;
 
     try {
       if (options.signal?.aborted) {
@@ -659,7 +648,12 @@ export class LaunchCoordinator {
         env: options.extraEnv,
       });
       durablePid = durable.pid;
-      this.activeDurablePidsSet.add(durable.pid);
+      cleanupKey = Symbol();
+      this.cleanupHandles.set(cleanupKey, () => {
+        safeKillPid(durable.pid, 'SIGTERM');
+        const escalation = setTimeout(() => safeKillPid(durable.pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+        escalation.unref?.();
+      });
 
       let abortedBySignal = false;
       let runtimeRecord = durable.runtimeRecord;
@@ -753,8 +747,8 @@ export class LaunchCoordinator {
         await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
       }
     } finally {
-      if (durablePid !== null) {
-        this.activeDurablePidsSet.delete(durablePid);
+      if (cleanupKey !== null) {
+        this.cleanupHandles.delete(cleanupKey);
       }
       if (killTimer) clearTimeout(killTimer);
       if (abortHandler && options.signal) {
