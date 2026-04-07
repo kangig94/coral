@@ -166,7 +166,7 @@ function pickTerminalPreviewSource(result: TerminalResult): string {
   return '(empty result)';
 }
 
-export function formatLaunchDecision(result: AcceptedLaunchResponse): string {
+export function formatLaunch(result: AcceptedLaunchResponse): string {
   return `Job ${result.job} ${result.launchState} (session ${result.session})`;
 }
 

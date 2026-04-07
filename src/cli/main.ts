@@ -43,7 +43,7 @@ import {
   formatDiscussStart,
   formatDiscussWatch,
   formatError,
-  formatLaunchDecision,
+  formatLaunch,
   formatPersonaSeed,
   formatProviderList,
   formatShutdown,
@@ -60,7 +60,6 @@ import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
-import type { ToolDomainResult } from '../execution/tool-response.js';
 
 function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
@@ -190,42 +189,6 @@ function makeClient(projectRoot: string): BackendClient {
   });
 }
 
-function isToolDomainResult(value: unknown): value is ToolDomainResult {
-  if (!isJsonObject(value) || typeof value.ok !== 'boolean') {
-    return false;
-  }
-
-  if (value.ok) {
-    return 'data' in value;
-  }
-
-  return typeof value.code === 'string' && typeof value.message === 'string';
-}
-
-function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
-  if (isToolDomainResult(result)) {
-    return result.ok ? { output: result.data, isError: false } : { output: result, isError: true };
-  }
-
-  if (
-    isJsonObject(result) &&
-    typeof result.isError === 'boolean' &&
-    Array.isArray(result.content) &&
-    result.content.length > 0
-  ) {
-    const first = result.content[0];
-    if (isJsonObject(first) && typeof first.text === 'string') {
-      try {
-        return { output: JSON.parse(first.text), isError: result.isError };
-      } catch {
-        return { output: first.text, isError: result.isError };
-      }
-    }
-  }
-
-  return { output: result, isError: false };
-}
-
 export function getOutputFormat(command: Command): 'text' | 'json' {
   return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json' ? 'json' : 'text';
 }
@@ -235,16 +198,7 @@ function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
 }
 
 function emit(result: unknown, outputFormat: 'text' | 'json', textFormatter?: (data: unknown) => string): void {
-  const { output, isError } = normalizeResult(result);
-
-  if (isError) {
-    const text = outputFormat === 'text' ? formatError(output) : JSON.stringify(output);
-    process.stderr.write(text + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(output) : JSON.stringify(output);
+  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
 }
 
@@ -257,12 +211,6 @@ export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
 
   if (error instanceof BackendToolHttpError) {
     process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  if (isToolDomainResult(error) && !error.ok) {
-    process.stderr.write(JSON.stringify(error) + '\n');
     process.exitCode = 1;
     return;
   }
@@ -310,7 +258,7 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
 }
 
 export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse, outputFormat: 'text' | 'json'): void {
-  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
+  const text = outputFormat === 'text' ? formatLaunch(decision) : JSON.stringify(decision);
   process.stdout.write(text + '\n');
 }
 
@@ -327,28 +275,21 @@ async function handleLaunchResult(
   outputFormat: 'text' | 'json',
   client: BackendClient,
 ): Promise<void> {
-  const normalized = normalizeResult(result);
-
-  if (normalized.isError) {
-    emitError(normalized.output, outputFormat);
-    return;
-  }
-
-  if (!isAcceptedLaunchResponse(normalized.output)) {
+  if (!isAcceptedLaunchResponse(result)) {
     emitError(
-      new Error(`Expected accepted launch response, received: ${JSON.stringify(normalized.output)}`),
+      new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`),
       outputFormat,
     );
     return;
   }
 
   if (detach) {
-    emitAcceptedLaunchResponse(normalized.output, outputFormat);
+    emitAcceptedLaunchResponse(result, outputFormat);
     return;
   }
 
   process.exitCode = await launchAndFollow({
-    launchResult: normalized.output,
+    launchResult: result,
     abortJob: async (jobId) => {
       await client.abortJobs([jobId]);
     },

@@ -25,7 +25,7 @@ import {
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
-  formatLaunchDecision,
+  formatLaunch,
   formatPersonaSeed,
   formatProviderList,
   formatShutdown,
@@ -190,13 +190,13 @@ const waitTimeoutEvent = {
 } satisfies Extract<WaitStreamEvent, { type: 'timeout' }>;
 
 describe('cli format', () => {
-  describe('formatLaunchDecision', () => {
+  describe('formatLaunch', () => {
     it('formats a running decision', () => {
-      expect(formatLaunchDecision(runningDecision)).toBe('Job job-1 running (session session-1)');
+      expect(formatLaunch(runningDecision)).toBe('Job job-1 running (session session-1)');
     });
 
     it('formats a queued decision', () => {
-      expect(formatLaunchDecision(queuedDecision)).toBe('Job job-2 queued (session session-2)');
+      expect(formatLaunch(queuedDecision)).toBe('Job job-2 queued (session session-2)');
     });
   });
 

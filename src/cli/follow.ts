@@ -6,7 +6,7 @@ import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
   formatError,
-  formatLaunchDecision,
+  formatLaunch,
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
@@ -86,7 +86,7 @@ function emitLaunch(decision: FollowLaunchDecision, outputFormat: 'text' | 'json
     return;
   }
 
-  process.stdout.write(formatLaunchDecision(decision) + '\n');
+  process.stdout.write(formatLaunch(decision) + '\n');
 }
 
 function emitWaitEvent(
