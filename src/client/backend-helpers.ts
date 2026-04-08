@@ -1,7 +1,7 @@
 import { withAbortTimeout } from './backend-lifecycle.js';
 import { isBackendHealth } from './backend-health.js';
 import { readBackendInfo } from '../infra/backend-info.js';
-import { isProcessAlive, isRecord } from '../shared/utils.js';
+import { isProcessAlive, isRecord, TransientHttpError } from '../shared/utils.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
@@ -163,6 +163,9 @@ export async function* streamWait(
       const message = isRecord(body) && typeof body.message === 'string'
         ? body.message
         : describeHttpError(response.status, response.statusText);
+      if (TransientHttpError.isTransientStatus(response.status)) {
+        throw new TransientHttpError(response.status, message);
+      }
       throw new Error(message);
     }
 
