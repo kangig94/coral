@@ -36,7 +36,7 @@ export type ShutdownResult =
 
 export type WaitCursorRef = { lastEventId?: string };
 
-function throwBackendCommunicationError(error: unknown): never {
+export function throwBackendCommunicationError(error: unknown): never {
   if (error instanceof Error) throw error;
   throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
 }

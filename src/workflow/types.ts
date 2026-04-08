@@ -1,5 +1,5 @@
-import type { CallerContext } from '../execution/request-context.js';
-import type { AbortResult } from '../execution/abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { LaunchDecision, LaunchState, ProviderInstruction, WaitRequest, WaitStreamEvent } from '../shared/types.js';
 
 export type AgentAtom = {

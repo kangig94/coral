@@ -27,12 +27,13 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../engine.js';
-import { type AbortRegistry } from '../abort-registry.js';
+import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
 import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
-import { ExecutionService, type CallerContext } from '../service.js';
+import type { CallerContext } from '../../shared/request-context.js';
+import { ExecutionService } from '../service.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -2223,9 +2224,9 @@ describe('ExecutionService', () => {
 
     (
       service as unknown as {
-        failJob(jobId: string, sessionId: string, launchState: string, message: string): void;
+        launchOrchestrator: { failJob(jobId: string, sessionId: string, launchState: string, message: string): void };
       }
-    ).failJob(jobId, 'session-1', 'error', 'provider failed');
+    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', 'provider failed');
 
     expect(markTerminalStatus).toHaveBeenCalledWith(jobId, { content: '', notice: 'provider failed' }, 'error');
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });

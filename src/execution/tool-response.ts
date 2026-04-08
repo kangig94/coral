@@ -13,7 +13,7 @@ export function domainError(code: string, message: string, detail?: unknown): To
   return detail === undefined ? { ok: false, code, message } : { ok: false, code, message, detail };
 }
 
-export function deriveLegacyErrorMessage(code: string, detail?: unknown): string {
+export function deriveErrorMessage(code: string, detail?: unknown): string {
   if (typeof detail === 'string' && detail.length > 0) {
     return detail;
   }

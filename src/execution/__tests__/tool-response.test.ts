@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { LaunchDecision } from '../../shared/types.js';
 import {
-  deriveLegacyErrorMessage,
+  deriveErrorMessage,
   domainError,
   domainResultToHttp,
   domainSuccess,
@@ -32,15 +32,15 @@ describe('tool response domain helpers', () => {
     });
   });
 
-  it('derives a legacy message from detail.message when present', () => {
-    expect(deriveLegacyErrorMessage('kb_error', { message: 'KB failed' })).toBe('KB failed');
-    expect(deriveLegacyErrorMessage('kb_error', 'KB failed')).toBe('KB failed');
-    expect(deriveLegacyErrorMessage('kb_error', new Error('KB failed'))).toBe('KB failed');
+  it('derives an error message from detail.message when present', () => {
+    expect(deriveErrorMessage('kb_error', { message: 'KB failed' })).toBe('KB failed');
+    expect(deriveErrorMessage('kb_error', 'KB failed')).toBe('KB failed');
+    expect(deriveErrorMessage('kb_error', new Error('KB failed'))).toBe('KB failed');
   });
 
-  it('falls back to a humanized code when legacy detail has no message', () => {
-    expect(deriveLegacyErrorMessage('pool_too_large', { hint: 'shrink the pool' })).toBe('pool too large');
-    expect(deriveLegacyErrorMessage('session_not_found')).toBe('session not found');
+  it('falls back to a humanized code when detail has no message', () => {
+    expect(deriveErrorMessage('pool_too_large', { hint: 'shrink the pool' })).toBe('pool too large');
+    expect(deriveErrorMessage('session_not_found')).toBe('session not found');
   });
 });
 

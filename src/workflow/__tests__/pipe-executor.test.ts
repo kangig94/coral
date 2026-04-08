@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CallerContext } from '../../execution/request-context.js';
+import type { WorkflowCheckpointWriter } from '../../shared/execution-contracts.js';
+import type { CallerContext } from '../../shared/request-context.js';
 import type { TerminalResult, WaitRequest, WaitStreamEvent, WorkflowCheckpoint } from '../../shared/types.js';
-import type { ProgressStore } from '../../execution/progress-store.js';
 import { parseExpression } from '../pipe-parser.js';
 import type { WorkflowExecutionPort } from '../types.js';
 import {
@@ -893,10 +893,10 @@ describe('waitForAtoms', () => {
 });
 
 describe('checkpoint persistence', () => {
-  function createMockProgressStore(): ProgressStore & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> } {
+  function createMockProgressStore(): WorkflowCheckpointWriter & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> } {
     return {
       writeWorkflowCheckpoint: vi.fn(),
-    } as unknown as ProgressStore & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> };
+    } as WorkflowCheckpointWriter & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> };
   }
 
   it('writes initial checkpoint at coordinator start', async () => {

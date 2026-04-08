@@ -13,14 +13,10 @@ import {
 import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import { assertOwnerId, collectCoralEnv } from '../shared/utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
-import type { AbortResult } from '../execution/abort-registry.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../discuss/schemas.js';
-import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
 import type { WaitStreamEvent } from '../shared/types.js';
 import {
-  type DiscussAbortResult,
-  type DiscussStartResult,
   type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
@@ -197,7 +193,7 @@ function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
   return argv[0]?.match(/node(\.exe)?$/) ? `node "${argv[1]}"` : (argv[0] ?? 'coral-cli');
 }
 
-function emit(result: unknown, outputFormat: 'text' | 'json', textFormatter?: (data: unknown) => string): void {
+function emit<T>(result: T, outputFormat: 'text' | 'json', textFormatter?: (data: T) => string): void {
   const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
 }
@@ -450,7 +446,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
           })),
         };
         emit(displayResult, outputFormat, (data) =>
-          formatProviderList(data as SessionListResult, { includeProvider: opts.provider === undefined }),
+          formatProviderList(data, { includeProvider: opts.provider === undefined }),
         );
       } catch (error) {
         emitError(error, outputFormat);
@@ -530,7 +526,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       try {
         const client = makeClient(process.cwd());
         const result = await client.abortJobs(parseJobIds(opts.jobs));
-        emit(result, outputFormat, (data) => formatAbortResult(data as AbortResult));
+        emit(result, outputFormat, formatAbortResult);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -637,7 +633,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         discussSeedSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
-        emit(result, outputFormat, (data) => formatPersonaSeed(data as PersonaSeedOutput));
+        emit(result, outputFormat, formatPersonaSeed);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -666,7 +662,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         discussStartSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
-        emit(result, outputFormat, (data) => formatDiscussStart(data as DiscussStartResult));
+        emit(result, outputFormat, formatDiscussStart);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -721,7 +717,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         const result = 'content' in args
           ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
           : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
-        emit(result, outputFormat, (data) => formatDiscussParticipate(data as BidResult | SpeechResult));
+        emit(result, outputFormat, formatDiscussParticipate);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -737,7 +733,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       try {
         const client = makeClient(process.cwd());
         const result = await client.discussAbort(opts.session);
-        emit(result, outputFormat, (data) => formatDiscussAbort(data as DiscussAbortResult));
+        emit(result, outputFormat, formatDiscussAbort);
       } catch (error) {
         emitError(error, outputFormat);
       }

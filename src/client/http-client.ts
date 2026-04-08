@@ -1,8 +1,9 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
 import type { BackendHealth } from './backend-health.js';
 import { isBackendHealth } from './backend-health.js';
-import type { AbortResult } from '../execution/abort-registry.js';
-import type { CallerContext } from '../execution/request-context.js';
+import { throwBackendCommunicationError } from './backend-helpers.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { WatchState } from '../discuss/watch.js';
@@ -142,12 +143,8 @@ type WorkflowOptions = {
 };
 
 export { isBackendHealth };
-export type { CallerContext, BackendHealth };
-
-function throwBackendCommunicationError(error: unknown): never {
-  if (error instanceof Error) throw error;
-  throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
-}
+export type { BackendHealth };
+export type { CallerContext } from '../shared/request-context.js';
 
 export class BackendToolHttpError extends Error {
   constructor(

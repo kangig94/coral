@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CallerContext } from '../../execution/request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',

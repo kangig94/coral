@@ -19,7 +19,7 @@ import {
   handleDiscussWatch,
 } from '../discuss-tools.js';
 import { getSession } from '../discuss/registry.js';
-import type { CallerContext } from '../request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
 import type { ToolDomainResult } from '../tool-response.js';
 import {

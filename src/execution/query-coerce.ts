@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { collectCoralEnv } from '../shared/utils.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 
 export function parseBooleanQuery(value: unknown): boolean | undefined {
   if (value === 'true' || value === '1') return true;

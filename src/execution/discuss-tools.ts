@@ -5,8 +5,8 @@ import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartS
 import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
 import * as discussOperations from './discuss/operations.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
-import { deriveLegacyErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
-import type { CallerContext } from './request-context.js';
+import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
+import type { CallerContext } from '../shared/request-context.js';
 
 const discussSessionSchema = z.object({
   session: z.string().min(1),
@@ -40,7 +40,7 @@ function toolValidationError(error: z.ZodError): ToolDomainResult {
 }
 
 function discussManagerError(error: DiscussManagerError): ToolDomainResult {
-  return domainError(error.code, deriveLegacyErrorMessage(error.code, error.detail), error.detail);
+  return domainError(error.code, deriveErrorMessage(error.code, error.detail), error.detail);
 }
 
 function unexpectedDiscussError(error: unknown): ToolDomainResult {
@@ -50,7 +50,7 @@ function unexpectedDiscussError(error: unknown): ToolDomainResult {
 function executeDiscussSeed(args: DiscussSeedArgs): ToolDomainResult {
   const seeded = seedPersonas(args);
   if (!seeded.ok) {
-    return domainError(seeded.error, deriveLegacyErrorMessage(seeded.error, seeded.detail), seeded.detail);
+    return domainError(seeded.error, deriveErrorMessage(seeded.error, seeded.detail), seeded.detail);
   }
   return domainSuccess(seeded.value);
 }

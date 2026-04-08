@@ -19,7 +19,7 @@ import {
   sessionMessageSchema,
   workflowRequestSchema,
 } from '../shared/schemas.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
 import { belongsToNamespace } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
@@ -310,6 +310,28 @@ function decodePathSegment(segment: string): string | null {
   } catch {
     return null;
   }
+}
+
+type RouteHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  match: RegExpExecArray,
+  parsedUrl: URL,
+) => Promise<void>;
+
+type Route = {
+  method: string;
+  pattern: RegExp;
+  handler: RouteHandler;
+};
+
+function getRouteParam(match: RegExpExecArray, name: string): string {
+  const value = match.groups?.[name];
+  if (value === undefined) {
+    throw new Error(`Missing route parameter: ${name}`);
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -1334,12 +1356,319 @@ async function handleKbMemoDeleteRoute(
   );
 }
 
+async function handleJobListRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  parsedUrl: URL,
+): Promise<void> {
+  const phase = parsedUrl.searchParams.get('phase');
+  let jobs = listAllJobs(deps.progressStore, deps.identity.namespace);
+  if (phase !== null) {
+    jobs = jobs.filter((job) => job.status?.phase === phase);
+  }
+  sendJson(res, 200, { jobs });
+}
+
+async function handleJobDetailRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  jobId: string,
+): Promise<void> {
+  const detail = getJobDetail(deps.progressStore, jobId, deps.identity.namespace);
+  if (!detail) {
+    sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${jobId}` });
+    return;
+  }
+  sendJson(res, 200, detail);
+}
+
+async function handleSessionListRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  const sessions = deps.sessionIndex
+    .listForNamespace(deps.identity.namespace, deps.progressStore)
+    .flatMap((row) => row.sessions);
+  sendJson(res, 200, { sessions });
+}
+
+async function handleDiscussSessionListRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  sendJson(res, 200, { sessions: deps.listDiscussSessions() });
+}
+
+const routes: Route[] = [
+  {
+    method: 'POST',
+    pattern: /^\/jobs\/wait$/,
+    handler: async (req, res, deps) => {
+      await handleWaitStream(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/sessions$/,
+    handler: async (req, res, deps) => {
+      await handleSessionCreate(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/sessions\/(?<sessionId>[^/]+)\/messages$/,
+    handler: async (req, res, deps, match) => {
+      await handleSessionMessage(req, res, deps, getRouteParam(match, 'sessionId'));
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/sessions\/(?<sessionId>[^/]+)\/forks$/,
+    handler: async (req, res, deps, match) => {
+      await handleSessionFork(req, res, deps, getRouteParam(match, 'sessionId'));
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/workflow$/,
+    handler: async (req, res, deps) => {
+      await handleWorkflowRequest(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/jobs\/abort$/,
+    handler: async (req, res, deps) => {
+      await handleAbortRequest(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/discuss\/persona-sets$/,
+    handler: async (req, res, deps) => {
+      await handleDiscussPersonaSets(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/discuss\/sessions$/,
+    handler: async (req, res, deps) => {
+      await handleDiscussSessionCreate(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/bids$/,
+    handler: async (req, res, deps, match) => {
+      await handleDiscussBidRoute(req, res, deps, getRouteParam(match, 'sessionId'));
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/speeches$/,
+    handler: async (req, res, deps, match) => {
+      await handleDiscussSpeechRoute(req, res, deps, getRouteParam(match, 'sessionId'));
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/kb\/notes$/,
+    handler: async (req, res, deps) => {
+      await handleKbNoteCreate(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/kb\/sources$/,
+    handler: async (req, res, deps) => {
+      await handleKbSourceCreate(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/kb\/memos$/,
+    handler: async (req, res, deps) => {
+      await handleKbMemoCreate(req, res, deps);
+    },
+  },
+  {
+    method: 'POST',
+    pattern: /^\/kb\/index$/,
+    handler: async (req, res, deps) => {
+      await handleKbIndex(req, res, deps);
+    },
+  },
+  {
+    method: 'PUT',
+    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      await handleKbNoteUpdateRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/api\/jobs$/,
+    handler: async (req, res, deps, _match, parsedUrl) => {
+      req.resume();
+      await handleJobListRoute(req, res, deps, parsedUrl);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/api\/jobs\/(?<jobId>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleJobDetailRoute(req, res, deps, getRouteParam(match, 'jobId'));
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/sessions$/,
+    handler: async (req, res, deps) => {
+      req.resume();
+      await handleSessionListRoute(req, res, deps);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/discuss\/sessions$/,
+    handler: async (req, res, deps) => {
+      req.resume();
+      await handleDiscussSessionListRoute(req, res, deps);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/events$/,
+    handler: async (req, res, deps, match, parsedUrl) => {
+      req.resume();
+      await handleDiscussEvents(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)$/,
+    handler: async (req, res, deps, match, parsedUrl) => {
+      req.resume();
+      await handleDiscussSessionDetail(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/entries$/,
+    handler: async (req, res, deps, _match, parsedUrl) => {
+      req.resume();
+      await handleKbEntries(req, res, deps, parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbNoteReadRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/sources$/,
+    handler: async (req, res, deps) => {
+      req.resume();
+      await handleKbSourceListRoute(req, res, deps);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/sources\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbSourceReadRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/communities\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbCommunityReadRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/memos$/,
+    handler: async (req, res, deps, _match, parsedUrl) => {
+      req.resume();
+      await handleKbMemoListRoute(req, res, deps, parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/memos\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match, parsedUrl) => {
+      req.resume();
+      await handleKbMemoReadRoute(req, res, deps, getRouteParam(match, 'slug'), parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/principles$/,
+    handler: async (req, res, deps, _match, parsedUrl) => {
+      req.resume();
+      await handleKbPrinciplesRoute(req, res, deps, parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/kb\/principles\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbPrincipleReadRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)$/,
+    handler: async (req, res, deps, match, parsedUrl) => {
+      req.resume();
+      await handleDiscussSessionDelete(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbNoteDeleteRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/kb\/sources\/(?<slug>[^/]+)$/,
+    handler: async (req, res, deps, match) => {
+      req.resume();
+      await handleKbSourceDeleteRoute(req, res, deps, getRouteParam(match, 'slug'));
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/kb\/memos$/,
+    handler: async (req, res, deps, _match, parsedUrl) => {
+      req.resume();
+      await handleKbMemoDeleteRoute(req, res, deps, parsedUrl.searchParams);
+    },
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Main request dispatcher
 // ---------------------------------------------------------------------------
 
 export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { identity, runtimeState, idleTimer, progressStore, sessionIndex } = deps;
+  const { identity, runtimeState, idleTimer, progressStore } = deps;
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1416,242 +1745,27 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
       idleTimer.endRequest();
     });
 
-    if (req.method === 'POST' && req.url === '/jobs/wait') {
-      await handleWaitStream(req, res, deps);
+    if (!req.url) {
+      req.resume();
+      sendJson(res, 404, { error: 'not_found' });
       return;
     }
 
-    if (req.method === 'POST' && req.url) {
-      const parsedUrl = new URL(req.url, 'http://localhost');
-      const pathname = parsedUrl.pathname;
+    const parsedUrl = new URL(req.url, 'http://localhost');
+    const { pathname } = parsedUrl;
 
-      if (pathname === '/sessions') {
-        await handleSessionCreate(req, res, deps);
-        return;
+    for (const route of routes) {
+      if (req.method !== route.method) {
+        continue;
       }
 
-      const sessionMessageMatch = pathname.match(/^\/sessions\/([^/]+)\/messages$/);
-      if (sessionMessageMatch) {
-        await handleSessionMessage(req, res, deps, sessionMessageMatch[1]);
-        return;
+      const match = route.pattern.exec(pathname);
+      if (!match) {
+        continue;
       }
 
-      const sessionForkMatch = pathname.match(/^\/sessions\/([^/]+)\/forks$/);
-      if (sessionForkMatch) {
-        await handleSessionFork(req, res, deps, sessionForkMatch[1]);
-        return;
-      }
-
-      if (pathname === '/workflow') {
-        await handleWorkflowRequest(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/jobs/abort') {
-        await handleAbortRequest(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/discuss/persona-sets') {
-        await handleDiscussPersonaSets(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/discuss/sessions') {
-        await handleDiscussSessionCreate(req, res, deps);
-        return;
-      }
-
-      const discussBidMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/bids$/);
-      if (discussBidMatch) {
-        await handleDiscussBidRoute(req, res, deps, discussBidMatch[1]);
-        return;
-      }
-
-      const discussSpeechMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/speeches$/);
-      if (discussSpeechMatch) {
-        await handleDiscussSpeechRoute(req, res, deps, discussSpeechMatch[1]);
-        return;
-      }
-
-      if (pathname === '/kb/notes') {
-        await handleKbNoteCreate(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/kb/sources') {
-        await handleKbSourceCreate(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/kb/memos') {
-        await handleKbMemoCreate(req, res, deps);
-        return;
-      }
-
-      if (pathname === '/kb/index') {
-        await handleKbIndex(req, res, deps);
-        return;
-      }
-    }
-
-    if (req.method === 'PUT' && req.url) {
-      const parsedUrl = new URL(req.url, 'http://localhost');
-      const pathname = parsedUrl.pathname;
-
-      const kbNoteUpdateMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
-      if (kbNoteUpdateMatch) {
-        await handleKbNoteUpdateRoute(req, res, deps, kbNoteUpdateMatch[1]);
-        return;
-      }
-    }
-
-    if (req.method === 'GET' && req.url) {
-      const parsedUrl = new URL(req.url, 'http://localhost');
-      const pathname = parsedUrl.pathname;
-
-      if (pathname === '/api/jobs') {
-        req.resume();
-        const phase = parsedUrl.searchParams.get('phase');
-        let jobs = listAllJobs(progressStore, identity.namespace);
-        if (phase !== null) {
-          jobs = jobs.filter((j) => j.status?.phase === phase);
-        }
-        sendJson(res, 200, { jobs });
-        return;
-      }
-
-      const jobDetailMatch = pathname.match(/^\/api\/jobs\/([^/]+)$/);
-      if (jobDetailMatch) {
-        req.resume();
-        const detail = getJobDetail(progressStore, jobDetailMatch[1], identity.namespace);
-        if (!detail) {
-          sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${jobDetailMatch[1]}` });
-          return;
-        }
-        sendJson(res, 200, detail);
-        return;
-      }
-
-      if (pathname === '/sessions') {
-        req.resume();
-        const sessions = sessionIndex
-          .listForNamespace(identity.namespace, progressStore)
-          .flatMap((row) => row.sessions);
-        sendJson(res, 200, { sessions });
-        return;
-      }
-
-      if (pathname === '/discuss/sessions') {
-        req.resume();
-        sendJson(res, 200, { sessions: deps.listDiscussSessions() });
-        return;
-      }
-
-      const discussEventsMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/events$/);
-      if (discussEventsMatch) {
-        req.resume();
-        await handleDiscussEvents(req, res, deps, discussEventsMatch[1], parsedUrl.searchParams);
-        return;
-      }
-
-      const discussDetailMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)$/);
-      if (discussDetailMatch) {
-        req.resume();
-        await handleDiscussSessionDetail(req, res, deps, discussDetailMatch[1], parsedUrl.searchParams);
-        return;
-      }
-
-      if (pathname === '/kb/entries') {
-        req.resume();
-        await handleKbEntries(req, res, deps, parsedUrl.searchParams);
-        return;
-      }
-
-      const kbNoteReadMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
-      if (kbNoteReadMatch) {
-        req.resume();
-        await handleKbNoteReadRoute(req, res, deps, kbNoteReadMatch[1]);
-        return;
-      }
-
-      if (pathname === '/kb/sources') {
-        req.resume();
-        await handleKbSourceListRoute(req, res, deps);
-        return;
-      }
-
-      const kbSourceReadMatch = pathname.match(/^\/kb\/sources\/([^/]+)$/);
-      if (kbSourceReadMatch) {
-        req.resume();
-        await handleKbSourceReadRoute(req, res, deps, kbSourceReadMatch[1]);
-        return;
-      }
-
-      const kbCommunityReadMatch = pathname.match(/^\/kb\/communities\/([^/]+)$/);
-      if (kbCommunityReadMatch) {
-        req.resume();
-        await handleKbCommunityReadRoute(req, res, deps, kbCommunityReadMatch[1]);
-        return;
-      }
-
-      if (pathname === '/kb/memos') {
-        req.resume();
-        await handleKbMemoListRoute(req, res, deps, parsedUrl.searchParams);
-        return;
-      }
-
-      const kbMemoReadMatch = pathname.match(/^\/kb\/memos\/([^/]+)$/);
-      if (kbMemoReadMatch) {
-        req.resume();
-        await handleKbMemoReadRoute(req, res, deps, kbMemoReadMatch[1], parsedUrl.searchParams);
-        return;
-      }
-
-      if (pathname === '/kb/principles') {
-        req.resume();
-        await handleKbPrinciplesRoute(req, res, deps, parsedUrl.searchParams);
-        return;
-      }
-
-      const kbPrincipleReadMatch = pathname.match(/^\/kb\/principles\/([^/]+)$/);
-      if (kbPrincipleReadMatch) {
-        req.resume();
-        await handleKbPrincipleReadRoute(req, res, deps, kbPrincipleReadMatch[1]);
-        return;
-      }
-    }
-
-    if (req.method === 'DELETE' && req.url) {
-      const parsedUrl = new URL(req.url, 'http://localhost');
-      const pathname = parsedUrl.pathname;
-
-      const discussDeleteMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)$/);
-      if (discussDeleteMatch) {
-        req.resume();
-        await handleDiscussSessionDelete(req, res, deps, discussDeleteMatch[1], parsedUrl.searchParams);
-        return;
-      }
-
-      const kbNoteDeleteMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
-      if (kbNoteDeleteMatch) {
-        req.resume();
-        await handleKbNoteDeleteRoute(req, res, deps, kbNoteDeleteMatch[1]);
-        return;
-      }
-
-      const kbSourceDeleteMatch = pathname.match(/^\/kb\/sources\/([^/]+)$/);
-      if (kbSourceDeleteMatch) {
-        req.resume();
-        await handleKbSourceDeleteRoute(req, res, deps, kbSourceDeleteMatch[1]);
-        return;
-      }
-
-      if (pathname === '/kb/memos') {
-        req.resume();
-        await handleKbMemoDeleteRoute(req, res, deps, parsedUrl.searchParams);
-        return;
-      }
+      await route.handler(req, res, deps, match, parsedUrl);
+      return;
     }
 
     req.resume();

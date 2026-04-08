@@ -107,7 +107,7 @@ export interface ProviderRequest {
   cwd?: string;
   effort?: string;
   bypassPermissions: boolean;
-  /** User-facing system prompt from MCP tool schema (Claude: --append-system-prompt). */
+  /** User-facing system prompt passed through the backend to the provider adapter (Claude: --append-system-prompt). */
   systemPrompt?: string;
   coralEnv: Record<string, string>;
   /**

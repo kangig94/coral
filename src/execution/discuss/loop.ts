@@ -2,7 +2,7 @@ import { decideBidRoundClose, decideEnd } from '../../discuss/state-machine.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import { errorMessage } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
-import type { CallerContext } from '../request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './executor.js';
 import { type DiscussContext, DiscussManagerError } from './context.js';
 import { commitDecision } from './persistence.js';

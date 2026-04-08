@@ -98,6 +98,8 @@ type QueuedLaunchEntry = {
   reject: (error: Error) => void;
 };
 
+type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
+
 const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
@@ -127,17 +129,22 @@ export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Pro
 export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, () => void>();
   private nextProviderServerGeneration = 1;
-  private readonly activeLaunchesDefault = new Map<string, string>();
-  private readonly activeLaunchesDiscuss = new Map<string, string>();
-  private readonly activeLaunchesCurate = new Map<string, string>();
-  private readonly queuedLaunchesDefault: QueuedLaunchEntry[] = [];
-  private readonly queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
-  private readonly queuedLaunchesCurate: QueuedLaunchEntry[] = [];
+  private readonly pools: Map<LaunchPool, PoolState> = new Map<LaunchPool, PoolState>();
   private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
+
+  constructor() {
+    this.pools.set('default', { active: new Map<string, string>(), queued: [] });
+    this.pools.set('discuss', { active: new Map<string, string>(), queued: [] });
+    this.pools.set('curate', { active: new Map<string, string>(), queued: [] });
+  }
 
   /** Number of active launch permits across all pools. */
   get active(): number {
-    return this.activeLaunchesDefault.size + this.activeLaunchesDiscuss.size + this.activeLaunchesCurate.size;
+    let total = 0;
+    for (const state of this.pools.values()) {
+      total += state.active.size;
+    }
+    return total;
   }
 
   requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
@@ -383,23 +390,11 @@ export class LaunchCoordinator {
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, string> {
-    if (pool === 'discuss') {
-      return this.activeLaunchesDiscuss;
-    }
-    if (pool === 'curate') {
-      return this.activeLaunchesCurate;
-    }
-    return this.activeLaunchesDefault;
+    return this.pools.get(pool)!.active;
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
-    if (pool === 'discuss') {
-      return this.queuedLaunchesDiscuss;
-    }
-    if (pool === 'curate') {
-      return this.queuedLaunchesCurate;
-    }
-    return this.queuedLaunchesDefault;
+    return this.pools.get(pool)!.queued;
   }
 
   private hasLaunchCapacity(pool: LaunchPool): boolean {
@@ -436,9 +431,9 @@ export class LaunchCoordinator {
   }
 
   private drainQueuedLaunches(message: string): void {
-    drainQueuedLaunchPool(this.queuedLaunchesDefault, message);
-    drainQueuedLaunchPool(this.queuedLaunchesDiscuss, message);
-    drainQueuedLaunchPool(this.queuedLaunchesCurate, message);
+    for (const state of this.pools.values()) {
+      drainQueuedLaunchPool(state.queued, message);
+    }
   }
 
   private consumeSignalPermit(signal: AbortSignal, provider: string): boolean {

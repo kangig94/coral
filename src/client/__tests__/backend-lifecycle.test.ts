@@ -1,11 +1,27 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendLockPath, installationDir } from '../../infra/paths.js';
-import { tryExclusiveWrite } from '../../shared/utils.js';
+import { ensureBackend } from '../backend-lifecycle.js';
+import { isProcessAlive, tryExclusiveWrite } from '../../shared/utils.js';
 
 const tempRoots: string[] = [];
+const STARTUP_POLL_MS = 200;
+
+const mockState = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+  spawn: vi.fn(() => ({ unref: vi.fn() })),
+}));
+
+vi.mock('node:child_process', () => ({
+  execFileSync: mockState.execFileSync,
+  spawn: mockState.spawn,
+}));
+
+vi.mock('node:timers/promises', () => ({
+  setTimeout: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+}));
 
 function createPluginRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-lifecycle-test-'));
@@ -27,10 +43,22 @@ function writeLockFile(root: string, pid: number): void {
   writeFileSync(backendLockPath(root), payload, 'utf-8');
 }
 
+function createErrnoError(code: string): NodeJS.ErrnoException {
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
+    rmSync(installationDir(root), { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
+  mockState.execFileSync.mockClear();
+  mockState.spawn.mockClear();
+  vi.clearAllTimers();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('backend lock lifecycle', () => {
@@ -104,6 +132,36 @@ describe('backend lock lifecycle', () => {
     expect(existsSync(lockPath)).toBe(true);
     const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as Record<string, unknown>;
     expect(parsed.pid).toBeUndefined();
+  });
+
+  it('EPERM from process.kill treats the lock owner as alive (shared isProcessAlive semantics)', () => {
+    vi.spyOn(process, 'kill').mockImplementation((() => {
+      throw createErrnoError('EPERM');
+    }) as typeof process.kill);
+
+    // The shared isProcessAlive treats EPERM as "process exists but no permission" → alive
+    expect(isProcessAlive(424242)).toBe(true);
+
+    // Since isProcessAlive returns true, tryRemoveStaleLock won't delete the lock
+    const root = createPluginRoot();
+    writeLockFile(root, 424242);
+    const lockPath = backendLockPath(root);
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it('non-ESRCH/non-EPERM process.kill failures are rethrown by shared isProcessAlive', () => {
+    vi.spyOn(process, 'kill').mockImplementation((() => {
+      throw createErrnoError('EACCES');
+    }) as typeof process.kill);
+
+    // The shared isProcessAlive rethrows unexpected errors (not ESRCH, not EPERM)
+    expect(() => isProcessAlive(434343)).toThrow('EACCES');
+
+    // tryRemoveStaleLock catches all errors and returns false, so the lock survives
+    const root = createPluginRoot();
+    writeLockFile(root, 434343);
+    const lockPath = backendLockPath(root);
+    expect(existsSync(lockPath)).toBe(true);
   });
 });
 

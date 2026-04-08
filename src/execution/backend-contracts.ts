@@ -7,12 +7,12 @@
  */
 
 import type { ServerResponse } from 'node:http';
-import type { AbortResult } from './abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { EventBusEvents } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
 import type { LifecycleState } from './server-types.js';
 import type { ExecutionService } from './service.js';

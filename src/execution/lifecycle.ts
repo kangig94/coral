@@ -20,7 +20,7 @@ import { RecoveryRegistry } from './recovery-registry.js';
 import { type EventBusEvents, type TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';

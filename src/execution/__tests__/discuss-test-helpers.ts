@@ -21,7 +21,8 @@ import { buildWatchEvents } from '../../discuss/projections.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { attachSession, detachSession, listSessions } from '../discuss/registry.js';
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
-import type { CallerContext, ExecutionService } from '../service.js';
+import type { CallerContext } from '../../shared/request-context.js';
+import type { ExecutionService } from '../service.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';

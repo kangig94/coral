@@ -2,7 +2,7 @@ import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
-import type { CallerContext } from '../execution/request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import { ZodError } from 'zod';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema, type WorkflowInput } from './schemas.js';

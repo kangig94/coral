@@ -29,8 +29,8 @@ import {
   type KbResolvedReadSelector,
 } from '../shared/kb-read-contract.js';
 import { assertOwnerId } from '../shared/utils.js';
-import type { CallerContext } from './request-context.js';
-import { deriveLegacyErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
+import type { CallerContext } from '../shared/request-context.js';
+import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
 
 export type KbSubsystem = {
   kb: KbRuntime;
@@ -147,7 +147,7 @@ const kbPrinciplesSchema = z
 
 function kbErrorResult(error: unknown): ToolDomainResult {
   const detail = error instanceof Error ? { message: error.message } : error;
-  return domainError('kb_error', deriveLegacyErrorMessage('kb_error', detail), detail);
+  return domainError('kb_error', deriveErrorMessage('kb_error', detail), detail);
 }
 
 function toolValidationError(error: ZodError): ToolDomainResult {
@@ -171,7 +171,7 @@ function runKbSyncAction(action: () => unknown): ToolDomainResult {
 }
 
 function invalidRequestResult(error: unknown): ToolDomainResult {
-  return domainError('invalid_request', deriveLegacyErrorMessage('invalid_request', error));
+  return domainError('invalid_request', deriveErrorMessage('invalid_request', error));
 }
 
 function kbNotFoundResult(kind: KbReadKind, slug: string): ToolDomainResult {

@@ -1,9 +1,9 @@
 import { homedir } from 'node:os';
 import { readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { CallerContext } from '../execution/request-context.js';
+import type { WorkflowCheckpointWriter } from '../shared/execution-contracts.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } from '../shared/types.js';
-import type { ProgressStore } from '../execution/progress-store.js';
 import type { PipeAtom, PipelineAST, WorkflowExecutionPort } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/utils.js';
@@ -145,7 +145,7 @@ type PersistCheckpoint = (
 
 /** Fire-and-forget checkpoint write, serialized through the mutex. */
 function writeCheckpoint(
-  progressStore: ProgressStore,
+  progressStore: WorkflowCheckpointWriter,
   workflowJobId: string,
   mutex: ReturnType<typeof createAsyncMutex>,
   data: CheckpointState,
@@ -191,7 +191,7 @@ function writeCheckpoint(
 
 function createCheckpointPersister(
   workflowJobId: string | undefined,
-  progressStore: ProgressStore | undefined,
+  progressStore: WorkflowCheckpointWriter | undefined,
   provider: string,
   sessionId: string,
   completedStepDetails: StepDetail[],
@@ -990,7 +990,7 @@ export async function resumePipeline(
     staleTimeoutMs?: number;
     pollIntervalMs?: number;
     workflowJobId?: string;
-    progressStore?: ProgressStore;
+    progressStore?: WorkflowCheckpointWriter;
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
@@ -1170,7 +1170,7 @@ export async function executePipeline(
     staleTimeoutMs?: number;
     pollIntervalMs?: number;
     workflowJobId?: string;
-    progressStore?: ProgressStore;
+    progressStore?: WorkflowCheckpointWriter;
   } = {},
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});

@@ -1,34 +1,43 @@
 import { MAX_INLINE } from '../shared/schemas.js';
 import { isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
-import type { AcceptedLaunchResponse, BackendToolHttpError } from '../client/http-client.js';
+import type {
+  AcceptedLaunchResponse,
+  BackendToolHttpError,
+  DiscussStartResponse,
+  KbDeleteResponse,
+  KbMemoResponse,
+  KbPromoteResponse,
+  KbSourceDeleteResponse,
+  KbSourceImportResponse,
+  KbUpdateResponse,
+} from '../client/http-client.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
-import type { AbortResult } from '../execution/abort-registry.js';
+import type { WatchState } from '../discuss/watch.js';
+import type {
+  KbMemoDeleteResult,
+  KbMemoListResult,
+  KbMemoPurgeResult,
+  KbPrincipleVerboseRow,
+  KbPrinciplesResult,
+  KbReadResult,
+  KbSearchResponse,
+  KbSourceListResult,
+  ReindexResult,
+} from '../kb/types.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
-
-export type DiscussStartResult = {
-  session: string;
-};
 
 export type DiscussAbortResult = {
   ok: boolean;
   session: string;
 };
 
-type DiscussWatchResult = {
-  session: string;
-  status: string;
-  topic: string;
-  epoch: number;
-  step: number;
-  events: unknown[];
-  cursor: number;
-};
-
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
 type WaitTimeoutEvent = Extract<WaitStreamEvent, { type: 'timeout' }>;
+type KbReadDisplayResult = KbReadResult & { age?: string };
 
 export type SessionListResult = {
   sessions: Array<{
@@ -71,16 +80,12 @@ function appendCursor(text: string, cursor: string | null): string {
   return cursor === null ? text : `${text} (cursor: ${cursor})`;
 }
 
-function normalizeKbWarning(warning: unknown, cliPrefix = 'coral-cli'): string | undefined {
-  if (typeof warning !== 'string' || warning.length === 0) {
+function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'): string | undefined {
+  if (warning === undefined || warning.length === 0) {
     return undefined;
   }
 
   return warning.replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
-}
-
-function isKbSearchMode(value: unknown): value is 'text' | 'hybrid' {
-  return value === 'text' || value === 'hybrid';
 }
 
 function formatTable(headers: string[], rows: string[][]): string {
@@ -118,9 +123,8 @@ function formatDiscussEnded(result: { reason?: string; content?: string }): stri
   return joinLines([headline, result.content]);
 }
 
-function isDiscussWatchResult(value: unknown): value is DiscussWatchResult {
+function isWatchState(value: WatchState | Record<string, unknown>): value is WatchState {
   return (
-    isRecord(value) &&
     typeof value.session === 'string' &&
     typeof value.status === 'string' &&
     typeof value.topic === 'string' &&
@@ -129,6 +133,26 @@ function isDiscussWatchResult(value: unknown): value is DiscussWatchResult {
     Array.isArray(value.events) &&
     Number.isInteger(value.cursor)
   );
+}
+
+function isVerbosePrincipleRows(
+  principles: KbPrinciplesResult['principles'],
+): principles is KbPrincipleVerboseRow[] {
+  return principles.length > 0 && typeof principles[0] !== 'string';
+}
+
+function toKbReadDisplayResult(data: KbReadResult): KbReadDisplayResult {
+  if (typeof data.updatedAt !== 'string') {
+    return data;
+  }
+
+  const ms = Date.now() - Date.parse(data.updatedAt);
+  const days = Math.floor(ms / 86_400_000);
+
+  return {
+    ...data,
+    age: days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`,
+  };
 }
 
 function isBackendToolHttpError(value: unknown): value is BackendToolHttpError {
@@ -224,7 +248,7 @@ export function formatPersonaSeed(result: PersonaSeedOutput): string {
   ]);
 }
 
-export function formatDiscussStart(result: DiscussStartResult): string {
+export function formatDiscussStart(result: DiscussStartResponse): string {
   return `Session started: ${result.session}`;
 }
 
@@ -257,8 +281,8 @@ export function formatDiscussParticipate(result: BidResult | SpeechResult): stri
   }
 }
 
-export function formatDiscussWatch(result: unknown): string {
-  if (!isDiscussWatchResult(result)) {
+export function formatDiscussWatch(result: WatchState | Record<string, unknown>): string {
+  if (!isWatchState(result)) {
     return formatUnknown(result);
   }
 
@@ -270,27 +294,15 @@ export function formatDiscussWatch(result: unknown): string {
 }
 
 /** KB search is consumed by LLM agents, not humans — always return JSON. Do not add text-mode formatting. */
-export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
-  if (!isRecord(data) || !Array.isArray(data.results) || !isKbSearchMode(data.mode)) {
-    return formatUnknown(data);
-  }
-
+export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
   const results = data.results.map((result) => {
-    if (!isRecord(result)) {
-      return { note: '-', kind: '-', title: '-', matched: [] as string[], snippet: '-' };
-    }
-
-    const matched = Array.isArray(result.matchedBy)
-      ? result.matchedBy.filter((value): value is string => typeof value === 'string')
-      : [];
-
     return {
-      note: typeof result.note === 'string' ? result.note : '-',
-      kind: typeof result.kind === 'string' ? result.kind : '-',
-      title: typeof result.title === 'string' ? result.title : '-',
-      matched,
-      snippet: typeof result.snippet === 'string' ? result.snippet : '-',
+      note: result.note,
+      kind: result.kind,
+      title: result.title,
+      matched: result.matchedBy,
+      snippet: result.snippet ?? '-',
     };
   });
 
@@ -311,37 +323,21 @@ export function formatKbSearch(data: unknown, cliPrefix = 'coral-cli'): string {
   return JSON.stringify(output);
 }
 
-export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): string {
-  if (!isRecord(data) || !Array.isArray(data.principles) || typeof data.total !== 'number') {
-    return formatUnknown(data);
-  }
-
+export function formatKbPrinciples(data: KbPrinciplesResult, cliPrefix = 'coral-cli'): string {
   const principles = data.principles;
   const warning = normalizeKbWarning(data.warning, cliPrefix);
-  const first = principles[0];
 
-  if (typeof first === 'string' || first === undefined) {
-    const names = principles.filter((value): value is string => typeof value === 'string');
+  if (!isVerbosePrincipleRows(principles)) {
     return joinLines([
-      names.length === 0 ? 'No principles' : names.join('\n'),
+      principles.length === 0 ? 'No principles' : principles.join('\n'),
       `Total: ${data.total}`,
       warning === undefined ? undefined : `Warning: ${warning}`,
     ]);
   }
 
-  const rows = principles.flatMap((value) => {
-    if (
-      !isRecord(value) ||
-      typeof value.name !== 'string' ||
-      typeof value.statement !== 'string' ||
-      !Array.isArray(value.notes) ||
-      !value.notes.every((note) => typeof note === 'string')
-    ) {
-      return [];
-    }
-
+  const rows = principles.map((value) => {
     const notes = value.notes.length === 0 ? '' : ` (${value.notes.join(', ')})`;
-    return [`${value.name}${notes}: ${value.statement}`];
+    return `${value.name}${notes}: ${value.statement}`;
   });
 
   return joinLines([
@@ -351,54 +347,16 @@ export function formatKbPrinciples(data: unknown, cliPrefix = 'coral-cli'): stri
   ]);
 }
 
-export function formatKbRead(data: unknown): string {
-  if (
-    !isRecord(data) ||
-    typeof data.note !== 'string' ||
-    typeof data.title !== 'string' ||
-    typeof data.content !== 'string'
-  ) {
-    return formatUnknown(data);
-  }
-
-  if (typeof data.updatedAt === 'string') {
-    const ms = Date.now() - Date.parse(data.updatedAt);
-    const days = Math.floor(ms / 86_400_000);
-    data.age = days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`;
-  }
-
-  return JSON.stringify(data);
+export function formatKbRead(data: KbReadResult): string {
+  return JSON.stringify(toKbReadDisplayResult(data));
 }
 
-export function formatKbMemo(data: unknown): string {
-  if (!isRecord(data) || typeof data.filename !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbMemo(data: KbMemoResponse): string {
   return `Memo: ${data.filename}`;
 }
 
-export function formatKbMemoList(data: unknown): string {
-  if (!isRecord(data) || !Array.isArray(data.memos)) {
-    return formatUnknown(data);
-  }
-
-  const rows = data.memos.flatMap((memo) => {
-    if (
-      !isRecord(memo) ||
-      typeof memo.filename !== 'string' ||
-      typeof memo.summary !== 'string' ||
-      typeof memo.createdAt !== 'string'
-    ) {
-      return [];
-    }
-
-    return [[memo.filename, memo.summary, memo.createdAt]];
-  });
-
-  if (rows.length !== data.memos.length) {
-    return formatUnknown(data);
-  }
+export function formatKbMemoList(data: KbMemoListResult): string {
+  const rows = data.memos.map((memo) => [memo.filename, memo.summary, memo.createdAt]);
 
   if (rows.length === 0) {
     return 'No memos';
@@ -407,81 +365,32 @@ export function formatKbMemoList(data: unknown): string {
   return formatTable(['FILENAME', 'SUMMARY', 'CREATED AT'], rows);
 }
 
-export function formatKbMemoDelete(data: unknown): string {
-  if (
-    !isRecord(data) ||
-    !Array.isArray(data.deleted) ||
-    !data.deleted.every((entry) => typeof entry === 'string') ||
-    typeof data.count !== 'number'
-  ) {
-    return formatUnknown(data);
-  }
-
+export function formatKbMemoDelete(data: KbMemoDeleteResult): string {
   return joinLines([data.deleted.length === 0 ? 'No memos deleted' : data.deleted.join('\n'), `Count: ${data.count}`]);
 }
 
-export function formatKbMemoPurge(data: unknown): string {
-  if (!isRecord(data) || typeof data.deleted !== 'number') {
-    return formatUnknown(data);
-  }
-
+export function formatKbMemoPurge(data: KbMemoPurgeResult): string {
   return `Purged: ${data.deleted} memos`;
 }
 
-export function formatKbPromote(data: unknown): string {
-  if (!isRecord(data) || typeof data.path !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbPromote(data: KbPromoteResponse): string {
   return `Created: ${data.path}`;
 }
 
-export function formatKbUpdate(data: unknown): string {
-  if (!isRecord(data) || typeof data.path !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbUpdate(data: KbUpdateResponse): string {
   return `Updated: ${data.path}`;
 }
 
-export function formatKbDelete(data: unknown): string {
-  if (!isRecord(data) || typeof data.deleted !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbDelete(data: KbDeleteResponse): string {
   return `Deleted: ${data.deleted}`;
 }
 
-export function formatKbSourceImport(data: unknown): string {
-  if (!isRecord(data) || typeof data.path !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbSourceImport(data: KbSourceImportResponse): string {
   return `Imported: ${data.path}`;
 }
 
-export function formatKbSourceList(data: unknown): string {
-  if (!isRecord(data) || !Array.isArray(data.sources)) {
-    return formatUnknown(data);
-  }
-
-  const rows = data.sources.flatMap((source) => {
-    if (
-      !isRecord(source) ||
-      typeof source.slug !== 'string' ||
-      typeof source.title !== 'string' ||
-      typeof source.type !== 'string' ||
-      typeof source.importedAt !== 'string'
-    ) {
-      return [];
-    }
-
-    return [[source.slug, source.title, source.type, source.importedAt]];
-  });
-
-  if (rows.length !== data.sources.length) {
-    return formatUnknown(data);
-  }
+export function formatKbSourceList(data: KbSourceListResult): string {
+  const rows = data.sources.map((source) => [source.slug, source.title, source.type, source.importedAt]);
 
   if (rows.length === 0) {
     return 'No sources';
@@ -490,27 +399,11 @@ export function formatKbSourceList(data: unknown): string {
   return formatTable(['SLUG', 'TITLE', 'TYPE', 'IMPORTED AT'], rows);
 }
 
-export function formatKbSourceDelete(data: unknown): string {
-  if (!isRecord(data) || typeof data.deleted !== 'string') {
-    return formatUnknown(data);
-  }
-
+export function formatKbSourceDelete(data: KbSourceDeleteResponse): string {
   return `Deleted: ${data.deleted}`;
 }
 
-export function formatKbReindex(data: unknown, cliPrefix = 'coral-cli'): string {
-  if (
-    !isRecord(data) ||
-    typeof data.notes !== 'number' ||
-    typeof data.communities !== 'number' ||
-    typeof data.principles !== 'number' ||
-    typeof data.tags !== 'number' ||
-    typeof data.duration_ms !== 'number' ||
-    !isKbSearchMode(data.mode)
-  ) {
-    return formatUnknown(data);
-  }
-
+export function formatKbReindex(data: ReindexResult, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
 
   return joinLines([

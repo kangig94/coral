@@ -1,0 +1,88 @@
+/**
+ * Discuss session read helpers extracted from `createBackendServer()`.
+ *
+ * The server composition root owns the mutable discuss registry and store
+ * lookup, while this module owns the read-side helper behavior.
+ */
+
+import { readDiscussSources } from '../client/readers.js';
+import {
+  buildDiscussDetail,
+  buildDiscussSummary,
+  type DiscussDetailResponse,
+  type DiscussSummaryDto,
+  type DiscussView,
+} from '../discuss/views.js';
+import { listAttachedSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
+import type { DiscussSessionStore } from './discuss/session-store.js';
+
+export type DiscussReadHelpersDeps = {
+  readonly discussRegistry: DiscussContextRegistry;
+  readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
+  readonly resolveProjectSource: (projectRoot: string) => string;
+};
+
+export function knownDiscussSources(deps: DiscussReadHelpersDeps): Set<string> {
+  const sources = new Set<string>();
+  for (const source of readDiscussSources()) {
+    sources.add(source);
+  }
+  for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
+    sources.add(deps.resolveProjectSource(liveSession.projectRoot));
+  }
+  return sources;
+}
+
+export function listDiscussSessions(deps: DiscussReadHelpersDeps): DiscussSummaryDto[] {
+  const results = new Map<string, DiscussSummaryDto>();
+
+  for (const source of knownDiscussSources(deps)) {
+    for (const summary of deps.getDiscussStoreForSource(source).listSummariesFromIndex()) {
+      const key = `${source}\u0000${summary.sessionId}`;
+      results.set(key, summary);
+    }
+  }
+
+  for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
+    const snapshot = liveSession.session.snapshot;
+    const summary = buildDiscussSummary(snapshot, 'live');
+    const source = deps.resolveProjectSource(liveSession.projectRoot);
+    results.set(`${source}\u0000${summary.sessionId}`, summary);
+  }
+
+  return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function isLiveDiscussSession(
+  deps: DiscussReadHelpersDeps,
+  source: string,
+  sessionId: string,
+): boolean {
+  for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
+    if (liveSession.sessionId === sessionId && deps.resolveProjectSource(liveSession.projectRoot) === source) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function loadDiscussDetail(
+  deps: DiscussReadHelpersDeps,
+  source: string,
+  sessionId: string,
+  view: DiscussView,
+): DiscussDetailResponse | 'audit_requires_ended_session' | null {
+  const snapshot = deps.getDiscussStoreForSource(source).load(sessionId);
+  if (!snapshot) {
+    return null;
+  }
+  if (view === 'audit' && snapshot.state.status !== 'ended') {
+    return 'audit_requires_ended_session';
+  }
+
+  const authority = isLiveDiscussSession(deps, source, sessionId) ? 'live' : 'persisted';
+  if (view === 'audit') {
+    return buildDiscussDetail(snapshot, 'audit', authority);
+  }
+  return buildDiscussDetail(snapshot, 'control', authority);
+}

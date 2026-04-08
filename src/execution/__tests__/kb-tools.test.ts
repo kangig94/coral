@@ -28,7 +28,7 @@ import {
   handleKbUpdate,
   type KbSubsystem,
 } from '../kb-tools.js';
-import type { CallerContext } from '../request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),

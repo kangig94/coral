@@ -12,12 +12,12 @@ import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } f
 import { LaunchCoordinator } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
-import type { AbortResult } from './abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 
 import { TypedEventBus } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import { SessionIndex } from './session-index.js';
 import { type DiscussContext } from './discuss/context.js';
 import {
@@ -28,14 +28,11 @@ import {
 } from './discuss/context-registry.js';
 import { DiscussSessionStore } from './discuss/session-store.js';
 import {
-  buildDiscussDetail,
-  buildDiscussSummary,
-  type DiscussAuthority,
-  type DiscussDetailResponse,
-  type DiscussSummaryDto,
-  type DiscussView,
-} from '../discuss/views.js';
-import { readDiscussSources } from '../client/readers.js';
+  knownDiscussSources,
+  listDiscussSessions,
+  loadDiscussDetail,
+  type DiscussReadHelpersDeps,
+} from './discuss-read-helpers.js';
 import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
 import type { KbSubsystem } from './kb-tools.js';
@@ -260,6 +257,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     );
   }
 
+  const discussReadHelpersDeps: DiscussReadHelpersDeps = {
+    discussRegistry,
+    getDiscussStoreForSource,
+    resolveProjectSource,
+  };
+
   // -- Abort / scope helpers ------------------------------------------------
   function abortJobs(jobIds: string[]): AbortResult {
     const pending = new Set(jobIds);
@@ -329,67 +332,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { valid, missing, mismatch };
   }
 
-  // -- Discuss read helpers -------------------------------------------------
-  function knownDiscussSources(): Set<string> {
-    const sources = new Set<string>();
-    for (const source of readDiscussSources()) {
-      sources.add(source);
-    }
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      sources.add(resolveProjectSource(liveSession.projectRoot));
-    }
-    return sources;
-  }
-
-  function listDiscussSessions(): DiscussSummaryDto[] {
-    const results = new Map<string, DiscussSummaryDto>();
-
-    for (const source of knownDiscussSources()) {
-      for (const summary of getDiscussStoreForSource(source).listSummariesFromIndex()) {
-        const key = `${source}\u0000${summary.sessionId}`;
-        results.set(key, summary);
-      }
-    }
-
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      const snapshot = liveSession.session.snapshot;
-      const summary = buildDiscussSummary(snapshot, 'live');
-      const source = resolveProjectSource(liveSession.projectRoot);
-      results.set(`${source}\u0000${summary.sessionId}`, summary);
-    }
-
-    return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  }
-
-  function isLiveDiscussSession(source: string, sessionId: string): boolean {
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      if (liveSession.sessionId === sessionId && resolveProjectSource(liveSession.projectRoot) === source) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function loadDiscussDetail(
-    source: string,
-    sessionId: string,
-    view: DiscussView,
-  ): DiscussDetailResponse | 'audit_requires_ended_session' | null {
-    const snapshot = getDiscussStoreForSource(source).load(sessionId);
-    if (!snapshot) {
-      return null;
-    }
-    if (view === 'audit' && snapshot.state.status !== 'ended') {
-      return 'audit_requires_ended_session';
-    }
-
-    const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId) ? 'live' : 'persisted';
-    if (view === 'audit') {
-      return buildDiscussDetail(snapshot, 'audit', authority);
-    }
-    return buildDiscussDetail(snapshot, 'control', authority);
-  }
-
   // -- Drain admission fence -------------------------------------------------
   // Flipped immediately by /admin/shutdown BEFORE lifecycle transitions to
   // 'draining'. This closes the pre-existing race window.
@@ -441,8 +383,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       eventBus.off('discuss:updated', handlers.onDiscussUpdated);
     },
     liveDiscussCount: () => listAttachedSessions(discussRegistry).length,
-    listDiscussSessions,
-    loadDiscussDetail,
+    listDiscussSessions: () => listDiscussSessions(discussReadHelpersDeps),
+    loadDiscussDetail: (source, sessionId, view) => loadDiscussDetail(discussReadHelpersDeps, source, sessionId, view),
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
@@ -476,7 +418,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     getRecoveryService,
     listExecutionServices,
     getDiscussStoreForSource,
-    knownDiscussSources,
+    knownDiscussSources: () => knownDiscussSources(discussReadHelpersDeps),
     getDiscussContext,
     acquireLockFn,
     writeBackendInfoFn,
