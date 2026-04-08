@@ -243,68 +243,539 @@ describe('client http-client', () => {
     );
   });
 
-  it.each([
-    {
-      name: 'discussStart',
-      invoke: (client: BackendClient) =>
-        client.discussStart({
-          topic: 'Should the bridge be removed?',
-          agents: [{ name: 'alice', persona: 'Architect' }],
-        }),
-      path: '/discuss/start',
-      body: {
-        topic: 'Should the bridge be removed?',
-        agents: [{ name: 'alice', persona: 'Architect' }],
-        projectRoot: '/tmp/project',
-        owner: 'team-a',
-        effort: 'high',
-        claudeModelCap: 'sonnet',
-      },
-      responseBody: { session: 'discuss-1' },
-    },
-    {
-      name: 'kbSearch',
-      invoke: (client: BackendClient) => client.kbSearch({ query: 'accel' }),
-      path: '/kb/search',
-      body: {
-        query: 'accel',
-        projectRoot: '/tmp/project',
-        owner: 'team-a',
-        effort: 'high',
-        claudeModelCap: 'sonnet',
-      },
-      responseBody: { results: [], mode: 'text' },
-    },
-    {
-      name: 'kbMemo',
-      invoke: (client: BackendClient) => client.kbMemo({ topic: 'routing', content: 'memo body', owner: 'memo-owner' }),
-      path: '/kb/memo',
-      body: {
-        topic: 'routing',
-        content: 'memo body',
-        owner: 'memo-owner',
-        projectRoot: '/tmp/project',
-        effort: 'high',
-        claudeModelCap: 'sonnet',
-      },
-      responseBody: { filename: '20260408-routing.md', path: '/tmp/project/.coral/memos/20260408-routing.md' },
-    },
-  ])('posts direct discuss/KB bodies for $name and returns the unwrapped success payload', async ({ invoke, path, body, responseBody }) => {
+  it('routes discuss resource methods through the new endpoints and verbs', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
 
-    fetchMock.mockResolvedValueOnce(jsonResponse(responseBody));
+    const seedArgs = {
+      controversy_axes: [{ axis: 'cost', positions: ['low', 'high'] }],
+      n: 3,
+      seed: 42,
+    };
+    const startArgs = {
+      topic: 'Should the bridge be removed?',
+      agents: [{ name: 'alice', persona: 'Architect' }],
+    };
+    const bidArgs = {
+      session: 'discuss-1',
+      agent_name: 'alice',
+      score: 80,
+      thought: 'Ship it.',
+    };
+    const speechArgs = {
+      session: 'discuss-1',
+      agent_name: 'alice',
+      content: 'Ship it.',
+    };
+    const seedBody = { personas: [{ name: 'Avery' }] };
+    const startBody = { session: 'discuss-1' };
+    const watchBody = { state: { status: 'running' } };
+    const bidBody = { ok: true, queued: false };
+    const speechBody = { ok: true };
+    const abortBody = { ok: true, session: 'discuss-1' };
+    const sessionsBody = { sessions: [{ sessionId: 'discuss-1', authority: 'live' }] };
+    const detailBody = { authority: 'persisted', view: 'audit', session: { sessionId: 'discuss-1' }, transcript: [] };
 
-    await expect(invoke(client)).resolves.toEqual(responseBody);
-    expect(fetchMock).toHaveBeenCalledWith(
-      `http://127.0.0.1:4100${path}`,
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(seedBody))
+      .mockResolvedValueOnce(jsonResponse(startBody, 201, 'Created'))
+      .mockResolvedValueOnce(jsonResponse(watchBody))
+      .mockResolvedValueOnce(jsonResponse(bidBody))
+      .mockResolvedValueOnce(jsonResponse(speechBody))
+      .mockResolvedValueOnce(jsonResponse(abortBody))
+      .mockResolvedValueOnce(jsonResponse(sessionsBody))
+      .mockResolvedValueOnce(jsonResponse(detailBody));
+
+    await expect(client.discussSeed(seedArgs)).resolves.toEqual(seedBody);
+    await expect(client.discussStart(startArgs)).resolves.toEqual(startBody);
+    await expect(client.discussWatch('discuss-1', 3)).resolves.toEqual(watchBody);
+    await expect(client.discussBid(bidArgs)).resolves.toEqual(bidBody);
+    await expect(client.discussSpeech(speechArgs)).resolves.toEqual(speechBody);
+    await expect(client.discussAbort('discuss-1')).resolves.toEqual(abortBody);
+    await expect(client.listDiscussSessions()).resolves.toEqual(sessionsBody);
+    await expect(client.getDiscussSession('discuss-1', 'audit')).resolves.toEqual(detailBody);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4100/discuss/persona-sets',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify(seedArgs),
       }),
     );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:4100/discuss/sessions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          ...startArgs,
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:4100/discuss/sessions/discuss-1/events?projectRoot=%2Ftmp%2Fproject&cursor=3',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:4100/discuss/sessions/discuss-1/bids',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          agent_name: 'alice',
+          score: 80,
+          thought: 'Ship it.',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      'http://127.0.0.1:4100/discuss/sessions/discuss-1/speeches',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          agent_name: 'alice',
+          content: 'Ship it.',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      'http://127.0.0.1:4100/discuss/sessions/discuss-1?projectRoot=%2Ftmp%2Fproject',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      'http://127.0.0.1:4100/discuss/sessions',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      8,
+      'http://127.0.0.1:4100/discuss/sessions/discuss-1?projectRoot=%2Ftmp%2Fproject&view=audit',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+  });
+
+  it('routes KB resource methods through the new endpoints and verbs', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ path: '/tmp/project/notes/contracts-overview.md' }, 201, 'Created'))
+      .mockResolvedValueOnce(jsonResponse({ path: '/tmp/project/notes/contracts-overview.md' }))
+      .mockResolvedValueOnce(jsonResponse({ deleted: 'contracts/overview' }))
+      .mockResolvedValueOnce(jsonResponse({ slug: 'bridge-removal-plan', path: '/tmp/project/sources/bridge.md' }, 201, 'Created'))
+      .mockResolvedValueOnce(jsonResponse({ deleted: 'bridge-removal-plan' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ filename: '20260408-routing.md', path: '/tmp/project/.coral/memos/20260408-routing.md' }, 201, 'Created'),
+      )
+      .mockResolvedValueOnce(jsonResponse({ notes: 1, sources: 2, communities: 3, principles: 4, duration_ms: 10, mode: 'text' }));
+
+    await expect(
+      client.kbPromote({
+        memo: '20260408-routing',
+        title: 'Contracts Overview',
+        content: 'Body',
+        domain: 'eng',
+        topic: 'routing',
+      }),
+    ).resolves.toEqual({ path: '/tmp/project/notes/contracts-overview.md' });
+    await expect(client.kbUpdate({ note: 'contracts/overview', title: 'Updated' })).resolves.toEqual({
+      path: '/tmp/project/notes/contracts-overview.md',
+    });
+    await expect(client.kbDelete({ note: 'contracts/overview' })).resolves.toEqual({
+      deleted: 'contracts/overview',
+    });
+    await expect(
+      client.kbSourceImport({
+        slug: 'bridge-removal-plan',
+        stagedPath: '/tmp/staged.md',
+        meta: {
+          title: 'Bridge Removal Plan',
+          type: 'markdown',
+          tags: ['plan'],
+          importedAt: '2026-04-08T00:00:00.000Z',
+        },
+      }),
+    ).resolves.toEqual({
+      slug: 'bridge-removal-plan',
+      path: '/tmp/project/sources/bridge.md',
+    });
+    await expect(client.kbSourceDelete({ slug: 'bridge-removal-plan' })).resolves.toEqual({
+      deleted: 'bridge-removal-plan',
+    });
+    await expect(client.kbMemo({ topic: 'routing', content: 'memo body', owner: 'memo-owner' })).resolves.toEqual({
+      filename: '20260408-routing.md',
+      path: '/tmp/project/.coral/memos/20260408-routing.md',
+    });
+    await expect(client.kbReindex({})).resolves.toEqual({
+      notes: 1,
+      sources: 2,
+      communities: 3,
+      principles: 4,
+      duration_ms: 10,
+      mode: 'text',
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4100/kb/notes',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          memo: '20260408-routing',
+          title: 'Contracts Overview',
+          content: 'Body',
+          domain: 'eng',
+          topic: 'routing',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:4100/kb/notes/contracts%2Foverview',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          title: 'Updated',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:4100/kb/notes/contracts%2Foverview',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:4100/kb/sources',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          slug: 'bridge-removal-plan',
+          stagedPath: '/tmp/staged.md',
+          meta: {
+            title: 'Bridge Removal Plan',
+            type: 'markdown',
+            tags: ['plan'],
+            importedAt: '2026-04-08T00:00:00.000Z',
+          },
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      'http://127.0.0.1:4100/kb/sources/bridge-removal-plan',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      'http://127.0.0.1:4100/kb/memos',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          topic: 'routing',
+          content: 'memo body',
+          owner: 'memo-owner',
+          projectRoot: '/tmp/project',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      7,
+      'http://127.0.0.1:4100/kb/index',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+  });
+
+  it('routes KB GET and DELETE resource methods with query params and owner fallback', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ results: [], mode: 'text' }))
+      .mockResolvedValueOnce(jsonResponse({ sources: [{ slug: 'bridge-removal-plan' }] }))
+      .mockResolvedValueOnce(jsonResponse({ principles: ['contract-first-design'], total: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ memos: [{ filename: '20260408-routing.md', summary: 'routing', createdAt: '2026-04-08T00:00:00.000Z' }] }))
+      .mockResolvedValueOnce(jsonResponse({ deleted: ['20260408-routing.md'], count: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ deleted: 5 }));
+
+    await expect(client.kbSearch({ query: 'contracts', scope: 'notes', top_k: 5 })).resolves.toEqual({
+      results: [],
+      mode: 'text',
+    });
+    await expect(client.kbSourceList()).resolves.toEqual({
+      sources: [{ slug: 'bridge-removal-plan' }],
+    });
+    await expect(client.kbPrinciples({ query: 'contract', top_k: 5, verbose: true })).resolves.toEqual({
+      principles: ['contract-first-design'],
+      total: 1,
+    });
+    await expect(client.kbMemoList({})).resolves.toEqual({
+      memos: [{ filename: '20260408-routing.md', summary: 'routing', createdAt: '2026-04-08T00:00:00.000Z' }],
+    });
+    await expect(client.kbMemoDelete({ pattern: '*routing*' })).resolves.toEqual({
+      deleted: ['20260408-routing.md'],
+      count: 1,
+    });
+    await expect(client.kbMemoPurge({ owner: 'override-owner' })).resolves.toEqual({
+      deleted: 5,
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4100/kb/entries?q=contracts&scope=notes&top_k=5',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:4100/kb/sources',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:4100/kb/principles?q=contract&top_k=5&verbose=true',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&owner=team-a',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&pattern=*routing*&owner=team-a',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      'http://127.0.0.1:4100/kb/memos?projectRoot=%2Ftmp%2Fproject&all=true&owner=override-owner',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+  });
+
+  it('dispatches kbRead explicit selectors directly to the matching resource route', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+    });
+    const responseBody = {
+      kind: 'source',
+      note: 'bridge-removal-plan',
+      title: 'Bridge Removal Plan',
+      content: 'Source body.',
+      tags: ['plan'],
+      principles: [],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(responseBody));
+
+    await expect(client.kbRead({ note: 'sources:bridge-removal-plan' })).resolves.toEqual(responseBody);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/kb/sources/bridge-removal-plan',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+  });
+
+  it('preserves memo precedence for timestamp-shaped bare kbRead slugs', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+    const slug = '20260323-010203-shared-slug';
+    const responseBody = {
+      kind: 'memo',
+      note: slug,
+      title: slug,
+      content: 'Memo body.',
+      tags: [],
+      principles: [],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(responseBody));
+
+    await expect(client.kbRead({ note: slug })).resolves.toEqual(responseBody);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://127.0.0.1:4100/kb/memos/${slug}?projectRoot=%2Ftmp%2Fproject`,
+      expect.objectContaining({
+        method: 'GET',
+        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+      }),
+    );
+  });
+
+  it('falls through kbRead bare probes only on 404 responses', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+    const responseBody = {
+      kind: 'source',
+      note: 'bridge-removal-plan',
+      title: 'Bridge Removal Plan',
+      content: 'Source body.',
+      tags: ['plan'],
+      principles: [],
+    };
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ code: 'not_found', message: 'missing note' }, 404, 'Not Found'))
+      .mockResolvedValueOnce(jsonResponse({ code: 'not_found', message: 'missing community' }, 404, 'Not Found'))
+      .mockResolvedValueOnce(jsonResponse(responseBody));
+
+    await expect(client.kbRead({ note: 'bridge-removal-plan' })).resolves.toEqual(responseBody);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:4100/kb/notes/bridge-removal-plan',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:4100/kb/communities/bridge-removal-plan',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:4100/kb/sources/bridge-removal-plan',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('surfaces non-404 kbRead probe failures immediately', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 'kb_unavailable', message: 'Knowledge base is not available.' }, 503, 'Service Unavailable'),
+    );
+
+    await expect(client.kbRead({ note: 'bridge-removal-plan' })).rejects.toMatchObject({
+      name: 'BackendToolHttpError',
+      statusCode: 503,
+      body: { code: 'kb_unavailable', message: 'Knowledge base is not available.' },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      name: 'discussWatch',
+      invoke: (client: BackendClient) => client.discussWatch('discuss-1'),
+    },
+    {
+      name: 'discussAbort',
+      invoke: (client: BackendClient) => client.discussAbort('discuss-1'),
+    },
+    {
+      name: 'getDiscussSession',
+      invoke: (client: BackendClient) => client.getDiscussSession('discuss-1'),
+    },
+    {
+      name: 'kbMemoList',
+      invoke: (client: BackendClient) => client.kbMemoList({}),
+    },
+    {
+      name: 'kbMemoDelete',
+      invoke: (client: BackendClient) => client.kbMemoDelete({ pattern: '*' }),
+    },
+    {
+      name: 'kbMemoPurge',
+      invoke: (client: BackendClient) => client.kbMemoPurge({}),
+    },
+    {
+      name: 'kbRead bare',
+      invoke: (client: BackendClient) => client.kbRead({ note: 'bridge-removal-plan' }),
+    },
+  ])('requires CallerContext for scoped route handling in $name', async ({ invoke }) => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+    });
+
+    await expect(invoke(client)).rejects.toThrow(/CallerContext is required/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('uses the new job and session read routes', async () => {

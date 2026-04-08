@@ -4,6 +4,7 @@ import { isBackendHealth } from './backend-health.js';
 import type { AbortResult } from '../execution/abort-registry.js';
 import type { CallerContext } from '../execution/request-context.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
+import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {
   KbDeleteInput,
@@ -29,6 +30,12 @@ import type {
   ReindexResult,
 } from '../kb/types.js';
 import type { EffortLevel } from '../shared/schemas.js';
+import {
+  KB_BARE_READ_ORDER,
+  isKbMemoCandidateSlug,
+  parseKbSelector,
+  type KbReadKind,
+} from '../shared/kb-read-contract.js';
 import type { LenientSessionEntry } from '../shared/session-entry.js';
 import {
   describeHttpError,
@@ -72,6 +79,10 @@ export type DiscussStartResponse = {
 export type DiscussAbortResponse = {
   ok: true;
   session: string;
+};
+
+export type DiscussSessionsListResponse = {
+  sessions: DiscussSummaryDto[];
 };
 
 export type KbMemoResponse = {
@@ -308,7 +319,7 @@ export class BackendClient {
     },
     context?: CallerContext,
   ): Promise<PersonaSeedOutput> {
-    return this.postRoute('/discuss/seed', args, this.resolveContext(context));
+    return this.postRoute('/discuss/persona-sets', args, context, { injectContext: false });
   }
 
   async discussStart(
@@ -325,84 +336,223 @@ export class BackendClient {
     },
     context?: CallerContext,
   ): Promise<DiscussStartResponse> {
-    return this.postRoute('/discuss/start', args, this.resolveContext(context));
+    return this.postRoute('/discuss/sessions', args, this.resolveContext(context, 'discuss session creation'));
   }
 
-  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<WatchState> {
-    return this.postRoute('/discuss/watch', { session, cursor }, this.resolveContext(context));
+  async discussWatch(session: string, context?: CallerContext): Promise<WatchState>;
+  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<WatchState>;
+  async discussWatch(
+    session: string,
+    cursorOrContext?: number | CallerContext,
+    maybeContext?: CallerContext,
+  ): Promise<WatchState> {
+    const cursor = typeof cursorOrContext === 'number' ? cursorOrContext : undefined;
+    const context = typeof cursorOrContext === 'number' ? maybeContext : cursorOrContext;
+    const ctx = this.resolveContext(context, 'discuss watch');
+    return this.getRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(session)}/events`, {
+        projectRoot: ctx.projectRoot,
+        cursor,
+      }),
+      ctx,
+    );
   }
 
-  async discussParticipate(
+  async discussBid(
     args: {
       session: string;
       agent_name: string;
-      score?: number;
-      thought?: string;
-      content?: string;
+      score: number;
+      thought: string;
     },
     context?: CallerContext,
-  ): Promise<BidResult | SpeechResult> {
-    return this.postRoute('/discuss/participate', args, this.resolveContext(context));
+  ): Promise<BidResult> {
+    const { session, ...body } = args;
+    return this.postRoute(
+      `/discuss/sessions/${encodeURIComponent(session)}/bids`,
+      body,
+      this.resolveContext(context, 'discuss bid'),
+    );
+  }
+
+  async discussSpeech(
+    args: {
+      session: string;
+      agent_name: string;
+      content: string;
+    },
+    context?: CallerContext,
+  ): Promise<SpeechResult> {
+    const { session, ...body } = args;
+    return this.postRoute(
+      `/discuss/sessions/${encodeURIComponent(session)}/speeches`,
+      body,
+      this.resolveContext(context, 'discuss speech'),
+    );
   }
 
   async discussAbort(session: string, context?: CallerContext): Promise<DiscussAbortResponse> {
-    return this.postRoute('/discuss/abort', { session }, this.resolveContext(context));
+    const ctx = this.resolveContext(context, 'discuss abort');
+    return this.deleteRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(session)}`, {
+        projectRoot: ctx.projectRoot,
+      }),
+      ctx,
+    );
+  }
+
+  async listDiscussSessions(context?: CallerContext): Promise<DiscussSessionsListResponse> {
+    return this.getRoute('/discuss/sessions', context);
+  }
+
+  async getDiscussSession(id: string, context?: CallerContext): Promise<DiscussDetailResponse>;
+  async getDiscussSession(
+    id: string,
+    view?: DiscussView,
+    context?: CallerContext,
+  ): Promise<DiscussDetailResponse>;
+  async getDiscussSession(
+    id: string,
+    viewOrContext?: DiscussView | CallerContext,
+    maybeContext?: CallerContext,
+  ): Promise<DiscussDetailResponse> {
+    const view = typeof viewOrContext === 'string' ? viewOrContext : undefined;
+    const context = typeof viewOrContext === 'string' ? maybeContext : viewOrContext;
+    const ctx = this.resolveContext(context, 'discuss session detail');
+    return this.getRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(id)}`, {
+        projectRoot: ctx.projectRoot,
+        view,
+      }),
+      ctx,
+    );
   }
 
   async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<KbSearchResponse> {
-    return this.postRoute('/kb/search', args, this.resolveContext(context));
+    return this.getRoute(
+      this.buildRoutePath('/kb/entries', {
+        q: args.query,
+        scope: args.scope,
+        top_k: args.top_k,
+      }),
+      context,
+    );
   }
 
   async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<KbPrinciplesResult> {
-    return this.postRoute('/kb/principles', args, this.resolveContext(context));
+    return this.getRoute(
+      this.buildRoutePath('/kb/principles', {
+        q: args.query,
+        top_k: args.top_k,
+        verbose: args.verbose,
+      }),
+      context,
+    );
   }
 
   async kbRead(args: KbReadInput, context?: CallerContext): Promise<KbReadResult> {
-    return this.postRoute('/kb/read', args, this.resolveContext(context));
+    const selector = parseKbSelector(args.note);
+    if (selector.kind !== null) {
+      return this.kbReadByKind(selector.kind, selector.slug, context);
+    }
+
+    const ctx = this.resolveContext(context, 'bare KB reads');
+    let lastNotFound: BackendToolHttpError | null = null;
+
+    for (const kind of KB_BARE_READ_ORDER) {
+      if (kind === 'memo' && !isKbMemoCandidateSlug(selector.slug)) {
+        continue;
+      }
+
+      try {
+        return await this.kbReadByKind(kind, selector.slug, ctx);
+      } catch (error) {
+        if (error instanceof BackendToolHttpError && error.statusCode === 404) {
+          lastNotFound = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (lastNotFound) {
+      throw lastNotFound;
+    }
+
+    throw new Error(`KB entry not found: ${args.note}`);
   }
 
   async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<KbPromoteResponse> {
-    return this.postRoute('/kb/promote', args, this.resolveContext(context));
+    return this.postRoute('/kb/notes', args, this.resolveContext(context, 'kb note creation'));
   }
 
   async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<KbUpdateResponse> {
-    return this.postRoute('/kb/update', args, this.resolveContext(context));
+    const { note, ...body } = args;
+    return this.putRoute(
+      `/kb/notes/${encodeURIComponent(note)}`,
+      body,
+      this.resolveContext(context, 'kb note update'),
+    );
   }
 
   async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<KbDeleteResponse> {
-    return this.postRoute('/kb/delete', args, this.resolveContext(context));
+    return this.deleteRoute(`/kb/notes/${encodeURIComponent(args.note)}`, context);
   }
 
   async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<KbSourceImportResponse> {
-    return this.postRoute('/kb/source-import', args, this.resolveContext(context));
+    return this.postRoute('/kb/sources', args, this.resolveContext(context, 'kb source import'));
   }
 
   async kbSourceList(context?: CallerContext): Promise<KbSourceListResult> {
-    return this.postRoute('/kb/source-list', {}, this.resolveContext(context));
+    return this.getRoute('/kb/sources', context);
   }
 
   async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<KbSourceDeleteResponse> {
-    return this.postRoute('/kb/source-delete', args, this.resolveContext(context));
+    return this.deleteRoute(`/kb/sources/${encodeURIComponent(args.slug)}`, context);
   }
 
   async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<KbMemoResponse> {
-    return this.postRoute('/kb/memo', args, this.resolveContext(context));
+    return this.postRoute('/kb/memos', args, this.resolveContext(context, 'kb memo creation'));
   }
 
   async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<KbMemoListResult> {
-    return this.postRoute('/kb/memo-list', args, this.resolveContext(context));
+    const ctx = this.resolveContext(context, 'kb memo list');
+    return this.getRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
   }
 
   async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<KbMemoDeleteResult> {
-    return this.postRoute('/kb/memo-delete', args, this.resolveContext(context));
+    const ctx = this.resolveContext(context, 'kb memo delete');
+    return this.deleteRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        pattern: args.pattern,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
   }
 
   async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<KbMemoPurgeResult> {
-    return this.postRoute('/kb/memo-purge', args, this.resolveContext(context));
+    const ctx = this.resolveContext(context, 'kb memo purge');
+    return this.deleteRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        all: true,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
   }
 
-  async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<ReindexResult> {
-    return this.postRoute('/kb/reindex', args, this.resolveContext(context));
+  async kbReindex(args: KbReindexInput = {}, context?: CallerContext): Promise<ReindexResult> {
+    void args;
+    return this.postRoute('/kb/index', {}, this.resolveContext(context, 'kb reindex'));
   }
 
   async health(): Promise<BackendHealth | null> {
@@ -446,10 +596,10 @@ export class BackendClient {
     }
   }
 
-  private resolveContext(context?: CallerContext): CallerContext {
+  private resolveContext(context?: CallerContext, operation = 'backend tool calls'): CallerContext {
     const resolvedContext = context ?? this.defaultContext;
     if (resolvedContext) return resolvedContext;
-    throw new Error('CallerContext is required for backend tool calls');
+    throw new Error(`CallerContext is required for ${operation}`);
   }
 
   private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
@@ -480,6 +630,30 @@ export class BackendClient {
     return body;
   }
 
+  private buildRoutePath(
+    path: string,
+    query: Record<string, string | number | boolean | undefined>,
+  ): string {
+    const params = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const queryString = params.toString();
+    return queryString.length > 0 ? `${path}?${queryString}` : path;
+  }
+
+  private resolveMemoOwner(owner: string | undefined, ctx: CallerContext): string | undefined {
+    if (owner !== undefined) {
+      return owner;
+    }
+
+    const fallback = ctx.coralEnv.CORAL_OWNER;
+    return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+  }
+
   private describeError(response: Response, responseBody: unknown): string {
     if (isRecord(responseBody) && typeof responseBody.message === 'string' && responseBody.message.length > 0) {
       return responseBody.message;
@@ -488,8 +662,8 @@ export class BackendClient {
     return describeHttpError(response.status, response.statusText);
   }
 
-  private async getRoute<T>(path: string): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle();
+  private async getRoute<T>(path: string, context?: CallerContext): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
@@ -513,9 +687,74 @@ export class BackendClient {
     }
   }
 
-  private async postRoute<T>(path: string, args: Record<string, unknown>, ctx: CallerContext): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle(ctx);
-    const body = JSON.stringify(this.buildRequestBody(args, ctx));
+  private async putRoute<T>(
+    path: string,
+    args: Record<string, unknown>,
+    context?: CallerContext,
+    options: { injectContext?: boolean } = {},
+  ): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+    const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
+    const body = JSON.stringify(payload);
+
+    try {
+      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`http://${host}:${port}${path}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': token,
+          },
+          body,
+          signal,
+        });
+        const responseBody = await parseJsonResponse(response);
+
+        if (response.ok) {
+          return responseBody as T;
+        }
+
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+      });
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
+  private async deleteRoute<T>(path: string, context?: CallerContext): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+
+    try {
+      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`http://${host}:${port}${path}`, {
+          method: 'DELETE',
+          headers: {
+            'X-Coral-Backend-Token': token,
+          },
+          signal,
+        });
+        const responseBody = await parseJsonResponse(response);
+
+        if (response.ok) {
+          return responseBody as T;
+        }
+
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+      });
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
+  private async postRoute<T>(
+    path: string,
+    args: Record<string, unknown>,
+    context?: CallerContext,
+    options: { injectContext?: boolean } = {},
+  ): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+    const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
+    const body = JSON.stringify(payload);
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
@@ -539,6 +778,46 @@ export class BackendClient {
     } catch (error) {
       throwBackendCommunicationError(error);
     }
+  }
+
+  private kbReadByKind(kind: KbReadKind, slug: string, context?: CallerContext): Promise<KbReadResult> {
+    switch (kind) {
+      case 'note':
+        return this.kbReadNote(slug, context);
+      case 'memo':
+        return this.kbReadMemo(slug, this.resolveContext(context, 'kb memo read'));
+      case 'source':
+        return this.kbReadSource(slug, context);
+      case 'community':
+        return this.kbReadCommunity(slug, context);
+      case 'principle':
+        return this.kbReadPrinciple(slug, context);
+    }
+  }
+
+  private kbReadNote(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/notes/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadMemo(slug: string, context: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(
+      this.buildRoutePath(`/kb/memos/${encodeURIComponent(slug)}`, {
+        projectRoot: context.projectRoot,
+      }),
+      context,
+    );
+  }
+
+  private kbReadSource(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/sources/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadCommunity(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/communities/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadPrinciple(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/principles/${encodeURIComponent(slug)}`, context);
   }
 
   private createWaitStream(body: ReadableStream<Uint8Array>): ReadableStream<WaitStreamEvent> {

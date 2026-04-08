@@ -14,7 +14,7 @@ import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef }
 import { assertOwnerId, collectCoralEnv } from '../shared/utils.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { AbortResult } from '../execution/abort-registry.js';
-import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../discuss/schemas.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
 import { MAX_INLINE } from '../shared/schemas.js';
 import type { WaitStreamEvent } from '../shared/types.js';
@@ -712,9 +712,15 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
           ...(opts.thought !== undefined ? { thought: opts.thought } : {}),
           ...(opts.content !== undefined ? { content: opts.content } : {}),
         };
-        discussParticipateSchema.parse(args);
+        if ('content' in args) {
+          discussSpeechSchema.parse(args);
+        } else {
+          discussBidSchema.parse(args);
+        }
         const client = makeClient(process.cwd());
-        const result = await client.discussParticipate(args as Parameters<BackendClient['discussParticipate']>[0]);
+        const result = 'content' in args
+          ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
+          : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
         emit(result, outputFormat, (data) => formatDiscussParticipate(data as BidResult | SpeechResult));
       } catch (error) {
         emitError(error, outputFormat);

@@ -18,7 +18,8 @@ const mockState = vi.hoisted(() => ({
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
   discussWatch: vi.fn(),
-  discussParticipate: vi.fn(),
+  discussBid: vi.fn(),
+  discussSpeech: vi.fn(),
   discussAbort: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
@@ -54,7 +55,8 @@ vi.mock('../../client/http-client.js', () => {
     discussSeed = mockState.discussSeed;
     discussStart = mockState.discussStart;
     discussWatch = mockState.discussWatch;
-    discussParticipate = mockState.discussParticipate;
+    discussBid = mockState.discussBid;
+    discussSpeech = mockState.discussSpeech;
     discussAbort = mockState.discussAbort;
     kbSearch = mockState.kbSearch;
     kbPrinciples = mockState.kbPrinciples;
@@ -130,7 +132,8 @@ describe('cli main routing', () => {
     mockState.discussSeed.mockReset();
     mockState.discussStart.mockReset();
     mockState.discussWatch.mockReset();
-    mockState.discussParticipate.mockReset();
+    mockState.discussBid.mockReset();
+    mockState.discussSpeech.mockReset();
     mockState.discussAbort.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
@@ -560,6 +563,139 @@ describe('cli main routing', () => {
     expect(stdout).toBe('');
     expect(JSON.parse(stderr.trim())).toEqual({ error: true, statusCode: 503, body: errorBody });
     expect(process.exitCode).toBe(1);
+  });
+
+  it('routes discuss participate bid payloads to discussBid', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.discussBid.mockResolvedValueOnce({
+      agent_name: 'alice',
+      score: 72,
+      thought: 'Fits the current plan.',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'discuss',
+      'participate',
+      '--session',
+      'session-1',
+      '--agent-name',
+      'alice',
+      '--score',
+      '72',
+      '--thought',
+      'Fits the current plan.',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.discussBid).toHaveBeenCalledWith({
+      session: 'session-1',
+      agent_name: 'alice',
+      score: 72,
+      thought: 'Fits the current plan.',
+    });
+    expect(mockState.discussSpeech).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout.trim())).toEqual({
+      agent_name: 'alice',
+      score: 72,
+      thought: 'Fits the current plan.',
+    });
+  });
+
+  it('routes discuss participate speech payloads to discussSpeech', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.discussSpeech.mockResolvedValueOnce({
+      agent_name: 'alice',
+      content: 'I support the change.',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'discuss',
+      'participate',
+      '--session',
+      'session-1',
+      '--agent-name',
+      'alice',
+      '--content',
+      'I support the change.',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.discussSpeech).toHaveBeenCalledWith({
+      session: 'session-1',
+      agent_name: 'alice',
+      content: 'I support the change.',
+    });
+    expect(mockState.discussBid).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout.trim())).toEqual({
+      agent_name: 'alice',
+      content: 'I support the change.',
+    });
+  });
+
+  it('routes discuss watch through discussWatch', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.discussWatch.mockResolvedValueOnce({
+      events: [],
+      cursor: 4,
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'discuss',
+      'watch',
+      '--session',
+      'session-1',
+      '--cursor',
+      '4',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.discussWatch).toHaveBeenCalledWith('session-1', 4);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      events: [],
+      cursor: 4,
+    });
+  });
+
+  it('routes discuss abort through discussAbort', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.discussAbort.mockResolvedValueOnce({
+      ok: true,
+      session: 'session-1',
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'discuss',
+      'abort',
+      '--session',
+      'session-1',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.discussAbort).toHaveBeenCalledWith('session-1');
+    expect(JSON.parse(stdout.trim())).toEqual({
+      ok: true,
+      session: 'session-1',
+    });
   });
 
   it('routes bare kb search without top_k so backend defaults apply', async () => {

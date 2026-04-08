@@ -8,11 +8,11 @@ Discuss is exposed through CLI commands backed by dedicated HTTP endpoints:
 
 | CLI command | HTTP route | Purpose |
 | --- | --- | --- |
-| `coral-cli discuss seed` | `POST /discuss/seed` | Persona seeding |
-| `coral-cli discuss start` | `POST /discuss/start` | Create session, append initial events, start control loop |
-| `coral-cli discuss watch` | `POST /discuss/watch` | Read projected watch events |
-| `coral-cli discuss participate` | `POST /discuss/participate` | Inject a manual bid or speech |
-| `coral-cli discuss abort` | `POST /discuss/abort` | End the session and detach it from the live registry |
+| `coral-cli discuss seed` | `POST /discuss/persona-sets` | Persona seeding |
+| `coral-cli discuss start` | `POST /discuss/sessions` | Create session, append initial events, start control loop |
+| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events |
+| `coral-cli discuss participate` | `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches` | Inject a manual bid or speech |
+| `coral-cli discuss abort` | `DELETE /discuss/sessions/:id` | End the session and detach it from the live registry |
 
 Manual observers are agents with no `provider` and no `model`. They are skipped during automatic bid collection and the loop pauses when a manual participant becomes the current speaker.
 
@@ -44,11 +44,11 @@ Domain events are defined in `src/discuss/events.ts`.
 
 Runtime flow:
 
-1. `coral-cli discuss start` / `POST /discuss/start` appends `session.created` and `bidding.opened`.
-2. Automatic providers bid; manual participants wait for `participate`.
+1. `coral-cli discuss start` / `POST /discuss/sessions` appends `session.created` and `bidding.opened`.
+2. Automatic providers bid; manual participants wait for `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches`.
 3. The loop resolves speakers, records speech, evaluates epochs, schedules follow-up turns, and eventually synthesizes.
-4. `coral-cli discuss watch` reads the projected watch stream.
-5. `coral-cli discuss abort` appends a durable terminal event and detaches the live session.
+4. `coral-cli discuss watch` reads the projected watch stream from `GET /discuss/sessions/:id/events`.
+5. `coral-cli discuss abort` / `DELETE /discuss/sessions/:id` appends a durable terminal event and detaches the live session.
 
 Persisted control phases are `idle`, `observer_wait`, `evaluate_epoch`, `collect_follow_up`, and `synthesize`.
 
@@ -112,7 +112,8 @@ Discuss exposes three read models:
 
 HTTP read APIs:
 
-- `GET /api/discuss`
-- `GET /api/discuss/detail?view=control|audit`
+- `GET /discuss/sessions`
+- `GET /discuss/sessions/:id?view=control|audit`
+- `GET /discuss/sessions/:id/events`
 
 Live sessions override persisted summaries with `authority: "live"`. Audit detail is only available for ended sessions.

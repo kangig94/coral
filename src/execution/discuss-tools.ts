@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { errorMessage } from '../shared/utils.js';
-import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../discuss/schemas.js';
 import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
 import * as discussOperations from './discuss/operations.js';
 import { seedPersonas } from '../discuss/persona-seed.js';
@@ -17,6 +17,8 @@ const discussWatchSchema = z.object({
   cursor: z.number().int().min(0).optional(),
 });
 
+const legacyDiscussParticipateSchema = z.union([discussBidSchema, discussSpeechSchema]);
+
 type DiscussToolHelpers = {
   getDiscussContext: (ctx: CallerContext) => DiscussContext;
 };
@@ -25,7 +27,13 @@ type DiscussSeedArgs = z.infer<typeof discussSeedSchema>;
 type DiscussStartArgs = z.infer<typeof discussStartSchema>;
 type DiscussSessionArgs = z.infer<typeof discussSessionSchema>;
 type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
-type DiscussParticipateArgs = z.infer<typeof discussParticipateSchema>;
+type DiscussBidArgs = z.infer<typeof discussBidSchema>;
+type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
+type LegacyDiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchema>;
+
+function isDiscussSpeechArgs(args: LegacyDiscussParticipateArgs): args is DiscussSpeechArgs {
+  return typeof args.content === 'string';
+}
 
 function toolValidationError(error: z.ZodError): ToolDomainResult {
   return domainError('invalid_request', error.message);
@@ -101,24 +109,12 @@ function executeDiscussWatch(
   }
 }
 
-async function executeDiscussParticipate(
-  args: DiscussParticipateArgs,
+async function executeDiscussBid(
+  args: DiscussBidArgs,
   context: CallerContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   try {
-    if (typeof args.content === 'string') {
-      return domainSuccess(
-        await discussOperations.submitManualSpeech(
-          helpers.getDiscussContext(context),
-          args.session,
-          args.agent_name,
-          args.content,
-          context,
-        ),
-      );
-    }
-
     return domainSuccess(
       await discussOperations.submitManualBid(
         helpers.getDiscussContext(context),
@@ -126,6 +122,29 @@ async function executeDiscussParticipate(
         args.agent_name,
         args.score,
         args.thought,
+        context,
+      ),
+    );
+  } catch (error: unknown) {
+    if (error instanceof DiscussManagerError) {
+      return discussManagerError(error);
+    }
+    return unexpectedDiscussError(error);
+  }
+}
+
+async function executeDiscussSpeech(
+  args: DiscussSpeechArgs,
+  context: CallerContext,
+  helpers: DiscussToolHelpers,
+): Promise<ToolDomainResult> {
+  try {
+    return domainSuccess(
+      await discussOperations.submitManualSpeech(
+        helpers.getDiscussContext(context),
+        args.session,
+        args.agent_name,
+        args.content,
         context,
       ),
     );
@@ -185,15 +204,43 @@ export async function handleDiscussAbort(
   return executeDiscussAbort(parsed.data, context, helpers);
 }
 
+export async function handleDiscussBid(
+  args: unknown,
+  context: CallerContext,
+  helpers: DiscussToolHelpers,
+): Promise<ToolDomainResult> {
+  const parsed = discussBidSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
+  }
+
+  return executeDiscussBid(parsed.data, context, helpers);
+}
+
+export async function handleDiscussSpeech(
+  args: unknown,
+  context: CallerContext,
+  helpers: DiscussToolHelpers,
+): Promise<ToolDomainResult> {
+  const parsed = discussSpeechSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
+  }
+
+  return executeDiscussSpeech(parsed.data, context, helpers);
+}
+
 export async function handleDiscussParticipate(
   args: unknown,
   context: CallerContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
-  const parsed = discussParticipateSchema.safeParse(args);
+  const parsed = legacyDiscussParticipateSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
   }
 
-  return executeDiscussParticipate(parsed.data, context, helpers);
+  return isDiscussSpeechArgs(parsed.data)
+    ? executeDiscussSpeech(parsed.data, context, helpers)
+    : executeDiscussBid(parsed.data, context, helpers);
 }

@@ -12,8 +12,9 @@ import {
 import type { DiscussContext } from '../discuss/context.js';
 import {
   handleDiscussAbort,
-  handleDiscussParticipate,
+  handleDiscussBid,
   handleDiscussSeed,
+  handleDiscussSpeech,
   handleDiscussStart,
   handleDiscussWatch,
 } from '../discuss-tools.js';
@@ -71,7 +72,7 @@ function parseToolError(result: ToolDomainResult): Record<string, unknown> {
 
 async function callDiscussTool(
   request: {
-    name: 'discuss_seed' | 'discuss_start' | 'discuss_abort' | 'discuss_watch' | 'discuss_participate';
+    name: 'discuss_seed' | 'discuss_start' | 'discuss_abort' | 'discuss_watch' | 'discuss_bid' | 'discuss_speech';
     args: Record<string, unknown>;
     context: CallerContext;
   },
@@ -86,8 +87,10 @@ async function callDiscussTool(
       return handleDiscussAbort(request.args, request.context, helpers);
     case 'discuss_watch':
       return Promise.resolve(handleDiscussWatch(request.args, request.context, helpers));
-    case 'discuss_participate':
-      return handleDiscussParticipate(request.args, request.context, helpers);
+    case 'discuss_bid':
+      return handleDiscussBid(request.args, request.context, helpers);
+    case 'discuss_speech':
+      return handleDiscussSpeech(request.args, request.context, helpers);
   }
 }
 
@@ -547,7 +550,7 @@ describe('execution discuss tools', () => {
     harness.cleanup();
   });
 
-  it('discuss_participate records a manual observer bid through the store-backed manager', async () => {
+  it('discuss_bid records a manual observer bid through the store-backed manager', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
@@ -583,7 +586,7 @@ describe('execution discuss tools', () => {
 
     const result = await callDiscussTool(
       {
-        name: 'discuss_participate',
+        name: 'discuss_bid',
         args: {
           session: 'discuss-1',
           agent_name: 'user',
@@ -605,7 +608,7 @@ describe('execution discuss tools', () => {
     harness.cleanup();
   });
 
-  it('discuss_participate records speech and enforces turn ownership', async () => {
+  it('discuss_speech records speech and enforces turn ownership', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
     const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
@@ -701,7 +704,7 @@ describe('execution discuss tools', () => {
 
     const validResult = await callDiscussTool(
       {
-        name: 'discuss_participate',
+        name: 'discuss_speech',
         args: {
           session: 'discuss-valid',
           agent_name: 'user',
@@ -713,7 +716,7 @@ describe('execution discuss tools', () => {
     );
     const invalidResult = await callDiscussTool(
       {
-        name: 'discuss_participate',
+        name: 'discuss_speech',
         args: {
           session: 'discuss-invalid',
           agent_name: 'user',
@@ -816,7 +819,7 @@ describe('execution discuss tools', () => {
       harness.cleanup();
     });
 
-    it('discuss_participate returns discuss_error for non-DiscussManagerError', async () => {
+    it('discuss_bid returns discuss_error for non-DiscussManagerError', async () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
         getExecutionService: (_ctx: CallerContext) => harness.service,
@@ -827,7 +830,39 @@ describe('execution discuss tools', () => {
 
       const result = await callDiscussTool(
         {
-          name: 'discuss_participate',
+          name: 'discuss_bid',
+          args: {
+            session: 'sess-err3',
+            agent_name: 'tester',
+            score: 50,
+            thought: 'test',
+          },
+          context: harness.ctx,
+        },
+        throwingHelpers,
+      );
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.code).toBe('discuss_error');
+        expect(result.message).toBe('out of bounds');
+      }
+
+      harness.cleanup();
+    });
+
+    it('discuss_speech returns discuss_error for non-DiscussManagerError', async () => {
+      const harness = createDiscussHarness();
+      const throwingHelpers = {
+        getExecutionService: (_ctx: CallerContext) => harness.service,
+        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
+        scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
+      };
+
+      const result = await callDiscussTool(
+        {
+          name: 'discuss_speech',
           args: { session: 'sess-err3', agent_name: 'tester', content: 'test' },
           context: harness.ctx,
         },

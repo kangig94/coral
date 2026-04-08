@@ -40,23 +40,20 @@ export const discussStartSchema = z.object({
 });
 export type DiscussStartInput = z.infer<typeof discussStartSchema>;
 
-export const discussParticipateBidSchema = z.object({
+export const discussBidSchema = z.object({
   session: z.string().min(1),
   agent_name: z.string().min(1),
   score: z.number().int().min(0).max(100),
   thought: z.string(),
   content: z.undefined().optional(),
 });
-export type DiscussParticipateBidInput = z.infer<typeof discussParticipateBidSchema>;
+export type DiscussBidInput = z.infer<typeof discussBidSchema>;
 
-export const discussParticipateSpeechSchema = z.object({
+export const discussSpeechSchema = z.object({
   session: z.string().min(1),
   agent_name: z.string().min(1),
   content: z.string(),
   score: z.undefined().optional(),
   thought: z.undefined().optional(),
 });
-export type DiscussParticipateSpeechInput = z.infer<typeof discussParticipateSpeechSchema>;
-
-export const discussParticipateSchema = z.union([discussParticipateBidSchema, discussParticipateSpeechSchema]);
-export type DiscussParticipateInput = z.infer<typeof discussParticipateSchema>;
+export type DiscussSpeechInput = z.infer<typeof discussSpeechSchema>;

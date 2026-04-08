@@ -46,13 +46,35 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
-| `POST /discuss/:action` | 2xx | Discuss actions: `seed`, `start`, `watch`, `participate`, `abort` |
-| `POST /kb/:action` | 2xx | KB actions: search, read, mutate, memo, source, reindex, principles |
+| `POST /discuss/persona-sets` | 200 | Compute discuss persona sets from seed input |
+| `GET /discuss/sessions` | 200 | List discuss sessions |
+| `POST /discuss/sessions` | 201 | Create discuss session and start the control loop |
+| `GET /discuss/sessions/:id` | 200 | Read discuss session control or audit detail |
+| `GET /discuss/sessions/:id/events` | 200 | Read projected watch events for a discuss session |
+| `POST /discuss/sessions/:id/bids` | 200 | Submit a manual bid for a discuss session |
+| `POST /discuss/sessions/:id/speeches` | 200 | Submit a manual speech for a discuss session |
+| `DELETE /discuss/sessions/:id` | 200 | End a discuss session and detach it from the live registry |
+| `GET /kb/entries` | 200 | Search KB entries |
+| `GET /kb/notes/:slug` | 200 | Read a note by slug |
+| `GET /kb/memos/:slug` | 200 | Read a project-scoped memo by slug |
+| `GET /kb/sources/:slug` | 200 | Read an imported source by slug |
+| `GET /kb/communities/:slug` | 200 | Read a community by slug |
+| `GET /kb/principles/:slug` | 200 | Read a principle by slug |
+| `POST /kb/notes` | 201 | Promote content into a note |
+| `PUT /kb/notes/:slug` | 200 | Update a note by slug |
+| `DELETE /kb/notes/:slug` | 200 | Delete a note by slug |
+| `GET /kb/sources` | 200 | List imported KB sources |
+| `POST /kb/sources` | 201 | Import a KB source |
+| `DELETE /kb/sources/:slug` | 200 | Delete an imported KB source |
+| `GET /kb/memos` | 200 | List project-scoped memos |
+| `POST /kb/memos` | 201 | Create a project-scoped memo |
+| `DELETE /kb/memos` | 200 | Delete selected memos or purge all project memos |
+| `GET /kb/principles` | 200 | Search KB principles |
+| `POST /kb/index` | 200 | Rebuild the KB index |
 | `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
 | `GET /events/stream` | 200 | Backend-local event stream for live observers |
 | `GET /api/jobs` / `GET /api/jobs/:id` | 200 | Job summaries and detailed progress history |
-| `GET /api/discuss` / `GET /api/discuss/detail` | 200 | Discuss summaries and detail views |
 
 Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / legacy session), 503 (recovering / busy).
 
@@ -85,8 +107,8 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 ### Discuss and KB
 
-- `coral-cli discuss ...` maps to `POST /discuss/:action` and uses `src/execution/discuss-tools.ts`
-- `coral-cli kb ...` maps to `POST /kb/:action` and uses `src/execution/kb-tools.ts`
+- `coral-cli discuss ...` maps to resource routes under `/discuss/*` and uses `src/execution/discuss-tools.ts`
+- `coral-cli kb ...` maps to resource routes under `/kb/*` and uses `src/execution/kb-tools.ts`
 - Discuss runtime lives under `src/execution/discuss/` and the pure domain model lives under `src/discuss/`
 - KB runtime lives under `src/kb/`
 

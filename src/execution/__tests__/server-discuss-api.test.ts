@@ -296,7 +296,7 @@ describe('server discuss API', () => {
     const backend = await startServer(harness.projectRoot, createDiscussContextRegistry(), harness.service);
 
     const controlResponse = await fetch(
-      `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(harness.projectRoot)}&sessionId=ended-session`,
+      `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
       { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const controlBody = (await controlResponse.json()) as DiscussDetailResponse;
@@ -317,7 +317,7 @@ describe('server discuss API', () => {
     expect(JSON.stringify(controlBody.transcript)).not.toContain('keep sealed');
 
     const auditResponse = await fetch(
-      `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(harness.projectRoot)}&sessionId=ended-session&view=audit`,
+      `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}&view=audit`,
       { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const auditBody = (await auditResponse.json()) as DiscussDetailResponse;
@@ -332,7 +332,7 @@ describe('server discuss API', () => {
     });
 
     const liveAuditResponse = await fetch(
-      `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(harness.projectRoot)}&sessionId=live-session&view=audit`,
+      `${backend.baseUrl}/discuss/sessions/live-session?projectRoot=${encodeURIComponent(harness.projectRoot)}&view=audit`,
       { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
 
@@ -359,7 +359,7 @@ describe('server discuss API', () => {
     const backend = await startServer(secondHarness.projectRoot, createDiscussContextRegistry(), secondHarness.service);
 
     const response = await fetch(
-      `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(secondHarness.projectRoot)}&sessionId=shared-session`,
+      `${backend.baseUrl}/discuss/sessions/shared-session?projectRoot=${encodeURIComponent(secondHarness.projectRoot)}`,
       { headers: { 'X-Coral-Backend-Token': backend.token } },
     );
     const body = (await response.json()) as DiscussDetailResponse;
@@ -370,7 +370,7 @@ describe('server discuss API', () => {
     expect(body.session.sessionId).toBe('shared-session');
   });
 
-  it('dedupes same-source sessions across different project roots in /api/discuss', async () => {
+  it('dedupes same-source sessions across different project roots in GET /discuss/sessions', async () => {
     const sharedSource = 'test-org/shared-repo';
     const sharedRemote = 'https://github.com/test-org/shared-repo.git';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
@@ -404,7 +404,7 @@ describe('server discuss API', () => {
 
     const backend = await startServer(firstHarness.projectRoot, firstHarness.registry, firstHarness.service);
 
-    const response = await fetch(`${backend.baseUrl}/api/discuss`, {
+    const response = await fetch(`${backend.baseUrl}/discuss/sessions`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as { sessions: DiscussSummaryDto[] };
@@ -500,7 +500,7 @@ describe('server discuss API', () => {
       });
 
       const detailResponse = await fetch(
-        `${backend.baseUrl}/api/discuss/detail?projectRoot=${encodeURIComponent(harness.projectRoot)}&sessionId=manual-live-session`,
+        `${backend.baseUrl}/discuss/sessions/manual-live-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
         { headers: { 'X-Coral-Backend-Token': backend.token } },
       );
       const detailBody = (await detailResponse.json()) as DiscussDetailResponse;

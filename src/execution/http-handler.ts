@@ -28,34 +28,44 @@ import type { DiscussView } from '../discuss/views.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
 import {
   handleDiscussAbort,
-  handleDiscussParticipate,
+  handleDiscussBid,
   handleDiscussSeed,
+  handleDiscussSpeech,
   handleDiscussStart,
   handleDiscussWatch,
 } from './discuss-tools.js';
 import {
+  handleKbCommunityRead,
   handleKbDelete,
   handleKbMemo,
-  handleKbMemoDelete,
+  handleKbMemoDeleteConsolidated,
   handleKbMemoList,
-  handleKbMemoPurge,
+  handleKbMemoRead,
+  handleKbNoteRead,
+  handleKbPrincipleRead,
   handleKbPrinciples,
   handleKbPromote,
-  handleKbRead,
   handleKbReindex,
   handleKbSearch,
   handleKbSourceDelete,
   handleKbSourceImport,
   handleKbSourceList,
+  handleKbSourceRead,
   handleKbUpdate,
 } from './kb-tools.js';
-import {
-  domainError,
-  domainResultToHttp,
-  launchToHttp,
-  type ToolDomainResult,
-} from './tool-response.js';
+import { domainError, domainResultToHttp, launchToHttp, type ToolDomainResult } from './tool-response.js';
 import { handleWorkflow as launchWorkflow, isWorkflowInputFailure } from '../workflow/handler.js';
+import {
+  buildCallerContextFromQuery,
+  discussDeleteQuerySchema,
+  discussDetailQuerySchema,
+  discussEventsQuerySchema,
+  kbMemoDeleteQuerySchema,
+  kbMemoListQuerySchema,
+  kbPrinciplesQuerySchema,
+  kbSearchQuerySchema,
+  queryParamsToObject,
+} from './query-coerce.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -261,21 +271,45 @@ export function getJobDetail(
 }
 
 // ---------------------------------------------------------------------------
-// Discuss read helpers (used by /api/discuss and /api/discuss/detail)
+// Discuss read helpers
 // ---------------------------------------------------------------------------
-
-export function parseDiscussView(raw: string | null): DiscussView | null {
-  if (raw === null || raw === 'control') {
-    return 'control';
-  }
-  if (raw === 'audit') {
-    return 'audit';
-  }
-  return null;
-}
 
 function invalidRequestResult(message = 'invalid request'): ToolDomainResult {
   return domainError('invalid_request', message);
+}
+
+function sendToolResult(res: ServerResponse, result: ToolDomainResult, successStatusCode = 200): void {
+  const response = domainResultToHttp(result);
+  sendJson(res, result.ok ? successStatusCode : response.statusCode, response.body);
+}
+
+function buildReadOnlyCallerContext(pluginRoot: string): CallerContext {
+  return {
+    projectRoot: '',
+    pluginRoot,
+    coralEnv: collectCoralEnv(),
+  };
+}
+
+function requireKbSubsystem(res: ServerResponse, deps: HttpHandlerDeps) {
+  const kbSubsystem = deps.runtimeState.getKbSubsystem();
+  if (kbSubsystem) {
+    return kbSubsystem;
+  }
+
+  sendToolResult(
+    res,
+    domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.'),
+  );
+  return null;
+}
+
+function decodePathSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -669,11 +703,26 @@ async function handleAbortRequest(req: IncomingMessage, res: ServerResponse, dep
   sendJson(res, 200, deps.abortJobs(args.jobs));
 }
 
-async function handleDiscussRequest(
+async function handleDiscussPersonaSets(
+  req: IncomingMessage,
+  res: ServerResponse,
+  _deps: HttpHandlerDeps,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  sendToolResult(res, handleDiscussSeed(body), 200);
+}
+
+async function handleDiscussSessionCreate(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerDeps,
-  action: string,
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
@@ -684,54 +733,84 @@ async function handleDiscussRequest(
   }
 
   if (!request) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
+    sendToolResult(res, invalidRequestResult());
     return;
   }
 
-  if (deps.runtimeState.getLaunchFenceActive() && (action === 'start' || action === 'participate')) {
+  if (deps.runtimeState.getLaunchFenceActive()) {
     sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
     return;
   }
 
-  const helpers = {
-    getDiscussContext: deps.getDiscussContext,
-  };
-
-  let result: ToolDomainResult;
-  switch (action) {
-    case 'seed':
-      result = handleDiscussSeed(request.args);
-      break;
-    case 'start':
-      result = await handleDiscussStart(request.args, request.ctx, helpers);
-      break;
-    case 'abort':
-      result = await handleDiscussAbort(request.args, request.ctx, helpers);
-      break;
-    case 'watch':
-      result = handleDiscussWatch(request.args, request.ctx, helpers);
-      break;
-    case 'participate':
-      result = await handleDiscussParticipate(request.args, request.ctx, helpers);
-      break;
-    default:
-      {
-        const response = domainResultToHttp(domainError('not_found', `Unknown discuss action: ${action}`));
-        sendJson(res, response.statusCode, response.body);
-      }
-      return;
-  }
-
-  const response = domainResultToHttp(result);
-  sendJson(res, response.statusCode, response.body);
+  sendToolResult(
+    res,
+    await handleDiscussStart(request.args, request.ctx, {
+      getDiscussContext: deps.getDiscussContext,
+    }),
+    201,
+  );
 }
 
-async function handleKbRequest(
+async function handleDiscussSessionDetail(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = discussDetailQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  const view: DiscussView = parsed.data.view ?? 'control';
+  const detail = deps.loadDiscussDetail(resolveProjectSource(context.projectRoot), sessionId, view);
+  if (!detail) {
+    sendJson(res, 404, { error: 'session_not_found' });
+    return;
+  }
+  if (detail === 'audit_requires_ended_session') {
+    sendJson(res, 409, { error: 'audit_requires_ended_session' });
+    return;
+  }
+
+  sendJson(res, 200, detail);
+}
+
+async function handleDiscussEvents(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = discussEventsQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  const result = handleDiscussWatch(
+    {
+      session: sessionId,
+      ...(parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor }),
+    },
+    context,
+    {
+      getDiscussContext: deps.getDiscussContext,
+    },
+  );
+  sendToolResult(res, result, 200);
+}
+
+async function handleDiscussBidRoute(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerDeps,
-  action: string,
+  sessionId: string,
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
@@ -742,73 +821,517 @@ async function handleKbRequest(
   }
 
   if (!request) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
+    sendToolResult(res, invalidRequestResult());
     return;
   }
 
-  const kbSubsystem = deps.runtimeState.getKbSubsystem();
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  sendToolResult(
+    res,
+    await handleDiscussBid(
+      {
+        ...request.args,
+        session: sessionId,
+      },
+      request.ctx,
+      {
+        getDiscussContext: deps.getDiscussContext,
+      },
+    ),
+    200,
+  );
+}
+
+async function handleDiscussSpeechRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+): Promise<void> {
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  if (deps.runtimeState.getLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return;
+  }
+
+  sendToolResult(
+    res,
+    await handleDiscussSpeech(
+      {
+        ...request.args,
+        session: sessionId,
+      },
+      request.ctx,
+      {
+        getDiscussContext: deps.getDiscussContext,
+      },
+    ),
+    200,
+  );
+}
+
+async function handleDiscussSessionDelete(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  sessionId: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = discussDeleteQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  sendToolResult(
+    res,
+    await handleDiscussAbort({ session: sessionId }, context, {
+      getDiscussContext: deps.getDiscussContext,
+    }),
+    200,
+  );
+}
+
+async function handleKbEntries(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = kbSearchQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
   if (!kbSubsystem) {
-    const response = domainResultToHttp(
-      domainError('kb_unavailable', 'Knowledge base is not available. Check backend health for details.'),
-    );
-    sendJson(res, response.statusCode, response.body);
     return;
   }
 
-  let result: ToolDomainResult;
-  switch (action) {
-    case 'search':
-      result = await handleKbSearch(request.args, kbSubsystem);
-      break;
-    case 'read':
-      result = handleKbRead(request.args, request.ctx);
-      break;
-    case 'promote':
-      result = await handleKbPromote(request.args, kbSubsystem, request.ctx);
-      break;
-    case 'update':
-      result = await handleKbUpdate(request.args, kbSubsystem);
-      break;
-    case 'delete':
-      result = await handleKbDelete(request.args, kbSubsystem);
-      break;
-    case 'source-import':
-      result = await handleKbSourceImport(request.args, kbSubsystem);
-      break;
-    case 'source-list':
-      result = await handleKbSourceList(request.args, kbSubsystem);
-      break;
-    case 'source-delete':
-      result = await handleKbSourceDelete(request.args, kbSubsystem);
-      break;
-    case 'reindex':
-      result = await handleKbReindex(request.args, kbSubsystem);
-      break;
-    case 'principles':
-      result = await handleKbPrinciples(request.args, kbSubsystem);
-      break;
-    case 'memo':
-      result = handleKbMemo(request.args, request.ctx);
-      break;
-    case 'memo-list':
-      result = handleKbMemoList(request.args, request.ctx);
-      break;
-    case 'memo-delete':
-      result = handleKbMemoDelete(request.args, request.ctx);
-      break;
-    case 'memo-purge':
-      result = handleKbMemoPurge(request.args, request.ctx);
-      break;
-    default: {
-      const response = domainResultToHttp(domainError('unknown_tool', `Unknown KB action: ${action}`));
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
+  sendToolResult(
+    res,
+    await handleKbSearch(
+      {
+        query: parsed.data.q,
+        ...(parsed.data.scope === undefined ? {} : { scope: parsed.data.scope }),
+        ...(parsed.data.top_k === undefined ? {} : { top_k: parsed.data.top_k }),
+      },
+      kbSubsystem,
+    ),
+    200,
+  );
+}
+
+async function handleKbNoteReadRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
   }
 
-  const response = domainResultToHttp(result);
-  sendJson(res, response.statusCode, response.body);
+  if (!requireKbSubsystem(res, deps)) {
+    return;
+  }
+
+  sendToolResult(res, handleKbNoteRead(slug, buildReadOnlyCallerContext(deps.identity.pluginRoot)), 200);
+}
+
+async function handleKbSourceReadRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, handleKbSourceRead(slug, kbSubsystem), 200);
+}
+
+async function handleKbSourceListRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbSourceList({}, kbSubsystem), 200);
+}
+
+async function handleKbCommunityReadRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, handleKbCommunityRead(slug, kbSubsystem), 200);
+}
+
+async function handleKbMemoReadRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+  params: URLSearchParams,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const parsed = kbMemoListQuerySchema.pick({ projectRoot: true }).safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  if (!requireKbSubsystem(res, deps)) {
+    return;
+  }
+
+  sendToolResult(
+    res,
+    handleKbMemoRead(slug, buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot)),
+    200,
+  );
+}
+
+async function handleKbMemoListRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = kbMemoListQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  if (!requireKbSubsystem(res, deps)) {
+    return;
+  }
+
+  sendToolResult(
+    res,
+    handleKbMemoList(
+      parsed.data.owner === undefined ? {} : { owner: parsed.data.owner },
+      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot),
+    ),
+    200,
+  );
+}
+
+async function handleKbPrinciplesRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = kbPrinciplesQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(
+    res,
+    await handleKbPrinciples(
+      {
+        ...(parsed.data.q === undefined ? {} : { query: parsed.data.q }),
+        ...(parsed.data.top_k === undefined ? {} : { top_k: parsed.data.top_k }),
+        ...(parsed.data.verbose === undefined ? {} : { verbose: parsed.data.verbose }),
+      },
+      kbSubsystem,
+    ),
+    200,
+  );
+}
+
+async function handleKbPrincipleReadRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, handleKbPrincipleRead(slug, kbSubsystem), 200);
+}
+
+async function handleKbNoteCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbPromote(request.args, kbSubsystem, request.ctx), 201);
+}
+
+async function handleKbSourceCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbSourceImport(request.args, kbSubsystem), 201);
+}
+
+async function handleKbMemoCreate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  if (!requireKbSubsystem(res, deps)) {
+    return;
+  }
+
+  sendToolResult(
+    res,
+    handleKbMemo(
+      request.ctx.coralEnv.CORAL_OWNER === undefined
+        ? request.args
+        : { ...request.args, owner: request.ctx.coralEnv.CORAL_OWNER },
+      request.ctx,
+    ),
+    201,
+  );
+}
+
+async function handleKbIndex(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+): Promise<void> {
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbReindex({}, kbSubsystem), 200);
+}
+
+async function handleKbNoteUpdateRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  let request: ParsedDirectBody | null;
+  try {
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+  } catch {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    return;
+  }
+
+  if (!request) {
+    sendToolResult(res, invalidRequestResult());
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbUpdate({ ...request.args, note: slug }, kbSubsystem), 200);
+}
+
+async function handleKbNoteDeleteRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbDelete({ note: slug }, kbSubsystem), 200);
+}
+
+async function handleKbSourceDeleteRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  slugSegment: string,
+): Promise<void> {
+  const slug = decodePathSegment(slugSegment);
+  if (slug === null) {
+    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+    return;
+  }
+
+  const kbSubsystem = requireKbSubsystem(res, deps);
+  if (!kbSubsystem) {
+    return;
+  }
+
+  sendToolResult(res, await handleKbSourceDelete({ slug }, kbSubsystem), 200);
+}
+
+async function handleKbMemoDeleteRoute(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerDeps,
+  params: URLSearchParams,
+): Promise<void> {
+  const parsed = kbMemoDeleteQuerySchema.safeParse(queryParamsToObject(params));
+  if (!parsed.success) {
+    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    return;
+  }
+
+  if (!requireKbSubsystem(res, deps)) {
+    return;
+  }
+
+  sendToolResult(
+    res,
+    handleKbMemoDeleteConsolidated(
+      {
+        ...(parsed.data.pattern === undefined ? {} : { pattern: parsed.data.pattern }),
+        ...(parsed.data.owner === undefined ? {} : { owner: parsed.data.owner }),
+        ...(parsed.data.all === undefined ? {} : { all: parsed.data.all }),
+      },
+      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot),
+    ),
+    200,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -821,7 +1344,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -929,15 +1452,56 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         return;
       }
 
-      const discussMatch = pathname.match(/^\/discuss\/([^/]+)$/);
-      if (discussMatch) {
-        await handleDiscussRequest(req, res, deps, discussMatch[1]);
+      if (pathname === '/discuss/persona-sets') {
+        await handleDiscussPersonaSets(req, res, deps);
         return;
       }
 
-      const kbMatch = pathname.match(/^\/kb\/([^/]+)$/);
-      if (kbMatch) {
-        await handleKbRequest(req, res, deps, kbMatch[1]);
+      if (pathname === '/discuss/sessions') {
+        await handleDiscussSessionCreate(req, res, deps);
+        return;
+      }
+
+      const discussBidMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/bids$/);
+      if (discussBidMatch) {
+        await handleDiscussBidRoute(req, res, deps, discussBidMatch[1]);
+        return;
+      }
+
+      const discussSpeechMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/speeches$/);
+      if (discussSpeechMatch) {
+        await handleDiscussSpeechRoute(req, res, deps, discussSpeechMatch[1]);
+        return;
+      }
+
+      if (pathname === '/kb/notes') {
+        await handleKbNoteCreate(req, res, deps);
+        return;
+      }
+
+      if (pathname === '/kb/sources') {
+        await handleKbSourceCreate(req, res, deps);
+        return;
+      }
+
+      if (pathname === '/kb/memos') {
+        await handleKbMemoCreate(req, res, deps);
+        return;
+      }
+
+      if (pathname === '/kb/index') {
+        await handleKbIndex(req, res, deps);
+        return;
+      }
+    }
+
+    if (req.method === 'PUT' && req.url) {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const pathname = parsedUrl.pathname;
+
+      const kbNoteUpdateMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
+      if (kbNoteUpdateMatch) {
+        await handleKbNoteUpdateRoute(req, res, deps, kbNoteUpdateMatch[1]);
         return;
       }
     }
@@ -978,35 +1542,114 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         return;
       }
 
-      if (pathname === '/api/discuss') {
+      if (pathname === '/discuss/sessions') {
         req.resume();
         sendJson(res, 200, { sessions: deps.listDiscussSessions() });
         return;
       }
 
-      if (pathname === '/api/discuss/detail') {
+      const discussEventsMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)\/events$/);
+      if (discussEventsMatch) {
         req.resume();
-        const projectRoot = parsedUrl.searchParams.get('projectRoot');
-        const sessionIdParam = parsedUrl.searchParams.get('sessionId');
-        if (!projectRoot || !sessionIdParam) {
-          sendJson(res, 400, { error: 'missing_params', message: 'projectRoot and sessionId are required' });
-          return;
-        }
-        const view = parseDiscussView(parsedUrl.searchParams.get('view'));
-        if (!view) {
-          sendJson(res, 400, { error: 'invalid_view', message: 'view must be control or audit' });
-          return;
-        }
-        const detail = deps.loadDiscussDetail(resolveProjectSource(projectRoot), sessionIdParam, view);
-        if (!detail) {
-          sendJson(res, 404, { error: 'session_not_found' });
-          return;
-        }
-        if (detail === 'audit_requires_ended_session') {
-          sendJson(res, 409, { error: 'audit_requires_ended_session' });
-          return;
-        }
-        sendJson(res, 200, detail);
+        await handleDiscussEvents(req, res, deps, discussEventsMatch[1], parsedUrl.searchParams);
+        return;
+      }
+
+      const discussDetailMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)$/);
+      if (discussDetailMatch) {
+        req.resume();
+        await handleDiscussSessionDetail(req, res, deps, discussDetailMatch[1], parsedUrl.searchParams);
+        return;
+      }
+
+      if (pathname === '/kb/entries') {
+        req.resume();
+        await handleKbEntries(req, res, deps, parsedUrl.searchParams);
+        return;
+      }
+
+      const kbNoteReadMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
+      if (kbNoteReadMatch) {
+        req.resume();
+        await handleKbNoteReadRoute(req, res, deps, kbNoteReadMatch[1]);
+        return;
+      }
+
+      if (pathname === '/kb/sources') {
+        req.resume();
+        await handleKbSourceListRoute(req, res, deps);
+        return;
+      }
+
+      const kbSourceReadMatch = pathname.match(/^\/kb\/sources\/([^/]+)$/);
+      if (kbSourceReadMatch) {
+        req.resume();
+        await handleKbSourceReadRoute(req, res, deps, kbSourceReadMatch[1]);
+        return;
+      }
+
+      const kbCommunityReadMatch = pathname.match(/^\/kb\/communities\/([^/]+)$/);
+      if (kbCommunityReadMatch) {
+        req.resume();
+        await handleKbCommunityReadRoute(req, res, deps, kbCommunityReadMatch[1]);
+        return;
+      }
+
+      if (pathname === '/kb/memos') {
+        req.resume();
+        await handleKbMemoListRoute(req, res, deps, parsedUrl.searchParams);
+        return;
+      }
+
+      const kbMemoReadMatch = pathname.match(/^\/kb\/memos\/([^/]+)$/);
+      if (kbMemoReadMatch) {
+        req.resume();
+        await handleKbMemoReadRoute(req, res, deps, kbMemoReadMatch[1], parsedUrl.searchParams);
+        return;
+      }
+
+      if (pathname === '/kb/principles') {
+        req.resume();
+        await handleKbPrinciplesRoute(req, res, deps, parsedUrl.searchParams);
+        return;
+      }
+
+      const kbPrincipleReadMatch = pathname.match(/^\/kb\/principles\/([^/]+)$/);
+      if (kbPrincipleReadMatch) {
+        req.resume();
+        await handleKbPrincipleReadRoute(req, res, deps, kbPrincipleReadMatch[1]);
+        return;
+      }
+    }
+
+    if (req.method === 'DELETE' && req.url) {
+      const parsedUrl = new URL(req.url, 'http://localhost');
+      const pathname = parsedUrl.pathname;
+
+      const discussDeleteMatch = pathname.match(/^\/discuss\/sessions\/([^/]+)$/);
+      if (discussDeleteMatch) {
+        req.resume();
+        await handleDiscussSessionDelete(req, res, deps, discussDeleteMatch[1], parsedUrl.searchParams);
+        return;
+      }
+
+      const kbNoteDeleteMatch = pathname.match(/^\/kb\/notes\/([^/]+)$/);
+      if (kbNoteDeleteMatch) {
+        req.resume();
+        await handleKbNoteDeleteRoute(req, res, deps, kbNoteDeleteMatch[1]);
+        return;
+      }
+
+      const kbSourceDeleteMatch = pathname.match(/^\/kb\/sources\/([^/]+)$/);
+      if (kbSourceDeleteMatch) {
+        req.resume();
+        await handleKbSourceDeleteRoute(req, res, deps, kbSourceDeleteMatch[1]);
+        return;
+      }
+
+      if (pathname === '/kb/memos') {
+        req.resume();
+        await handleKbMemoDeleteRoute(req, res, deps, parsedUrl.searchParams);
         return;
       }
     }
