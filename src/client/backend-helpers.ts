@@ -83,6 +83,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     if (response.status === 503) {
       return { status: 'shutting_down' };
     }
+    if (TransientHttpError.isTransientStatus(response.status)) {
+      return { status: 'shutting_down' };
+    }
     if (response.status === 401) return { status: 'unauthorized' };
     return { status: 'not_running' };
   } catch {
