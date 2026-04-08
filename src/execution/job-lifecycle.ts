@@ -382,7 +382,7 @@ export class LaunchOrchestrator {
       return;
     }
 
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     if (signal.aborted || isAbortError(error)) {
       this.finishAbortedJob(jobId, sessionId, message);
       return;

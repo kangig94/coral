@@ -613,68 +613,51 @@ type DiscussSourcesRegistryData = {
   sources: string[];
 };
 
-function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDiscoveryData | null {
+function parseSourceEnvelopeData<T>(
+  value: unknown,
+  source: string,
+  rowSchema: z.ZodType<T>,
+  label: string,
+): { source: string; updatedAt: string; sessions: T[] } | null {
   const parsed = z
     .object({
       updatedAt: z.string(),
-      sessions: z.array(discussDiscoverySessionSchema),
+      sessions: z.array(rowSchema),
       source: z.unknown().optional(),
       projectRoot: z.unknown().optional(),
     })
     .passthrough()
-    .superRefine((discovery, ctx) => {
+    .superRefine((envelope, ctx) => {
       const fileSource =
-        typeof discovery.source === 'string'
-          ? discovery.source
-          : typeof discovery.projectRoot === 'string'
+        typeof envelope.source === 'string'
+          ? envelope.source
+          : typeof envelope.projectRoot === 'string'
             ? source
             : null;
 
       if (fileSource !== source) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'discovery source does not match requested source',
+          message: `${label} source does not match requested source`,
           path: ['source'],
         });
       }
     })
-    .transform((discovery) => ({
+    .transform((envelope) => ({
       source,
-      updatedAt: discovery.updatedAt,
-      sessions: discovery.sessions,
+      updatedAt: envelope.updatedAt,
+      sessions: envelope.sessions,
     }))
     .safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
-function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSummaryIndexData | null {
-  const parsed = z
-    .object({
-      updatedAt: z.string(),
-      sessions: z.array(discussSummaryIndexRowSchema),
-      source: z.unknown().optional(),
-      projectRoot: z.unknown().optional(),
-    })
-    .passthrough()
-    .superRefine((index, ctx) => {
-      const fileSource =
-        typeof index.source === 'string' ? index.source : typeof index.projectRoot === 'string' ? source : null;
+function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDiscoveryData | null {
+  return parseSourceEnvelopeData(value, source, discussDiscoverySessionSchema, 'discovery');
+}
 
-      if (fileSource !== source) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'summary index source does not match requested source',
-          path: ['source'],
-        });
-      }
-    })
-    .transform((index) => ({
-      source,
-      updatedAt: index.updatedAt,
-      sessions: index.sessions,
-    }))
-    .safeParse(value);
-  return parsed.success ? parsed.data : null;
+function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSummaryIndexData | null {
+  return parseSourceEnvelopeData(value, source, discussSummaryIndexRowSchema, 'summary index');
 }
 
 function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData | null {

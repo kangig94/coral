@@ -1442,32 +1442,7 @@ export class ExecutionService implements RecoveryCapableService {
         );
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
-        const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
-        const stepDetails = err instanceof WorkflowExecutionError ? err.stepDetails : [];
-
-        try {
-          const serialized = serializeWorkflowResult(stepDetails);
-          const terminalResult: TerminalResult = aborted
-            ? {
-                content: '',
-                aborted: true,
-                notice: message,
-                workflow: serialized.workflow,
-              }
-            : {
-                content: '',
-                notice: message,
-                workflow: serialized.workflow,
-              };
-          this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
-        } catch {
-          const emptyResult: TerminalResult = aborted
-            ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
-            : { content: '', notice: message, workflow: { steps: [] } };
-          this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
-        }
+        this.handleWorkflowError(err, signal, sessionId, jobId);
       });
   }
 
@@ -1517,22 +1492,27 @@ export class ExecutionService implements RecoveryCapableService {
         );
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
-        const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
-        const stepDetailsList = err instanceof WorkflowExecutionError ? err.stepDetails : [];
-        try {
-          const serialized = serializeWorkflowResult(stepDetailsList);
-          const terminalResult: TerminalResult = aborted
-            ? { content: '', aborted: true, notice: message, workflow: serialized.workflow }
-            : { content: '', notice: message, workflow: serialized.workflow };
-          this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
-        } catch {
-          const emptyResult: TerminalResult = aborted
-            ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
-            : { content: '', notice: message, workflow: { steps: [] } };
-          this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
-        }
+        this.handleWorkflowError(err, signal, sessionId, jobId);
       });
+  }
+
+  private handleWorkflowError(err: unknown, signal: AbortSignal, sessionId: string, jobId: string): void {
+    const message = errorMessage(err);
+    const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
+    const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
+    const stepDetails = err instanceof WorkflowExecutionError ? err.stepDetails : [];
+
+    try {
+      const serialized = serializeWorkflowResult(stepDetails);
+      const terminalResult: TerminalResult = aborted
+        ? { content: '', aborted: true, notice: message, workflow: serialized.workflow }
+        : { content: '', notice: message, workflow: serialized.workflow };
+      this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
+    } catch {
+      const emptyResult: TerminalResult = aborted
+        ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
+        : { content: '', notice: message, workflow: { steps: [] } };
+      this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
+    }
   }
 }

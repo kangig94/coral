@@ -35,15 +35,24 @@ export function knownDiscussSources(deps: DiscussReadHelpersDeps): Set<string> {
 
 export function listDiscussSessions(deps: DiscussReadHelpersDeps): DiscussSummaryDto[] {
   const results = new Map<string, DiscussSummaryDto>();
+  const liveSessions = listAttachedSessions(deps.discussRegistry);
 
-  for (const source of knownDiscussSources(deps)) {
+  const sources = new Set<string>();
+  for (const source of readDiscussSources()) {
+    sources.add(source);
+  }
+  for (const liveSession of liveSessions) {
+    sources.add(deps.resolveProjectSource(liveSession.projectRoot));
+  }
+
+  for (const source of sources) {
     for (const summary of deps.getDiscussStoreForSource(source).listSummariesFromIndex()) {
       const key = `${source}\u0000${summary.sessionId}`;
       results.set(key, summary);
     }
   }
 
-  for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
+  for (const liveSession of liveSessions) {
     const snapshot = liveSession.session.snapshot;
     const summary = buildDiscussSummary(snapshot, 'live');
     const source = deps.resolveProjectSource(liveSession.projectRoot);
