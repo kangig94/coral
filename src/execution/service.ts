@@ -132,7 +132,7 @@ type ResolvedAgentLaunchProfile = {
   instruction: ProviderInstruction;
 };
 type EffectiveContinuationProfile = {
-  model: string;
+  model?: string;
   cwd: string;
   effort?: string;
   bypassPermissions: boolean;
@@ -931,7 +931,7 @@ export class ExecutionService implements RecoveryCapableService {
     const cwd = input.cwd ?? ctx.projectRoot;
     const requestName = resolvedAgent?.name ?? input.name;
     const name = requestName ?? `session-${Date.now()}`;
-    const model = input.model ?? resolvedAgent?.model ?? 'unknown';
+    const model = input.model ?? resolvedAgent?.model;
     const pool = input.pool ?? 'default';
     const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
     const instruction = resolvedAgent?.instruction ?? input.instruction;

@@ -64,7 +64,7 @@ export interface SessionEntry {
   lastJobId?: string;
   conversationRef?: string;
   providerContinuity?: ProviderContinuityBlob;
-  model: string;
+  model?: string;
   cwd: string;
   projectRoot?: string;
   backendNamespace?: string;

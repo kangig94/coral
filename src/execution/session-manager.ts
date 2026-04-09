@@ -22,7 +22,7 @@ export type SessionContinuityMutation =
 export type SessionAllocateOptions = {
   provider: string;
   name: string;
-  model: string;
+  model?: string;
   cwd: string;
   projectRoot?: string;
   backendNamespace?: string;
@@ -231,7 +231,7 @@ export class SessionManager {
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
   allocate(options: SessionAllocateOptions): SessionEntry;
-  allocate(provider: string, name: string, model: string, cwd: string, projectRoot?: string): SessionEntry;
+  allocate(provider: string, name: string, model: string | undefined, cwd: string, projectRoot?: string): SessionEntry;
   allocate(
     optionsOrProvider: SessionAllocateOptions | string,
     name?: string,
@@ -244,7 +244,7 @@ export class SessionManager {
         ? {
             provider: optionsOrProvider,
             name: name ?? `session-${Date.now()}`,
-            model: model ?? 'unknown',
+            model,
             cwd: cwd ?? '',
             ...(projectRoot !== undefined ? { projectRoot } : {}),
           }
