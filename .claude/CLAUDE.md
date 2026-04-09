@@ -1,11 +1,9 @@
 # Coral - Development Instructions
 
-Claude Code plugin providing structured agents with Codex and Claude CLI bridges and moderated multi-agent discussions. Exposes one MCP server: `ax` for all tools (codex, claude, discuss, kb, workflow). Includes skills (slash commands), hooks (lifecycle injection), and agent definitions for Claude-native, Codex-delegated, and discuss workflows.
+Claude Code plugin providing structured agents, Codex and Claude CLI integrations, and moderated multi-agent discussions. Skills and hooks invoke Coral's CLI surfaces, which coordinate through a persistent HTTP backend daemon for provider execution, workflow dispatch, discuss operations, and knowledge-base tasks.
 
 **Critical Requirements**:
-- MCP protocol compliance: all tool responses must use `{ content: [{ type: "text", text }], isError }` format
-- Zod schema validation on every tool input before execution
-- Never use `console.log` in MCP server code (stdio transport conflict)
+- Zod schema validation on every CLI/backend input before execution
 - Atomic file writes for session persistence (write to `.tmp`, then rename)
 - Hook scripts must work as Node.js ESM (`.mjs`), read stdin, fail-open on errors
 - SKILL.md frontmatter must match plugin.json tool/agent declarations
@@ -13,7 +11,6 @@ Claude Code plugin providing structured agents with Codex and Claude CLI bridges
 
 **Key Documentation**:
 - `docs/architecture.md` - System structure, data flow, module dependency graph
-- `docs/mcp-tools.md` - MCP tool specifications
 - `docs/core-modules.md` - TypeScript module details
 - `docs/agents.md` - Agent definitions and routing
 - `docs/methodology.md` - HOW methodology system, agent/skill connections

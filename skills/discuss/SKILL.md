@@ -23,7 +23,8 @@ Pass `--user` to participate as a human observer.
    - Assign a distinct name culture per slot.
 
 3. **Generate persona seeds** with:
-   `discuss_seed({ controversy_axes, n, demographics?, seed })`
+   `coral-cli discuss seed --input-json - --output-format json`
+   using the prepared `{ controversy_axes, n, demographics?, seed }` payload on stdin.
 
 4. **Turn the seed output into personas**.
    - Use the seed positions, tone, and any `suggested_origin` / `is_outlier` fields.
@@ -35,8 +36,8 @@ Pass `--user` to participate as a human observer.
    - If `--user`, add:
      `{ name: 'user', persona: '# User — Human Participant\nHuman observer with real-time participation via /bid skill.', participation: 'observer' }`
    - Start with:
-     `discuss_start({ topic, agents, config: { min_bid_delay_ms: 10000 } })` for `--user`
-     or `discuss_start({ topic, agents })` otherwise.
+     `coral-cli discuss start --input-json - --output-format json` for the full `{ topic, agents, config? }` payload.
+     Include `config: { min_bid_delay_ms: 10000 }` for `--user`; omit `config` otherwise.
    - Save the returned `session` as `session_id`.
 
 6. **If `--user`**, write `CORAL_PROJECT/discuss/active-user-session.json`
@@ -44,10 +45,10 @@ Pass `--user` to participate as a human observer.
    This keeps `/bid` pointed at the active observer session.
 
 7. **Monitor progress** by polling:
-   `discuss_watch({ session: session_id })`
+   `coral-cli discuss watch --session "<session_id>" --output-format json`
    - First poll: omit `cursor` to get full history.
    - Subsequent polls: pass the returned `cursor` value to get only new events:
-     `discuss_watch({ session: session_id, cursor: previous_cursor })`
+     `coral-cli discuss watch --session "<session_id>" --cursor <previous_cursor> --output-format json`
    - Show new `speech_done` events as they appear.
    - Watch for `epoch_transition` and `session_ended`.
    - Do not expect sealed-bid internals in this payload.

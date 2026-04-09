@@ -1,11 +1,24 @@
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { isOwnerId } from '../shared/mcp-utils.js';
+import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
-import type { CallerContext } from '../execution/request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
+import { ZodError } from 'zod';
 import { parseExpression } from './pipe-parser.js';
 import { workflowInputSchema, type WorkflowInput } from './schemas.js';
 import type { PipelineAST } from './types.js';
+
+export class WorkflowInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowInputError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function isWorkflowInputFailure(error: unknown): error is WorkflowInputError | ZodError {
+  return error instanceof WorkflowInputError || error instanceof ZodError;
+}
 
 interface WorkflowService {
   executeWorkflow(
@@ -15,20 +28,6 @@ interface WorkflowService {
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision>;
-}
-
-function validateAtomConfigKeys(atoms: Record<string, Record<string, unknown>>, ast: PipelineAST): void {
-  const atomNames = new Set<string>();
-  for (const step of ast) {
-    for (const atom of step) {
-      if (atom.kind !== 'agent') continue;
-      atomNames.add(atom.agent);
-    }
-  }
-
-  const unknownKeys = Object.keys(atoms).filter((key) => !atomNames.has(key));
-  if (unknownKeys.length === 0) return;
-  throw new Error(`Unknown atoms keys: ${unknownKeys.join(', ')}`);
 }
 
 function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAST {
@@ -107,11 +106,14 @@ export async function handleWorkflow(
   providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
-  const ast = normalizeAst(parseExpression(input.expression), input.provider);
-
-  if (input.atoms) validateAtomConfigKeys(input.atoms, ast);
-  validateNamespaces(ast);
-  validateParallelDuplicates(ast);
+  let ast: PipelineAST;
+  try {
+    ast = normalizeAst(parseExpression(input.expression), input.provider);
+    validateNamespaces(ast);
+    validateParallelDuplicates(ast);
+  } catch (error: unknown) {
+    throw new WorkflowInputError(error instanceof Error ? error.message : String(error));
+  }
 
   const unknownProviders = findUnknownProviders(ast, input.provider, providerRegistry);
   if (unknownProviders.length > 0) {

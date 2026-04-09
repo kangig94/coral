@@ -5,19 +5,19 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { formatError, readBundleHash } from '../shared/mcp-utils.js';
+import { formatError, readBundleHash } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
 import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
 import { LaunchCoordinator } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
-import type { AbortResult } from './abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 
 import { TypedEventBus } from './event-bus.js';
 import { IdleTimer } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import { SessionIndex } from './session-index.js';
 import { type DiscussContext } from './discuss/context.js';
 import {
@@ -28,27 +28,22 @@ import {
 } from './discuss/context-registry.js';
 import { DiscussSessionStore } from './discuss/session-store.js';
 import {
-  buildDiscussDetail,
-  buildDiscussSummary,
-  type DiscussAuthority,
-  type DiscussDetailResponse,
-  type DiscussSummaryDto,
-  type DiscussView,
-} from '../discuss/views.js';
-import { readDiscussSources } from '../client/readers.js';
+  knownDiscussSources,
+  listDiscussSessions,
+  loadDiscussDetail,
+  type DiscussReadHelpersDeps,
+} from './discuss-read-helpers.js';
 import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
-import {
-  routeToolCall,
-  getToolDescriptors,
-  type CreateKbSubsystemFn,
-  type ExecutionServiceLike,
-  type KbSubsystem,
-  type RouteToolCallFn,
-  type ScopeCheckResult,
-} from './tool-router.js';
+import type { KbSubsystem } from './kb-tools.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
-import type { EventStreamHandlers, HttpHandlerDeps, MutableBackendRuntimeState } from './backend-contracts.js';
+import type {
+  EventStreamHandlers,
+  ExecutionServiceLike,
+  HttpHandlerDeps,
+  MutableBackendRuntimeState,
+  ScopeCheckResult,
+} from './backend-contracts.js';
 import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -60,12 +55,11 @@ import {
   markJobsAsError,
   createLifecycle,
   StartupInterruptedError,
+  type CreateKbSubsystemFn,
   type LifecycleDeps,
   type LifecycleController,
 } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
-
-export { routeToolCall, getToolDescriptors };
 
 type BackendServerOptions = {
   progressStore?: ProgressStore;
@@ -85,12 +79,11 @@ type BackendServerOptions = {
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
-  routeToolCallFn?: RouteToolCallFn;
   closeServerFn?: (server: Server) => Promise<void>;
   recoverOrphanedJobsFn?: (namespace: string) => void;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
-  killAllChildrenFn?: () => void;
+  terminateAllFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
@@ -150,9 +143,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
-  const routeToolCallFn =
-    options.routeToolCallFn ??
-    ((request, helpers, kbSubsystem) => routeToolCall(request, helpers, kbSubsystem, providerRegistry));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const recoverOrphanedJobsFn =
     options.recoverOrphanedJobsFn ??
@@ -169,7 +159,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     ((currentNamespace: string, message: string) => {
       markJobsAsError(progressStore, currentNamespace, message);
     });
-  const killAllChildrenFn = options.killAllChildrenFn ?? (() => launchCoordinator.killAllChildren());
+  const terminateAllFn = options.terminateAllFn ?? (() => launchCoordinator.terminateAll());
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
@@ -209,7 +199,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     },
   };
 
-  // -- Service factories (shared between lifecycle, HTTP handler, tool router)
+  // -- Service factories (shared between lifecycle and the HTTP handler)
   function getExecutionService(ctx: CallerContext): ExecutionServiceLike {
     const key = ctx.projectRoot;
     const existing = services.get(key);
@@ -266,6 +256,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       store,
     );
   }
+
+  const discussReadHelpersDeps: DiscussReadHelpersDeps = {
+    discussRegistry,
+    getDiscussStoreForSource,
+    resolveProjectSource,
+  };
 
   // -- Abort / scope helpers ------------------------------------------------
   function abortJobs(jobIds: string[]): AbortResult {
@@ -336,67 +332,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     return { valid, missing, mismatch };
   }
 
-  // -- Discuss read helpers -------------------------------------------------
-  function knownDiscussSources(): Set<string> {
-    const sources = new Set<string>();
-    for (const source of readDiscussSources()) {
-      sources.add(source);
-    }
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      sources.add(resolveProjectSource(liveSession.projectRoot));
-    }
-    return sources;
-  }
-
-  function listDiscussSessions(): DiscussSummaryDto[] {
-    const results = new Map<string, DiscussSummaryDto>();
-
-    for (const source of knownDiscussSources()) {
-      for (const summary of getDiscussStoreForSource(source).listSummariesFromIndex()) {
-        const key = `${source}\u0000${summary.sessionId}`;
-        results.set(key, summary);
-      }
-    }
-
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      const snapshot = liveSession.session.snapshot;
-      const summary = buildDiscussSummary(snapshot, 'live');
-      const source = resolveProjectSource(liveSession.projectRoot);
-      results.set(`${source}\u0000${summary.sessionId}`, summary);
-    }
-
-    return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  }
-
-  function isLiveDiscussSession(source: string, sessionId: string): boolean {
-    for (const liveSession of listAttachedSessions(discussRegistry)) {
-      if (liveSession.sessionId === sessionId && resolveProjectSource(liveSession.projectRoot) === source) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function loadDiscussDetail(
-    source: string,
-    sessionId: string,
-    view: DiscussView,
-  ): DiscussDetailResponse | 'audit_requires_ended_session' | null {
-    const snapshot = getDiscussStoreForSource(source).load(sessionId);
-    if (!snapshot) {
-      return null;
-    }
-    if (view === 'audit' && snapshot.state.status !== 'ended') {
-      return 'audit_requires_ended_session';
-    }
-
-    const authority: DiscussAuthority = isLiveDiscussSession(source, sessionId) ? 'live' : 'persisted';
-    if (view === 'audit') {
-      return buildDiscussDetail(snapshot, 'audit', authority);
-    }
-    return buildDiscussDetail(snapshot, 'control', authority);
-  }
-
   // -- Drain admission fence -------------------------------------------------
   // Flipped immediately by /admin/shutdown BEFORE lifecycle transitions to
   // 'draining'. This closes the pre-existing race window.
@@ -418,8 +353,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     idleTimer,
     progressStore,
     sessionIndex,
-    activeChildren: launchCoordinator.activeChildren,
-    activeDurablePids: launchCoordinator.activeDurablePids,
+    activeLaunchCount: () => launchCoordinator.active,
     queueDepth: () => launchCoordinator.queueDepth(),
     streamResponses,
     isDrainRequested: () => drainRequested,
@@ -429,10 +363,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     },
     getExecutionService,
     getDiscussContext,
+    providerRegistry,
     abortJobs,
     scopeCheckJobs: (jobIds, projectRoot) => scopeCheckJobs(jobIds, projectRoot, namespace),
-    routeToolCall: routeToolCallFn,
-    getToolDescriptors: () => getToolDescriptors(providerRegistry),
     subscribeBackendEvents: (handlers: EventStreamHandlers) => {
       eventBus.on('job:created', handlers.onJobCreated);
       eventBus.on('job:phase_changed', handlers.onPhaseChanged);
@@ -450,8 +383,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       eventBus.off('discuss:updated', handlers.onDiscussUpdated);
     },
     liveDiscussCount: () => listAttachedSessions(discussRegistry).length,
-    listDiscussSessions,
-    loadDiscussDetail,
+    listDiscussSessions: () => listDiscussSessions(discussReadHelpersDeps),
+    loadDiscussDetail: (source, sessionId, view) => loadDiscussDetail(discussReadHelpersDeps, source, sessionId, view),
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
@@ -485,7 +418,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     getRecoveryService,
     listExecutionServices,
     getDiscussStoreForSource,
-    knownDiscussSources,
+    knownDiscussSources: () => knownDiscussSources(discussReadHelpersDeps),
     getDiscussContext,
     acquireLockFn,
     writeBackendInfoFn,
@@ -494,7 +427,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
-    killAllChildrenFn,
+    terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
     closeServerFn,

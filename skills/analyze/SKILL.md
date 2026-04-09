@@ -53,12 +53,12 @@ argument-hint: "[--codex] [investigation target or question]"
   Wait for the agent to return its findings.
   You (the executor) post-process and append the result to the file after each step completes.
 
-  **Codex (`--codex`)**: call `codex({ op: "coral:<role_name>", prompt: "--deep " + prompt, ... })` with scope,
-  `work_dir`, and analysis file content so far.
+  **Codex (`--codex`)**: run `coral-cli codex <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d --output-format json`
+  with scope, `work_dir`, and analysis file content so far.
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   Each step is a fresh call (no session continuity — each agent has a different role).
-  After each exec: capture `job`, then `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+  After each launch: capture `job`, then run `coral-cli wait --jobs "<job>" --output-format json --embed` → read `event.result.content`; if absent, `Read(event.result.path)` is best-effort recovery.
   On error, abort the chain and report the error.
   You (the executor) post-process and append the result to the file after each step completes.
 

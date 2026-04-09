@@ -1,8 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-export type McpResult = { content: [{ type: 'text'; text: string }]; isError: boolean };
-
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
@@ -17,10 +15,26 @@ export function unlinkIfExists(filePath: string): void {
   }
 }
 
+/** HTTP error for transient server failures (502/503/504) eligible for retry. */
+export class TransientHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'TransientHttpError';
+    this.status = status;
+  }
+
+  static isTransientStatus(status: number): boolean {
+    return status === 502 || status === 503 || status === 504;
+  }
+}
+
 /** Classify transient SSE/connection errors eligible for cursor-based retry. */
 export function isTransientStreamError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.message === 'terminated') return true;
+  if (error instanceof TransientHttpError) return true;
   const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
   return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
 }
@@ -59,18 +73,6 @@ export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
 /** Parse an optional non-empty string from an unknown value. */
 export function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-export function textResult(text: string, isError = false): McpResult {
-  return { content: [{ type: 'text' as const, text }], isError };
-}
-
-export function jsonResult(data: Record<string, unknown>): McpResult {
-  return textResult(JSON.stringify(data, null, 2));
-}
-
-export function mcpError(data: Record<string, unknown>): McpResult {
-  return textResult(JSON.stringify(data, null, 2), true);
 }
 
 export function isProcessAlive(pid: number): boolean {

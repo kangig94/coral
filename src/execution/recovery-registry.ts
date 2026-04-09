@@ -1,5 +1,5 @@
 import { isDurableCliRuntime, type PersistedLaunchRecord, type PersistedRuntimeRecord } from '../shared/types.js';
-import type { AbortResult } from './abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 
 export interface RecoveryEntry {
   launchRecord: PersistedLaunchRecord;

@@ -40,8 +40,8 @@ describe('buildChildEnv', () => {
     process.env = {
       PATH: '/usr/bin',
       HOME: '/home/user',
-      CORAL_MAX_SESSIONS: '10',
-      CORAL_DISCUSS_MAX_SESSIONS: '5',
+      CORAL_MAX_WORKERS: '10',
+      CORAL_DISCUSS_MAX_WORKERS: '5',
     };
 
     const result = buildChildEnv();
@@ -49,8 +49,8 @@ describe('buildChildEnv', () => {
     expect(result.PATH).toBe('/usr/bin');
     expect(result.HOME).toBe('/home/user');
     expect(result.CORAL_CHILD).toBe('1');
-    expect(result).not.toHaveProperty('CORAL_MAX_SESSIONS');
-    expect(result).not.toHaveProperty('CORAL_DISCUSS_MAX_SESSIONS');
+    expect(result).not.toHaveProperty('CORAL_MAX_WORKERS');
+    expect(result).not.toHaveProperty('CORAL_DISCUSS_MAX_WORKERS');
   });
 
   it('should overlay extraEnv and preserve it over base', () => {

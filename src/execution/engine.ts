@@ -6,7 +6,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
 import { buildChildEnv } from '../shared/child-env.js';
 import { readAppendedLines } from '../shared/file-tail.js';
-import { buildJsonRpcError } from '../shared/mcp-utils.js';
+import { buildJsonRpcError } from '../shared/utils.js';
 import {
   isDurableCliRuntime,
   type DurableCliRuntimeRecord,
@@ -19,13 +19,13 @@ const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
-export const MAX_ACTIVE_SESSIONS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_SESSIONS, 10), 1), 10);
+export const MAX_WORKERS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_WORKERS, 10), 1), 10);
 export type LaunchPool = 'default' | 'discuss' | 'curate';
-export const DISCUSS_MAX_ACTIVE_SESSIONS = Math.min(
-  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_SESSIONS, 5), 1),
+export const DISCUSS_MAX_WORKERS = Math.min(
+  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_WORKERS, 5), 1),
   10,
 );
-export const CURATE_MAX_ACTIVE_SESSIONS = 1;
+export const CURATE_MAX_WORKERS = 1;
 const MAX_QUEUE_SIZE = 20;
 
 export type LaunchPermit = { type: 'immediate' };
@@ -73,11 +73,6 @@ export type ProviderServerHandle = {
   close: () => Promise<void>;
 };
 
-type ActiveChild = {
-  provider: string;
-  child: ChildProcess;
-};
-
 type ProviderServerEntry = {
   provider: string;
   child: ChildProcess;
@@ -102,6 +97,8 @@ type QueuedLaunchEntry = {
   resolve: () => void;
   reject: (error: Error) => void;
 };
+
+type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
 
 const IMMEDIATE_PERMIT: LaunchPermit = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
@@ -130,31 +127,24 @@ export type SpawnDurableJobFn = (options: SpawnDurableJobOptions) => Promise<Cli
 export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
 
 export class LaunchCoordinator {
-  private readonly activeChildrenSet = new Set<ActiveChild>();
-  private readonly activeDurablePidsSet = new Set<number>();
+  private readonly cleanupHandles = new Map<symbol, () => void>();
   private nextProviderServerGeneration = 1;
-  private readonly activeLaunchesDefault = new Map<string, string>();
-  private readonly activeLaunchesDiscuss = new Map<string, string>();
-  private readonly activeLaunchesCurate = new Map<string, string>();
-  private readonly queuedLaunchesDefault: QueuedLaunchEntry[] = [];
-  private readonly queuedLaunchesDiscuss: QueuedLaunchEntry[] = [];
-  private readonly queuedLaunchesCurate: QueuedLaunchEntry[] = [];
+  private readonly pools: Map<LaunchPool, PoolState> = new Map<LaunchPool, PoolState>();
   private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
 
-  get activeChildren(): ReadonlySet<ActiveChild> {
-    return this.activeChildrenSet;
+  constructor() {
+    this.pools.set('default', { active: new Map<string, string>(), queued: [] });
+    this.pools.set('discuss', { active: new Map<string, string>(), queued: [] });
+    this.pools.set('curate', { active: new Map<string, string>(), queued: [] });
   }
 
-  get activeDurablePids(): ReadonlySet<number> {
-    return this.activeDurablePidsSet;
-  }
-
-  get activeChildCount(): number {
-    return this.activeChildrenSet.size;
-  }
-
-  get activeDurablePidCount(): number {
-    return this.activeDurablePidsSet.size;
+  /** Number of active launch permits across all pools. */
+  get active(): number {
+    let total = 0;
+    for (const state of this.pools.values()) {
+      total += state.active.size;
+    }
+    return total;
   }
 
   requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
@@ -254,8 +244,8 @@ export class LaunchCoordinator {
         shell: process.platform === 'win32',
         env: buildChildEnv(options.extraEnv),
       });
-      const entry: ActiveChild = { provider: options.provider, child };
-      this.activeChildrenSet.add(entry);
+      const cleanupKey = Symbol();
+      this.cleanupHandles.set(cleanupKey, () => gracefulKill(child));
 
       let lastOutputAt = Date.now();
       let lastTickAt = Date.now();
@@ -276,7 +266,7 @@ export class LaunchCoordinator {
           settled = true;
           clearInterval(idleChecker);
           gracefulKill(child);
-          this.activeChildrenSet.delete(entry);
+          this.cleanupHandles.delete(cleanupKey);
           if (internalPermitJobId) {
             this.releaseLaunch(internalPermitJobId, pool);
             internalPermitJobId = null;
@@ -295,7 +285,7 @@ export class LaunchCoordinator {
         if (settled) return false;
         settled = true;
         clearInterval(idleChecker);
-        this.activeChildrenSet.delete(entry);
+        this.cleanupHandles.delete(cleanupKey);
         if (internalPermitJobId) {
           this.releaseLaunch(internalPermitJobId, pool);
           internalPermitJobId = null;
@@ -391,38 +381,20 @@ export class LaunchCoordinator {
     return this.queuedHandle(entry, pool);
   }
 
-  killAllChildren(): void {
+  terminateAll(): void {
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
-    for (const { child } of this.activeChildrenSet) {
-      gracefulKill(child);
+    for (const cleanup of this.cleanupHandles.values()) {
+      cleanup();
     }
-    this.activeChildrenSet.clear();
-    for (const pid of this.activeDurablePidsSet) {
-      safeKillPid(pid, 'SIGTERM');
-      const escalation = setTimeout(() => safeKillPid(pid, 'SIGKILL'), SIGTERM_GRACE_MS);
-      escalation.unref?.();
-    }
-    this.activeDurablePidsSet.clear();
+    this.cleanupHandles.clear();
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, string> {
-    if (pool === 'discuss') {
-      return this.activeLaunchesDiscuss;
-    }
-    if (pool === 'curate') {
-      return this.activeLaunchesCurate;
-    }
-    return this.activeLaunchesDefault;
+    return this.pools.get(pool)!.active;
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
-    if (pool === 'discuss') {
-      return this.queuedLaunchesDiscuss;
-    }
-    if (pool === 'curate') {
-      return this.queuedLaunchesCurate;
-    }
-    return this.queuedLaunchesDefault;
+    return this.pools.get(pool)!.queued;
   }
 
   private hasLaunchCapacity(pool: LaunchPool): boolean {
@@ -459,9 +431,9 @@ export class LaunchCoordinator {
   }
 
   private drainQueuedLaunches(message: string): void {
-    drainQueuedLaunchPool(this.queuedLaunchesDefault, message);
-    drainQueuedLaunchPool(this.queuedLaunchesDiscuss, message);
-    drainQueuedLaunchPool(this.queuedLaunchesCurate, message);
+    for (const state of this.pools.values()) {
+      drainQueuedLaunchPool(state.queued, message);
+    }
   }
 
   private consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
@@ -653,6 +625,7 @@ export class LaunchCoordinator {
     let abortHandler: (() => void) | null = null;
     let killTimer: NodeJS.Timeout | null = null;
     let durablePid: number | null = null;
+    let cleanupKey: symbol | null = null;
 
     try {
       if (options.signal?.aborted) {
@@ -670,7 +643,12 @@ export class LaunchCoordinator {
         env: options.extraEnv,
       });
       durablePid = durable.pid;
-      this.activeDurablePidsSet.add(durable.pid);
+      cleanupKey = Symbol();
+      this.cleanupHandles.set(cleanupKey, () => {
+        safeKillPid(durable.pid, 'SIGTERM');
+        const escalation = setTimeout(() => safeKillPid(durable.pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+        escalation.unref?.();
+      });
 
       let abortedBySignal = false;
       let runtimeRecord = durable.runtimeRecord;
@@ -764,8 +742,8 @@ export class LaunchCoordinator {
         await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
       }
     } finally {
-      if (durablePid !== null) {
-        this.activeDurablePidsSet.delete(durablePid);
+      if (cleanupKey !== null) {
+        this.cleanupHandles.delete(cleanupKey);
       }
       if (killTimer) clearTimeout(killTimer);
       if (abortHandler && options.signal) {
@@ -787,12 +765,12 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
 
 function getActiveLimit(pool: LaunchPool): number {
   if (pool === 'discuss') {
-    return DISCUSS_MAX_ACTIVE_SESSIONS;
+    return DISCUSS_MAX_WORKERS;
   }
   if (pool === 'curate') {
-    return CURATE_MAX_ACTIVE_SESSIONS;
+    return CURATE_MAX_WORKERS;
   }
-  return MAX_ACTIVE_SESSIONS;
+  return MAX_WORKERS;
 }
 
 function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): void {
@@ -1130,7 +1108,7 @@ export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise
   );
 
   // Fire-and-forget — wrapper survives backend exit.
-  // Not added to activeChildren; the wrapper manages its own lifecycle.
+  // Not added to active launch tracking; the wrapper manages its own lifecycle.
   wrapper.unref();
 
   // Poll for runtime.json existence with ~100ms intervals, 5s timeout.

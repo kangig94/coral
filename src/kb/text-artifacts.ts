@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
-import { errorMessage } from '../shared/mcp-utils.js';
+import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import {
   extractMalformedEntryRepair,

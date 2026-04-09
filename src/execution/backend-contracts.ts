@@ -2,21 +2,23 @@
  * Dependency injection contracts for the decomposed backend server.
  *
  * These interfaces make the closure dependencies of the former monolithic
- * `createBackendServer()` explicit so that http-handler.ts, lifecycle.ts,
- * and tool-router.ts receive only what they need.
+ * `createBackendServer()` explicit so that http-handler.ts and lifecycle.ts
+ * receive only what they need.
  */
 
 import type { ServerResponse } from 'node:http';
-import type { AbortResult } from './abort-registry.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { EventBusEvents } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
 import type { LifecycleState } from './server-types.js';
-import type { ExecutionServiceLike, KbSubsystem, RouteToolCallFn, ScopeCheckResult } from './tool-router.js';
+import type { ExecutionService } from './service.js';
+import type { KbSubsystem } from './kb-tools.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 
 // ---------------------------------------------------------------------------
 // BackendIdentity — immutable config/identity for a backend instance
@@ -57,6 +59,17 @@ export interface MutableBackendRuntimeState extends ReadonlyBackendRuntimeState 
 // HttpHandlerDeps — everything the HTTP handler needs at request-time
 // ---------------------------------------------------------------------------
 
+export type ExecutionServiceLike = Pick<
+  ExecutionService,
+  'start' | 'resumeBySessionId' | 'forkBySessionId' | 'executeWorkflow' | 'abort' | 'waitStream' | 'waitStreamOnce'
+>;
+
+export type ScopeCheckResult = {
+  valid: string[];
+  missing: string[];
+  mismatch: string[];
+};
+
 export interface HttpHandlerDeps {
   // Identity / config
   readonly identity: BackendIdentity;
@@ -68,8 +81,7 @@ export interface HttpHandlerDeps {
   readonly idleTimer: IdleTimer;
   readonly progressStore: ProgressStore;
   readonly sessionIndex: SessionIndex;
-  readonly activeChildren: ReadonlySet<unknown>;
-  readonly activeDurablePids: ReadonlySet<number>;
+  readonly activeLaunchCount: () => number;
   readonly queueDepth: () => number;
   readonly streamResponses: Set<ServerResponse>;
 
@@ -80,10 +92,9 @@ export interface HttpHandlerDeps {
   // Request-time control ports
   readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
   readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  readonly providerRegistry?: ProviderRegistry;
   readonly abortJobs: (jobIds: string[]) => AbortResult;
   readonly scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
-  readonly routeToolCall: RouteToolCallFn;
-  readonly getToolDescriptors: () => unknown[];
 
   // Event-stream authority
   readonly subscribeBackendEvents: (handlers: EventStreamHandlers) => void;

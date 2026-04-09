@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
-import { unlinkIfExists } from '../shared/mcp-utils.js';
+import { unlinkIfExists } from '../shared/utils.js';
 import {
   extractBody,
   extractTitle,

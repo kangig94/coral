@@ -36,6 +36,7 @@ describe('cli main — help and structure', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('codex');
     expect(stdout).toContain('claude');
+    expect(stdout).toContain('list');
     expect(stdout).toContain('wait');
     expect(stdout).toContain('abort');
     expect(stdout).toContain('workflow');
@@ -43,13 +44,22 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('discuss');
   });
 
-  it('shows provider subcommand help', () => {
+  it('shows flattened provider help', () => {
     const { stdout, status } = runCli(['codex', '--help']);
     expect(status).toBe(0);
-    expect(stdout).toContain('exec');
-    expect(stdout).toContain('fork');
-    expect(stdout).toContain('list');
-    expect(stdout).toContain('coral');
+    expect(stdout).toContain('[agent]');
+    expect(stdout).toContain('--input');
+    expect(stdout).toContain('--session');
+    expect(stdout).toContain('--owner');
+    expect(stdout).not.toContain('exec [options]');
+    expect(stdout).not.toContain('coral [options]');
+    expect(stdout).not.toContain('list [options]');
+  });
+
+  it('shows the bypass flag on provider help', () => {
+    const { stdout, status } = runCli(['codex', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('--bypass-permissions');
   });
 
   it('shows wait subcommand help', () => {
@@ -78,10 +88,10 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('shutdown');
   });
 
-  it('normalizes coral:<agent> syntax to coral <agent> form', () => {
+  it('accepts namespaced agent syntax directly on provider help', () => {
     const { stdout, status } = runCli(['codex', 'coral:architect', '--help']);
     expect(status).toBe(0);
-    expect(stdout).toContain('--prompt');
+    expect(stdout).toContain('--input');
   });
 });
 
@@ -93,6 +103,15 @@ describe('cli main — output format', () => {
     expect(stderr).toContain('text');
     expect(stderr).toContain('json');
   });
+
+  it('accepts the -f short flag for output format', () => {
+    const { stdout, status } = runCli(['backend', 'status', '-f', 'json'], {
+      env: { CORAL_BACKEND_DISABLE_AUTOSTART: '1' },
+    });
+
+    expect(status).toBe(0);
+    expect(() => JSON.parse(stdout)).not.toThrow();
+  });
 });
 
 describe('cli main — wait --jobs validation', () => {
@@ -103,59 +122,42 @@ describe('cli main — wait --jobs validation', () => {
   });
 });
 
-describe('cli main — workflow --input-json merge', () => {
-  let tmpDir: string;
+describe('cli main — workflow positional and flag args', () => {
+  it('shows workflow help without a positional prompt argument', () => {
+    const { stdout, status } = runCli(['workflow', '--help']);
 
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-test-'));
+    expect(status).toBe(0);
+    expect(stdout).toContain('[expression]');
+    expect(stdout).toContain('--start-prompt');
+    expect(stdout).not.toContain('[prompt]');
   });
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('reads expression and init_prompt from --input-json stdin', () => {
-    const { stderr } = runCli(['workflow', '--input-json', '-', '--detach'], {
-      env: { HOME: tmpDir },
-      input: JSON.stringify({
-        expression: '(architect, critic)',
-        init_prompt: 'test',
-      }),
-    });
-
-    expect(stderr).not.toContain('--expression is required');
-    expect(stderr).not.toContain('--init-prompt is required');
-  });
-
-  it('exits 1 with validation error when expression is missing', () => {
-    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
-      input: JSON.stringify({ init_prompt: 'test' }),
-    });
+  it('exits 1 when expression is missing', () => {
+    const { stderr, status } = runCli(['workflow']);
 
     expect(status).toBe(1);
-    expect(stderr).toContain('--expression is required');
+    expect(stderr).toContain('expression is required');
   });
 
-  it('exits 1 with validation error when init-prompt is missing', () => {
-    const { stderr, status } = runCli(['workflow', '--input-json', '-'], {
-      input: JSON.stringify({ expression: '(architect)' }),
-    });
+  it('exits 1 when start prompt is missing', () => {
+    const { stderr, status } = runCli(['workflow', 'architect']);
 
     expect(status).toBe(1);
-    expect(stderr).toContain('--init-prompt is required');
+    expect(stderr).toContain('start prompt is required');
   });
 
-  it('accepts explicit flags alongside --input-json stdin', () => {
-    const { stderr } = runCli(['workflow', '--expression', 'from-flag', '--input-json', '-', '--detach'], {
-      env: { HOME: tmpDir },
-      input: JSON.stringify({
-        expression: 'from-json',
-        init_prompt: 'from-json',
-      }),
-    });
+  it('exits 1 when only -e flag is provided without start prompt', () => {
+    const { stderr, status } = runCli(['workflow', '-e', 'architect']);
 
-    expect(stderr).not.toContain('--expression is required');
-    expect(stderr).not.toContain('--init-prompt is required');
+    expect(status).toBe(1);
+    expect(stderr).toContain('start prompt is required');
+  });
+
+  it('does not accept a positional workflow prompt anymore', () => {
+    const { stderr, status } = runCli(['workflow', 'architect', 'hi']);
+
+    expect(status).toBe(1);
+    expect(stderr).toContain('too many arguments');
   });
 });
 

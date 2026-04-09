@@ -164,9 +164,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
     1. Group ACs in the batch by coupling: tightly coupled ACs (shared files, sequential dependency)
        go into one Codex call; independent ACs get separate parallel calls.
-       `codex({ op: "bypass_exec", prompt: "<ACs + file paths + constraints>", work_dir: "<project root>" })`
-       Do NOT pass `session`. Collect all job IDs.
-    2. `wait({ jobs: [job1, job2, ...] })` → read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+       `coral-cli codex -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d --output-format json`
+       Do NOT pass `--session`. Collect all job IDs.
+    2. `coral-cli wait --jobs "<job-id list>" --output-format json --embed` → read each terminal JSON line; use `event.result.content` when present, otherwise `Read(event.result.path)` as best-effort recovery.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
@@ -192,9 +192,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
          <AC text copied identically from plan>
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
        ⛔ Do not promote KB notes. Implementation only.
-       1. codex({ op: "bypass_exec", prompt: "<above structure + file paths + constraints>", work_dir: "<project root>" })
-          → wait({ jobs: [job] }) → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
-          Do NOT pass `session`.
+       1. `coral-cli codex -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d --output-format json`
+          → `coral-cli wait --jobs "<job>" --output-format json --embed` → read `event.result.content`; if absent, `Read(event.result.path)` is best-effort recovery.
+          Do NOT pass `--session`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run codex. If met → report completion.
        ```

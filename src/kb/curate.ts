@@ -11,7 +11,7 @@ import {
   isStringArray,
   nowIsoString,
   unlinkIfExists,
-} from '../shared/mcp-utils.js';
+} from '../shared/utils.js';
 import {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,

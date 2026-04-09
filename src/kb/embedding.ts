@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { backendLog } from '../shared/backend-log.js';
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord, TransientHttpError } from '../shared/utils.js';
 import { kbRuntimeDir } from './paths.js';
 import { loadCoralEnv } from './env.js';
 import type { EmbeddingSpec } from './vector-store.js';
@@ -140,6 +140,35 @@ function isOnnxRuntimeModule(value: unknown): value is OnnxRuntimeModule {
   );
 }
 
+const TRANSIENT_RETRY_LIMIT = 2;
+const TRANSIENT_RETRY_BASE_MS = 1_000;
+
+async function fetchWithTransientRetry(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= TRANSIENT_RETRY_LIMIT; attempt++) {
+    try {
+      const response = await fetch(input, init);
+      if (response.ok || !TransientHttpError.isTransientStatus(response.status)) {
+        return response;
+      }
+      lastError = new TransientHttpError(response.status, `${response.status} ${response.statusText}`);
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    if (attempt < TRANSIENT_RETRY_LIMIT) {
+      const delayMs = TRANSIENT_RETRY_BASE_MS * 2 ** attempt;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError ?? new Error('fetch failed');
+}
+
 async function parseJsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     throw new Error(`Embedding request failed (${response.status} ${response.statusText}): ${await response.text()}`);
@@ -234,7 +263,7 @@ function chunkTexts<T>(values: T[], size: number): T[][] {
 }
 
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
-  const response = await fetch(url);
+  const response = await fetchWithTransientRetry(url);
   if (!response.ok || response.body === null) {
     throw new Error(`Download failed (${response.status} ${response.statusText})`);
   }
@@ -361,7 +390,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
 
     for (const batch of chunkTexts(texts, 100)) {
       const payload = await parseJsonResponse(
-        await fetch(endpoint, {
+        await fetchWithTransientRetry(endpoint, {
           method: 'POST',
           headers: buildGeminiHeaders(this.apiKey),
           body: JSON.stringify({
@@ -387,7 +416,7 @@ export class GeminiEmbeddingProvider implements EmbeddingProvider {
   private async embedContent(text: string, taskType: GeminiTaskType): Promise<Float32Array> {
     const endpoint = `${GEMINI_API_BASE}/${geminiModelPath(this.model)}:embedContent`;
     const payload = await parseJsonResponse(
-      await fetch(endpoint, {
+      await fetchWithTransientRetry(endpoint, {
         method: 'POST',
         headers: buildGeminiHeaders(this.apiKey),
         body: JSON.stringify({
@@ -417,7 +446,7 @@ export class OpenAICompatibleProvider implements EmbeddingProvider {
     }
 
     const payload = await parseJsonResponse(
-      await fetch(resolveOpenAIEndpoint(this.baseUrl), {
+      await fetchWithTransientRetry(resolveOpenAIEndpoint(this.baseUrl), {
         method: 'POST',
         headers: buildOpenAIHeaders(this.apiKey),
         body: JSON.stringify({

@@ -1,9 +1,7 @@
-declare const __PLUGIN_ROOT__: string;
-
-import { ensureBackend, withAbortTimeout } from '../client/backend-lifecycle.js';
-import { isBackendHealth } from '../client/backend-health.js';
+import { withAbortTimeout } from './backend-lifecycle.js';
+import { isBackendHealth } from './backend-health.js';
 import { readBackendInfo } from '../infra/backend-info.js';
-import { collectCoralEnv, isProcessAlive, isRecord } from '../shared/mcp-utils.js';
+import { isProcessAlive, isRecord, TransientHttpError } from '../shared/utils.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
@@ -11,13 +9,9 @@ import {
   parseJsonResponse,
   parseSseBlock,
   parseWaitStreamEvent,
-  TOOL_TIMEOUT_MS,
   WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
 import type { WaitStreamEvent } from '../shared/types.js';
-import type { ToolDomainResult } from '../execution/tool-response.js';
-
-export { ensureBackend } from '../client/backend-lifecycle.js';
 
 export type BackendStatus = {
   status: 'ok';
@@ -25,7 +19,7 @@ export type BackendStatus = {
   bundleHash: string;
   instanceId: string;
   uptimeMs: number;
-  activeChildren: number;
+  active: number;
   activeJobs: number;
   inflightRequests: number;
 } | {
@@ -40,13 +34,15 @@ export type ShutdownResult =
   | { ok: true; alreadyDraining?: true }
   | { ok: false; reason: string };
 
-function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
-  return isRecord(value) && value.error === 'backend_shutting_down';
-}
+export type WaitCursorRef = { lastEventId?: string };
 
-function throwBackendCommunicationError(error: unknown): never {
+export function throwBackendCommunicationError(error: unknown): never {
   if (error instanceof Error) throw error;
   throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
+}
+
+export function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
+  return isRecord(value) && value.error === 'backend_shutting_down';
 }
 
 export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
@@ -79,12 +75,15 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     });
     if (response.status === 200) {
       if (isBackendHealth(body) && body.namespace === info.namespace) {
-        const { namespace: _, queueDepth: _q, ...health } = body;
+        const { namespace: _namespace, queueDepth: _queueDepth, ...health } = body;
         return { status: 'ok', health };
       }
       return { status: 'not_running' };
     }
     if (response.status === 503) {
+      return { status: 'shutting_down' };
+    }
+    if (TransientHttpError.isTransientStatus(response.status)) {
       return { status: 'shutting_down' };
     }
     if (response.status === 401) return { status: 'unauthorized' };
@@ -128,48 +127,6 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   }
 }
 
-export async function proxyToolCall(
-  name: string,
-  args: Record<string, unknown>,
-  ctx: { projectRoot: string; pluginRoot: string },
-): Promise<ToolDomainResult> {
-  const { port, host, token } = await ensureBackend(ctx.pluginRoot);
-  const coralEnv = collectCoralEnv();
-  const body = JSON.stringify({
-    name,
-    args,
-    context: {
-      projectRoot: ctx.projectRoot,
-      pluginRoot: ctx.pluginRoot,
-      coralEnv,
-    },
-  });
-
-  try {
-    return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-      const response = await fetch(`http://${host}:${port}/tool`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': token,
-        },
-        body,
-        signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(describeHttpError(response.status, response.statusText));
-      }
-
-      return (await parseJsonResponse(response)) as ToolDomainResult;
-    });
-  } catch (error) {
-    throwBackendCommunicationError(error);
-  }
-}
-
-export type WaitCursorRef = { lastEventId?: string };
-
 export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
@@ -193,7 +150,7 @@ export async function* streamWait(
   }
 
   try {
-    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/wait/stream`, {
+    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/jobs/wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -209,6 +166,9 @@ export async function* streamWait(
       const message = isRecord(body) && typeof body.message === 'string'
         ? body.message
         : describeHttpError(response.status, response.statusText);
+      if (TransientHttpError.isTransientStatus(response.status)) {
+        throw new TransientHttpError(response.status, message);
+      }
       throw new Error(message);
     }
 

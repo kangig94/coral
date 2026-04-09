@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { nowIsoString } from '../shared/mcp-utils.js';
+import { nowIsoString } from '../shared/utils.js';
 import { parseMemoFrontmatter, serializeNote } from './frontmatter.js';
 import { memoPathFromContext } from './paths.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';

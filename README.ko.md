@@ -2,6 +2,8 @@
 
 Claude Code는 이미 코딩할 줄 압니다. Coral은 *당신의 방식대로* 일하도록 가르칩니다.
 
+Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 HTTP 데몬을 통해 처리됩니다.
+
 ## 설치
 
 **요구사항:** Node.js 18+
@@ -217,7 +219,7 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`) |
-| `CORAL_MAX_SESSIONS` | `10` | 최대 동시 CLI 세션 수 (1–10) |
+| `CORAL_MAX_WORKERS` | `10` | 최대 동시 워커 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (0 = 비활성화) |
 | `CORAL_KB_GIT_SYNC` | `0` | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화) |
@@ -240,7 +242,6 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 ## 문서
 
 - [Architecture](docs/architecture.md) — 아키텍처 및 데이터 흐름
-- [MCP Tools](docs/mcp-tools.md) — MCP 도구 입출력 사양
 - [Core Modules](docs/core-modules.md) — TypeScript 모듈 상세
 - [Agents](docs/agents.md) — 에이전트 정의 및 라우팅
 - [Hooks](docs/hooks.md) — 훅 시스템 및 라이프사이클 이벤트

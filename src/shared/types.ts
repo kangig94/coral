@@ -2,6 +2,12 @@
  * Shared type definitions for the Coral plugin.
  */
 
+export type SessionControllerProfile = {
+  owner?: string;
+  effort?: string;
+  claudeModelCap?: string;
+};
+
 // ── Execution Service contract types ─────────────────────────────────────────
 
 /** Opaque identifier for a single job attempt. Used for wait/abort. */
@@ -61,6 +67,12 @@ export interface SessionEntry {
   model: string;
   cwd: string;
   projectRoot?: string;
+  backendNamespace?: string;
+  agentName?: string;
+  instruction?: ProviderInstruction;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+  controllerProfile?: SessionControllerProfile;
   createdAt: string;
   lastUsedAt: string;
   version: number;
@@ -95,7 +107,7 @@ export interface ProviderRequest {
   cwd?: string;
   effort?: string;
   bypassPermissions: boolean;
-  /** User-facing system prompt from MCP tool schema (Claude: --append-system-prompt). */
+  /** User-facing system prompt passed through the backend to the provider adapter (Claude: --append-system-prompt). */
   systemPrompt?: string;
   coralEnv: Record<string, string>;
   /**

@@ -11,7 +11,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/mcp-utils.js';
+import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { kbRoot } from '../infra/paths.js';
 import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
@@ -20,7 +20,7 @@ import { RecoveryRegistry } from './recovery-registry.js';
 import { type EventBusEvents, type TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
-import type { CallerContext } from './request-context.js';
+import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
 import { SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
@@ -46,10 +46,10 @@ import {
 import { createCurateScheduler } from '../kb/curate.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import type { BackendIdentity, MutableBackendRuntimeState } from './backend-contracts.js';
+import type { KbSubsystem } from './kb-tools.js';
+import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import type { CreateKbSubsystemFn, ExecutionServiceLike, KbSubsystem } from './tool-router.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +64,11 @@ export const OLD_FORMAT_NOTICE =
   'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
 export const GHOST_LAUNCH_NOTICE =
   'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
+
+export type CreateKbSubsystemFn = (options: {
+  pluginRoot: string;
+  spawnCli: SpawnCliFn;
+}) => Promise<KbSubsystem>;
 
 // ---------------------------------------------------------------------------
 // ShutdownMode / RecoveryClass
@@ -428,7 +433,7 @@ export type LifecycleDeps = {
   readonly recoverOrphanedJobsFn: (namespace: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
-  readonly killAllChildrenFn: () => void;
+  readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
 
   // KB subsystem factory
@@ -482,7 +487,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     recoverOrphanedJobsFn: _recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
-    killAllChildrenFn,
+    terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
     closeServerFn,
@@ -781,7 +786,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
         await providerHostManager.shutdown();
-        killAllChildrenFn();
+        terminateAllFn();
       } else {
         await finalizeLiveAppServerJobsForHandoff();
       }
@@ -1064,7 +1069,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
-          launchCoordinator.activeChildren.size === 0 &&
+          launchCoordinator.active === 0 &&
           adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&

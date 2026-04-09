@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Equip installer — downloads and configures MCP tools for Claude Code.
+// Equip installer — downloads Coral companion tooling and runtime dependencies for Claude Code.
 // Usage: node install.mjs [--list | [--update] <package>]
 // Outputs a single JSON line to stdout.
 
@@ -73,10 +73,6 @@ const CATALOG = {
       'win32-x64': 'cgc-windows-x64.exe',
     },
     pip: 'codegraphcontext',
-    mcp: {
-      serverName: 'CodeGraphContext',
-      args: ['mcp', 'start'],
-    },
   },
   kb: {
     kind: 'needle',
@@ -313,11 +309,6 @@ function buildResult(status, method, cmdPath, entry, extra) {
     status,
     method,
     command: cmdPath,
-    mcp: {
-      serverName: entry.mcp.serverName,
-      command: cmdPath,
-      args: entry.mcp.args,
-    },
     ...extra,
   };
 }

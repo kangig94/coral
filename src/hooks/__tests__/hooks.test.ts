@@ -9,6 +9,7 @@ const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
 const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
 const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
 const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');
+const CLI_RESOLVE_HOOK = join(process.cwd(), 'hooks', 'cli-resolve.mjs');
 const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
 const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
 const HOOKS_JSON_PATH = join(process.cwd(), 'hooks', 'hooks.json');
@@ -25,6 +26,15 @@ interface HookOutput {
   hookSpecificOutput: {
     hookEventName: string;
     additionalContext: string;
+  };
+}
+
+interface CliResolveOutput {
+  hookSpecificOutput: {
+    hookEventName: string;
+    updatedInput: {
+      command: string;
+    };
   };
 }
 
@@ -192,6 +202,27 @@ function expectStopOutput(result: HookRunResult): StopHookOutput {
   return output as StopHookOutput;
 }
 
+function expectCliResolveOutput(result: HookRunResult): CliResolveOutput {
+  const output = parseJsonOutput<Partial<CliResolveOutput>>(result.stdout);
+  if (
+    output === null || output === undefined ||
+    output.hookSpecificOutput === null || output.hookSpecificOutput === undefined ||
+    output.hookSpecificOutput.hookEventName !== 'PreToolUse' ||
+    output.hookSpecificOutput.updatedInput === null || output.hookSpecificOutput.updatedInput === undefined ||
+    typeof output.hookSpecificOutput.updatedInput.command !== 'string'
+  ) {
+    throw new Error(
+      `Expected cli-resolve JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+    );
+  }
+
+  return output as CliResolveOutput;
+}
+
+function extractTempInputPaths(command: string): string[] {
+  return [...command.matchAll(/coral-input-[0-9a-f]{12}\.txt/g)].map((match) => join(tmpdir(), match[0]));
+}
+
 function writeInjectMd(pluginRoot: string, content: string): void {
   mkdirSync(pluginRoot, { recursive: true });
   writeFileSync(join(pluginRoot, 'INJECT.md'), content, 'utf-8');
@@ -241,6 +272,127 @@ function listSnapshots(snapshotDir: string): string[] {
     .map((fileName) => join(snapshotDir, fileName))
     .sort((left, right) => left.localeCompare(right));
 }
+
+describe('cli-resolve.mjs', () => {
+  const cliBundle = join(process.cwd(), 'bridge', 'coral-cli.cjs');
+  const createdTempInputs: string[] = [];
+
+  afterEach(() => {
+    for (const filePath of createdTempInputs.splice(0)) {
+      rmSync(filePath, { force: true });
+    }
+  });
+
+  function rememberTempInputs(command: string): string[] {
+    const tempPaths = extractTempInputPaths(command);
+    createdTempInputs.push(...tempPaths);
+    return tempPaths;
+  }
+
+  function expectedRewrittenCommand(command: string): string {
+    return command.replace(/^(\s*)coral-cli(\s|$)(.*)$/s, `$1node "${cliBundle}"$2$3`);
+  }
+
+  it('extracts provider -i quoted text to a temp file, skips top-level --output-format, and leaves provider -s untouched', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli --output-format json codex -s session-1 -i "text with $HOME and `backticks`"';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(rewritten).toContain(`node "${cliBundle}" --output-format json codex`);
+    expect(rewritten).toContain('-s session-1');
+    expect(rewritten).not.toContain('text with $HOME and `backticks`');
+    expect(tempPaths).toHaveLength(1);
+    expect(existsSync(tempPaths[0])).toBe(true);
+    expect(readFileSync(tempPaths[0], 'utf-8')).toBe('text with $HOME and `backticks`');
+  });
+
+  it('extracts workflow -s and -c text with mixed quote forms while skipping top-level -f', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli -f json workflow architect -s\'start prompt\' --context="ctx \\\"quoted\\\""';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(rewritten).toContain(`node "${cliBundle}" -f json workflow architect`);
+    expect(tempPaths).toHaveLength(2);
+    expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8'))).toEqual([
+      'start prompt',
+      'ctx "quoted"',
+    ]);
+  });
+
+  it('preserves quoted existing file paths for provider -i relative to input.cwd', () => {
+    const fixture = createFixture();
+    const promptsDir = join(fixture.projectRoot, 'prompts');
+    const promptPath = join(promptsDir, 'alpha prompt.md');
+    mkdirSync(promptsDir, { recursive: true });
+    writeFileSync(promptPath, '# prompt', 'utf-8');
+
+    const command = 'coral-cli codex -i "./prompts/alpha prompt.md"';
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(rewritten).toBe(expectedRewrittenCommand(command));
+    expect(rewritten).toContain('"./prompts/alpha prompt.md"');
+    expect(extractTempInputPaths(rewritten)).toHaveLength(0);
+  });
+
+  it.each([
+    ['unquoted expansion', 'coral-cli codex -i $HOME/prompt.md'],
+    ['control operators', 'coral-cli codex -i "prompt" && echo done'],
+    ['ambiguous short cluster', 'coral-cli codex -bi "prompt"'],
+    ['unquoted backslash-escaped literal', 'coral-cli codex -i hello\\ world'],
+    ['unterminated quoting', 'coral-cli codex -i "unterminated'],
+  ])('fails open for %s', (_label, command) => {
+    const fixture = createFixture();
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(rewritten).toBe(expectedRewrittenCommand(command));
+    expect(extractTempInputPaths(rewritten)).toHaveLength(0);
+  });
+});
 
 describe('session-start.mjs', () => {
   it('outputs INJECT.md with session_id when both provided', () => {
@@ -689,7 +841,9 @@ describe('post-compact.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
     expect(output.hookSpecificOutput.additionalContext).toContain('Pending:');
-    expect(output.hookSpecificOutput.additionalContext).toContain('Call wait({ jobs: [');
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      'Run coral-cli wait --jobs test-job-pending-a,test-job-pending-b --output-format json to resume monitoring.',
+    );
     expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-a');
     expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-b');
   });
@@ -727,9 +881,11 @@ describe('post-compact.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('Completed during compaction:');
-    expect(output.hookSpecificOutput.additionalContext).toContain('wait({ jobs: [');
     expect(output.hookSpecificOutput.additionalContext).toContain(
-      'Read result.content if present, otherwise Read(result.path) for the full artifact.',
+      'Use coral-cli wait --jobs "test-job-complete-no-artifact" --output-format json --embed to attempt replay.',
+    );
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      'Read event.result.content from the terminal JSON line if present; otherwise Read(event.result.path) for the full artifact.',
     );
   });
 

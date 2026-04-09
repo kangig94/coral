@@ -18,6 +18,5 @@
     "workflow",
     "bridge"
   ],
-  "skills": "./skills/",
-  "mcpServers": "./.mcp.json"
+  "skills": "./skills/"
 }

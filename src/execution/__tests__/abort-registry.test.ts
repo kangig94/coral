@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AbortRegistry } from '../abort-registry.js';
+import { AbortRegistry } from '../abort-controller-registry.js';
 
 describe('execution AbortRegistry', () => {
   it('register returns a UUID', () => {

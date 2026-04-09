@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { stripMdExt } from '../kb/paths.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
+import { isNoEntryError } from '../shared/utils.js';
 
 declare const __PLUGIN_ROOT__: string;
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');

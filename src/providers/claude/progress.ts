@@ -1,5 +1,5 @@
 import { formatToolProgress } from '../../shared/format-progress.js';
-import { isRecord } from '../../shared/mcp-utils.js';
+import { isRecord } from '../../shared/utils.js';
 import type { ClaudeStreamEvent } from './types.js';
 
 export function extractClaudeProgressMessage(event: ClaudeStreamEvent, projectRoot?: string): string | null {

@@ -1,4 +1,4 @@
-import { isRecord } from '../shared/mcp-utils.js';
+import { isRecord } from '../shared/utils.js';
 
 /**
  * Health metadata exposed by the Coral backend.
@@ -10,7 +10,7 @@ export interface BackendHealth {
   instanceId: string;
   namespace: string;
   uptimeMs: number;
-  activeChildren: number;
+  active: number;
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;
@@ -26,7 +26,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&
     Number.isFinite(value.uptimeMs) &&
-    Number.isInteger(value.activeChildren) &&
+    Number.isInteger(value.active) &&
     Number.isInteger(value.activeJobs) &&
     Number.isInteger(value.inflightRequests) &&
     Number.isInteger(value.queueDepth)

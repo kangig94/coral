@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
-import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate-state.js';
 import type {

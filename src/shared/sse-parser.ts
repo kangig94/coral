@@ -1,4 +1,4 @@
-import { isRecord, isStringArray } from './mcp-utils.js';
+import { isRecord, isStringArray } from './utils.js';
 import type { WaitStreamEvent } from './types.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;

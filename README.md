@@ -4,6 +4,8 @@
 
 Claude Code already knows how to code. Coral teaches it how *you* work.
 
+Coral is a CLI-first plugin backed by a persistent HTTP daemon for orchestration, sessions, discussion, and knowledge-base workflows.
+
 ## Install
 
 **Requirements:** Node.js 18+
@@ -221,7 +223,7 @@ Coral learns from every session. Root causes, gotchas, patterns — captured as 
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
-| `CORAL_MAX_SESSIONS` | `10` | Max concurrent CLI sessions (1–10) |
+| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Days before completed sessions are auto-pruned (0 = disabled) |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync — auto push/pull with remote (`1` = enabled) |
@@ -244,7 +246,6 @@ Set in `.claude/settings.json` (persists across sessions):
 ## Documentation
 
 - [Architecture](docs/architecture.md) — System structure and data flow
-- [MCP Tools](docs/mcp-tools.md) — Input/output specs for all MCP tools
 - [Core Modules](docs/core-modules.md) — TypeScript module details
 - [Agents](docs/agents.md) — Agent definitions and routing
 - [Hooks](docs/hooks.md) — Hook system and lifecycle events

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { replaceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';

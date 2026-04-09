@@ -2,22 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import type { LaunchDecision } from '../../shared/types.js';
 import {
-  deriveLegacyErrorMessage,
+  deriveErrorMessage,
   domainError,
+  domainResultToHttp,
   domainSuccess,
-  domainToHttp,
-  domainToMcp,
-  launchDecisionToDomain,
+  launchToHttp,
 } from '../tool-response.js';
 
 describe('tool response domain helpers', () => {
-  it('creates success domain results and preserves them in HTTP responses', () => {
-    const result = domainSuccess({ session: 'session-1' });
-
-    expect(result).toEqual({ ok: true, data: { session: 'session-1' } });
-    expect(domainToHttp(result)).toEqual({
-      statusCode: 200,
-      body: { ok: true, data: { session: 'session-1' } },
+  it('creates success domain results', () => {
+    expect(domainSuccess({ session: 'session-1' })).toEqual({
+      ok: true,
+      data: { session: 'session-1' },
     });
   });
 
@@ -36,63 +32,136 @@ describe('tool response domain helpers', () => {
     });
   });
 
-  it('derives a legacy message from detail.message when present', () => {
-    expect(deriveLegacyErrorMessage('kb_error', { message: 'KB failed' })).toBe('KB failed');
-    expect(deriveLegacyErrorMessage('kb_error', 'KB failed')).toBe('KB failed');
-    expect(deriveLegacyErrorMessage('kb_error', new Error('KB failed'))).toBe('KB failed');
+  it('derives an error message from detail.message when present', () => {
+    expect(deriveErrorMessage('kb_error', { message: 'KB failed' })).toBe('KB failed');
+    expect(deriveErrorMessage('kb_error', 'KB failed')).toBe('KB failed');
+    expect(deriveErrorMessage('kb_error', new Error('KB failed'))).toBe('KB failed');
   });
 
-  it('falls back to a humanized code when legacy detail has no message', () => {
-    expect(deriveLegacyErrorMessage('pool_too_large', { hint: 'shrink the pool' })).toBe('pool too large');
-    expect(deriveLegacyErrorMessage('session_not_found')).toBe('session not found');
+  it('falls back to a humanized code when detail has no message', () => {
+    expect(deriveErrorMessage('pool_too_large', { hint: 'shrink the pool' })).toBe('pool too large');
+    expect(deriveErrorMessage('session_not_found')).toBe('session not found');
   });
+});
 
-  it('maps running and queued launch decisions to success domain results', () => {
-    const running = {
+describe('launchToHttp', () => {
+  it('maps running launches to the accepted status code and includes launchState', () => {
+    const decision = {
       status: 'running',
       job: 'job-1',
       session: 'session-1',
     } satisfies LaunchDecision;
-    const queued = {
+
+    expect(launchToHttp(decision, 201)).toEqual({
+      statusCode: 201,
+      body: {
+        session: 'session-1',
+        job: 'job-1',
+        launchState: 'running',
+      },
+    });
+  });
+
+  it('maps queued launches to the accepted status code and includes launchState', () => {
+    const decision = {
       status: 'queued',
       job: 'job-2',
       session: 'session-2',
     } satisfies LaunchDecision;
 
-    expect(launchDecisionToDomain(running)).toEqual({ ok: true, data: running });
-    expect(launchDecisionToDomain(queued)).toEqual({ ok: true, data: queued });
+    expect(launchToHttp(decision, 201)).toEqual({
+      statusCode: 201,
+      body: {
+        session: 'session-2',
+        job: 'job-2',
+        launchState: 'queued',
+      },
+    });
   });
 
-  it('maps rejected launch decisions to domain errors', () => {
-    const rejected = {
-      status: 'rejected',
-      phase: 'preflight',
-      code: 'invalid_request',
-      message: 'Missing prompt',
+  it('uses 202 when the caller passes it for accepted launches', () => {
+    const decision = {
+      status: 'running',
+      job: 'job-3',
+      session: 'session-3',
     } satisfies LaunchDecision;
 
-    expect(launchDecisionToDomain(rejected)).toEqual({
-      ok: false,
-      code: 'invalid_request',
-      message: 'Missing prompt',
+    expect(launchToHttp(decision, 202)).toEqual({
+      statusCode: 202,
+      body: {
+        session: 'session-3',
+        job: 'job-3',
+        launchState: 'running',
+      },
     });
   });
 
-  it('converts domain results to MCP results for bridge boundaries', () => {
-    const success = domainToMcp(domainSuccess({ session: 'session-1' }));
-    const failure = domainToMcp(domainError('invalid_request', 'Missing prompt', { field: 'prompt' }));
+  it.each([
+    ['busy', 503],
+    ['preflight_failed', 503],
+    ['unknown_provider', 404],
+    ['session_not_found', 404],
+    ['scope_mismatch', 403],
+    ['session_busy', 409],
+    ['non_resumable', 409],
+    ['legacy_session_unsupported', 409],
+    ['invalid_request', 400],
+  ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {
+    const decision = {
+      status: 'rejected',
+      phase: 'preflight',
+      code,
+      message: `Rejected: ${code}`,
+    } satisfies LaunchDecision;
 
-    expect(success).toEqual({
-      content: [{ type: 'text', text: '{"session":"session-1"}' }],
-      isError: false,
+    expect(launchToHttp(decision, 201)).toEqual({
+      statusCode,
+      body: {
+        code,
+        message: `Rejected: ${code}`,
+      },
     });
+  });
+});
 
-    expect(failure.isError).toBe(true);
-    expect(JSON.parse(failure.content[0].text)).toEqual({
-      ok: false,
-      code: 'invalid_request',
-      message: 'Missing prompt',
-      detail: { field: 'prompt' },
+describe('domainResultToHttp', () => {
+  it('unwraps successful domain results directly into a 200 response body', () => {
+    expect(domainResultToHttp(domainSuccess({ session: 'session-1' }))).toEqual({
+      statusCode: 200,
+      body: { session: 'session-1' },
+    });
+  });
+
+  it.each([
+    ['invalid_request', 400],
+    ['not_found', 404],
+    ['session_not_found', 404],
+    ['unknown_tool', 404],
+    ['scope_mismatch', 403],
+    ['backend_recovering', 503],
+    ['kb_unavailable', 503],
+    ['start_failed', 500],
+    ['kb_error', 500],
+    ['discuss_error', 500],
+    ['unexpected_failure', 500],
+  ])('maps domain error code %s to HTTP %i', (code, statusCode) => {
+    expect(domainResultToHttp(domainError(code, `Error: ${code}`))).toEqual({
+      statusCode,
+      body: {
+        code,
+        message: `Error: ${code}`,
+      },
+    });
+  });
+
+  it('includes detail in error bodies when present', () => {
+    expect(domainResultToHttp(domainError('kb_error', 'KB failed', { note: 'broken' }))).toEqual({
+      statusCode: 500,
+      body: {
+        code: 'kb_error',
+        message: 'KB failed',
+        detail: { note: 'broken' },
+      },
     });
   });
 });

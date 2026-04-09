@@ -1,5 +1,5 @@
 import type { ProviderContinuityBlob, ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
-import { nowIsoString } from '../shared/mcp-utils.js';
+import { nowIsoString } from '../shared/utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
 
 export type { ProviderContinuityBlob } from '../shared/types.js';

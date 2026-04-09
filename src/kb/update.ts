@@ -1,4 +1,4 @@
-import { nowIsoString } from '../shared/mcp-utils.js';
+import { nowIsoString } from '../shared/utils.js';
 import { serializeNote } from './frontmatter.js';
 import { loadKbNote } from './read.js';
 import { runEntrySeqUpgradeGuard } from './runtime.js';

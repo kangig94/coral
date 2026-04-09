@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { isNoEntryError, isRecord, isStringArray } from '../shared/mcp-utils.js';
+import { isNoEntryError } from '../shared/utils.js';
 import {
   discussSourcesPath,
   JOBS_DIR,
@@ -32,17 +32,20 @@ import {
   type DiscussDomainEvent,
   type PersistedDiscussSnapshot,
   controlPhases,
-  discussEventKinds,
 } from '../discuss/events.js';
 
-const discussEventKindSet = new Set<string>(discussEventKinds);
-const discussStatusSet = new Set<string>(discussStatuses);
-const participationSet = new Set<string>(participationTypes);
-const speakerTypeSet = new Set<string>(speakerTypes);
-const transcriptResolveTypeSet = new Set<string>(transcriptResolveTypes);
-const transcriptEventSet = new Set<string>(sessionEventKinds);
-const controlPhaseSet = new Set<string>(controlPhases);
-const resolveReasonSet = new Set<string>(resolveReasons);
+const finiteNumberSchema = z.number().finite();
+const integerSchema = z.number().int();
+const nonNegativeIntegerSchema = integerSchema.min(0);
+const positiveIntegerSchema = integerSchema.min(1);
+const stringArraySchema = z.array(z.string());
+const discussStatusSchema = z.enum(discussStatuses);
+const participationSchema = z.enum(participationTypes);
+const speakerTypeSchema = z.enum(speakerTypes);
+const transcriptResolveTypeSchema = z.enum(transcriptResolveTypes);
+const transcriptEventSchema = z.enum(sessionEventKinds);
+const controlPhaseSchema = z.enum(controlPhases);
+const resolveReasonSchema = z.enum(resolveReasons);
 
 export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
 
@@ -108,390 +111,501 @@ function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirector
   }
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
+function recordLikeSchema<T extends z.ZodTypeAny>(valueSchema: T) {
+  return z.union([z.record(z.string(), valueSchema), z.array(valueSchema)]);
 }
 
-function isInteger(value: unknown): value is number {
-  return Number.isInteger(value);
+function parseStringArray(value: unknown): string[] | null {
+  const parsed = stringArraySchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
-function isRecordOf(value: unknown, predicate: (entry: unknown) => boolean): boolean {
-  return isRecord(value) && Object.values(value).every(predicate);
-}
+const unknownRecordLikeSchema = recordLikeSchema(z.unknown());
+const stringRecordLikeSchema = recordLikeSchema(z.string());
+const booleanRecordLikeSchema = recordLikeSchema(z.boolean());
+const numberRecordLikeSchema = recordLikeSchema(finiteNumberSchema);
+const nullableNumberRecordLikeSchema = recordLikeSchema(z.union([finiteNumberSchema, z.null()]));
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-  return isRecordOf(value, (entry) => typeof entry === 'string');
-}
+const discussAgentStateSchema = z
+  .object({
+    persona: z.string(),
+    display_name: z.string(),
+    participation: participationSchema,
+    quota_remaining: finiteNumberSchema,
+    total_speaks: finiteNumberSchema,
+    fallback_used: z.boolean(),
+    banned: z.boolean(),
+  })
+  .passthrough();
 
-function isBooleanRecord(value: unknown): value is Record<string, boolean> {
-  return isRecordOf(value, (entry) => typeof entry === 'boolean');
-}
-
-function isNumberRecord(value: unknown): value is Record<string, number> {
-  return isRecordOf(value, isFiniteNumber);
-}
-
-function isNullableNumberRecord(value: unknown): value is Record<string, number | null> {
-  return isRecordOf(value, (entry) => entry === null || isFiniteNumber(entry));
-}
-
-function isValidDiscussAgentState(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.persona === 'string' &&
-    typeof value.display_name === 'string' &&
-    typeof value.participation === 'string' &&
-    participationSet.has(value.participation) &&
-    isFiniteNumber(value.quota_remaining) &&
-    isFiniteNumber(value.total_speaks) &&
-    typeof value.fallback_used === 'boolean' &&
-    typeof value.banned === 'boolean'
-  );
-}
-
-function isValidTranscriptEntry(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.type !== 'string') return false;
-
-  switch (value.type) {
-    case 'bids':
-      return (
-        isFiniteNumber(value.step) &&
-        isFiniteNumber(value.epoch) &&
-        typeof value.ts === 'string' &&
-        isNumberRecord(value.bids) &&
-        (value.effective_bids === undefined || isNumberRecord(value.effective_bids)) &&
-        (value.thoughts === undefined || isStringRecord(value.thoughts)) &&
-        (value.winner === null || typeof value.winner === 'string') &&
-        typeof value.resolve_type === 'string' &&
-        transcriptResolveTypeSet.has(value.resolve_type)
-      );
-
-    case 'speech':
-      return (
-        isFiniteNumber(value.step) &&
-        isFiniteNumber(value.epoch) &&
-        typeof value.ts === 'string' &&
-        typeof value.agent === 'string' &&
-        typeof value.display_name === 'string' &&
-        typeof value.content === 'string'
-      );
-
-    case 'follow_up':
-      return (
-        isFiniteNumber(value.epoch) &&
-        typeof value.ts === 'string' &&
-        typeof value.agent === 'string' &&
-        typeof value.question === 'string' &&
-        typeof value.answer === 'string'
-      );
-
-    case 'epoch_summary':
-      return isFiniteNumber(value.epoch) && typeof value.ts === 'string' && typeof value.summary === 'string';
-
-    case 'session_event':
-      return (
-        isFiniteNumber(value.epoch) &&
-        typeof value.ts === 'string' &&
-        typeof value.event === 'string' &&
-        transcriptEventSet.has(value.event) &&
-        typeof value.detail === 'string'
-      );
-
-    default:
-      return false;
-  }
-}
+const transcriptEntrySchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('bids'),
+      step: finiteNumberSchema,
+      epoch: finiteNumberSchema,
+      ts: z.string(),
+      bids: numberRecordLikeSchema,
+      effective_bids: numberRecordLikeSchema.optional(),
+      thoughts: stringRecordLikeSchema.optional(),
+      winner: z.union([z.string(), z.null()]),
+      resolve_type: transcriptResolveTypeSchema,
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal('speech'),
+      step: finiteNumberSchema,
+      epoch: finiteNumberSchema,
+      ts: z.string(),
+      agent: z.string(),
+      display_name: z.string(),
+      content: z.string(),
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal('follow_up'),
+      epoch: finiteNumberSchema,
+      ts: z.string(),
+      agent: z.string(),
+      question: z.string(),
+      answer: z.string(),
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal('epoch_summary'),
+      epoch: finiteNumberSchema,
+      ts: z.string(),
+      summary: z.string(),
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal('session_event'),
+      epoch: finiteNumberSchema,
+      ts: z.string(),
+      event: transcriptEventSchema,
+      detail: z.string(),
+    })
+    .passthrough(),
+]);
 
 export function isValidSessionEntry(value: unknown): value is SessionEntry {
   return isSharedValidSessionEntry(value);
 }
 
+const discussStateSchema = z
+  .object({
+    session_id: z.string(),
+    topic: z.string(),
+    status: z.string(),
+    agents: unknownRecordLikeSchema,
+  })
+  .passthrough();
+
+const sessionCreatedInputSchema = z
+  .object({
+    topic: z.string(),
+    min_bid_delay_ms: finiteNumberSchema,
+    agents: z.array(
+      z
+        .object({
+          name: z.string(),
+          persona: z.string(),
+          participation: participationSchema,
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
+const sessionCreatedConfigSchema = z
+  .object({
+    bidThreshold: finiteNumberSchema,
+    maxEpochs: finiteNumberSchema,
+    quotaPerEpoch: finiteNumberSchema,
+  })
+  .passthrough();
+
+const sessionCreatedAgentExecutionSchema = z.union([
+  z
+    .object({
+      manual: z.literal(true),
+      provider: z.undefined().optional(),
+      model: z.undefined().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
+      manual: z.literal(false),
+      provider: z.string(),
+      model: z.string(),
+    })
+    .passthrough(),
+]);
+
+const followUpQueueItemSchema = z
+  .object({
+    agent: z.string(),
+    question: z.string(),
+  })
+  .passthrough();
+
+const bidRoundClosedOutcomeSchema = z.union([
+  z
+    .object({
+      winner: z.string(),
+      speaker_type: speakerTypeSchema,
+    })
+    .passthrough(),
+  z
+    .object({
+      no_winner: z.literal(true),
+      reason: resolveReasonSchema,
+    })
+    .passthrough(),
+]);
+
+const bidRoundClosedStateMutationsSchema = z
+  .object({
+    cold_start: z.boolean().optional(),
+    fallback_used: booleanRecordLikeSchema.optional(),
+    quota_remaining: numberRecordLikeSchema.optional(),
+    epoch: finiteNumberSchema.optional(),
+  })
+  .passthrough();
+
+function createDiscussEventSchema<K extends DiscussDomainEvent['kind']>(kind: K, payloadSchema: z.ZodTypeAny) {
+  return z
+    .object({
+      v: z.literal(1),
+      sessionId: z.string(),
+      projectRoot: z.string(),
+      topic: z.string(),
+      seq: positiveIntegerSchema,
+      kind: z.literal(kind),
+      ts: z.string(),
+      payload: payloadSchema,
+    })
+    .passthrough();
+}
+
+const discussDomainEventSchema = z.discriminatedUnion('kind', [
+  createDiscussEventSchema(
+    'session.created',
+    z
+      .object({
+        input: sessionCreatedInputSchema,
+        config: sessionCreatedConfigSchema,
+        agentExecution: recordLikeSchema(sessionCreatedAgentExecutionSchema),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema('bidding.opened', unknownRecordLikeSchema),
+  createDiscussEventSchema(
+    'bid.submitted',
+    z
+      .object({
+        agent: z.string(),
+        score: finiteNumberSchema,
+        thought: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'participants.expelled',
+    z
+      .object({
+        agents: stringArraySchema,
+        isRespawn: z.boolean(),
+        hint: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'bid.round.closed',
+    z
+      .object({
+        allBids: numberRecordLikeSchema,
+        effectiveBids: numberRecordLikeSchema,
+        thoughts: stringRecordLikeSchema,
+        outcome: bidRoundClosedOutcomeSchema,
+        stateMutations: bidRoundClosedStateMutationsSchema,
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'speech.recorded',
+    z
+      .object({
+        agent: z.string(),
+        content: z.string(),
+        decrementQuota: z.boolean(),
+        recordLastSpeechStep: integerSchema.optional(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'speech.timed_out',
+    z
+      .object({
+        agent: z.string(),
+        content: z.string(),
+        decrementQuota: z.boolean(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'epoch.summary.recorded',
+    z
+      .object({
+        summary: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'must_answer.carry_forward.set',
+    z
+      .object({
+        items: stringArraySchema,
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'follow_up.queue.set',
+    z
+      .object({
+        queue: z.array(followUpQueueItemSchema),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'follow_up.answered',
+    z
+      .object({
+        agent: z.string(),
+        question: z.string(),
+        answer: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'session.ended',
+    z
+      .object({
+        endReason: z.string().optional(),
+        endReasonContent: z.union([z.string(), z.null()]).optional(),
+        force: z.boolean().optional(),
+        reason: z.string().optional(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'session.synthesized',
+    z
+      .object({
+        synthesis: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'agent.run.bound',
+    z
+      .object({
+        agent: z.string(),
+        executionSessionId: z.string(),
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'agent.job.started',
+    z
+      .object({
+        agent: z.string(),
+        jobId: z.string(),
+        purpose: z.string(),
+        attempt: integerSchema,
+      })
+      .passthrough(),
+  ),
+  createDiscussEventSchema(
+    'agent.job.finished',
+    z
+      .object({
+        agent: z.string(),
+        jobId: z.string(),
+        outcome: z.string(),
+        attempt: integerSchema,
+      })
+      .passthrough(),
+  ),
+]);
+
+const persistedDiscussAgentRunSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+    executionSessionId: z.string().optional(),
+    currentJobId: z.string().optional(),
+    currentJobPurpose: z.string().optional(),
+    currentAttempt: integerSchema.optional(),
+    lastAttemptOutcome: z.string().optional(),
+  })
+  .passthrough();
+
+const persistedDiscussRuntimeSchema = z
+  .object({
+    controlPhase: controlPhaseSchema,
+    carryForwardMustAnswer: stringArraySchema,
+    followUpQueue: z.array(followUpQueueItemSchema),
+    agentRuns: recordLikeSchema(persistedDiscussAgentRunSchema),
+  })
+  .passthrough();
+
+const persistedDiscussStateSchema = z
+  .object({
+    session_id: z.string(),
+    topic: z.string(),
+    status: discussStatusSchema,
+    step: integerSchema,
+    epoch: integerSchema,
+    max_epochs: integerSchema,
+    quota_per_epoch: finiteNumberSchema,
+    cold_start: z.boolean(),
+    agents: recordLikeSchema(discussAgentStateSchema),
+    current_bids: nullableNumberRecordLikeSchema,
+    current_thoughts: stringRecordLikeSchema,
+    pending_bidders: stringArraySchema,
+    current_speaker: z.union([z.string(), z.null()]),
+    speaker_type: z.union([speakerTypeSchema, z.null()]),
+    epoch_summary_written: z.union([integerSchema, z.null()]),
+    created_at: z.string(),
+    last_activity_at: z.string(),
+    last_speech_step: integerSchema,
+    pending_since_ts: z.union([finiteNumberSchema, z.null()]),
+    bid_release_step: integerSchema,
+    end_reason_content: z.union([z.string(), z.null()]),
+    transcript: z.array(transcriptEntrySchema),
+    bid_threshold: finiteNumberSchema,
+    min_bid_delay_ms: finiteNumberSchema,
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    const agentNames = new Set(Object.keys(value.agents));
+
+    for (const name of Object.keys(value.current_bids)) {
+      if (!agentNames.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'current_bids keys must match agents',
+          path: ['current_bids', name],
+        });
+      }
+    }
+
+    for (const name of Object.keys(value.current_thoughts)) {
+      if (!agentNames.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'current_thoughts keys must match agents',
+          path: ['current_thoughts', name],
+        });
+      }
+    }
+
+    for (const name of value.pending_bidders) {
+      if (!agentNames.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pending_bidders entries must match agents',
+          path: ['pending_bidders'],
+        });
+      }
+    }
+
+    if (value.current_speaker !== null && !agentNames.has(value.current_speaker)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'current_speaker must match agents',
+        path: ['current_speaker'],
+      });
+    }
+
+    if (value.status === 'speaking' && (value.current_speaker === null || value.speaker_type === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'speaking state requires current_speaker and speaker_type',
+        path: ['status'],
+      });
+    }
+  });
+
+const persistedDiscussSnapshotSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    sessionId: z.string(),
+    projectRoot: z.string(),
+    updatedAt: z.string(),
+    lastAppliedSeq: nonNegativeIntegerSchema,
+    logByteOffset: nonNegativeIntegerSchema.optional(),
+    state: persistedDiscussStateSchema,
+    runtime: persistedDiscussRuntimeSchema,
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (value.state.session_id !== value.sessionId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'snapshot sessionId must match state.session_id',
+        path: ['state', 'session_id'],
+      });
+    }
+
+    for (const name of Object.keys(value.runtime.agentRuns)) {
+      if (!(name in value.state.agents)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'runtime.agentRuns keys must be compatible with state.agents',
+          path: ['runtime', 'agentRuns', name],
+        });
+      }
+    }
+  });
+
+const discussDiscoverySessionSchema = z
+  .object({
+    sessionId: z.string(),
+    topic: z.string(),
+    sessionDir: z.string(),
+    createdAt: z.string(),
+  })
+  .passthrough();
+
+const discussSummaryIndexRowSchema = z
+  .object({
+    sessionId: z.string(),
+    projectRoot: z.string(),
+    topic: z.string(),
+    status: discussStatusSchema,
+    createdAt: z.string(),
+    agentCount: nonNegativeIntegerSchema,
+    updatedAt: z.string(),
+    lastSeq: nonNegativeIntegerSchema,
+  })
+  .passthrough();
+
 function isValidDiscussState(value: unknown): value is DiscussState {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.session_id === 'string' &&
-    typeof value.topic === 'string' &&
-    typeof value.status === 'string' &&
-    isRecord(value.agents)
-  );
-}
-
-function isValidSessionCreatedInput(value: unknown): boolean {
-  if (!isRecord(value) || !Array.isArray(value.agents)) return false;
-  return (
-    typeof value.topic === 'string' &&
-    isFiniteNumber(value.min_bid_delay_ms) &&
-    value.agents.every(
-      (agent) =>
-        isRecord(agent) &&
-        typeof agent.name === 'string' &&
-        typeof agent.persona === 'string' &&
-        typeof agent.participation === 'string' &&
-        participationSet.has(agent.participation),
-    )
-  );
-}
-
-function isValidSessionCreatedConfig(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return isFiniteNumber(value.bidThreshold) && isFiniteNumber(value.maxEpochs) && isFiniteNumber(value.quotaPerEpoch);
-}
-
-function isValidSessionCreatedAgentExecution(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.manual !== 'boolean') return false;
-  if (value.manual) {
-    return value.provider === undefined && value.model === undefined;
-  }
-  return typeof value.provider === 'string' && typeof value.model === 'string';
-}
-
-function isValidFollowUpQueueItem(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return typeof value.agent === 'string' && typeof value.question === 'string';
-}
-
-function isValidBidRoundClosedOutcome(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  if (typeof value.winner === 'string') {
-    return typeof value.speaker_type === 'string' && speakerTypeSet.has(value.speaker_type);
-  }
-  return value.no_winner === true && typeof value.reason === 'string' && resolveReasonSet.has(value.reason);
-}
-
-function isValidBidRoundClosedStateMutations(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return (
-    (value.cold_start === undefined || typeof value.cold_start === 'boolean') &&
-    (value.fallback_used === undefined || isBooleanRecord(value.fallback_used)) &&
-    (value.quota_remaining === undefined || isNumberRecord(value.quota_remaining)) &&
-    (value.epoch === undefined || isFiniteNumber(value.epoch))
-  );
-}
-
-function isValidDiscussEventPayload(kind: DiscussDomainEvent['kind'], payload: unknown): boolean {
-  if (!isRecord(payload)) return false;
-
-  switch (kind) {
-    case 'session.created':
-      return (
-        isValidSessionCreatedInput(payload.input) &&
-        isValidSessionCreatedConfig(payload.config) &&
-        isRecord(payload.agentExecution) &&
-        Object.values(payload.agentExecution).every(isValidSessionCreatedAgentExecution)
-      );
-
-    case 'bidding.opened':
-      return true;
-
-    case 'bid.submitted':
-      return typeof payload.agent === 'string' && isFiniteNumber(payload.score) && typeof payload.thought === 'string';
-
-    case 'participants.expelled':
-      return (
-        isStringArray(payload.agents) && typeof payload.isRespawn === 'boolean' && typeof payload.hint === 'string'
-      );
-
-    case 'bid.round.closed':
-      return (
-        isNumberRecord(payload.allBids) &&
-        isNumberRecord(payload.effectiveBids) &&
-        isStringRecord(payload.thoughts) &&
-        isValidBidRoundClosedOutcome(payload.outcome) &&
-        isValidBidRoundClosedStateMutations(payload.stateMutations)
-      );
-
-    case 'speech.recorded':
-      return (
-        typeof payload.agent === 'string' &&
-        typeof payload.content === 'string' &&
-        typeof payload.decrementQuota === 'boolean' &&
-        (payload.recordLastSpeechStep === undefined || isInteger(payload.recordLastSpeechStep))
-      );
-
-    case 'speech.timed_out':
-      return (
-        typeof payload.agent === 'string' &&
-        typeof payload.content === 'string' &&
-        typeof payload.decrementQuota === 'boolean'
-      );
-
-    case 'epoch.summary.recorded':
-      return typeof payload.summary === 'string';
-
-    case 'must_answer.carry_forward.set':
-      return isStringArray(payload.items);
-
-    case 'follow_up.queue.set':
-      return Array.isArray(payload.queue) && payload.queue.every(isValidFollowUpQueueItem);
-
-    case 'follow_up.answered':
-      return (
-        typeof payload.agent === 'string' && typeof payload.question === 'string' && typeof payload.answer === 'string'
-      );
-
-    case 'session.ended':
-      return (
-        (payload.endReason === undefined || typeof payload.endReason === 'string') &&
-        (payload.endReasonContent === undefined ||
-          payload.endReasonContent === null ||
-          typeof payload.endReasonContent === 'string') &&
-        (payload.force === undefined || typeof payload.force === 'boolean') &&
-        (payload.reason === undefined || typeof payload.reason === 'string')
-      );
-
-    case 'session.synthesized':
-      return typeof payload.synthesis === 'string';
-
-    case 'agent.run.bound':
-      return typeof payload.agent === 'string' && typeof payload.executionSessionId === 'string';
-
-    case 'agent.job.started':
-      return (
-        typeof payload.agent === 'string' &&
-        typeof payload.jobId === 'string' &&
-        typeof payload.purpose === 'string' &&
-        isInteger(payload.attempt)
-      );
-
-    case 'agent.job.finished':
-      return (
-        typeof payload.agent === 'string' &&
-        typeof payload.jobId === 'string' &&
-        typeof payload.outcome === 'string' &&
-        isInteger(payload.attempt)
-      );
-  }
+  return discussStateSchema.safeParse(value).success;
 }
 
 function isValidDiscussDomainEvent(value: unknown): value is DiscussDomainEvent {
-  if (!isRecord(value)) return false;
-  return (
-    value.v === 1 &&
-    typeof value.sessionId === 'string' &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.topic === 'string' &&
-    isInteger(value.seq) &&
-    value.seq > 0 &&
-    typeof value.kind === 'string' &&
-    discussEventKindSet.has(value.kind) &&
-    typeof value.ts === 'string' &&
-    isValidDiscussEventPayload(value.kind as DiscussDomainEvent['kind'], value.payload)
-  );
-}
-
-function isValidPersistedDiscussRuntime(value: unknown): value is PersistedDiscussSnapshot['runtime'] {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.controlPhase === 'string' &&
-    controlPhaseSet.has(value.controlPhase) &&
-    isStringArray(value.carryForwardMustAnswer) &&
-    Array.isArray(value.followUpQueue) &&
-    value.followUpQueue.every(isValidFollowUpQueueItem) &&
-    isRecord(value.agentRuns) &&
-    Object.values(value.agentRuns).every(
-      (run) =>
-        isRecord(run) &&
-        typeof run.provider === 'string' &&
-        typeof run.model === 'string' &&
-        (run.executionSessionId === undefined || typeof run.executionSessionId === 'string') &&
-        (run.currentJobId === undefined || typeof run.currentJobId === 'string') &&
-        (run.currentJobPurpose === undefined || typeof run.currentJobPurpose === 'string') &&
-        (run.currentAttempt === undefined || isInteger(run.currentAttempt)) &&
-        (run.lastAttemptOutcome === undefined || typeof run.lastAttemptOutcome === 'string'),
-    )
-  );
-}
-
-function isValidPersistedDiscussState(value: unknown): value is DiscussState {
-  if (!isRecord(value) || !isRecord(value.agents)) return false;
-
-  const agentNames = new Set(Object.keys(value.agents));
-  const currentSpeaker = value.current_speaker;
-  const speakerType = value.speaker_type;
-
-  return (
-    typeof value.session_id === 'string' &&
-    typeof value.topic === 'string' &&
-    typeof value.status === 'string' &&
-    discussStatusSet.has(value.status) &&
-    isInteger(value.step) &&
-    isInteger(value.epoch) &&
-    isInteger(value.max_epochs) &&
-    isFiniteNumber(value.quota_per_epoch) &&
-    typeof value.cold_start === 'boolean' &&
-    Object.values(value.agents).every(isValidDiscussAgentState) &&
-    isNullableNumberRecord(value.current_bids) &&
-    Object.keys(value.current_bids).every((name) => agentNames.has(name)) &&
-    isStringRecord(value.current_thoughts) &&
-    Object.keys(value.current_thoughts).every((name) => agentNames.has(name)) &&
-    isStringArray(value.pending_bidders) &&
-    value.pending_bidders.every((name) => agentNames.has(name)) &&
-    (currentSpeaker === null || (typeof currentSpeaker === 'string' && agentNames.has(currentSpeaker))) &&
-    (speakerType === null || (typeof speakerType === 'string' && speakerTypeSet.has(speakerType))) &&
-    (value.epoch_summary_written === null || isInteger(value.epoch_summary_written)) &&
-    typeof value.created_at === 'string' &&
-    typeof value.last_activity_at === 'string' &&
-    isInteger(value.last_speech_step) &&
-    (value.pending_since_ts === null || isFiniteNumber(value.pending_since_ts)) &&
-    isInteger(value.bid_release_step) &&
-    (value.end_reason_content === null || typeof value.end_reason_content === 'string') &&
-    Array.isArray(value.transcript) &&
-    value.transcript.every(isValidTranscriptEntry) &&
-    isFiniteNumber(value.bid_threshold) &&
-    isFiniteNumber(value.min_bid_delay_ms) &&
-    (value.status !== 'speaking' || (currentSpeaker !== null && speakerType !== null))
-  );
+  return discussDomainEventSchema.safeParse(value).success;
 }
 
 function isValidPersistedDiscussSnapshot(value: unknown): value is PersistedDiscussSnapshot {
-  if (!isRecord(value)) return false;
-  if (
-    value.schemaVersion !== 2 ||
-    typeof value.sessionId !== 'string' ||
-    typeof value.projectRoot !== 'string' ||
-    typeof value.updatedAt !== 'string' ||
-    !isInteger(value.lastAppliedSeq) ||
-    value.lastAppliedSeq < 0 ||
-    (value.logByteOffset !== undefined && (!isInteger(value.logByteOffset) || value.logByteOffset < 0))
-  ) {
-    return false;
-  }
-
-  const state = value.state;
-  const runtime = value.runtime;
-  if (!isValidPersistedDiscussState(state) || !isValidPersistedDiscussRuntime(runtime)) {
-    return false;
-  }
-
-  return state.session_id === value.sessionId && Object.keys(runtime.agentRuns).every((name) => name in state.agents);
-}
-
-function isValidDiscussDiscoverySession(value: unknown): value is DiscussDiscoverySession {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.sessionId === 'string' &&
-    typeof value.topic === 'string' &&
-    typeof value.sessionDir === 'string' &&
-    typeof value.createdAt === 'string'
-  );
-}
-
-function isValidDiscussSummaryIndexRow(value: unknown): value is DiscussSummaryIndexRow {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.sessionId === 'string' &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.topic === 'string' &&
-    typeof value.status === 'string' &&
-    discussStatusSet.has(value.status) &&
-    typeof value.createdAt === 'string' &&
-    isInteger(value.agentCount) &&
-    value.agentCount >= 0 &&
-    typeof value.updatedAt === 'string' &&
-    isInteger(value.lastSeq) &&
-    value.lastSeq >= 0
-  );
+  return persistedDiscussSnapshotSchema.safeParse(value).success;
 }
 
 type DiscussSourcesRegistryData = {
@@ -499,68 +613,99 @@ type DiscussSourcesRegistryData = {
   sources: string[];
 };
 
+function parseSourceEnvelopeData<T>(
+  value: unknown,
+  source: string,
+  rowSchema: z.ZodType<T>,
+  label: string,
+): { source: string; updatedAt: string; sessions: T[] } | null {
+  const parsed = z
+    .object({
+      updatedAt: z.string(),
+      sessions: z.array(rowSchema),
+      source: z.unknown().optional(),
+      projectRoot: z.unknown().optional(),
+    })
+    .passthrough()
+    .superRefine((envelope, ctx) => {
+      const fileSource =
+        typeof envelope.source === 'string'
+          ? envelope.source
+          : typeof envelope.projectRoot === 'string'
+            ? source
+            : null;
+
+      if (fileSource !== source) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${label} source does not match requested source`,
+          path: ['source'],
+        });
+      }
+    })
+    .transform((envelope) => ({
+      source,
+      updatedAt: envelope.updatedAt,
+      sessions: envelope.sessions,
+    }))
+    .safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDiscoveryData | null {
-  if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
-
-  const fileSource =
-    typeof value.source === 'string' ? value.source : typeof value.projectRoot === 'string' ? source : null;
-
-  if (
-    fileSource !== source ||
-    typeof value.updatedAt !== 'string' ||
-    !value.sessions.every(isValidDiscussDiscoverySession)
-  ) {
-    return null;
-  }
-
-  return {
-    source,
-    updatedAt: value.updatedAt,
-    sessions: value.sessions,
-  };
+  return parseSourceEnvelopeData(value, source, discussDiscoverySessionSchema, 'discovery');
 }
 
 function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSummaryIndexData | null {
-  if (!isRecord(value) || !Array.isArray(value.sessions)) return null;
-
-  const fileSource =
-    typeof value.source === 'string' ? value.source : typeof value.projectRoot === 'string' ? source : null;
-
-  if (
-    fileSource !== source ||
-    typeof value.updatedAt !== 'string' ||
-    !value.sessions.every(isValidDiscussSummaryIndexRow)
-  ) {
-    return null;
-  }
-
-  return {
-    source,
-    updatedAt: value.updatedAt,
-    sessions: value.sessions,
-  };
+  return parseSourceEnvelopeData(value, source, discussSummaryIndexRowSchema, 'summary index');
 }
 
 function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData | null {
-  if (!isRecord(value) || (value.updatedAt !== undefined && typeof value.updatedAt !== 'string')) {
-    return null;
-  }
+  const parsed = z
+    .object({
+      updatedAt: z.unknown().optional(),
+      sources: z.unknown().optional(),
+      projectRoots: z.unknown().optional(),
+    })
+    .passthrough()
+    .superRefine((registry, ctx) => {
+      if (registry.updatedAt !== undefined && typeof registry.updatedAt !== 'string') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'updatedAt must be a string when present',
+          path: ['updatedAt'],
+        });
+      }
 
-  if (isStringArray(value.sources)) {
-    return {
-      updatedAt: value.updatedAt,
-      sources: [...new Set(value.sources)],
-    };
-  }
+      if (parseStringArray(registry.sources) !== null) {
+        return;
+      }
 
-  if (!isStringArray(value.projectRoots)) {
-    return null;
-  }
+      if (parseStringArray(registry.projectRoots) === null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'registry must provide sources or projectRoots',
+          path: ['sources'],
+        });
+      }
+    })
+    .transform((registry): DiscussSourcesRegistryData => {
+      const sources = parseStringArray(registry.sources);
+      if (sources !== null) {
+        return {
+          updatedAt: typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined,
+          sources: [...new Set(sources)],
+        };
+      }
 
-  return {
-    updatedAt: value.updatedAt,
-    sources: [...new Set(value.projectRoots.map((projectRoot) => resolveProjectSource(projectRoot)))],
-  };
+      const projectRoots = parseStringArray(registry.projectRoots) ?? [];
+      return {
+        updatedAt: typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined,
+        sources: [...new Set(projectRoots.map((projectRoot) => resolveProjectSource(projectRoot)))],
+      };
+    })
+    .safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 /**

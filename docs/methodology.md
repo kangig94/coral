@@ -215,14 +215,15 @@ Skills orchestrate agents and read HOW files directly for protocol-level decisio
 │  │                                                              │  │
 │  │  Phase 1 (--codex)        Phase 2 (always)                   │  │
 │  │  ┌──────────────────┐    ┌──────────────────┐                │  │
-│  │  │ 4a: codex(op:    │    │ 4a: architect    │                │  │
-│  │  │ "coral:architect")│   │     critic       │  ──parallel──  │  │
-│  │  │ + coral:critic   │    │                  │                │  │
+│  │  │ 4a: coral-cli    │    │ 4a: architect    │                │  │
+│  │  │ codex architect  │    │     critic       │  ──parallel──  │  │
+│  │  │ /critic -i       │    │                  │                │  │
 │  │  └────────┬─────────┘    └────────┬─────────┘                │  │
 │  │           │                       │                          │  │
 │  │  ┌────────▼─────────┐    ┌────────▼─────────┐                │  │
-│  │  │ 4b: codex(op:    │    │ 4b: resolver     │  --deep only   │  │
-│  │  │ "coral:resolver")│    │  (edits plan)    │                │  │
+│  │  │ 4b: coral-cli    │    │ 4b: resolver     │  --deep only   │  │
+│  │  │ codex resolver   │    │  (edits plan)    │                │  │
+│  │  │ -i               │    │                  │                │  │
 │  │  └────────┬─────────┘    └────────┬─────────┘                │  │
 │  │           │                       │                          │  │
 │  │  ┌────────▼─────────────────────────────────┐                │  │

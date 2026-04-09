@@ -1,40 +1,41 @@
 # Discuss
 
-Backend-managed multi-agent discussion with an event-sourced core. `event-log.jsonl` is the canonical record. `state.json` is a derived `PersistedDiscussSnapshot` used for fast reads and snapshot-plus-tail hydration.
+Backend-managed multi-agent discussion with an event-sourced core. `event-log.jsonl` is the canonical record. `state.json` is a derived snapshot used for fast reads and snapshot-plus-tail hydration.
 
 ## Entry Points
 
-| Tool | Purpose |
-|------|---------|
-| `discuss_seed` | Persona seeding (k-DPP sampling) |
-| `discuss_start` | Create session, append initial events, start control loop |
-| `discuss_participate` | Manual bid or speech injection |
-| `discuss_watch` | Projected watch-log envelope (not raw events) |
-| `discuss_abort` | Force-end session, detach from registry |
+Discuss is exposed through CLI commands backed by dedicated HTTP endpoints:
 
-Manual observers: an agent with no `provider` and no `model` is treated as manual. The reducer omits them from `runtime.agentRuns`, subflows skip them during automatic bid collection, and the loop pauses when a manual participant becomes the current speaker. The session resumes after `discuss_participate`.
+| CLI command | HTTP route | Purpose |
+| --- | --- | --- |
+| `coral-cli discuss seed` | `POST /discuss/persona-sets` | Persona seeding |
+| `coral-cli discuss start` | `POST /discuss/sessions` | Create session, append initial events, start control loop |
+| `coral-cli discuss watch` | `GET /discuss/sessions/:id/events` | Read projected watch events |
+| `coral-cli discuss participate` | `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches` | Inject a manual bid or speech |
+| `coral-cli discuss abort` | `DELETE /discuss/sessions/:id` | End the session and detach it from the live registry |
+
+Manual observers are agents with no `provider` and no `model`. They are skipped during automatic bid collection and the loop pauses when a manual participant becomes the current speaker.
 
 ## Architecture
 
-Two-layer split following **Functional Core / Imperative Shell**:
+Discuss keeps a strict functional-core / imperative-shell split:
 
 | Layer | Location | Responsibility |
-|-------|----------|---------------|
-| **Domain (L0)** | `src/discuss/` | Pure state transitions, event definitions, projections — zero I/O |
-| **Runtime (L1)** | `src/execution/discuss/` | Control loop, persistence, provider execution, live registry |
+| --- | --- | --- |
+| Domain | `src/discuss/` | Pure state transitions, event definitions, projections |
+| Runtime | `src/execution/discuss/` | Control loop, persistence, provider execution, live registry |
 
-The domain snapshot has two facets:
-- **state**: user-visible discussion state (agents, bids, transcript, epoch, speaker, thresholds)
-- **runtime**: persisted control metadata (controlPhase, carry-forward, follow-up queue, execution bookkeeping)
+The persisted snapshot has two facets:
 
-The state machine validates and emits event batches. The reducer is the single replay path for materializing committed events back into state and runtime — used by both live execution and restart recovery.
+- `state`: user-visible discuss state
+- `runtime`: control metadata used to resume live execution
 
 ## Event Flow
 
-Domain events (defined in `src/discuss/events.ts`):
+Domain events are defined in `src/discuss/events.ts`.
 
 | Group | Events |
-|-------|--------|
+| --- | --- |
 | Session lifecycle | `session.created`, `session.ended`, `session.synthesized` |
 | Bidding | `bidding.opened`, `bid.submitted`, `bid.round.closed`, `participants.expelled` |
 | Speech / epoch | `speech.recorded`, `speech.timed_out`, `epoch.summary.recorded` |
@@ -43,17 +44,17 @@ Domain events (defined in `src/discuss/events.ts`):
 
 Runtime flow:
 
-1. `discuss_start` → append `session.created` + `bidding.opened` → attach live session → collect automatic bids → schedule loop
-2. Bid collection skips manual participants — manual bids arrive via `discuss_participate`
-3. Loop closes bidding rounds, honors `observer_wait` for pending observer bids
-4. Winner speaks (automatic via provider turn, or manual via `discuss_participate`)
-5. Epoch evaluation → follow-up turns → synthesis → each advances `runtime.controlPhase`
+1. `coral-cli discuss start` / `POST /discuss/sessions` appends `session.created` and `bidding.opened`.
+2. Automatic providers bid; manual participants wait for `POST /discuss/sessions/:id/bids` or `POST /discuss/sessions/:id/speeches`.
+3. The loop resolves speakers, records speech, evaluates epochs, schedules follow-up turns, and eventually synthesizes.
+4. `coral-cli discuss watch` reads the projected watch stream from `GET /discuss/sessions/:id/events`.
+5. `coral-cli discuss abort` / `DELETE /discuss/sessions/:id` appends a durable terminal event and detaches the live session.
 
-Persisted control phases: `idle` → `observer_wait` → `evaluate_epoch` → `collect_follow_up` → `synthesize`
+Persisted control phases are `idle`, `observer_wait`, `evaluate_epoch`, `collect_follow_up`, and `synthesize`.
 
-## `discuss_watch` Contract
+## `watch` Contract
 
-Envelope shape:
+`coral-cli discuss watch` returns a projected envelope, not raw domain events:
 
 ```json
 {
@@ -69,22 +70,18 @@ Envelope shape:
 }
 ```
 
-The `events` array is a **projection**, not raw domain events. Emitted types: `bid_resolved`, `speech_done`, `epoch_transition`, `session_ended`.
-
-Cursor semantics:
+Cursor rules:
 
 | Input | Output |
-|-------|--------|
-| Omit `cursor` | Full watch history + current total cursor |
-| `cursor = N` | Events after index N |
-| `cursor = total` | Empty events, same cursor |
+| --- | --- |
+| omit `cursor` | full watch history plus current cursor |
+| `cursor = N` | events after `N` |
+| `cursor = total` | empty `events`, same cursor |
 | `cursor > total` | `invalid_cursor` |
 
-Live sessions append projected events into an in-memory watch buffer. Polling reads serve from the live buffer when the cursor is within retained range. If no live session or cursor is older than the buffer, the runtime rebuilds from persisted events.
+## Storage and Recovery
 
-## Storage And Recovery
-
-Persisted storage is source-scoped — all checkouts of the same canonical git source share:
+Discuss storage is source-scoped:
 
 ```text
 ~/.coral/
@@ -100,26 +97,23 @@ Persisted storage is source-scoped — all checkouts of the same canonical git s
 ```
 
 - `event-log.jsonl` is authoritative
-- `state.json` is a derived snapshot (optimization + restart seed)
-- `discovery.json` / `summary-index.json` are source-scoped indexes
+- `state.json` is the derived snapshot
+- source indexes are rebuilt or marked dirty as sessions change
 
-Append order: log append + `fdatasync` → reduce into snapshot → atomic `state.json` rewrite → mark source indexes dirty.
+Hydration uses snapshot-plus-tail replay. On backend startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
 
-Hydration is snapshot-plus-tail: if `state.json` matches the log, use it directly; if log grew, replay only `seq > lastAppliedSeq`; if snapshot missing, rebuild from full log.
+## Projections and Authority
 
-On backend startup, known discuss sources are iterated and non-abort-ended sessions are recovered with prebuilt watch buffers.
+Discuss exposes three read models:
 
-## Projections And Authority
+- control view
+- audit view
+- watch-event projection
 
-Three projection layers:
-- **Control view**: redacts bid internals (bids, effective_bids, thoughts)
-- **Audit view**: full transcript (only available for ended sessions)
-- **Watch events**: derived notifications for live polling
+HTTP read APIs:
 
-HTTP API authority:
-- `/api/discuss` reads persisted summaries per canonical source
-- Deduplication by canonical source + sessionId (same repo, different checkouts = one entry)
-- Live sessions override persisted rows with `authority: "live"`
-- `/api/discuss/detail?view=audit` returns 409 for non-ended sessions
+- `GET /discuss/sessions`
+- `GET /discuss/sessions/:id?view=control|audit`
+- `GET /discuss/sessions/:id/events`
 
-The sealed-bid design keeps live protocol private while enabling post-hoc audit from the same projection layer.
+Live sessions override persisted summaries with `authority: "live"`. Audit detail is only available for ended sessions.

@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { backendInfoPath } from './paths.js';
-import { isNoEntryError } from '../shared/mcp-utils.js';
+import { isNoEntryError } from '../shared/utils.js';
 
 export { backendInfoPath } from './paths.js';
 

@@ -2,7 +2,7 @@
  * Centralized backend logger.
  *
  * Every line is prefixed with ISO timestamp and optional identity tag.
- * Output goes to stderr (never stdout — MCP stdio transport conflict).
+ * Output goes to stderr so backend logs stay separate from stdout responses.
  *
  * Usage:
  *   import { backendLog } from '../shared/backend-log.js';

@@ -1,229 +1,682 @@
-import { assertOwnerId } from '../shared/mcp-utils.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { CurateHandle } from '../kb/curate.js';
+import { parseMembersFromBody, parseSummaryFromBody } from '../kb/community-detection.js';
+import type { KbRuntime } from '../kb/contracts.js';
+import { ZodError, z } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
+import { extractBody, extractPrincipleStatement } from '../kb/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
+import {
+  memoDir,
+  notePathFromName,
+  principlePathFromName,
+  sourcePathFromName,
+  communityPathFromName,
+} from '../kb/paths.js';
 import { promote as kbPromote } from '../kb/promote.js';
-import { readEntry } from '../kb/read.js';
+import { loadKbCommunity, loadKbNote, loadKbSource } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/reindex.js';
 import { searchKb } from '../kb/search.js';
 import { deleteSource, listSources, persistPreparedSource } from '../kb/source-store.js';
-import { isNoteEntry, type KbSearchScope } from '../kb/types.js';
+import { isNoteEntry } from '../kb/types.js';
 import { update as kbUpdate } from '../kb/update.js';
-import { compareLocale } from '../kb/validation.js';
-import type { ToolRequest } from './request-context.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from '../kb/validation.js';
 import {
-  deriveLegacyErrorMessage,
-  domainError,
-  domainSuccess,
-  optionalString,
-  requireString,
-  type ToolDomainResult,
-} from './tool-response.js';
-import type { KbSubsystem } from './tool-router.js';
+  expandKbReadSelector,
+  parseKbSelector,
+  type KbReadKind,
+  type KbResolvedReadSelector,
+} from '../shared/kb-read-contract.js';
+import { assertOwnerId } from '../shared/utils.js';
+import type { CallerContext } from '../shared/request-context.js';
+import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
 
-function optionalKbSearchScope(args: Record<string, unknown>): KbSearchScope | null | undefined {
-  const scope = optionalString(args, 'scope');
-  if (scope === undefined) {
-    return undefined;
-  }
+export type KbSubsystem = {
+  kb: KbRuntime;
+  curateScheduler: CurateHandle;
+};
 
-  if (scope === 'notes' || scope === 'sources' || scope === 'communities' || scope === 'all') {
-    return scope;
-  }
+type KbArgs = Record<string, unknown>;
 
-  return null;
+const kbSearchSchema = z
+  .object({
+    query: z.string().min(1),
+    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
+    top_k: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const kbReadSchema = z
+  .object({
+    note: z.string().min(1),
+  })
+  .strict();
+
+const kbPromoteSchema = z
+  .object({
+    memo: z.string().min(1),
+    title: z.string().min(1),
+    content: z.string(),
+    domain: z.string().min(1),
+    topic: z.string().min(1),
+  })
+  .strict();
+
+const kbUpdateSchema = z
+  .object({
+    note: z.string().min(1),
+    title: z.string().optional(),
+    content: z.string().optional(),
+  })
+  .strict();
+
+const kbDeleteSchema = z
+  .object({
+    note: z.string().min(1),
+  })
+  .strict();
+
+const kbSourceImportSchema = z
+  .object({
+    slug: z.string().min(1),
+    stagedPath: z.string().min(1),
+    meta: z
+      .object({
+        title: z.string(),
+        type: z.string(),
+        tags: z.array(z.string()),
+        importedAt: z.string(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const kbSourceListSchema = z.object({}).strict();
+
+const kbSourceDeleteSchema = z
+  .object({
+    slug: z.string().min(1),
+  })
+  .strict();
+
+const kbReindexSchema = z.object({}).strict();
+
+const kbMemoSchema = z
+  .object({
+    topic: z.string().min(1),
+    content: z.string(),
+    owner: z.string().min(1),
+  })
+  .strict();
+
+const kbMemoListSchema = z
+  .object({
+    owner: z.string().optional(),
+  })
+  .strict();
+
+const kbMemoDeleteSchema = z
+  .object({
+    pattern: z.string().min(1),
+    owner: z.string().optional(),
+  })
+  .strict();
+
+const kbMemoPurgeSchema = z
+  .object({
+    owner: z.string().optional(),
+  })
+  .strict();
+
+const kbMemoDeleteConsolidatedSchema = z
+  .object({
+    pattern: z.string().min(1).optional(),
+    owner: z.string().optional(),
+    all: z.boolean().optional(),
+  })
+  .strict();
+
+const kbPrinciplesSchema = z
+  .object({
+    query: z.string().optional(),
+    verbose: z.boolean().optional(),
+    top_k: z.number().int().positive().optional(),
+  })
+  .strict();
+
+function kbErrorResult(error: unknown): ToolDomainResult {
+  const detail = error instanceof Error ? { message: error.message } : error;
+  return domainError('kb_error', deriveErrorMessage('kb_error', detail), detail);
 }
 
-function readRequiredOwner(owner: string): { ok: true; value: string } | { ok: false; error: ToolDomainResult } {
+function toolValidationError(error: ZodError): ToolDomainResult {
+  return domainError('invalid_request', error.message);
+}
+
+async function runKbAction(action: () => Promise<unknown> | unknown): Promise<ToolDomainResult> {
   try {
-    return { ok: true, value: assertOwnerId(owner) };
+    return domainSuccess(await action());
   } catch (error: unknown) {
-    return { ok: false, error: domainError('invalid_request', deriveLegacyErrorMessage('invalid_request', error)) };
+    return kbErrorResult(error);
   }
 }
 
-function readOptionalOwner(
-  args: Record<string, unknown>,
-): { ok: true; value: string | undefined } | { ok: false; error: ToolDomainResult } {
-  if (!Object.hasOwn(args, 'owner')) {
-    return { ok: true, value: undefined };
-  }
-
-  const rawOwner = args.owner;
-  if (typeof rawOwner !== 'string') {
-    return { ok: false, error: domainError('invalid_request', 'owner must be a valid token-safe identifier') };
-  }
-
-  const owner = readRequiredOwner(rawOwner);
-  return owner.ok ? { ok: true, value: owner.value } : owner;
-}
-
-export async function handleKbToolCall(request: ToolRequest, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  const { kb } = kbSubsystem;
-  const args = request.args;
-  const ctx = request.context;
+function runKbSyncAction(action: () => unknown): ToolDomainResult {
   try {
-    let result: unknown;
-    switch (request.name) {
-      case 'kb_search': {
-        const query = requireString(args, 'query');
-        if (query === null) return domainError('invalid_request', 'query is required');
-        const scope = optionalKbSearchScope(args);
-        if (scope === null) {
-          return domainError('invalid_request', 'scope must be one of notes, sources, communities, all');
-        }
+    return domainSuccess(action());
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
 
-        result = await searchKb(kb, query, typeof args.top_k === 'number' ? args.top_k : 20, scope ?? 'all');
-        break;
-      }
-      case 'kb_read': {
-        const note = requireString(args, 'note');
-        if (note === null) return domainError('invalid_request', 'note is required');
-        result = readEntry({ note }, ctx.projectRoot);
-        break;
-      }
-      case 'kb_promote': {
-        const memo = requireString(args, 'memo');
-        const title = requireString(args, 'title');
-        const content = requireString(args, 'content');
-        const domain = requireString(args, 'domain');
-        const topic = requireString(args, 'topic');
-        if (!memo || !title || content === null || !domain || !topic) {
-          return domainError('invalid_request', 'memo, title, content, domain, and topic are required strings');
-        }
-        result = await kbPromote(kb, ctx.projectRoot, { memo, title, content, domain, topic }, () => {
-          kbSubsystem.curateScheduler.schedule();
-        });
-        kbSubsystem.curateScheduler.scheduleDeferredCommit();
-        break;
-      }
-      case 'kb_update': {
-        const note = requireString(args, 'note');
-        if (note === null) return domainError('invalid_request', 'note is required');
-        result = await kbUpdate(kb, {
-          note,
-          ...(args.title !== undefined ? { title: optionalString(args, 'title') } : {}),
-          ...(args.content !== undefined ? { content: optionalString(args, 'content') } : {}),
-        });
-        kbSubsystem.curateScheduler.scheduleDeferredCommit();
-        break;
-      }
-      case 'kb_delete': {
-        const note = requireString(args, 'note');
-        if (note === null) return domainError('invalid_request', 'note is required');
-        result = await kbDeleteFn(kb, { note });
-        kbSubsystem.curateScheduler.scheduleDeferredCommit();
-        break;
-      }
-      case 'kb_source_import': {
-        const slug = requireString(args, 'slug');
-        const stagedPath = requireString(args, 'stagedPath');
-        if (slug === null || stagedPath === null) {
-          return domainError('invalid_request', 'slug and stagedPath are required');
-        }
+function invalidRequestResult(error: unknown): ToolDomainResult {
+  return domainError('invalid_request', deriveErrorMessage('invalid_request', error));
+}
 
-        result = await persistPreparedSource(kb, stagedPath, slug);
-        kbSubsystem.curateScheduler.scheduleDeferredCommit();
-        break;
-      }
-      case 'kb_source_list':
-        result = await listSources(kb);
-        break;
-      case 'kb_source_delete': {
-        const slug = requireString(args, 'slug');
-        if (slug === null) return domainError('invalid_request', 'slug is required');
-        result = await deleteSource(kb, { slug });
-        kbSubsystem.curateScheduler.scheduleDeferredCommit();
-        break;
-      }
-      case 'kb_reindex':
-        result = await kbReindex(kb);
-        break;
-      case 'kb_principles': {
-        const index = await kb.ensureIndex();
-        const verbose = args.verbose === true;
-        const allNames = Object.keys(index.principles).sort(compareLocale);
-        const total = allNames.length;
-        const query = optionalString(args, 'query');
-        let names = allNames;
-        if (query?.trim()) {
-          const q = query.toLowerCase();
-          names = allNames.filter((name) => name.toLowerCase().includes(q));
-        }
-        const topK = typeof args.top_k === 'number' && Number.isInteger(args.top_k) && args.top_k > 0 ? args.top_k : 100;
-        names = names.slice(0, topK);
-        if (!verbose) {
-          result = { principles: names, total };
-          break;
-        }
+function kbNotFoundResult(kind: KbReadKind, slug: string): ToolDomainResult {
+  return domainError('not_found', `KB ${kind} not found: ${slug}`);
+}
 
-        const selected = new Set(names);
-        const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
-        const orphanRefs = new Set<string>();
+function normalizeKbSlug(
+  slug: string,
+  kind: KbReadKind,
+): { ok: true; slug: string } | { ok: false; result: ToolDomainResult } {
+  try {
+    if (kind === 'community') {
+      return { ok: true, slug: assertCommunitySlug(slug, kind) };
+    }
 
-        for (const noteRecord of Object.values(index.entries).filter(isNoteEntry).sort((left, right) =>
-          compareLocale(left.slug, right.slug),
-        )) {
-          for (const principle of noteRecord.principles) {
-            if (selected.has(principle)) {
-              notesByPrinciple.get(principle)?.push(noteRecord.slug);
-              continue;
-            }
-            if (!(principle in index.principles)) {
-              orphanRefs.add(principle);
-            }
+    if (kind === 'source') {
+      return { ok: true, slug: assertSourceSlug(slug, kind) };
+    }
+
+    return { ok: true, slug: assertNoteSlug(slug, kind) };
+  } catch (error: unknown) {
+    return { ok: false, result: invalidRequestResult(error) };
+  }
+}
+
+function validateOwner(
+  owner: string | undefined,
+): { ok: true; owner: string | undefined } | { ok: false; result: ToolDomainResult } {
+  if (owner === undefined) {
+    return { ok: true, owner: undefined };
+  }
+
+  try {
+    return { ok: true, owner: assertOwnerId(owner) };
+  } catch (error: unknown) {
+    return { ok: false, result: invalidRequestResult(error) };
+  }
+}
+
+function resolveSourcePath(slug: string, kbSubsystem?: KbSubsystem): string {
+  return kbSubsystem?.kb.sourcePath(slug) ?? sourcePathFromName(slug);
+}
+
+function resolveCommunityPath(slug: string, kbSubsystem?: KbSubsystem): string {
+  return kbSubsystem?.kb.communityPath(slug) ?? communityPathFromName(slug);
+}
+
+function resolvePrinciplePath(slug: string, kbSubsystem?: KbSubsystem): string {
+  return kbSubsystem?.kb.principlePath(slug) ?? principlePathFromName(slug);
+}
+
+function dispatchKbReadCandidate(
+  candidate: KbResolvedReadSelector,
+  ctx: CallerContext,
+  kbSubsystem?: KbSubsystem,
+): ToolDomainResult {
+  switch (candidate.kind) {
+    case 'memo':
+      return handleKbMemoRead(candidate.slug, ctx);
+    case 'note':
+      return handleKbNoteRead(candidate.slug, ctx);
+    case 'community':
+      return handleKbCommunityRead(candidate.slug, kbSubsystem);
+    case 'source':
+      return handleKbSourceRead(candidate.slug, kbSubsystem);
+    case 'principle':
+      return handleKbPrincipleRead(candidate.slug, kbSubsystem);
+  }
+}
+
+export async function handleKbSearch(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbSearchSchema.parse(args);
+    return runKbAction(() => searchKb(kbSubsystem.kb, parsed.query, parsed.top_k ?? 20, parsed.scope ?? 'all'));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbNoteRead(slug: string, _ctx: CallerContext): ToolDomainResult {
+  const normalized = normalizeKbSlug(slug, 'note');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const notePath = notePathFromName(normalized.slug);
+    if (!existsSync(notePath)) {
+      return kbNotFoundResult('note', normalized.slug);
+    }
+
+    const { frontmatter, title, body } = loadKbNote(notePath);
+    return domainSuccess({
+      kind: 'note',
+      note: normalized.slug,
+      title,
+      content: body,
+      tags: frontmatter.tags,
+      principles: frontmatter.principles,
+      updatedAt: frontmatter.updatedAt,
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbSourceRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+  const normalized = normalizeKbSlug(slug, 'source');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const sourcePath = resolveSourcePath(normalized.slug, kbSubsystem);
+    if (!existsSync(sourcePath)) {
+      return kbNotFoundResult('source', normalized.slug);
+    }
+
+    const { frontmatter, title, body } = loadKbSource(sourcePath);
+    return domainSuccess({
+      kind: 'source',
+      note: normalized.slug,
+      title,
+      content: body,
+      tags: frontmatter.tags,
+      principles: [],
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbCommunityRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+  const normalized = normalizeKbSlug(slug, 'community');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const communityPath = resolveCommunityPath(normalized.slug, kbSubsystem);
+    if (!existsSync(communityPath)) {
+      return kbNotFoundResult('community', normalized.slug);
+    }
+
+    const { title, body, level, parent, children, updatedAt } = loadKbCommunity(communityPath);
+    const summary = parseSummaryFromBody(body);
+    return domainSuccess({
+      kind: 'community',
+      note: normalized.slug,
+      title,
+      content: body,
+      tags: [],
+      principles: [],
+      members: parseMembersFromBody(body),
+      level,
+      ...(parent === undefined ? {} : { parent }),
+      ...(children === undefined ? {} : { children }),
+      ...(summary === undefined ? {} : { summary }),
+      updatedAt,
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbMemoRead(slug: string, ctx: CallerContext): ToolDomainResult {
+  const normalized = normalizeKbSlug(slug, 'memo');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const memoPath = join(memoDir(ctx.projectRoot), `${normalized.slug}.md`);
+    if (!existsSync(memoPath)) {
+      return kbNotFoundResult('memo', normalized.slug);
+    }
+
+    const raw = readFileSync(memoPath, 'utf-8');
+    return domainSuccess({
+      kind: 'memo',
+      note: normalized.slug,
+      title: normalized.slug,
+      content: extractBody(raw),
+      tags: [],
+      principles: [],
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbPrincipleRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+  const normalized = normalizeKbSlug(slug, 'principle');
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const principlePath = resolvePrinciplePath(normalized.slug, kbSubsystem);
+    if (!existsSync(principlePath)) {
+      return kbNotFoundResult('principle', normalized.slug);
+    }
+
+    const raw = readFileSync(principlePath, 'utf-8');
+    const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
+    return domainSuccess({
+      kind: 'principle',
+      note: normalized.slug,
+      title: normalized.slug,
+      content: extractPrincipleStatement(raw),
+      rawContent: raw,
+      tags: [],
+      principles: [],
+      updatedAt: updatedAtMatch?.[1]?.trim(),
+    });
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
+export function handleKbRead(args: KbArgs, ctx: CallerContext, kbSubsystem?: KbSubsystem): ToolDomainResult {
+  try {
+    const parsed = kbReadSchema.parse(args);
+    const selector = parseKbSelector(parsed.note);
+
+    for (const candidate of expandKbReadSelector(selector)) {
+      const result = dispatchKbReadCandidate(candidate, ctx, kbSubsystem);
+      if (result.ok) {
+        return result;
+      }
+      if (result.code !== 'not_found') {
+        return result;
+      }
+    }
+
+    return domainError('not_found', `KB entry not found: ${parsed.note}`);
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    return invalidRequestResult(error);
+  }
+}
+
+export async function handleKbPromote(
+  args: KbArgs,
+  kbSubsystem: KbSubsystem,
+  ctx: CallerContext,
+): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbPromoteSchema.parse(args);
+    return runKbAction(async () => {
+      const result = await kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed, () => {
+        kbSubsystem.curateScheduler.schedule();
+      });
+      kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      return result;
+    });
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbUpdate(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbUpdateSchema.parse(args);
+    return runKbAction(async () => {
+      const result = await kbUpdate(kbSubsystem.kb, {
+        note: parsed.note,
+        ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+        ...(parsed.content !== undefined ? { content: parsed.content } : {}),
+      });
+      kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      return result;
+    });
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbDelete(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbDeleteSchema.parse(args);
+    return runKbAction(async () => {
+      const result = await kbDeleteFn(kbSubsystem.kb, { note: parsed.note });
+      kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      return result;
+    });
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbSourceImportSchema.parse(args);
+    return runKbAction(async () => {
+      const result = await persistPreparedSource(kbSubsystem.kb, parsed.stagedPath, parsed.slug);
+      kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      return result;
+    });
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbSourceList(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    kbSourceListSchema.parse(args);
+    return runKbAction(() => listSources(kbSubsystem.kb));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbSourceDeleteSchema.parse(args);
+    return runKbAction(async () => {
+      const result = await deleteSource(kbSubsystem.kb, { slug: parsed.slug });
+      kbSubsystem.curateScheduler.scheduleDeferredCommit();
+      return result;
+    });
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbReindex(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    kbReindexSchema.parse(args);
+    return runKbAction(() => kbReindex(kbSubsystem.kb));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
+  try {
+    const parsed = kbPrinciplesSchema.parse(args);
+    return runKbAction(async () => {
+      const index = await kbSubsystem.kb.ensureIndex();
+      const allNames = Object.keys(index.principles).sort(compareLocale);
+      const total = allNames.length;
+      let names = allNames;
+
+      if (parsed.query?.trim()) {
+        const loweredQuery = parsed.query.toLowerCase();
+        names = allNames.filter((name) => name.toLowerCase().includes(loweredQuery));
+      }
+
+      names = names.slice(0, parsed.top_k ?? 100);
+      if (parsed.verbose !== true) {
+        return { principles: names, total };
+      }
+
+      const selected = new Set(names);
+      const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
+      const orphanRefs = new Set<string>();
+
+      for (const noteRecord of Object.values(index.entries)
+        .filter(isNoteEntry)
+        .sort((left, right) => compareLocale(left.slug, right.slug))) {
+        for (const principle of noteRecord.principles) {
+          if (selected.has(principle)) {
+            notesByPrinciple.get(principle)?.push(noteRecord.slug);
+            continue;
+          }
+
+          if (!(principle in index.principles)) {
+            orphanRefs.add(principle);
           }
         }
+      }
 
-        result = {
-          principles: names.map((name) => ({
-            name,
-            statement: index.principles[name],
-            notes: notesByPrinciple.get(name) ?? [],
-          })),
-          total,
-          ...(orphanRefs.size === 0
-            ? {}
-            : { warning: `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}` }),
-        };
-        break;
-      }
-      case 'kb_memo': {
-        const topic = requireString(args, 'topic');
-        const content = requireString(args, 'content');
-        const owner = requireString(args, 'owner');
-        if (!topic || content === null || owner === null)
-          return domainError('invalid_request', 'topic, content, and owner are required');
-        const normalizedOwner = readRequiredOwner(owner);
-        if (!normalizedOwner.ok) return normalizedOwner.error;
-        result = writeMemo(ctx.projectRoot, { topic, content, owner: normalizedOwner.value });
-        break;
-      }
-      case 'kb_memo_list': {
-        const ownerFilter = readOptionalOwner(args);
-        if (!ownerFilter.ok) return ownerFilter.error;
-        result = listMemos(ctx.projectRoot, ownerFilter.value);
-        break;
-      }
-      case 'kb_memo_delete': {
-        const pattern = requireString(args, 'pattern');
-        if (pattern === null) return domainError('invalid_request', 'pattern is required');
-        const deleteOwner = readOptionalOwner(args);
-        if (!deleteOwner.ok) return deleteOwner.error;
-        result = deleteMemos(ctx.projectRoot, { pattern, owner: deleteOwner.value });
-        break;
-      }
-      case 'kb_memo_purge': {
-        const purgeOwner = readOptionalOwner(args);
-        if (!purgeOwner.ok) return purgeOwner.error;
-        result = purgeMemos(ctx.projectRoot, purgeOwner.value);
-        break;
-      }
-      default:
-        return domainError('unknown_tool', `Unknown tool: ${request.name}`, { name: request.name });
-    }
-    return domainSuccess(result);
+      return {
+        principles: names.map((name) => ({
+          name,
+          statement: index.principles[name],
+          notes: notesByPrinciple.get(name) ?? [],
+        })),
+        total,
+        ...(orphanRefs.size === 0
+          ? {}
+          : { warning: `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}` }),
+      };
+    });
   } catch (error: unknown) {
-    const detail = error instanceof Error ? { message: error.message } : error;
-    return domainError('kb_error', deriveLegacyErrorMessage('kb_error', detail), detail);
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbMemo(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+  try {
+    const parsed = kbMemoSchema.parse(args);
+    const owner = validateOwner(parsed.owner);
+    if (!owner.ok) {
+      return owner.result;
+    }
+
+    return runKbSyncAction(() =>
+      writeMemo(ctx.projectRoot, { topic: parsed.topic, content: parsed.content, owner: parsed.owner }),
+    );
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbMemoList(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+  try {
+    const parsed = kbMemoListSchema.parse(args);
+    const owner = validateOwner(parsed.owner);
+    if (!owner.ok) {
+      return owner.result;
+    }
+
+    return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+  try {
+    const parsed = kbMemoDeleteSchema.parse(args);
+    return handleKbMemoDeleteConsolidated(parsed, ctx);
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+  try {
+    const parsed = kbMemoPurgeSchema.parse(args);
+    return handleKbMemoDeleteConsolidated({ owner: parsed.owner, all: true }, ctx);
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
+  }
+}
+
+export function handleKbMemoDeleteConsolidated(
+  args: { pattern?: string; owner?: string; all?: boolean },
+  ctx: CallerContext,
+): ToolDomainResult {
+  try {
+    const parsed = kbMemoDeleteConsolidatedSchema.parse(args);
+    const owner = validateOwner(parsed.owner);
+    if (!owner.ok) {
+      return owner.result;
+    }
+
+    const hasPattern = parsed.pattern !== undefined;
+    const purgeAll = parsed.all === true;
+    if (hasPattern === purgeAll) {
+      return domainError('invalid_request', 'Exactly one of pattern or all=true must be provided');
+    }
+
+    if (hasPattern) {
+      return runKbSyncAction(() => deleteMemos(ctx.projectRoot, { pattern: parsed.pattern!, owner: owner.owner }));
+    }
+
+    return runKbSyncAction(() => purgeMemos(ctx.projectRoot, owner.owner));
+  } catch (error: unknown) {
+    if (error instanceof ZodError) {
+      return toolValidationError(error);
+    }
+    throw error;
   }
 }

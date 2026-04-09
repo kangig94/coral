@@ -6,10 +6,10 @@ import type * as EngineMod from '../engine.js';
 
 type EngineModule = typeof EngineMod;
 
-const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_SESSIONS;
-const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_SESSIONS;
+const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
+const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
 
-function restoreEnv(name: 'CORAL_MAX_SESSIONS' | 'CORAL_DISCUSS_MAX_SESSIONS', value: string | undefined): void {
+function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
@@ -59,21 +59,21 @@ describe('engine admission queue', () => {
   let coordinator: InstanceType<EngineModule['LaunchCoordinator']>;
 
   beforeEach(async () => {
-    process.env.CORAL_MAX_SESSIONS = '1';
-    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
+    process.env.CORAL_MAX_WORKERS = '1';
+    process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
     coordinator = new engine.LaunchCoordinator();
   });
 
   afterEach(() => {
-    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
-    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    restoreEnv('CORAL_MAX_WORKERS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_WORKERS', ORIGINAL_DISCUSS_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
   });
 
   it('returns an immediate permit when capacity is available', () => {
-    expect(engine.MAX_ACTIVE_SESSIONS).toBe(1);
+    expect(engine.MAX_WORKERS).toBe(1);
     expect(coordinator.requestLaunch('job-1', 'codex')).toEqual({ type: 'immediate' });
     expect(coordinator.queueDepth()).toBe(0);
     expect(coordinator.queuePosition('job-1')).toBeNull();
@@ -94,8 +94,8 @@ describe('engine admission queue', () => {
   });
 
   it('tracks default and discuss pool admission independently', async () => {
-    expect(engine.MAX_ACTIVE_SESSIONS).toBe(1);
-    expect(engine.DISCUSS_MAX_ACTIVE_SESSIONS).toBe(1);
+    expect(engine.MAX_WORKERS).toBe(1);
+    expect(engine.DISCUSS_MAX_WORKERS).toBe(1);
     expect(coordinator.requestLaunch('default-1', 'codex')).toEqual({ type: 'immediate' });
     expect(coordinator.requestLaunch('discuss-1', 'codex', 'discuss')).toEqual({ type: 'immediate' });
 
@@ -172,7 +172,7 @@ describe('engine admission queue', () => {
     expect(coordinator.requestLaunch('job-22', 'codex')).toBe('queue_full');
 
     // Cleanup
-    coordinator.killAllChildren();
+    coordinator.terminateAll();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
@@ -265,7 +265,7 @@ describe('engine admission queue', () => {
     expect(coordinator.queuePosition('job-3')).toBeNull();
   });
 
-  it('killAllChildren drains the queued launch list and rejects every queued promise', async () => {
+  it('terminateAll drains the queued launch list and rejects every queued promise', async () => {
     expect(coordinator.requestLaunch('job-1', 'codex')).toEqual({ type: 'immediate' });
     const queuedSecond = coordinator.requestLaunch('job-2', 'codex');
     const queuedThird = coordinator.requestLaunch('job-3', 'codex');
@@ -282,7 +282,7 @@ describe('engine admission queue', () => {
       (error: unknown) => error as Error,
     );
 
-    coordinator.killAllChildren();
+    coordinator.terminateAll();
 
     expect((await secondRejected)?.message).toBe('Launch canceled while queue was drained');
     expect((await thirdRejected)?.message).toBe('Launch canceled while queue was drained');
@@ -297,17 +297,33 @@ describe('recovery helpers', () => {
   let coordinator: InstanceType<EngineModule['LaunchCoordinator']>;
 
   beforeEach(async () => {
-    process.env.CORAL_MAX_SESSIONS = '2';
-    process.env.CORAL_DISCUSS_MAX_SESSIONS = '2';
+    process.env.CORAL_MAX_WORKERS = '2';
+    process.env.CORAL_DISCUSS_MAX_WORKERS = '2';
     engine = await loadEngine();
     coordinator = new engine.LaunchCoordinator();
   });
 
   afterEach(() => {
-    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
-    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    restoreEnv('CORAL_MAX_WORKERS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_WORKERS', ORIGINAL_DISCUSS_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
+  });
+
+  it('active sums all pool active maps', () => {
+    expect(coordinator.active).toBe(0);
+
+    coordinator.restoreActiveLaunch('default-1', 'codex', 'default');
+    coordinator.restoreActiveLaunch('discuss-1', 'codex', 'discuss');
+    coordinator.restoreActiveLaunch('curate-1', 'codex', 'curate');
+    expect(coordinator.active).toBe(3);
+
+    coordinator.releaseLaunch('default-1', 'default');
+    expect(coordinator.active).toBe(2);
+
+    coordinator.releaseLaunch('discuss-1', 'discuss');
+    coordinator.releaseLaunch('curate-1', 'curate');
+    expect(coordinator.active).toBe(0);
   });
 
   it('restoreActiveLaunch inserts directly into active map', () => {
@@ -323,7 +339,7 @@ describe('recovery helpers', () => {
   });
 
   it('restoreActiveLaunch counts toward capacity', () => {
-    // MAX_ACTIVE_SESSIONS = 2 for this test suite
+    // MAX_WORKERS = 2 for this test suite
     coordinator.restoreActiveLaunch('restored-1', 'codex', 'default');
     coordinator.restoreActiveLaunch('restored-2', 'codex', 'default');
 
@@ -400,8 +416,8 @@ describe('spawnDurableJob', () => {
   let tmpRoot: string;
 
   beforeEach(async () => {
-    process.env.CORAL_MAX_SESSIONS = '1';
-    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
+    process.env.CORAL_MAX_WORKERS = '1';
+    process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
     coordinator = new engine.LaunchCoordinator();
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-engine-durable-'));
@@ -409,8 +425,8 @@ describe('spawnDurableJob', () => {
 
   afterEach(() => {
     rmSync(tmpRoot, { recursive: true, force: true });
-    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
-    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    restoreEnv('CORAL_MAX_WORKERS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_WORKERS', ORIGINAL_DISCUSS_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -489,16 +505,16 @@ describe('provider servers', () => {
   let coordinator: InstanceType<EngineModule['LaunchCoordinator']>;
 
   beforeEach(async () => {
-    process.env.CORAL_MAX_SESSIONS = '1';
-    process.env.CORAL_DISCUSS_MAX_SESSIONS = '1';
+    process.env.CORAL_MAX_WORKERS = '1';
+    process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
     coordinator = new engine.LaunchCoordinator();
   });
 
   afterEach(() => {
-    coordinator.killAllChildren();
-    restoreEnv('CORAL_MAX_SESSIONS', ORIGINAL_MAX_CHILDREN);
-    restoreEnv('CORAL_DISCUSS_MAX_SESSIONS', ORIGINAL_DISCUSS_MAX_CHILDREN);
+    coordinator.terminateAll();
+    restoreEnv('CORAL_MAX_WORKERS', ORIGINAL_MAX_CHILDREN);
+    restoreEnv('CORAL_DISCUSS_MAX_WORKERS', ORIGINAL_DISCUSS_MAX_CHILDREN);
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -578,14 +594,14 @@ describe('provider servers', () => {
     await handle.close();
   });
 
-  it('killAllChildren leaves provider servers to the host manager', async () => {
+  it('terminateAll leaves provider servers to the host manager', async () => {
     const handle = await coordinator.spawnProviderServer({
       provider: 'codex',
       command: process.execPath,
       args: ['-e', createProviderServerScript()],
     });
 
-    coordinator.killAllChildren();
+    coordinator.terminateAll();
 
     await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
       pong: 'still-live',

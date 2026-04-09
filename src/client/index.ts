@@ -48,7 +48,18 @@ export type { BackendHandle } from './backend-lifecycle.js';
 
 // ./http-client.js
 export { BackendClient, BackendToolHttpError, isBackendHealth } from './http-client.js';
-export type { CallerContext, BackendHealth } from './http-client.js';
+export type {
+  AcceptedLaunchResponse,
+  BackendHealth,
+  CallerContext,
+  JobDetailResponse,
+  JobsListResponse,
+  SessionCreateResponse,
+  SessionForkResponse,
+  SessionMessageResponse,
+  SessionsListResponse,
+  WorkflowLaunchResponse,
+} from './http-client.js';
 
 // ../shared/types.js
 export type {
@@ -58,7 +69,6 @@ export type {
   WaitStreamEvent,
   WaitCursor,
   TerminalResult,
-  LaunchDecision,
   JobPhase,
   SessionState,
   JobKind,

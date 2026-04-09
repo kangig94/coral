@@ -4,19 +4,20 @@ declare const __VERSION__: string;
 import { existsSync, readFileSync } from 'node:fs';
 import { Command, Option } from 'commander';
 
-import { BackendClient, BackendToolHttpError, type CallerContext } from '../client/http-client.js';
-import { assertOwnerId, collectCoralEnv } from '../shared/mcp-utils.js';
-import { ensureBackend } from '../client/backend-lifecycle.js';
-import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../bridge/backend-client.js';
-import type { AbortResult } from '../execution/abort-registry.js';
-import type { ListResult } from '../execution/service.js';
-import { discussParticipateSchema, discussSeedSchema, discussStartSchema } from '../discuss/schemas.js';
-import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
-import { MAX_INLINE } from '../shared/schemas.js';
-import type { LaunchDecision, WaitStreamEvent } from '../shared/types.js';
 import {
-  type DiscussAbortResult,
-  type DiscussStartResult,
+  BackendClient,
+  BackendToolHttpError,
+  type AcceptedLaunchResponse,
+  type CallerContext,
+} from '../client/http-client.js';
+import { getBackendStatusFull, shutdownBackend, streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
+import { assertOwnerId, collectCoralEnv } from '../shared/utils.js';
+import { ensureBackend } from '../client/backend-lifecycle.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../discuss/schemas.js';
+import { MAX_INLINE } from '../shared/schemas.js';
+import type { WaitStreamEvent } from '../shared/types.js';
+import {
+  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatKbDelete,
@@ -38,7 +39,7 @@ import {
   formatDiscussStart,
   formatDiscussWatch,
   formatError,
-  formatLaunchDecision,
+  formatLaunch,
   formatPersonaSeed,
   formatProviderList,
   formatShutdown,
@@ -55,7 +56,6 @@ import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
-import type { ToolDomainResult } from '../execution/tool-response.js';
 
 function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
@@ -66,28 +66,18 @@ function createCliProviderRegistry(): ProviderRegistry {
 }
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
-type ProviderExecOptions = {
-  prompt: string;
+type ProviderRunOptions = {
+  input?: string;
   session?: string;
   workDir?: string;
   model?: string;
-  detach?: boolean;
-};
-
-type ProviderForkOptions = {
-  session: string;
-  prompt?: string;
-  workDir?: string;
-  model?: string;
-  detach?: boolean;
-};
-
-type ProviderCoralOptions = {
-  prompt: string;
-  session?: string;
-  workDir?: string;
   owner?: string;
+  bypassPermissions?: boolean;
   detach?: boolean;
+};
+
+type ProviderListOptions = {
+  provider?: string;
 };
 
 type WaitOptions = {
@@ -103,13 +93,10 @@ type AbortOptions = {
 
 type WorkflowOptions = {
   expression?: string;
-  initPrompt?: string;
+  startPrompt?: string;
   context?: string;
   provider?: string;
   workDir?: string;
-  staleTimeoutSeconds?: string;
-  inputJson?: string;
-  atoms?: string;
   detach?: boolean;
   owner?: string;
 };
@@ -182,48 +169,20 @@ function resolveFilePath(filePath: string): string {
   return filePath;
 }
 
+function resolveInput(value: string): string {
+  return existsSync(value) ? readFileSync(value, 'utf8') : value;
+}
+
+function buildAgentOp(agent: string): string {
+  return agent.includes(':') ? agent : `coral:${agent}`;
+}
+
 function makeClient(projectRoot: string): BackendClient {
   const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv: collectCoralEnv() };
   return new BackendClient({
     ensureBackend: () => ensureBackend(pluginRoot || undefined),
     defaultContext,
   });
-}
-
-function isToolDomainResult(value: unknown): value is ToolDomainResult {
-  if (!isJsonObject(value) || typeof value.ok !== 'boolean') {
-    return false;
-  }
-
-  if (value.ok) {
-    return 'data' in value;
-  }
-
-  return typeof value.code === 'string' && typeof value.message === 'string';
-}
-
-function normalizeResult(result: unknown): { output: unknown; isError: boolean } {
-  if (isToolDomainResult(result)) {
-    return result.ok ? { output: result.data, isError: false } : { output: result, isError: true };
-  }
-
-  if (
-    isJsonObject(result) &&
-    typeof result.isError === 'boolean' &&
-    Array.isArray(result.content) &&
-    result.content.length > 0
-  ) {
-    const first = result.content[0];
-    if (isJsonObject(first) && typeof first.text === 'string') {
-      try {
-        return { output: JSON.parse(first.text), isError: result.isError };
-      } catch {
-        return { output: first.text, isError: result.isError };
-      }
-    }
-  }
-
-  return { output: result, isError: false };
 }
 
 export function getOutputFormat(command: Command): 'text' | 'json' {
@@ -234,17 +193,8 @@ function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
   return argv[0]?.match(/node(\.exe)?$/) ? `node "${argv[1]}"` : (argv[0] ?? 'coral-cli');
 }
 
-function emit(result: unknown, outputFormat: 'text' | 'json', textFormatter?: (data: unknown) => string): void {
-  const { output, isError } = normalizeResult(result);
-
-  if (isError) {
-    const text = outputFormat === 'text' ? formatError(output) : JSON.stringify(output);
-    process.stderr.write(text + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(output) : JSON.stringify(output);
+function emit<T>(result: T, outputFormat: 'text' | 'json', textFormatter?: (data: T) => string): void {
+  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
 }
 
@@ -257,12 +207,6 @@ export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
 
   if (error instanceof BackendToolHttpError) {
     process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  if (isToolDomainResult(error) && !error.ok) {
-    process.stderr.write(JSON.stringify(error) + '\n');
     process.exitCode = 1;
     return;
   }
@@ -297,24 +241,20 @@ function parseJobIds(raw: string): string[] {
   return jobIds;
 }
 
-export function isLaunchDecision(value: unknown): value is LaunchDecision {
-  if (!isJsonObject(value) || typeof value.status !== 'string') {
+export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
+  if (!isJsonObject(value) || typeof value.launchState !== 'string') {
     return false;
   }
 
-  if (value.status === 'running' || value.status === 'queued') {
-    return typeof value.job === 'string' && typeof value.session === 'string';
-  }
-
-  if (value.status === 'rejected') {
-    return value.phase === 'preflight' && typeof value.code === 'string' && typeof value.message === 'string';
-  }
-
-  return false;
+  return (
+    (value.launchState === 'running' || value.launchState === 'queued') &&
+    typeof value.job === 'string' &&
+    typeof value.session === 'string'
+  );
 }
 
-export function emitLaunchDecision(decision: LaunchDecision, outputFormat: 'text' | 'json'): void {
-  const text = outputFormat === 'text' ? formatLaunchDecision(decision) : JSON.stringify(decision);
+export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse, outputFormat: 'text' | 'json'): void {
+  const text = outputFormat === 'text' ? formatLaunch(decision) : JSON.stringify(decision);
   process.stdout.write(text + '\n');
 }
 
@@ -331,20 +271,21 @@ async function handleLaunchResult(
   outputFormat: 'text' | 'json',
   client: BackendClient,
 ): Promise<void> {
-  const normalized = normalizeResult(result);
-
-  if (normalized.isError) {
-    emitError(normalized.output, outputFormat);
+  if (!isAcceptedLaunchResponse(result)) {
+    emitError(
+      new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`),
+      outputFormat,
+    );
     return;
   }
 
   if (detach) {
-    emitLaunchDecision(normalized.output as LaunchDecision, outputFormat);
+    emitAcceptedLaunchResponse(result, outputFormat);
     return;
   }
 
   process.exitCode = await launchAndFollow({
-    launchResult: normalized.output as Extract<LaunchDecision, { status: 'running' | 'queued' }>,
+    launchResult: result,
     abortJob: async (jobId) => {
       await client.abortJobs([jobId]);
     },
@@ -416,111 +357,46 @@ function shapeWaitOutputRecord(event: WaitStreamEvent, cursor: string | null, em
   return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
-export function normalizeProviderArgv(
-  argv: readonly string[],
-  providerRegistry: ProviderRegistry = createCliProviderRegistry(),
-): string[] {
-  if (argv.length < 4) {
-    return argv.slice();
-  }
-
-  const [nodePath, scriptPath, provider, dispatchToken] = argv;
-
-  if (!getProviderNames(providerRegistry).includes(provider)) {
-    return argv.slice();
-  }
-
-  const match = /^coral:([a-z0-9][a-z0-9-]*)$/.exec(dispatchToken);
-  if (!match) {
-    return argv.slice();
-  }
-
-  return [nodePath, scriptPath, provider, 'coral', match[1], ...argv.slice(4)];
-}
-
 function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
     const provider = program.command(providerName).description(`${providerName} provider operations`);
-
-    const execCommand = provider.command('exec');
-    execCommand
-      .description('Execute a prompt')
-      .requiredOption('--prompt <text>', 'Prompt text')
-      .option('--session <id>', 'Resume session ID')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--model <model>', 'Model override')
+    provider
+      .argument('[agent]', 'Agent name (omit for raw execution)')
+      .option('-i, --input <text-or-file>', 'Prompt text or file path')
+      .option('-s, --session <id>', 'Session ID')
+      .option('-w, --work-dir <path>', 'Working directory')
+      .option('-m, --model <model>', 'Model override')
+      .option('-o, --owner <id>', 'Owner ID for memo isolation')
+      .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (opts: ProviderExecOptions) => {
-        const outputFormat = getOutputFormat(execCommand);
+      .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
+        const outputFormat = getOutputFormat(provider);
 
         try {
+          if (agent === 'list') {
+            throw new Error(
+              `Legacy "coral-cli ${providerName} list" has moved to "coral-cli list --provider ${providerName}"`,
+            );
+          }
+          if (opts.input === undefined) {
+            throw new Error('input is required (-i, --input)');
+          }
+
+          const prompt = resolveInput(opts.input);
           const client = makeClient(process.cwd());
-          const result = await client.providerExec(providerName, opts.prompt, {
-            session: opts.session,
-            work_dir: opts.workDir,
-            model: opts.model,
-          });
-          await handleLaunchResult(result, opts.detach, outputFormat, client);
-        } catch (error) {
-          emitError(error, outputFormat);
-        }
-      });
-
-    const forkCommand = provider.command('fork');
-    forkCommand
-      .description('Branch from an existing session, optionally continuing with a new prompt')
-      .requiredOption('--session <id>', 'Source session ID')
-      .option('--prompt <text>', 'Follow-up prompt')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--model <model>', 'Model override')
-      .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (opts: ProviderForkOptions) => {
-        const outputFormat = getOutputFormat(forkCommand);
-
-        try {
-          const client = makeClient(process.cwd());
-          const result = await client.providerFork(providerName, opts.session, opts.prompt, {
-            work_dir: opts.workDir,
-            model: opts.model,
-          });
-          await handleLaunchResult(result, opts.detach, outputFormat, client);
-        } catch (error) {
-          emitError(error, outputFormat);
-        }
-      });
-
-    const listCommand = provider.command('list');
-    listCommand.description('List sessions').action(async () => {
-      const outputFormat = getOutputFormat(listCommand);
-
-      try {
-        const client = makeClient(process.cwd());
-        const result = await client.providerList(providerName);
-        emit(result, outputFormat, (data) => formatProviderList(data as ListResult));
-      } catch (error) {
-        emitError(error, outputFormat);
-      }
-    });
-
-    const coralCommand = provider.command('coral');
-    coralCommand
-      .description('Run a prompt through a named Coral agent (e.g. architect, critic)')
-      .argument('<agent>', 'Agent name')
-      .requiredOption('--prompt <text>', 'Prompt text')
-      .option('--session <id>', 'Optional session ID')
-      .option('--work-dir <path>', 'Working directory')
-      .option('--owner <id>', 'Session owner ID for memo isolation')
-      .option('-d, --detach', 'Return launch decision without waiting')
-      .action(async (agent: string, opts: ProviderCoralOptions) => {
-        const outputFormat = getOutputFormat(coralCommand);
-
-        try {
-          const client = makeClient(process.cwd());
-          const result = await client.providerCoralDispatch(providerName, agent, opts.prompt, {
-            session: opts.session,
-            work_dir: opts.workDir,
-            owner: opts.owner,
-          });
+          const requestOptions = {
+            ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
+            ...(opts.model !== undefined ? { model: opts.model } : {}),
+            ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
+            ...(opts.bypassPermissions !== undefined ? { bypassPermissions: opts.bypassPermissions } : {}),
+          };
+          const result = opts.session
+            ? await client.sendMessage(opts.session, prompt, requestOptions)
+            : await client.createSession(
+                providerName,
+                prompt,
+                agent ? { agent: buildAgentOp(agent), ...requestOptions } : requestOptions,
+              );
           await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {
           emitError(error, outputFormat);
@@ -536,9 +412,46 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
     .name('coral-cli')
     .version(typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0')
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
-  program.addOption(new Option('--output-format <format>', 'Output format').choices(['text', 'json']).default('text'));
+  program.addOption(
+    new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'),
+  );
 
   registerProviderCommands(program, providerRegistry);
+
+  const listCommand = program.command('list');
+  listCommand
+    .description('List sessions')
+    .option('--provider <name>', 'Filter by provider')
+    .action(async (opts: ProviderListOptions) => {
+      const outputFormat = getOutputFormat(listCommand);
+
+      try {
+        const client = makeClient(process.cwd());
+        if (opts.provider !== undefined && !getProviderNames(providerRegistry).includes(opts.provider)) {
+          throw new Error(`Unknown provider: ${opts.provider}`);
+        }
+
+        const result = await client.listSessions();
+        const providerFiltered = opts.provider === undefined
+          ? result.sessions
+          : result.sessions.filter((session) => session.provider === opts.provider);
+        const displayResult: SessionListResult = {
+          sessions: providerFiltered.map((session) => ({
+            provider: session.provider,
+            sessionId: session.sessionId,
+            state: session.state,
+            name: session.name,
+            model: session.model,
+            cwd: session.cwd,
+          })),
+        };
+        emit(displayResult, outputFormat, (data) =>
+          formatProviderList(data, { includeProvider: opts.provider === undefined }),
+        );
+      } catch (error) {
+        emitError(error, outputFormat);
+      }
+    });
 
   const waitCommand = program.command('wait');
   waitCommand
@@ -613,7 +526,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       try {
         const client = makeClient(process.cwd());
         const result = await client.abortJobs(parseJobIds(opts.jobs));
-        emit(result, outputFormat, (data) => formatAbortResult(data as AbortResult));
+        emit(result, outputFormat, formatAbortResult);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -622,43 +535,33 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
   const workflowCommand = program.command('workflow');
   workflowCommand
     .description('Execute a workflow pipeline')
-    .option('--expression <expr>', 'Pipeline DSL expression')
-    .option('--init-prompt <text>', 'Initial prompt')
-    .option('--context <text>', 'Shared context')
-    .option('--provider <name>', 'Provider name (registered provider)')
-    .option('--work-dir <path>', 'Working directory')
-    .option('--stale-timeout-seconds <seconds>', 'Stale job timeout')
-    .option('--input-json <source>', 'JSON payload from stdin (use -)')
-    .option('--atoms <json>', 'Atoms JSON object (replaces atoms from stdin)')
-    .option('--owner <id>', 'Session owner ID for memo isolation')
+    .argument('[expression]', 'Pipeline DSL expression')
+    .option('-e, --expression <expr>', 'Pipeline DSL expression (flag alternative)')
+    .option('-s, --start-prompt <text-or-file>', 'Start prompt text or file path')
+    .option('-c, --context <text-or-file>', 'Shared context text or file path')
+    .option('-p, --provider <name>', 'Provider name (registered provider)')
+    .option('-w, --work-dir <path>', 'Working directory')
+    .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
-    .action(async (opts: WorkflowOptions) => {
+    .action(async (posExpression: string | undefined, opts: WorkflowOptions) => {
       const outputFormat = getOutputFormat(workflowCommand);
 
       try {
-        const base: JsonObject = await parseInputJson(opts.inputJson);
-        const { expression: baseExpression, init_prompt: baseInitPrompt, ...basePayload } = base;
-        const expression = opts.expression ?? (typeof baseExpression === 'string' ? baseExpression : undefined);
-        const initPrompt = opts.initPrompt ?? (typeof baseInitPrompt === 'string' ? baseInitPrompt : undefined);
+        const expression = opts.expression ?? posExpression;
 
-        if (!expression) {
-          throw new Error('--expression is required');
+        if (expression === undefined) {
+          throw new Error('expression is required (positional or -e)');
         }
-        if (!initPrompt) {
-          throw new Error('--init-prompt is required');
+        if (opts.startPrompt === undefined) {
+          throw new Error('start prompt is required (-s)');
         }
 
         const payload = {
-          ...basePayload,
-          ...(opts.context !== undefined ? { context: opts.context } : {}),
+          ...(opts.context !== undefined ? { context: resolveInput(opts.context) } : {}),
           ...(opts.provider !== undefined ? { provider: opts.provider } : {}),
-          ...(opts.workDir !== undefined ? { work_dir: opts.workDir } : {}),
-          ...(opts.staleTimeoutSeconds !== undefined
-            ? { stale_timeout_seconds: parseIntegerFlag('--stale-timeout-seconds', opts.staleTimeoutSeconds) }
-            : {}),
-          ...(opts.atoms !== undefined ? { atoms: JSON.parse(opts.atoms) } : {}),
+          ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
           ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
-          init_prompt: initPrompt,
+          startPrompt: resolveInput(opts.startPrompt),
         };
 
         const client = makeClient(process.cwd());
@@ -730,7 +633,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         discussSeedSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
-        emit(result, outputFormat, (data) => formatPersonaSeed(data as PersonaSeedOutput));
+        emit(result, outputFormat, formatPersonaSeed);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -759,7 +662,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
         discussStartSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
-        emit(result, outputFormat, (data) => formatDiscussStart(data as DiscussStartResult));
+        emit(result, outputFormat, formatDiscussStart);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -805,10 +708,16 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
           ...(opts.thought !== undefined ? { thought: opts.thought } : {}),
           ...(opts.content !== undefined ? { content: opts.content } : {}),
         };
-        discussParticipateSchema.parse(args);
+        if ('content' in args) {
+          discussSpeechSchema.parse(args);
+        } else {
+          discussBidSchema.parse(args);
+        }
         const client = makeClient(process.cwd());
-        const result = await client.discussParticipate(args as Parameters<BackendClient['discussParticipate']>[0]);
-        emit(result, outputFormat, (data) => formatDiscussParticipate(data as BidResult | SpeechResult));
+        const result = 'content' in args
+          ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
+          : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
+        emit(result, outputFormat, formatDiscussParticipate);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -824,7 +733,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       try {
         const client = makeClient(process.cwd());
         const result = await client.discussAbort(opts.session);
-        emit(result, outputFormat, (data) => formatDiscussAbort(data as DiscussAbortResult));
+        emit(result, outputFormat, formatDiscussAbort);
       } catch (error) {
         emitError(error, outputFormat);
       }
@@ -897,10 +806,8 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       const outputFormat = getOutputFormat(kbSourceImportCommand);
 
       try {
-        const prepared = await prepareSourceImport(
-          resolveFilePath(file),
-          opts.slug,
-          (line) => process.stderr.write(`${line}\n`),
+        const prepared = await prepareSourceImport(resolveFilePath(file), opts.slug, (line) =>
+          process.stderr.write(`${line}\n`),
         );
         const client = makeClient(process.cwd());
         const result = await client.kbSourceImport({

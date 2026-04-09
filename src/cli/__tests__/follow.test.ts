@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { LaunchDecision, TerminalResult, WaitStreamEvent } from '../../shared/types.js';
+import type { AcceptedLaunchResponse } from '../../client/http-client.js';
+import type { TerminalResult, WaitStreamEvent } from '../../shared/types.js';
 import type * as FollowMod from '../follow.js';
 
 const mockState = vi.hoisted(() => ({
@@ -12,7 +13,7 @@ vi.mock('../../client/backend-lifecycle.js', () => ({
   ensureBackend: mockState.ensureBackend,
 }));
 
-vi.mock('../../bridge/backend-client.js', () => ({
+vi.mock('../../client/backend-helpers.js', () => ({
   streamWait: mockState.streamWait,
 }));
 
@@ -94,7 +95,7 @@ function makeTerminalEvent(
 
 function makeOptions(
   overrides: Partial<{
-    launchResult: Extract<LaunchDecision, { status: 'running' | 'queued' }>;
+    launchResult: AcceptedLaunchResponse;
     abortJob: (jobId: string) => Promise<unknown>;
     pluginRoot: string;
     projectRoot: string;
@@ -105,10 +106,10 @@ function makeOptions(
 ) {
   return {
     launchResult: {
-      status: 'running',
+      launchState: 'running',
       job: 'job-1',
       session: 'session-1',
-    } satisfies Extract<LaunchDecision, { status: 'running' | 'queued' }>,
+    } satisfies AcceptedLaunchResponse,
     abortJob: async () => undefined,
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
@@ -263,7 +264,7 @@ describe('cli follow', () => {
       launchAndFollow(
         makeOptions({
           launchResult: {
-            status: 'queued',
+            launchState: 'queued',
             job: 'job-1',
             session: 'session-1',
           },

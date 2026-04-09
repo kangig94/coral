@@ -47,8 +47,8 @@ PR procedure (dev → main):
 - **Functions**: camelCase (`parseCodexJsonl`, `detectCodexCli`)
 - **Constants**: UPPER_SNAKE for true constants (`MAX_BUFFER`, `DEFAULT_TIMEOUT`), camelCase for derived values
 - **Zod schemas**: camelCase with `Schema` suffix (`codexOpSchema`, `discussSeedSchema`)
-- **MCP tool names**: snake_case (`codex`, `claude`, `discuss_seed`, `discuss_start`, `discuss_watch`, `discuss_participate`, `discuss_abort`, `kb_search`, `kb_read`)
-- **Agent files**: kebab-case markdown (`mcp-guardian.md`)
+- **Contract-facing action names**: snake_case where the CLI/backend contract expects it (`discuss_seed`, `kb_search`)
+- **Agent files**: kebab-case markdown (`integration-guardian.md`)
 - **Skill directories**: kebab-case (`code-simplify/`)
 
 ## TypeScript Style
@@ -71,8 +71,8 @@ PR procedure (dev → main):
 
 ## Error Handling
 
-- MCP tool errors: return `{ content: [{ type: "text", text: "Error: ..." }], isError: true }`
-- Zod validation errors: caught in the switch handler, surfaced as MCP error responses
+- Public-surface errors: return domain errors or structured responses that match the calling CLI/backend contract
+- Zod validation errors: catch them at the entrypoint and surface clear user-facing errors
 - Process spawn errors: wrap in descriptive messages with recovery hints
 - File I/O errors: check error codes (`ENOENT` for missing, `SyntaxError` for corrupt JSON)
 

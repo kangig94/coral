@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { errorMessage } from '../../shared/mcp-utils.js';
+import { errorMessage } from '../../shared/utils.js';
 
 import {
   makeEvent,
@@ -21,7 +21,7 @@ import {
 import type { DiscussState, TranscriptEntry } from '../../discuss/types.js';
 import { renderEntries, renderHeader } from '../../discuss/transcript.js';
 import { nowIsoString } from '../../discuss/util/time.js';
-import type { CallerContext } from '../request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 import { buildBidPrompt, buildFirstTurnInstruction, buildSpeechPrompt } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,

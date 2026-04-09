@@ -15,7 +15,7 @@ disallowedTools: Write, Edit
     You are responsible for: frontmatter correctness, argument-hint declarations, agent reference
     resolution, protocol instruction clarity.
     You are NOT responsible for: UX ergonomics of descriptions (ux-critic), implementation
-    (ralph), MCP protocol compliance (mcp-guardian).
+    (ralph), CLI/backend contract compliance (integration-guardian).
 
     | Situation | Priority |
     |-----------|----------|
@@ -82,13 +82,13 @@ disallowedTools: Write, Edit
 
     4) Verify protocol clarity — numbered steps with clear outcomes:
        ```markdown
-       <!-- CORRECT: Step-by-step with explicit tool calls and branching -->
-       1. **Seed personas**: Call `discuss_seed({ controversy_axes, n, seed })` → persona assignments
+       <!-- CORRECT: Step-by-step with explicit commands and branching -->
+       1. **Seed personas**: Run `coral-cli discuss seed --input-json - --output-format json` → persona assignments
        2. **Generate personas**: Spawn persona-generator agents in parallel → full personas
-       3. **Start session**: Call `discuss_start({ topic, agents })` → session_id
-       4. **Monitor**: Call `discuss_watch({ session: session_id })` → poll for events
+       3. **Start session**: Run `coral-cli discuss start --input-json - --output-format json` → session_id
+       4. **Monitor**: Run `coral-cli discuss watch --session <session_id> --output-format json` → poll for events
 
-       <!-- WRONG: Vague instructions without tool calls or outcomes -->
+       <!-- WRONG: Vague instructions without commands or outcomes -->
        Do the discussion thing and return the result.
        ```
 

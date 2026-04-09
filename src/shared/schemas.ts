@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { identPattern, providerIdentPattern } from './mcp-utils.js';
+import { identPattern, providerIdentPattern } from './utils.js';
+
+const modelNameSchema = z
+  .string()
+  .regex(identPattern, 'Model name must be alphanumeric with dots, hyphens, or underscores');
 
 export const modelSchema = z
   .string()
@@ -16,6 +20,91 @@ export const promptSchema = z.string().min(1, 'Prompt is required');
 export const sessionRefSchema = z.string().min(1, 'Session reference is required');
 
 export const cwdSchema = z.string().optional();
+
+export const providerNameSchema = z
+  .string()
+  .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
+
+const projectRootSchema = z.string().min(1, 'Project root is required');
+const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
+const effortLevelSchema = z.enum(['low', 'medium', 'high', 'max']);
+const claudeModelCapSchema = modelNameSchema.optional();
+
+const continuationFieldsShape = {
+  projectRoot: projectRootSchema,
+  model: modelSchema,
+  workDir: cwdSchema,
+  owner: ownerSchema.optional(),
+  effort: effortLevelSchema.optional(),
+  claudeModelCap: claudeModelCapSchema,
+  bypassPermissions: z.boolean().optional(),
+  systemPrompt: z.string().optional(),
+} satisfies z.ZodRawShape;
+
+export const sessionCreateSchema = z
+  .object({
+    provider: providerNameSchema,
+    prompt: promptSchema,
+    projectRoot: projectRootSchema,
+    model: modelSchema,
+    agent: z.string().min(1, 'Agent is required').optional(),
+    workDir: cwdSchema,
+    owner: ownerSchema.optional(),
+    effort: effortLevelSchema.optional(),
+    claudeModelCap: claudeModelCapSchema,
+    bypassPermissions: z.boolean().default(false),
+    systemPrompt: z.string().optional(),
+  })
+  .strict();
+
+export const sessionMessageSchema = z
+  .object({
+    prompt: promptSchema,
+    ...continuationFieldsShape,
+  })
+  .strict();
+
+export const sessionForkSchema = z
+  .object({
+    prompt: z.string().optional(),
+    ...continuationFieldsShape,
+  })
+  .strict();
+
+export const waitCursorSchema = z
+  .object({
+    jobs: z.record(z.number().int().min(0)),
+  })
+  .strict();
+
+export const jobWaitSchema = z
+  .object({
+    jobIds: z.array(z.string().min(1)).min(1, 'At least one job required'),
+    projectRoot: projectRootSchema,
+    timeoutSeconds: z.number().int().min(1).max(1200).optional(),
+    cursor: waitCursorSchema.optional(),
+  })
+  .strict();
+
+export const jobAbortSchema = z
+  .object({
+    jobs: z.array(z.string().min(1)).min(1, 'At least one job required'),
+    projectRoot: projectRootSchema,
+  })
+  .strict();
+
+export const workflowRequestSchema = z
+  .object({
+    expression: z.string().min(1, 'Expression required'),
+    startPrompt: z.string().min(1, 'Prompt required'),
+    context: z.string().optional(),
+    provider: providerNameSchema.optional(),
+    workDir: cwdSchema,
+    projectRoot: projectRootSchema,
+    owner: ownerSchema.optional(),
+    claudeModelCap: claudeModelCapSchema,
+  })
+  .strict();
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
@@ -57,71 +146,6 @@ export function resolveModelTier(model: string | undefined, cap?: string): strin
   return undefined;
 }
 
-export const coralOpSchema = z
-  .string()
-  .regex(/^coral:[a-z0-9][a-z0-9-]*$/, 'Op must be coral:<agent-name> (lowercase letters, digits, hyphens)');
-
-export const providerNameSchema = z
-  .string()
-  .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
-
-const sharedProviderFieldsShape = {
-  work_dir: cwdSchema,
-  model: modelSchema,
-};
-
-/**
- * Internal-only fields accepted by the backend but never exposed in MCP inputSchema.
- * bypass_permissions: controlled by op (bypass_exec, fork, resume, coral:*) — not a user-facing flag.
- * system_prompt: injected by coral:* dispatch or internal callers — not user-facing.
- */
-export const internalProviderFieldsShape = {
-  bypass_permissions: z.boolean().optional(),
-  system_prompt: z.string().optional(),
-};
-
-// ── Provider-neutral op schemas (Phase 1 additions) ──────────────────────────
-
-/**
- * Shared exec input schema (provider-neutral).
- * Providers extend this with extras (e.g. system_prompt for Claude).
- */
-export const sharedExecSchema = z.object({
-  op: z.enum(['exec', 'bypass_exec']),
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  ...sharedProviderFieldsShape,
-});
-
-/**
- * Shared resume input schema (explicit resume action, separate from exec).
- */
-export const sharedResumeSchema = z.object({
-  op: z.literal('resume'),
-  session: sessionRefSchema,
-  prompt: promptSchema,
-  ...sharedProviderFieldsShape,
-});
-
-/**
- * Shared fork input schema (provider-neutral).
- */
-export const sharedForkSchema = z.object({
-  op: z.literal('fork'),
-  session: sessionRefSchema,
-  prompt: z.string().optional(),
-  ...sharedProviderFieldsShape,
-});
-
-/**
- * Shared list input schema (no fields required).
- */
-export const sharedListSchema = z
-  .object({
-    op: z.literal('list'),
-  })
-  .strict();
-
 /** Maximum serialized emitted CallToolResult body length for optional content embedding. */
 export const MAX_INLINE = 10_000;
 
@@ -146,19 +170,3 @@ export const abortInputSchema = z.object({
 });
 
 export type AbortInput = z.infer<typeof abortInputSchema>;
-
-/**
- * Shared provider op union used by both codex and claude schemas.
- * Each provider re-exports with its own type alias.
- */
-export const providerOpSchema = z.discriminatedUnion('op', [sharedExecSchema, sharedListSchema, sharedForkSchema]);
-
-/** Shared coral agent schema used by both codex and claude tools. */
-export const coralAgentOpSchema = z.object({
-  op: coralOpSchema,
-  prompt: promptSchema,
-  session: sessionRefSchema.optional(),
-  work_dir: cwdSchema,
-  owner: z.string().regex(identPattern, 'Owner must be token-safe').optional(),
-});
-export type CoralAgentOpInput = z.infer<typeof coralAgentOpSchema>;

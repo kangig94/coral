@@ -17,18 +17,18 @@ If the argument starts with `session`, handle directly:
 
 | Command | Action |
 |---------|--------|
-| `session list` | `codex({ op: "list" })` |
-| `session fork <session-uuid> [new-name]` | `codex({ op: "fork", session: sessionUuid, name: newName })` → `wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery |
+| `session list` | Run `coral-cli list --provider codex --output-format json` |
 
-Present: list → table (name, model, last used). fork → show response from `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+Present: list → table (name, model, last used).
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
+If the user asks to branch an existing session or create a named branch, explain that Codex session branching is unsupported and stop.
 
 If not `session`, continue to step 2.
 
 ## 2. Session continuity
 
 Check conversation history for a coral `session` UUID from a previous `/codex` general call (4d).
-Use the `session` value returned directly by `codex({ op: "exec" })`/`codex({ op: "fork" })`.
+Use the `session` value returned by detached general launches from step 4d.
 - **Found** → pass it as the `session` parameter on subsequent 4d and 4a calls
 - **Not found or user says "new"** → omit `session`
 
@@ -46,11 +46,11 @@ Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 ## 4a. Review (parallel Codex ops)
 
 Dispatch TWO Codex jobs in parallel:
-- `codex({ op: "coral:architect", prompt, session, work_dir })`
-- `codex({ op: "coral:critic", prompt, session, work_dir })`
+- `coral-cli codex architect -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json`
+- `coral-cli codex critic -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
-`wait({ jobs: pendingJobs })` until both complete; read each `result.content`; if absent, `Read(result.path)` is best-effort recovery.
+Collect both `job` values from the detached launch JSON, then run `coral-cli wait --jobs "<job-id list>" --output-format json --embed` until both terminal events arrive; read `event.result.content` when present, otherwise `Read(event.result.path)` as best-effort recovery.
 
 After both return, synthesize:
 1. Merge findings, deduplicate
@@ -69,18 +69,18 @@ The ralph skill handles Codex delegation, verification loop, and result presenta
 
 ## 4d. General request
 
-Call MCP tool directly. Pass prompt **verbatim**. Never rephrase, filter, or refuse.
+Launch through Coral CLI. Pass prompt **verbatim**. Never rephrase, filter, or refuse.
 
 | Condition | Action |
 |-----------|--------|
-| No session | `codex({ op: "exec", prompt, work_dir })` → `{ job, session }` |
-| Session exists | `codex({ op: "exec", session, prompt, work_dir })` → `{ job, session }` |
+| No session | `coral-cli codex -i "<prompt>" --work-dir "<path>" -d --output-format json` → `{ job, session }` |
+| Session exists | `coral-cli codex --session "<session>" -i "<prompt>" --work-dir "<path>" -d --output-format json` → `{ job, session }` |
 
-`wait({ jobs: [job] })` → read `result.content`; if absent, `Read(result.path)` is best-effort recovery.
-Keep using the `session` UUID from the exec/fork response for continuity.
-Show the response, then append: `session: <session_name>`.
+Run `coral-cli wait --jobs "<job>" --output-format json --embed`; read the terminal JSON line, prefer `event.result.content`, and fall back to `Read(event.result.path)`.
+Keep using the `session` UUID from the detached launch response for continuity.
+Show the response, then append: `session: <session_name>` when the launch JSON includes `session_name`.
 On error, show the error and suggest resuming with /codex.
 
-Always show `session_name` (from exec response) so the user can see what session they are in.
-For session continuity, store the `session` UUID from the exec/fork response — NOT `session_name`.
+Always show `session_name` when the launch response includes it so the user can see what session they are in.
+For session continuity, store the `session` UUID from the detached launch response — NOT `session_name`.
 Never show raw `session` UUID, `model`, or `duration_ms` unless the user asks.

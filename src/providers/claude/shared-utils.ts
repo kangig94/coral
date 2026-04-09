@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { isRecord, readString } from '../../shared/mcp-utils.js';
+import { isRecord, readString } from '../../shared/utils.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
 

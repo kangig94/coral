@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BackendStatusFull, ShutdownResult } from '../../bridge/backend-client.js';
+import type { BackendStatusFull, ShutdownResult } from '../../client/backend-helpers.js';
+import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/types.js';
-import type { AbortResult } from '../../execution/abort-registry.js';
-import type { ListResult } from '../../execution/service.js';
-import type { LaunchDecision, WaitStreamEvent } from '../../shared/types.js';
+import type { WatchState } from '../../discuss/watch.js';
+import type { KbReadResult } from '../../kb/types.js';
+import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { WaitStreamEvent } from '../../shared/types.js';
 import {
+  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatDiscussAbort,
@@ -24,7 +27,7 @@ import {
   formatKbReindex,
   formatKbSearch,
   formatKbUpdate,
-  formatLaunchDecision,
+  formatLaunch,
   formatPersonaSeed,
   formatProviderList,
   formatShutdown,
@@ -36,23 +39,16 @@ import {
 } from '../format.js';
 
 const runningDecision = {
-  status: 'running',
+  launchState: 'running',
   job: 'job-1',
   session: 'session-1',
-} satisfies LaunchDecision;
+} satisfies AcceptedLaunchResponse;
 
 const queuedDecision = {
-  status: 'queued',
+  launchState: 'queued',
   job: 'job-2',
   session: 'session-2',
-} satisfies LaunchDecision;
-
-const rejectedDecision = {
-  status: 'rejected',
-  phase: 'preflight',
-  code: 'bad_request',
-  message: 'Missing prompt',
-} satisfies LaunchDecision;
+} satisfies AcceptedLaunchResponse;
 
 const abortOnlyResult = {
   aborted: ['job-1', 'job-2'],
@@ -78,12 +74,30 @@ const listResult = {
       state: 'ready',
       model: 'gpt-5',
       cwd: '/tmp/project',
-      createdAt: '2026-03-14T00:00:00.000Z',
-      lastUsedAt: '2026-03-14T00:00:00.000Z',
-      version: 1,
     },
   ],
-} satisfies ListResult;
+} satisfies SessionListResult;
+
+const aggregatedListResult = {
+  sessions: [
+    {
+      sessionId: 'session-1',
+      provider: 'codex',
+      name: 'alpha',
+      state: 'ready',
+      model: 'gpt-5',
+      cwd: '/tmp/codex',
+    },
+    {
+      sessionId: 'session-2',
+      provider: 'claude',
+      name: 'beta',
+      state: 'non_resumable',
+      model: 'sonnet',
+      cwd: '/tmp/claude',
+    },
+  ],
+} satisfies SessionListResult;
 
 const personaSeedResult = {
   seed_used: 7,
@@ -178,17 +192,13 @@ const waitTimeoutEvent = {
 } satisfies Extract<WaitStreamEvent, { type: 'timeout' }>;
 
 describe('cli format', () => {
-  describe('formatLaunchDecision', () => {
+  describe('formatLaunch', () => {
     it('formats a running decision', () => {
-      expect(formatLaunchDecision(runningDecision)).toBe('Job job-1 running (session session-1)');
+      expect(formatLaunch(runningDecision)).toBe('Job job-1 running (session session-1)');
     });
 
     it('formats a queued decision', () => {
-      expect(formatLaunchDecision(queuedDecision)).toBe('Job job-2 queued (session session-2)');
-    });
-
-    it('formats a rejected decision', () => {
-      expect(formatLaunchDecision(rejectedDecision)).toBe('Rejected [bad_request]: Missing prompt');
+      expect(formatLaunch(queuedDecision)).toBe('Job job-2 queued (session session-2)');
     });
   });
 
@@ -219,6 +229,16 @@ describe('cli format', () => {
       expect(formatted).toContain('session-1');
       expect(formatted).toContain('ready');
       expect(formatted).toContain('/tmp/project');
+    });
+
+    it('formats aggregated provider output with a provider column', () => {
+      const formatted = formatProviderList(aggregatedListResult, { includeProvider: true });
+
+      expect(formatted).toContain('PROVIDER');
+      expect(formatted).toContain('codex');
+      expect(formatted).toContain('claude');
+      expect(formatted).toContain('session-1');
+      expect(formatted).toContain('session-2');
     });
   });
 
@@ -274,16 +294,29 @@ describe('cli format', () => {
     });
 
     it('formats a valid discuss watch payload', () => {
+      const result = {
+        session: 'session-1',
+        status: 'bidding',
+        topic: 'Risk tradeoffs',
+        epoch: 2,
+        step: 3,
+        events: [
+          {
+            type: 'bid_resolved',
+            data: { id: 1 },
+            ts: 1,
+          },
+          {
+            type: 'speech_done',
+            data: { id: 2 },
+            ts: 2,
+          },
+        ],
+        cursor: 9,
+      } satisfies WatchState;
+
       expect(
-        formatDiscussWatch({
-          session: 'session-1',
-          status: 'bidding',
-          topic: 'Risk tradeoffs',
-          epoch: 2,
-          step: 3,
-          events: [{ id: 1 }, { id: 2 }],
-          cursor: 9,
-        }),
+        formatDiscussWatch(result),
       ).toBe(
         'Session session-1 [bidding]\n' + 'Topic: Risk tradeoffs\n' + 'Epoch: 2 | Step: 3 | Events: 2 | Cursor: 9',
       );
@@ -304,14 +337,14 @@ describe('cli format', () => {
           bundleHash: 'bundle-hash',
           instanceId: 'instance-1',
           uptimeMs: 1234,
-          activeChildren: 2,
+          active: 2,
           activeJobs: 1,
           inflightRequests: 0,
         },
       } satisfies BackendStatusFull;
 
       expect(formatBackendStatus(status)).toBe(
-        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active children: 2\n' + 'Active jobs: 1',
+        'Backend ok\n' + 'Version: 1.2.3\n' + 'Uptime: 1234ms\n' + 'Active: 2\n' + 'Active jobs: 1',
       );
     });
 
@@ -348,6 +381,8 @@ describe('cli format', () => {
               kind: 'note',
               title: 'KB CLI Tooling',
               matchedBy: ['filename', 'content'],
+              tags: ['cli', 'kb'],
+              principles: ['contract-first-design'],
               snippet: 'Use kb_reindex after stale writes.',
             },
           ],
@@ -407,7 +442,9 @@ describe('cli format', () => {
     });
 
     it('formats kb memo write, list, delete, and purge results', () => {
-      expect(formatKbMemo({ filename: '20260327-184939-kb.md' })).toBe('Memo: 20260327-184939-kb.md');
+      expect(formatKbMemo({ filename: '20260327-184939-kb.md', path: '/tmp/memos/20260327-184939-kb.md' })).toBe(
+        'Memo: 20260327-184939-kb.md',
+      );
       expect(
         formatKbMemoList({
           memos: [{ filename: 'a.md', summary: 'summary', createdAt: '2026-03-27T00:00:00.000Z' }],
@@ -421,6 +458,22 @@ describe('cli format', () => {
       expect(formatKbMemoDelete({ deleted: ['a.md', 'b.md'], count: 2 })).toBe('a.md\nb.md\nCount: 2');
       expect(formatKbMemoDelete({ deleted: [], count: 0 })).toBe('No memos deleted\nCount: 0');
       expect(formatKbMemoPurge({ deleted: 3 })).toBe('Purged: 3 memos');
+    });
+
+    it('does not mutate kb read results when deriving age text', () => {
+      const result = {
+        kind: 'note',
+        note: 'coral-kb-read',
+        title: 'Read Test',
+        content: '## Rule\nContent here.',
+        tags: ['coral', 'kb'],
+        principles: ['contract-first-design'],
+        updatedAt: '2026-03-23T00:00:00.000Z',
+      } satisfies KbReadResult;
+
+      formatKbRead(result);
+
+      expect('age' in result).toBe(false);
     });
 
     it('formats kb principles with totals and warning translation', () => {

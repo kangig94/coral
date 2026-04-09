@@ -1,4 +1,4 @@
-import { providerIdentPattern } from '../shared/mcp-utils.js';
+import { providerIdentPattern } from '../shared/utils.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
 
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

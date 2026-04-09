@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CallerContext } from '../../execution/request-context.js';
+import type { CallerContext } from '../../shared/request-context.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -31,7 +31,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect -> resolver',
-        init_prompt: 'hello',
+        start_prompt: 'hello',
       },
       executionSvc,
       ctx,
@@ -46,7 +46,7 @@ describe('workflow handler', () => {
       ],
       expect.objectContaining({
         expression: 'architect -> resolver',
-        init_prompt: 'hello',
+        start_prompt: 'hello',
         provider: 'claude',
       }),
       ctx,
@@ -61,7 +61,7 @@ describe('workflow handler', () => {
     await handleWorkflow(
       {
         expression: 'architect',
-        init_prompt: 'hello',
+        start_prompt: 'hello',
         work_dir: '/tmp/coral-workflow-cwd',
       },
       executionSvc,
@@ -73,7 +73,7 @@ describe('workflow handler', () => {
       [[{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: 'claude' }]],
       expect.objectContaining({
         expression: 'architect',
-        init_prompt: 'hello',
+        start_prompt: 'hello',
         work_dir: '/tmp/coral-workflow-cwd',
         provider: 'claude',
       }),
@@ -90,7 +90,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@missing-provider',
-        init_prompt: 'hello',
+        start_prompt: 'hello',
         provider: 'codex',
       },
       executionSvc,
@@ -120,7 +120,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@nonexistent-provider',
-        init_prompt: 'test',
+        start_prompt: 'test',
         provider: 'codex',
       },
       executionSvc,
@@ -141,7 +141,7 @@ describe('workflow handler', () => {
       handleWorkflow(
         {
           expression: '(architect, architect)',
-          init_prompt: 'test',
+          start_prompt: 'test',
           provider: 'claude',
         },
         executionSvc,
@@ -152,31 +152,11 @@ describe('workflow handler', () => {
     expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
   });
 
-  it('throws when atoms keys reference agent names not present in the AST', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
-
-    await expect(
-      handleWorkflow(
-        {
-          expression: 'architect',
-          init_prompt: 'test',
-          provider: 'claude',
-          atoms: { 'ghost-agent': { instruction: 'focus' } },
-        },
-        executionSvc,
-        ctx,
-      ),
-    ).rejects.toThrow('Unknown atoms keys: ghost-agent');
-
-    expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
-  });
-
   it('throws on missing expression field', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
 
-    await expect(handleWorkflow({ init_prompt: 'no expression' }, executionSvc, ctx)).rejects.toThrow();
+    await expect(handleWorkflow({ start_prompt: 'no expression' }, executionSvc, ctx)).rejects.toThrow();
   });
 
   it('rejected message names multiple unknown providers', async () => {
@@ -186,7 +166,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@ghost1 -> resolver@ghost2',
-        init_prompt: 'test',
+        start_prompt: 'test',
         provider: 'codex',
       },
       executionSvc,

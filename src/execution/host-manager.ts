@@ -1,4 +1,4 @@
-import { raceTimeout } from '../shared/mcp-utils.js';
+import { raceTimeout } from '../shared/utils.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from './engine.js';
 

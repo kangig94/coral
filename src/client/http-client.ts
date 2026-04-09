@@ -1,70 +1,150 @@
 import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
-import type { CallerContext } from '../execution/request-context.js';
+import type { BackendHealth } from './backend-health.js';
+import { isBackendHealth } from './backend-health.js';
+import { throwBackendCommunicationError } from './backend-helpers.js';
+import type { AbortResult } from '../shared/execution-contracts.js';
+import type { CallerContext } from '../shared/request-context.js';
+import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
+import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
+import type { WatchState } from '../discuss/watch.js';
 import type {
-  KbMemoDeleteInput,
   KbDeleteInput,
+  KbMemoDeleteInput,
+  KbMemoDeleteResult,
   KbMemoInput,
   KbMemoListInput,
+  KbMemoListResult,
   KbMemoPurgeInput,
+  KbMemoPurgeResult,
   KbPrinciplesInput,
+  KbPrinciplesResult,
   KbPromoteInput,
   KbReadInput,
+  KbReadResult,
   KbReindexInput,
   KbSearchInput,
+  KbSearchResponse,
   KbSourceDeleteInput,
+  KbSourceListResult,
   KbSourcePersistInput,
   KbUpdateInput,
+  ReindexResult,
 } from '../kb/types.js';
-import { isRecord } from '../shared/mcp-utils.js';
-import { describeHttpError, HEALTH_TIMEOUT_MS, parseJsonResponse, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
-import { isBackendHealth, type BackendHealth } from './backend-health.js';
-import type { ToolDomainResult } from '../execution/tool-response.js';
+import type { EffortLevel } from '../shared/schemas.js';
+import {
+  KB_BARE_READ_ORDER,
+  isKbMemoCandidateSlug,
+  parseKbSelector,
+  type KbReadKind,
+} from '../shared/kb-read-contract.js';
+import type { LenientSessionEntry } from '../shared/session-entry.js';
+import {
+  describeHttpError,
+  HEALTH_TIMEOUT_MS,
+  parseJsonResponse,
+  parseSseBlock,
+  parseWaitStreamEvent,
+  TOOL_TIMEOUT_MS,
+} from '../shared/sse-parser.js';
+import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitStreamEvent } from '../shared/types.js';
+import { isRecord } from '../shared/utils.js';
 
-interface ProviderToolOptions {
+export type AcceptedLaunchResponse = {
+  session: string;
+  job: string;
+  launchState: 'running' | 'queued';
+};
+
+export type SessionCreateResponse = AcceptedLaunchResponse;
+export type SessionMessageResponse = AcceptedLaunchResponse;
+export type SessionForkResponse = AcceptedLaunchResponse;
+export type WorkflowLaunchResponse = AcceptedLaunchResponse;
+
+export type SessionsListResponse = {
+  sessions: LenientSessionEntry[];
+};
+
+export type JobsListResponse = {
+  jobs: Array<{ jobId: string; status: PersistedStatusRecord }>;
+};
+
+export type JobDetailResponse = {
+  status: PersistedStatusRecord;
+  events: PersistedProgressRecord[];
+};
+
+export type DiscussStartResponse = {
+  session: string;
+};
+
+export type DiscussAbortResponse = {
+  ok: true;
+  session: string;
+};
+
+export type DiscussSessionsListResponse = {
+  sessions: DiscussSummaryDto[];
+};
+
+export type KbMemoResponse = {
+  filename: string;
+  path: string;
+};
+
+export type KbPromoteResponse = {
+  path: string;
+};
+
+export type KbUpdateResponse = {
+  path: string;
+};
+
+export type KbDeleteResponse = {
+  deleted: string;
+};
+
+export type KbSourceImportResponse = {
+  slug: string;
+  path: string;
+};
+
+export type KbSourceDeleteResponse = {
+  deleted: string;
+};
+
+type SessionRequestOptions = {
   context?: CallerContext;
-  work_dir?: string;
   model?: string;
-  bypass_permissions?: boolean;
-  system_prompt?: string;
-}
-
-interface ProviderExecOptions extends ProviderToolOptions {
-  session?: string;
-}
-
-interface ProviderCoralDispatchOptions {
-  context?: CallerContext;
-  session?: string;
-  work_dir?: string;
+  workDir?: string;
   owner?: string;
-}
+  effort?: EffortLevel;
+  claudeModelCap?: string;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+};
 
-interface WorkflowOptions {
-  init_prompt: string;
+type CreateSessionOptions = SessionRequestOptions & {
+  agent?: string;
+};
+
+type WaitJobsOptions = {
+  context?: CallerContext;
+  timeoutSeconds?: number;
+  cursor?: WaitCursor;
+};
+
+type WorkflowOptions = {
+  startPrompt: string;
   context?: string;
   provider?: string;
-  work_dir?: string;
-  stale_timeout_seconds?: number;
-  atoms?: Record<string, { instruction?: string }>;
+  workDir?: string;
   owner?: string;
-}
+  claudeModelCap?: string;
+};
 
 export { isBackendHealth };
-export type { CallerContext, BackendHealth };
-
-function isCallerContext(value: unknown): value is CallerContext {
-  return (
-    isRecord(value) &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.pluginRoot === 'string' &&
-    isRecord(value.coralEnv)
-  );
-}
-
-function throwBackendCommunicationError(error: unknown): never {
-  if (error instanceof Error) throw error;
-  throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
-}
+export type { BackendHealth };
+export type { CallerContext } from '../shared/request-context.js';
 
 export class BackendToolHttpError extends Error {
   constructor(
@@ -81,6 +161,7 @@ export class BackendToolHttpError extends Error {
 export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
   private readonly defaultContext?: CallerContext;
+  private readonly defaultPluginRoot?: string;
 
   constructor(
     options: {
@@ -88,77 +169,142 @@ export class BackendClient {
       defaultContext?: CallerContext;
     } = {},
   ) {
-    this.defaultContext = options.defaultContext;
-    const defaultPluginRoot = this.defaultContext?.pluginRoot;
+    this.defaultContext = options.defaultContext
+      ? {
+          projectRoot: options.defaultContext.projectRoot,
+          pluginRoot: options.defaultContext.pluginRoot,
+          coralEnv: { ...options.defaultContext.coralEnv },
+        }
+      : undefined;
+    this.defaultPluginRoot = this.defaultContext?.pluginRoot;
     this.ensureBackendHandle =
-      options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? defaultPluginRoot));
+      options.ensureBackend ?? ((pluginRoot?: string) => defaultEnsureBackend(pluginRoot ?? this.defaultPluginRoot));
   }
 
-  async exec(prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
-    return this.providerExec('codex', prompt, options);
+  async createSession(
+    provider: string,
+    prompt: string,
+    options: CreateSessionOptions = {},
+  ): Promise<SessionCreateResponse> {
+    const { context, ...request } = options;
+    return this.postRoute(
+      '/sessions',
+      {
+        provider,
+        prompt,
+        ...request,
+      },
+      this.resolveContext(context),
+    );
   }
 
-  async resume(session: string, prompt: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
-    const { context, ...args } = options;
-    return this.proxyToolCall('codex', { op: 'resume', session, prompt, ...args }, this.resolveContext(context));
+  async sendMessage(
+    sessionId: string,
+    prompt: string,
+    options: SessionRequestOptions = {},
+  ): Promise<SessionMessageResponse> {
+    const { context, ...request } = options;
+    return this.postRoute(
+      `/sessions/${encodeURIComponent(sessionId)}/messages`,
+      {
+        prompt,
+        ...request,
+      },
+      this.resolveContext(context),
+    );
   }
 
-  async fork(source: string, prompt?: string, options: ProviderToolOptions = {}): Promise<ToolDomainResult> {
-    return this.providerFork('codex', source, prompt, options);
+  async forkSession(
+    sessionId: string,
+    prompt?: string,
+    options: SessionRequestOptions = {},
+  ): Promise<SessionForkResponse> {
+    const { context, ...request } = options;
+    return this.postRoute(
+      `/sessions/${encodeURIComponent(sessionId)}/forks`,
+      prompt === undefined ? request : { prompt, ...request },
+      this.resolveContext(context),
+    );
   }
 
-  async abort(jobId: string, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.abortJobs([jobId], context);
+  async listSessions(): Promise<SessionsListResponse> {
+    return this.getRoute('/sessions');
   }
 
-  async workflow(expression: string, options: WorkflowOptions): Promise<ToolDomainResult>;
-  async workflow(expression: string, context: CallerContext, options: WorkflowOptions): Promise<ToolDomainResult>;
+  async waitJobs(jobIds: string[], options: WaitJobsOptions = {}): Promise<ReadableStream<WaitStreamEvent>> {
+    const { context, ...request } = options;
+    const ctx = this.resolveContext(context);
+    const { port, host, token } = await this.resolveBackendHandle(ctx);
+    const body = JSON.stringify(
+      this.buildRequestBody(
+        {
+          jobIds,
+          ...request,
+        },
+        ctx,
+      ),
+    );
+
+    try {
+      const response = await fetch(`http://${host}:${port}/jobs/wait`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': token,
+        },
+        body,
+      });
+      const responseBody = response.ok ? undefined : await parseJsonResponse(response);
+
+      if (!response.ok) {
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+      }
+
+      if (!response.body) {
+        throw new Error('Backend wait stream returned no response body');
+      }
+
+      return this.createWaitStream(response.body);
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
+  async abortJobs(jobIds: string[], context?: CallerContext): Promise<AbortResult> {
+    return this.postRoute('/jobs/abort', { jobs: jobIds }, this.resolveContext(context));
+  }
+
+  async listJobs(phase?: string): Promise<JobsListResponse> {
+    const query = phase ? `?phase=${encodeURIComponent(phase)}` : '';
+    return this.getRoute(`/api/jobs${query}`);
+  }
+
+  async getJob(jobId: string): Promise<JobDetailResponse> {
+    return this.getRoute(`/api/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  async workflow(expression: string, options: WorkflowOptions): Promise<WorkflowLaunchResponse>;
+  async workflow(
+    expression: string,
+    context: CallerContext,
+    options: WorkflowOptions,
+  ): Promise<WorkflowLaunchResponse>;
   async workflow(
     expression: string,
     contextOrOptions: CallerContext | WorkflowOptions,
     maybeOptions?: WorkflowOptions,
-  ): Promise<ToolDomainResult> {
-    const callerContext = isCallerContext(contextOrOptions) ? contextOrOptions : undefined;
-    const options = callerContext ? maybeOptions : contextOrOptions;
+  ): Promise<WorkflowLaunchResponse> {
+    const callerContext = maybeOptions === undefined ? undefined : (contextOrOptions as CallerContext);
+    const options = maybeOptions ?? (contextOrOptions as WorkflowOptions);
 
-    if (!options) throw new Error('Workflow options are required');
-
-    return this.proxyToolCall('workflow', { expression, ...options }, this.resolveContext(callerContext));
-  }
-
-  async providerExec(provider: string, prompt: string, options: ProviderExecOptions = {}): Promise<ToolDomainResult> {
-    const { context, ...args } = options;
-    return this.proxyToolCall(provider, { op: 'exec', prompt, ...args }, this.resolveContext(context));
-  }
-
-  async providerFork(
-    provider: string,
-    session: string,
-    prompt?: string,
-    options: ProviderToolOptions = {},
-  ): Promise<ToolDomainResult> {
-    const { context, ...args } = options;
-    const request: Record<string, unknown> = { op: 'fork', session, ...args };
-
-    if (prompt !== undefined) {
-      request.prompt = prompt;
-    }
-
-    return this.proxyToolCall(provider, request, this.resolveContext(context));
-  }
-
-  async providerList(provider: string, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall(provider, { op: 'list' }, this.resolveContext(context));
-  }
-
-  async providerCoralDispatch(
-    provider: string,
-    agentName: string,
-    prompt: string,
-    options: ProviderCoralDispatchOptions = {},
-  ): Promise<ToolDomainResult> {
-    const { context, ...args } = options;
-    return this.proxyToolCall(provider, { op: `coral:${agentName}`, prompt, ...args }, this.resolveContext(context));
+    return this.postRoute(
+      '/workflow',
+      {
+        expression,
+        ...options,
+      },
+      this.resolveContext(callerContext),
+    );
   }
 
   async discussSeed(
@@ -169,8 +315,8 @@ export class BackendClient {
       demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
     },
     context?: CallerContext,
-  ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_seed', args, this.resolveContext(context));
+  ): Promise<PersonaSeedOutput> {
+    return this.postRoute('/discuss/persona-sets', args, context, { injectContext: false });
   }
 
   async discussStart(
@@ -186,89 +332,224 @@ export class BackendClient {
       config?: { min_bid_delay_ms?: number };
     },
     context?: CallerContext,
-  ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_start', args, this.resolveContext(context));
+  ): Promise<DiscussStartResponse> {
+    return this.postRoute('/discuss/sessions', args, this.resolveContext(context, 'discuss session creation'));
   }
 
-  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_watch', { session, cursor }, this.resolveContext(context));
+  async discussWatch(session: string, context?: CallerContext): Promise<WatchState>;
+  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<WatchState>;
+  async discussWatch(
+    session: string,
+    cursorOrContext?: number | CallerContext,
+    maybeContext?: CallerContext,
+  ): Promise<WatchState> {
+    const cursor = typeof cursorOrContext === 'number' ? cursorOrContext : undefined;
+    const context = typeof cursorOrContext === 'number' ? maybeContext : cursorOrContext;
+    const ctx = this.resolveContext(context, 'discuss watch');
+    return this.getRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(session)}/events`, {
+        projectRoot: ctx.projectRoot,
+        cursor,
+      }),
+      ctx,
+    );
   }
 
-  async discussParticipate(
+  async discussBid(
     args: {
       session: string;
       agent_name: string;
-      score?: number;
-      thought?: string;
-      content?: string;
+      score: number;
+      thought: string;
     },
     context?: CallerContext,
-  ): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_participate', args, this.resolveContext(context));
+  ): Promise<BidResult> {
+    const { session, ...body } = args;
+    return this.postRoute(
+      `/discuss/sessions/${encodeURIComponent(session)}/bids`,
+      body,
+      this.resolveContext(context, 'discuss bid'),
+    );
   }
 
-  async discussAbort(session: string, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('discuss_abort', { session }, this.resolveContext(context));
+  async discussSpeech(
+    args: {
+      session: string;
+      agent_name: string;
+      content: string;
+    },
+    context?: CallerContext,
+  ): Promise<SpeechResult> {
+    const { session, ...body } = args;
+    return this.postRoute(
+      `/discuss/sessions/${encodeURIComponent(session)}/speeches`,
+      body,
+      this.resolveContext(context, 'discuss speech'),
+    );
   }
 
-  async abortJobs(jobIds: string[], context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('abort', { jobs: jobIds }, this.resolveContext(context));
+  async discussAbort(session: string, context?: CallerContext): Promise<DiscussAbortResponse> {
+    const ctx = this.resolveContext(context, 'discuss abort');
+    return this.deleteRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(session)}`, {
+        projectRoot: ctx.projectRoot,
+      }),
+      ctx,
+    );
   }
 
-  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_search', args, this.resolveContext(context));
+  async listDiscussSessions(context?: CallerContext): Promise<DiscussSessionsListResponse> {
+    return this.getRoute('/discuss/sessions', context);
   }
 
-  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_principles', args, this.resolveContext(context));
+  async getDiscussSession(id: string, context?: CallerContext): Promise<DiscussDetailResponse>;
+  async getDiscussSession(
+    id: string,
+    view?: DiscussView,
+    context?: CallerContext,
+  ): Promise<DiscussDetailResponse>;
+  async getDiscussSession(
+    id: string,
+    viewOrContext?: DiscussView | CallerContext,
+    maybeContext?: CallerContext,
+  ): Promise<DiscussDetailResponse> {
+    const view = typeof viewOrContext === 'string' ? viewOrContext : undefined;
+    const context = typeof viewOrContext === 'string' ? maybeContext : viewOrContext;
+    const ctx = this.resolveContext(context, 'discuss session detail');
+    return this.getRoute(
+      this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(id)}`, {
+        projectRoot: ctx.projectRoot,
+        view,
+      }),
+      ctx,
+    );
   }
 
-  async kbRead(args: KbReadInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_read', args, this.resolveContext(context));
+  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<KbSearchResponse> {
+    return this.getRoute(
+      this.buildRoutePath('/kb/entries', {
+        q: args.query,
+        scope: args.scope,
+        top_k: args.top_k,
+      }),
+      context,
+    );
   }
 
-  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_promote', args, this.resolveContext(context));
+  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<KbPrinciplesResult> {
+    return this.getRoute(
+      this.buildRoutePath('/kb/principles', {
+        q: args.query,
+        top_k: args.top_k,
+        verbose: args.verbose,
+      }),
+      context,
+    );
   }
 
-  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_update', args, this.resolveContext(context));
+  async kbRead(args: KbReadInput, context?: CallerContext): Promise<KbReadResult> {
+    const selector = parseKbSelector(args.note);
+    if (selector.kind !== null) {
+      return this.kbReadByKind(selector.kind, selector.slug, context);
+    }
+
+    const ctx = this.resolveContext(context, 'bare KB reads');
+    let lastNotFound: BackendToolHttpError | null = null;
+
+    for (const kind of KB_BARE_READ_ORDER) {
+      if (kind === 'memo' && !isKbMemoCandidateSlug(selector.slug)) {
+        continue;
+      }
+
+      try {
+        return await this.kbReadByKind(kind, selector.slug, ctx);
+      } catch (error) {
+        if (error instanceof BackendToolHttpError && error.statusCode === 404) {
+          lastNotFound = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (lastNotFound) {
+      throw lastNotFound;
+    }
+
+    throw new Error(`KB entry not found: ${args.note}`);
   }
 
-  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_delete', args, this.resolveContext(context));
+  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<KbPromoteResponse> {
+    return this.postRoute('/kb/notes', args, this.resolveContext(context, 'kb note creation'));
   }
 
-  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_import', args, this.resolveContext(context));
+  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<KbUpdateResponse> {
+    const { note, ...body } = args;
+    return this.putRoute(
+      `/kb/notes/${encodeURIComponent(note)}`,
+      body,
+      this.resolveContext(context, 'kb note update'),
+    );
   }
 
-  async kbSourceList(context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_list', {}, this.resolveContext(context));
+  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<KbDeleteResponse> {
+    return this.deleteRoute(`/kb/notes/${encodeURIComponent(args.note)}`, context);
   }
 
-  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_source_delete', args, this.resolveContext(context));
+  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<KbSourceImportResponse> {
+    return this.postRoute('/kb/sources', args, this.resolveContext(context, 'kb source import'));
   }
 
-  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo', args, this.resolveContext(context));
+  async kbSourceList(context?: CallerContext): Promise<KbSourceListResult> {
+    return this.getRoute('/kb/sources', context);
   }
 
-  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_list', args, this.resolveContext(context));
+  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<KbSourceDeleteResponse> {
+    return this.deleteRoute(`/kb/sources/${encodeURIComponent(args.slug)}`, context);
   }
 
-  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_delete', args, this.resolveContext(context));
+  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<KbMemoResponse> {
+    return this.postRoute('/kb/memos', args, this.resolveContext(context, 'kb memo creation'));
   }
 
-  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_memo_purge', args, this.resolveContext(context));
+  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<KbMemoListResult> {
+    const ctx = this.resolveContext(context, 'kb memo list');
+    return this.getRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
   }
 
-  async kbReindex(args: KbReindexInput, context?: CallerContext): Promise<ToolDomainResult> {
-    return this.proxyToolCall('kb_reindex', args, this.resolveContext(context));
+  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<KbMemoDeleteResult> {
+    const ctx = this.resolveContext(context, 'kb memo delete');
+    return this.deleteRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        pattern: args.pattern,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
+  }
+
+  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<KbMemoPurgeResult> {
+    const ctx = this.resolveContext(context, 'kb memo purge');
+    return this.deleteRoute(
+      this.buildRoutePath('/kb/memos', {
+        projectRoot: ctx.projectRoot,
+        all: true,
+        owner: this.resolveMemoOwner(args.owner, ctx),
+      }),
+      ctx,
+    );
+  }
+
+  async kbReindex(args: KbReindexInput = {}, context?: CallerContext): Promise<ReindexResult> {
+    void args;
+    return this.postRoute('/kb/index', {}, this.resolveContext(context, 'kb reindex'));
   }
 
   async health(): Promise<BackendHealth | null> {
@@ -312,54 +593,169 @@ export class BackendClient {
     }
   }
 
-  async listTools(): Promise<unknown> {
-    const { port, host, token } = await this.resolveBackendHandle();
+  private resolveContext(context?: CallerContext, operation = 'backend tool calls'): CallerContext {
+    const resolvedContext = context ?? this.defaultContext;
+    if (resolvedContext) return resolvedContext;
+    throw new Error(`CallerContext is required for ${operation}`);
+  }
+
+  private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
+    const pluginRoot = context?.pluginRoot ?? this.defaultPluginRoot;
+    return this.ensureBackendHandle(pluginRoot);
+  }
+
+  private buildRequestBody(args: Record<string, unknown>, ctx: CallerContext): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      ...args,
+      projectRoot: ctx.projectRoot,
+    };
+
+    const owner = ctx.coralEnv.CORAL_OWNER;
+    const effort = ctx.coralEnv.CORAL_EFFORT;
+    const claudeModelCap = ctx.coralEnv.CORAL_CLAUDE_MODEL_CAP;
+
+    if (body.owner === undefined && typeof owner === 'string' && owner.length > 0) {
+      body.owner = owner;
+    }
+    if (body.effort === undefined && typeof effort === 'string' && effort.length > 0) {
+      body.effort = effort;
+    }
+    if (body.claudeModelCap === undefined && typeof claudeModelCap === 'string' && claudeModelCap.length > 0) {
+      body.claudeModelCap = claudeModelCap;
+    }
+
+    return body;
+  }
+
+  private buildRoutePath(
+    path: string,
+    query: Record<string, string | number | boolean | undefined>,
+  ): string {
+    const params = new URLSearchParams();
+
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const queryString = params.toString();
+    return queryString.length > 0 ? `${path}?${queryString}` : path;
+  }
+
+  private resolveMemoOwner(owner: string | undefined, ctx: CallerContext): string | undefined {
+    if (owner !== undefined) {
+      return owner;
+    }
+
+    const fallback = ctx.coralEnv.CORAL_OWNER;
+    return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+  }
+
+  private describeError(response: Response, responseBody: unknown): string {
+    if (isRecord(responseBody) && typeof responseBody.message === 'string' && responseBody.message.length > 0) {
+      return responseBody.message;
+    }
+
+    return describeHttpError(response.status, response.statusText);
+  }
+
+  private async getRoute<T>(path: string, context?: CallerContext): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}/tools`, {
+        const response = await fetch(`http://${host}:${port}${path}`, {
           method: 'GET',
-          headers: { 'X-Coral-Backend-Token': token },
+          headers: {
+            'X-Coral-Backend-Token': token,
+          },
           signal,
         });
+        const responseBody = await parseJsonResponse(response);
 
-        if (!response.ok) {
-          throw new Error(describeHttpError(response.status, response.statusText));
+        if (response.ok) {
+          return responseBody as T;
         }
 
-        return parseJsonResponse(response);
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
       });
     } catch (error) {
       throwBackendCommunicationError(error);
     }
   }
 
-  private resolveContext(context?: CallerContext): CallerContext {
-    const resolvedContext = context ?? this.defaultContext;
-    if (resolvedContext) return resolvedContext;
-    throw new Error('CallerContext is required for backend tool calls');
-  }
-
-  private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
-    const pluginRoot = context?.pluginRoot ?? this.defaultContext?.pluginRoot;
-    return this.ensureBackendHandle(pluginRoot);
-  }
-
-  private async proxyToolCall(name: string, args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult> {
-    const { port, host, token } = await this.resolveBackendHandle(ctx);
-    const body = JSON.stringify({
-      name,
-      args,
-      context: {
-        projectRoot: ctx.projectRoot,
-        pluginRoot: ctx.pluginRoot,
-        coralEnv: ctx.coralEnv,
-      },
-    });
+  private async putRoute<T>(
+    path: string,
+    args: Record<string, unknown>,
+    context?: CallerContext,
+    options: { injectContext?: boolean } = {},
+  ): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+    const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
+    const body = JSON.stringify(payload);
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}/tool`, {
+        const response = await fetch(`http://${host}:${port}${path}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': token,
+          },
+          body,
+          signal,
+        });
+        const responseBody = await parseJsonResponse(response);
+
+        if (response.ok) {
+          return responseBody as T;
+        }
+
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+      });
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
+  private async deleteRoute<T>(path: string, context?: CallerContext): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+
+    try {
+      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`http://${host}:${port}${path}`, {
+          method: 'DELETE',
+          headers: {
+            'X-Coral-Backend-Token': token,
+          },
+          signal,
+        });
+        const responseBody = await parseJsonResponse(response);
+
+        if (response.ok) {
+          return responseBody as T;
+        }
+
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
+      });
+    } catch (error) {
+      throwBackendCommunicationError(error);
+    }
+  }
+
+  private async postRoute<T>(
+    path: string,
+    args: Record<string, unknown>,
+    context?: CallerContext,
+    options: { injectContext?: boolean } = {},
+  ): Promise<T> {
+    const { port, host, token } = await this.resolveBackendHandle(context);
+    const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
+    const body = JSON.stringify(payload);
+
+    try {
+      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
+        const response = await fetch(`http://${host}:${port}${path}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -368,21 +764,103 @@ export class BackendClient {
           body,
           signal,
         });
-
         const responseBody = await parseJsonResponse(response);
 
-        if (!response.ok) {
-          throw new BackendToolHttpError(
-            describeHttpError(response.status, response.statusText),
-            response.status,
-            responseBody,
-          );
+        if (response.ok) {
+          return responseBody as T;
         }
 
-        return responseBody as ToolDomainResult;
+        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
       });
     } catch (error) {
       throwBackendCommunicationError(error);
     }
+  }
+
+  private kbReadByKind(kind: KbReadKind, slug: string, context?: CallerContext): Promise<KbReadResult> {
+    switch (kind) {
+      case 'note':
+        return this.kbReadNote(slug, context);
+      case 'memo':
+        return this.kbReadMemo(slug, this.resolveContext(context, 'kb memo read'));
+      case 'source':
+        return this.kbReadSource(slug, context);
+      case 'community':
+        return this.kbReadCommunity(slug, context);
+      case 'principle':
+        return this.kbReadPrinciple(slug, context);
+    }
+  }
+
+  private kbReadNote(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/notes/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadMemo(slug: string, context: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(
+      this.buildRoutePath(`/kb/memos/${encodeURIComponent(slug)}`, {
+        projectRoot: context.projectRoot,
+      }),
+      context,
+    );
+  }
+
+  private kbReadSource(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/sources/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadCommunity(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/communities/${encodeURIComponent(slug)}`, context);
+  }
+
+  private kbReadPrinciple(slug: string, context?: CallerContext): Promise<KbReadResult> {
+    return this.getRoute(`/kb/principles/${encodeURIComponent(slug)}`, context);
+  }
+
+  private createWaitStream(body: ReadableStream<Uint8Array>): ReadableStream<WaitStreamEvent> {
+    return new ReadableStream<WaitStreamEvent>({
+      start(controller) {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const enqueueParsedBlock = (block: string): void => {
+          const parsed = parseSseBlock(block);
+          if (!parsed) return;
+          const event = parseWaitStreamEvent(parsed.event, parsed.data);
+          if (event) {
+            controller.enqueue(event);
+          }
+        };
+
+        const pump = async (): Promise<void> => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const blocks = buffer.split('\n\n');
+              buffer = blocks.pop() ?? '';
+
+              for (const block of blocks) {
+                enqueueParsedBlock(block);
+              }
+            }
+
+            buffer += decoder.decode();
+            enqueueParsedBlock(buffer);
+            controller.close();
+          } catch (error) {
+            controller.error(error);
+          }
+        };
+
+        void pump();
+      },
+      cancel(reason) {
+        return body.cancel(reason);
+      },
+    });
   }
 }

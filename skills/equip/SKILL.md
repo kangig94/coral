@@ -1,12 +1,12 @@
 ---
 name: equip
-description: "One-touch install of MCP tools to enhance Claude's capabilities"
+description: "One-touch install of Coral companion tooling and KB runtime"
 argument-hint: "[--list | [--update] cgc[@version] | kb[@version]]"
 ---
 
 # Equip
 
-Install and configure MCP tools for Claude Code.
+Install and configure Coral companion tooling for Claude Code.
 
 ## Execution
 
@@ -49,30 +49,13 @@ Install and configure MCP tools for Claude Code.
      - Tell them to edit `~/.coral/.env` directly and add the embedding settings there.
      - Show the security notice: "API key는 ~/.coral/.env에 직접 기록하세요. settings.json이 아닌 ~/.coral/.env에."
      - Do not run `postInstall` until the user confirms the manual setup is complete.
-2. If `mcp` field present → continue to MCP Registration
-3. If `postInstall` field present → execute each action in order:
-   - `backend_shutdown`: call `backend({ op: "shutdown" })`. Continue on success or connection-refused (not running).
-   - `kb_reindex`: call `kb_reindex()`.
+2. If `postInstall` field present → execute each action in order:
+   - `backend_shutdown`: run `coral-cli backend shutdown --output-format json`. Continue on success or not-running / connection-refused.
+   - `kb_reindex`: run `coral-cli kb reindex --output-format json`.
    - Inform user: "Enhanced KB mode activated."
-4. If neither → inform user "Installed.", done
+3. If neither → inform user "Installed.", done
 
-### MCP Registration
-
-1. Read `~/.claude/settings.json` (create with `{}` if absent)
-2. Ensure top-level `mcpServers` object exists
-3. If `mcp.serverName` already in `mcpServers`: "Already registered", done
-4. Add entry from script output:
-   ```json
-   {
-     "mcpServers": {
-       "<mcp.serverName>": {
-         "command": "<mcp.command>",
-         "args": ["<mcp.args>"]
-       }
-     }
-   }
-   ```
-5. Inform user: "Installed. Start a new Claude Code session to activate the new MCP tools."
+No settings registration step exists here. The installer returns executable paths and runtime metadata only.
 
 ## Notes
 
