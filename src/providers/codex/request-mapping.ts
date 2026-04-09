@@ -41,12 +41,18 @@ export function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
+const DEFAULT_CODEX_MODEL = 'gpt-5.4';
+
+function resolveCodexModel(requestModel: string | undefined): string {
+  return resolveModelTier(requestModel) ?? process.env.CORAL_CODEX_MODEL ?? DEFAULT_CODEX_MODEL;
+}
+
 function buildThreadParams(
   request: ProviderRequest,
 ): Pick<ThreadStartParams, 'cwd' | 'model' | 'approvalPolicy' | 'sandbox'> {
   return {
     cwd: request.cwd ?? process.cwd(),
-    model: resolveModelTier(request.model) ?? null,
+    model: resolveCodexModel(request.model),
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
   };
@@ -70,7 +76,7 @@ export function mapTurnStartParams(request: ProviderRequest, threadId: string): 
   return {
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
-    model: resolveModelTier(request.model),
+    model: resolveCodexModel(request.model),
     effort: request.effort,
   };
 }
