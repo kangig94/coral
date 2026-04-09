@@ -1,17 +1,9 @@
-import { createHash } from 'node:crypto';
 import type { KbRuntime } from '../contracts.js';
 import { loadKbNote, loadKbSource } from '../read.js';
+import { approximateTokenCount, fingerprintEntryContent } from './shared.js';
 import type { ClaimCandidate, CurateClaimedEntry } from './types.js';
 
 const CLASSIFICATION_SOURCE_EXCERPT_TOKEN_LIMIT = 2_000;
-
-function fingerprintEntryContent(raw: string): string {
-  return createHash('sha256').update(raw).digest('hex');
-}
-
-function approximateTokenCount(value: string): number {
-  return value.length === 0 ? 0 : Math.ceil(value.length / 4);
-}
 
 function trimTextToTokenBudget(text: string, tokenBudget: number): string {
   if (tokenBudget <= 0 || text.length === 0) {

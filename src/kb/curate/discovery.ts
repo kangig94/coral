@@ -3,12 +3,18 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../shared/utils.js';
-import { assertNoteSlug, compareLocale, stripMarkdownCodeFences } from '../validation.js';
+import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import {
+  filterCandidatesBeforeRepairFrontier,
+  isCursorBeforeRepairFrontier,
+} from './metadata-commit.js';
+import { parseJsonArray, uniqueTrimmedList } from './shared.js';
 import {
   compareCursor,
   getCurateRepairFrontier,
   normalizeCurateStateRepairFrontier,
+  noteCursor,
   type CurateCursor,
   type CurateRepairFrontier,
   type CurateState,
@@ -24,11 +30,6 @@ const DISCOVERY_BATCH_SIZE = 100;
 const DISCOVERY_PROMPT_BODY_LIMIT = 4000;
 const DISCOVERY_MAX_MERGES = 2;
 const DISCOVERY_MAX_REFINES = 3;
-
-type ParsedArrayResult = {
-  entries: unknown[];
-  parseFailed: boolean;
-};
 
 export type DiscoveryBatch = {
   selected: NoteClaimCandidate[];
@@ -46,45 +47,6 @@ export type DiscoveryPromptResult = {
   prompt: string;
   corpusPath: string;
 };
-
-function parseJsonArray(raw: string): ParsedArrayResult {
-  const normalized = stripMarkdownCodeFences(raw.trim());
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(normalized) as unknown;
-  } catch {
-    parsed = null;
-  }
-
-  if (!Array.isArray(parsed)) {
-    return {
-      entries: [],
-      parseFailed: true,
-    };
-  }
-
-  return {
-    entries: parsed,
-    parseFailed: false,
-  };
-}
-
-function uniqueTrimmedList(values: string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
-}
 
 export function truncateDiscoveryBody(body: string): string {
   return body.slice(0, DISCOVERY_PROMPT_BODY_LIMIT);
@@ -124,35 +86,6 @@ export function normalizeDiscoverySlug(raw: string): string | null {
 
 function getDiscoveryNotes(index: KbIndex): NoteEntry[] {
   return Object.values(index.entries).filter(isNoteEntry);
-}
-
-function noteCursor(note: string, entrySeq: number): CurateCursor {
-  return {
-    entryId: noteEntryId(note),
-    entrySeq,
-  };
-}
-
-function isCursorBeforeRepairFrontier(cursor: CurateCursor, frontier: CurateRepairFrontier): boolean {
-  if (frontier.kind === 'none') {
-    return true;
-  }
-  if (frontier.kind === 'unknown') {
-    return false;
-  }
-
-  return compareCursor(cursor, frontier.cursor) < 0;
-}
-
-function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateCursor }>(
-  candidates: T[],
-  frontier: CurateRepairFrontier,
-): T[] {
-  if (frontier.kind === 'none') {
-    return candidates;
-  }
-
-  return candidates.filter((candidate) => isCursorBeforeRepairFrontier(candidate.cursor, frontier));
 }
 
 function collectDiscoveryCandidates(index: KbIndex): NoteClaimCandidate[] {

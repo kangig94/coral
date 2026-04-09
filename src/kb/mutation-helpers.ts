@@ -98,7 +98,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   };
 }
 
-function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
+export function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
   return Object.fromEntries(
     Object.entries(entityMeta).map(([entity, meta]) => [
       entity,
@@ -111,7 +111,7 @@ function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<s
   );
 }
 
-function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {
+export function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {
   return {
     source: relationship.source,
     target: relationship.target,

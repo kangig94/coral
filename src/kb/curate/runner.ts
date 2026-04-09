@@ -21,8 +21,10 @@ import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { CurateJsonParseError, runCurateClaude } from './operations.js';
 import {
   compareCursor,
+  compareOptionalCursor,
   getCurateRepairFrontier,
   isClaimStale,
+  noteCursor,
   readCurateState,
   writeCurateState,
   type CurateCursor,
@@ -43,21 +45,6 @@ function getCuratableEntries(index: KbIndex): CuratableEntry[] {
   return Object.values(index.entries).filter(
     (entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry),
   );
-}
-
-function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
-  if (left === null) {
-    return -1;
-  }
-
-  return compareCursor(left, right);
-}
-
-function noteCursor(note: string, entrySeq: number): CurateCursor {
-  return {
-    entryId: noteEntryId(note),
-    entrySeq,
-  };
 }
 
 function sourceCursor(slug: string, entrySeq: number): CurateCursor {
@@ -206,9 +193,8 @@ export async function runClassificationBatches(
   index: KbIndex,
   signal?: AbortSignal,
 ): Promise<ClassificationAssignment[]> {
-  let workingIndex = { ...index };
   let workingGraphIndex = index;
-  let validatedAssignments: ClassificationAssignment[] = [];
+  const validatedAssignments: ClassificationAssignment[] = [];
   const principleNames = buildPrincipleNames(index);
   const remainingEntries = [...claim.entries];
 
@@ -232,9 +218,8 @@ export async function runClassificationBatches(
     }
 
     const validatedBatch = validateAssignments(parsed.assignments, workingGraphIndex, batch);
-    validatedAssignments = [...validatedAssignments, ...validatedBatch];
-    workingIndex = mergeAssignmentsIntoIndexGraph(workingGraphIndex, validatedBatch);
-    workingGraphIndex = workingIndex;
+    validatedAssignments.push(...validatedBatch);
+    workingGraphIndex = mergeAssignmentsIntoIndexGraph(workingGraphIndex, validatedBatch);
     remainingEntries.splice(0, batch.length);
   }
 

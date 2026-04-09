@@ -1,6 +1,6 @@
 import { deriveNoteIdentity } from '../frontmatter.js';
-import { cloneKbIndex } from '../mutation-helpers.js';
-import { assertNonEmptyText, compareLocale, stripMarkdownCodeFences } from '../validation.js';
+import { cloneKbIndex, cloneEntityMetaRecord, cloneEntityRelationship } from '../mutation-helpers.js';
+import { assertNonEmptyText, compareLocale } from '../validation.js';
 import {
   ENTITY_TYPES,
   RELATIONSHIP_TYPES,
@@ -18,6 +18,7 @@ import {
 } from '../types.js';
 import { isRecord, isStringArray } from '../../shared/utils.js';
 import { type EntityConsolidationDelta } from './entity-consolidation.js';
+import { approximateTokenCount, parseJsonArray, uniqueTrimmedList, type ParsedArrayResult } from './shared.js';
 import type {
   ClassificationAssignment,
   ClassificationNewEntity,
@@ -55,11 +56,6 @@ const RELATIONSHIP_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [RelationshipTyp
   ['replaces', 'source supersedes target'],
 ];
 
-type ParsedArrayResult = {
-  entries: unknown[];
-  parseFailed: boolean;
-};
-
 export type ClassificationPromptVocabularyEntry = {
   name: string;
   type: EntityType;
@@ -76,45 +72,6 @@ export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
 function buildFlatList(values: string[]): string {
   return values.map((value) => `- ${value}`).join('\n');
-}
-
-function parseJsonArray(raw: string): ParsedArrayResult {
-  const normalized = stripMarkdownCodeFences(raw.trim());
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(normalized) as unknown;
-  } catch {
-    parsed = null;
-  }
-
-  if (!Array.isArray(parsed)) {
-    return {
-      entries: [],
-      parseFailed: true,
-    };
-  }
-
-  return {
-    entries: parsed,
-    parseFailed: false,
-  };
-}
-
-function uniqueTrimmedList(values: string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
 }
 
 function isKnownEntityType(value: string): value is EntityType {
@@ -139,29 +96,6 @@ function isDescriptiveEntityName(value: string, minimumSegments = 2): boolean {
 
 function hasNonEmptyDescription(value: string): boolean {
   return value.trim().length > 0;
-}
-
-function cloneEntityMetaMap(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
-  return Object.fromEntries(
-    Object.entries(entityMeta).map(([entityName, meta]) => [
-      entityName,
-      {
-        type: meta.type,
-        description: meta.description,
-        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
-      },
-    ]),
-  );
-}
-
-function cloneEntityRelationships(relationships: EntityRelationship[]): EntityRelationship[] {
-  return relationships.map((relationship) => ({
-    source: relationship.source,
-    target: relationship.target,
-    type: relationship.type,
-    description: relationship.description,
-    evidence: [...relationship.evidence],
-  }));
 }
 
 function buildEntitySupportMap(index: KbIndex): Map<string, number> {
@@ -375,10 +309,6 @@ export function buildClassificationPrompt(
     ...entryBlocks,
     buildClassificationPromptFooter(shape),
   ].join('\n\n');
-}
-
-function approximateTokenCount(value: string): number {
-  return value.length === 0 ? 0 : Math.ceil(value.length / 4);
 }
 
 function classificationBatchShape(entries: CurateClaimedEntry[]): ClassificationBatchShape {
@@ -978,8 +908,8 @@ export function validateAssignments(
 
 export function mergeAssignmentsIntoIndexGraph(index: KbIndex, assignments: ClassificationAssignment[]): KbIndex {
   const nextIndex = cloneKbIndex(index);
-  const entityMeta = cloneEntityMetaMap(nextIndex.entityMeta ?? {});
-  const relationships = cloneEntityRelationships(nextIndex.relationships ?? []);
+  const entityMeta = cloneEntityMetaRecord(nextIndex.entityMeta ?? {});
+  const relationships = (nextIndex.relationships ?? []).map(cloneEntityRelationship);
   const relationshipsByKey = new Map(
     relationships.map((relationship, index) => [classificationRelationshipKey(relationship), index] as const),
   );

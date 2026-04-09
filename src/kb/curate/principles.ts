@@ -34,6 +34,7 @@ import {
   applyRemovePendingDiscovery,
   compareCursor,
   getCurateRepairFrontier,
+  noteCursor,
   readCurateState,
   type CurateCursor,
   type CurateState,
@@ -54,13 +55,6 @@ type RunPrincipleDiscoveryOptions = {
 function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
   const entry = getEntry(index, noteEntryId(note));
   return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
-}
-
-function noteCursor(note: string, entrySeq: number): CurateCursor {
-  return {
-    entryId: noteEntryId(note),
-    entrySeq,
-  };
 }
 
 function buildPrincipleAssignmentTargets(

@@ -68,6 +68,7 @@ import {
 import { loadKbNote, loadKbSource } from './read.js';
 import { readActiveSnapshotId } from './vector/store.js';
 import type { VectorStore } from './vector/contracts.js';
+import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
@@ -463,8 +464,6 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
 function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState {
   return state !== null && state.textStaleReason === undefined;
 }
-
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;

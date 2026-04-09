@@ -667,6 +667,21 @@ export function compareCursor(left: CurateCursor, right: CurateCursor): number {
   return left.entryId.localeCompare(right.entryId);
 }
 
+export function noteCursor(note: string, entrySeq: number): CurateCursor {
+  return {
+    entryId: noteEntryId(note),
+    entrySeq,
+  };
+}
+
+export function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
+  if (left === null) {
+    return -1;
+  }
+
+  return compareCursor(left, right);
+}
+
 export function sameStringList(left: string[], right: string[]): boolean {
   if (left.length !== right.length) {
     return false;

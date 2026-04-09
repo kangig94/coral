@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
 import type { KbRuntime } from '../contracts.js';
@@ -12,6 +11,8 @@ import {
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
+  cloneEntityMetaRecord,
+  cloneEntityRelationship,
   cloneKbIndex,
   recordMetadataMutation,
   writeFileAtomic,
@@ -27,8 +28,10 @@ import {
   type EntityMeta,
   type EntityRelationship,
 } from '../types.js';
+import { fingerprintEntryContent, uniqueTrimmedList } from './shared.js';
 import {
   compareCursor,
+  compareOptionalCursor,
   getCurateRepairFrontier,
   normalizeCurateStateRepairFrontier,
   readCurateState,
@@ -58,53 +61,10 @@ type LiveMetadataDecision = {
   nextPrinciples: string[];
 };
 
-function fingerprintEntryContent(raw: string): string {
-  return createHash('sha256').update(raw).digest('hex');
-}
-
-function uniqueTrimmedList(values: string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
-}
-
-function cloneEntityMetaMap(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
-  return Object.fromEntries(
-    Object.entries(entityMeta).map(([entityName, meta]) => [
-      entityName,
-      {
-        type: meta.type,
-        description: meta.description,
-        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
-      },
-    ]),
-  );
-}
-
-function cloneEntityRelationships(relationships: EntityRelationship[]): EntityRelationship[] {
-  return relationships.map((relationship) => ({
-    source: relationship.source,
-    target: relationship.target,
-    type: relationship.type,
-    description: relationship.description,
-    evidence: [...relationship.evidence],
-  }));
-}
-
 function snapshotEntityGraph(currentIndex: { entityMeta?: Record<string, EntityMeta>; relationships?: EntityRelationship[] }): EntityGraph {
   return {
-    entityMeta: cloneEntityMetaMap(currentIndex.entityMeta ?? {}),
-    relationships: cloneEntityRelationships(currentIndex.relationships ?? []),
+    entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta ?? {}),
+    relationships: (currentIndex.relationships ?? []).map(cloneEntityRelationship),
   };
 }
 
@@ -143,14 +103,6 @@ export function cursorFromTarget(target: MetadataTarget): CurateCursor {
 
 export function compareMetadataTarget(left: MetadataTarget, right: MetadataTarget): number {
   return compareCursor(cursorFromTarget(left), cursorFromTarget(right));
-}
-
-function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
-  if (left === null) {
-    return -1;
-  }
-
-  return compareCursor(left, right);
 }
 
 function advanceProcessedThrough(
@@ -255,8 +207,8 @@ export async function commitMetadataTargetsLocked(
     .map((target) => rewriteMetadataTargetEntities(target, consolidationResult.replacementMap))
     .sort(compareMetadataTarget);
 
-  nextIndex.entityMeta = cloneEntityMetaMap(desiredGraph.entityMeta);
-  nextIndex.relationships = cloneEntityRelationships(desiredGraph.relationships);
+  nextIndex.entityMeta = cloneEntityMetaRecord(desiredGraph.entityMeta);
+  nextIndex.relationships = desiredGraph.relationships.map(cloneEntityRelationship);
   let processedThrough = normalizedState.processedThrough;
   let cursorCanAdvance = true;
   let wroteMarkdown = false;

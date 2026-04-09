@@ -8,6 +8,7 @@ import {
   type RelationshipType,
 } from '../types.js';
 import { compareLocale } from '../validation.js';
+import { uniqueTrimmedList } from './shared.js';
 
 const GENERIC_PLURAL_SEGMENTS = new Set([
   'aliases',
@@ -66,23 +67,6 @@ export type EntityConsolidationDelta = {
   }>;
   relationships?: EntityRelationship[];
 };
-
-function uniqueTrimmedList(values: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
-}
 
 function normalizeEntityId(value: string): string {
   return value
