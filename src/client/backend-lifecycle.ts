@@ -75,13 +75,16 @@ async function readHealthyBackendInfo(root: string, info = readBackendInfo(root)
   if (!health) return null;
 
   const expectedNamespace = pluginRootNamespace(root);
-  const hasMismatch =
+  if (
     health.namespace !== expectedNamespace ||
     health.namespace !== info.namespace ||
     health.bundleHash !== info.bundleHash ||
-    health.instanceId !== info.instanceId;
+    health.instanceId !== info.instanceId
+  ) {
+    return null;
+  }
 
-  return hasMismatch ? null : info;
+  return info;
 }
 
 async function requestBackendShutdown(info: BackendInfo): Promise<void> {
@@ -193,14 +196,17 @@ async function waitForReplacementBackend(
 }
 
 export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle> {
-  function resolvePluginRoot(root?: string): string {
-    if (root) return root;
-    if (typeof __PLUGIN_ROOT__ === 'string') return __PLUGIN_ROOT__;
-    if (typeof __dirname === 'string') return join(__dirname, '..', '..');
-    return process.cwd();
+  let root: string;
+  if (pluginRoot) {
+    root = pluginRoot;
+  } else if (typeof __PLUGIN_ROOT__ === 'string') {
+    root = __PLUGIN_ROOT__;
+  } else if (typeof __dirname === 'string') {
+    root = join(__dirname, '..', '..');
+  } else {
+    root = process.cwd();
   }
 
-  const root = resolvePluginRoot(pluginRoot);
   const backendBin = join(root, 'bridge', 'coral-backend.cjs');
   const existingInfo = readBackendInfo(root);
   const existingHealthy = await readHealthyBackendInfo(root, existingInfo);

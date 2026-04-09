@@ -12,13 +12,7 @@ import {
   discussSummaryIndexPathForSource,
   resolveProjectSource,
 } from '../infra/paths.js';
-import {
-  isValidSessionEntry as isSharedValidSessionEntry,
-  readSessionEntry as readSharedSessionEntry,
-  readSessionEntryLenient as readSharedSessionEntryLenient,
-  type LenientSessionEntry,
-} from '../shared/session-entry.js';
-import type { PersistedProgressRecord, PersistedStatusRecord, SessionEntry } from '../shared/types.js';
+import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
 import type { DiscussState } from '../discuss/types.js';
 import {
   discussStatuses,
@@ -28,11 +22,7 @@ import {
   sessionEventKinds,
   resolveReasons,
 } from '../discuss/types.js';
-import {
-  type DiscussDomainEvent,
-  type PersistedDiscussSnapshot,
-  controlPhases,
-} from '../discuss/events.js';
+import { type DiscussDomainEvent, type PersistedDiscussSnapshot, controlPhases } from '../discuss/events.js';
 
 const finiteNumberSchema = z.number().finite();
 const integerSchema = z.number().int();
@@ -47,6 +37,7 @@ const transcriptEventSchema = z.enum(sessionEventKinds);
 const controlPhaseSchema = z.enum(controlPhases);
 const resolveReasonSchema = z.enum(resolveReasons);
 
+export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../shared/session-entry.js';
 export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
 
 function readJsonFile(filePath: string): unknown | null {
@@ -83,24 +74,28 @@ function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null
 }
 
 /** Structural schema for persisted status records — validates fields callers branch on. */
-const persistedStatusRecordSchema = z.object({
-  jobId: z.string(),
-  sessionId: z.string(),
-  provider: z.string(),
-  projectRoot: z.string(),
-  backendNamespace: z.string(),
-  phase: z.string(),
-  launch: z.object({ state: z.string(), updatedAt: z.string() }).passthrough(),
-}).passthrough();
+const persistedStatusRecordSchema = z
+  .object({
+    jobId: z.string(),
+    sessionId: z.string(),
+    provider: z.string(),
+    projectRoot: z.string(),
+    backendNamespace: z.string(),
+    phase: z.string(),
+    launch: z.object({ state: z.string(), updatedAt: z.string() }).passthrough(),
+  })
+  .passthrough();
 
 /** Structural schema for persisted progress records. */
-const persistedProgressRecordSchema = z.object({
-  jobId: z.string(),
-  sessionId: z.string(),
-  eventId: z.number(),
-  type: z.string(),
-  ts: z.string(),
-}).passthrough();
+const persistedProgressRecordSchema = z
+  .object({
+    jobId: z.string(),
+    sessionId: z.string(),
+    eventId: z.number(),
+    type: z.string(),
+    ts: z.string(),
+  })
+  .passthrough();
 
 function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
   try {
@@ -115,9 +110,13 @@ function recordLikeSchema<T extends z.ZodTypeAny>(valueSchema: T) {
   return z.union([z.record(z.string(), valueSchema), z.array(valueSchema)]);
 }
 
-function parseStringArray(value: unknown): string[] | null {
-  const parsed = stringArraySchema.safeParse(value);
+function parseWithSchema<TSchema extends z.ZodTypeAny>(schema: TSchema, value: unknown): z.output<TSchema> | null {
+  const parsed = schema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+function parseStringArray(value: unknown): string[] | null {
+  return parseWithSchema(stringArraySchema, value);
 }
 
 const unknownRecordLikeSchema = recordLikeSchema(z.unknown());
@@ -191,10 +190,6 @@ const transcriptEntrySchema = z.discriminatedUnion('type', [
     })
     .passthrough(),
 ]);
-
-export function isValidSessionEntry(value: unknown): value is SessionEntry {
-  return isSharedValidSessionEntry(value);
-}
 
 const discussStateSchema = z
   .object({
@@ -619,7 +614,7 @@ function parseSourceEnvelopeData<T>(
   rowSchema: z.ZodType<T>,
   label: string,
 ): { source: string; updatedAt: string; sessions: T[] } | null {
-  const parsed = z
+  const schema = z
     .object({
       updatedAt: z.string(),
       sessions: z.array(rowSchema),
@@ -628,28 +623,27 @@ function parseSourceEnvelopeData<T>(
     })
     .passthrough()
     .superRefine((envelope, ctx) => {
-      const fileSource =
-        typeof envelope.source === 'string'
-          ? envelope.source
-          : typeof envelope.projectRoot === 'string'
-            ? source
-            : null;
-
-      if (fileSource !== source) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `${label} source does not match requested source`,
-          path: ['source'],
-        });
+      let fileSource: string | null = null;
+      if (typeof envelope.source === 'string') {
+        fileSource = envelope.source;
+      } else if (typeof envelope.projectRoot === 'string') {
+        fileSource = source;
       }
+
+      if (fileSource === source) return;
+
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${label} source does not match requested source`,
+        path: ['source'],
+      });
     })
     .transform((envelope) => ({
       source,
       updatedAt: envelope.updatedAt,
       sessions: envelope.sessions,
-    }))
-    .safeParse(value);
-  return parsed.success ? parsed.data : null;
+    }));
+  return parseWithSchema(schema, value);
 }
 
 function parseDiscussDiscoveryData(value: unknown, source: string): DiscussDiscoveryData | null {
@@ -661,7 +655,7 @@ function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSu
 }
 
 function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData | null {
-  const parsed = z
+  const schema = z
     .object({
       updatedAt: z.unknown().optional(),
       sources: z.unknown().optional(),
@@ -690,22 +684,22 @@ function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData
       }
     })
     .transform((registry): DiscussSourcesRegistryData => {
+      const updatedAt = typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined;
       const sources = parseStringArray(registry.sources);
       if (sources !== null) {
         return {
-          updatedAt: typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined,
+          updatedAt,
           sources: [...new Set(sources)],
         };
       }
 
       const projectRoots = parseStringArray(registry.projectRoots) ?? [];
       return {
-        updatedAt: typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined,
+        updatedAt,
         sources: [...new Set(projectRoots.map((projectRoot) => resolveProjectSource(projectRoot)))],
       };
-    })
-    .safeParse(value);
-  return parsed.success ? parsed.data : null;
+    });
+  return parseWithSchema(schema, value);
 }
 
 /**
@@ -761,8 +755,7 @@ export interface DiscussSummaryIndexData {
 export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
   const record = readJsonFile(join(JOBS_DIR, jobId, 'status.json'));
   if (record === null) return null;
-  const parsed = persistedStatusRecordSchema.safeParse(record);
-  return parsed.success ? (parsed.data as PersistedStatusRecord) : null;
+  return parseWithSchema(persistedStatusRecordSchema, record) as PersistedStatusRecord | null;
 }
 
 /**
@@ -771,24 +764,10 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
 export function readProgressLog(jobId: string): PersistedProgressRecord[] {
   const log = readTextFile(join(JOBS_DIR, jobId, 'progress.jsonl'));
   if (log === null) return [];
-  return parseJsonLines(log, (lineValue) => {
-    const parsed = persistedProgressRecordSchema.safeParse(lineValue);
-    return parsed.success ? (parsed.data as PersistedProgressRecord) : null;
-  });
-}
-
-/**
- * Reads and validates a strict execution session entry JSON file.
- */
-export function readSessionEntry(sessionPath: string): SessionEntry | null {
-  return readSharedSessionEntry(sessionPath);
-}
-
-/**
- * Reads a session entry for reporting surfaces that must tolerate legacy or partial files.
- */
-export function readSessionEntryLenient(sessionPath: string): LenientSessionEntry | null {
-  return readSharedSessionEntryLenient(sessionPath);
+  return parseJsonLines(
+    log,
+    (lineValue) => parseWithSchema(persistedProgressRecordSchema, lineValue) as PersistedProgressRecord | null,
+  );
 }
 
 /**
