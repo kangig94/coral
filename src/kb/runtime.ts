@@ -16,7 +16,8 @@ import type {
 import { normalizeCommunityChildren, normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
-import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
+import { createOramaDb } from './orama-factory.js';
+import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import {
   communityPathFromName,
   communitiesDir as pathsCommunitiesDir,
@@ -65,8 +66,8 @@ import {
   readActiveSnapshotId,
   vectorAddonPath,
   vectorSnapshotDbPath,
-  type VectorStore,
 } from './vector/store.js';
+import type { VectorStore } from './vector/contracts.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';

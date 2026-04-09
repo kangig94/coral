@@ -9,7 +9,7 @@ import { backendLog } from '../../shared/backend-log.js';
 import { isRecord, TransientHttpError } from '../../shared/utils.js';
 import { kbRuntimeDir } from '../paths.js';
 import { loadCoralEnv } from '../env.js';
-import type { EmbeddingSpec } from './store.js';
+import type { EmbeddingSpec } from './contracts.js';
 
 const GEMINI_PROVIDER_NAME = 'gemini';
 const GEMINI_DEFAULT_MODEL = 'gemini-embedding-001';

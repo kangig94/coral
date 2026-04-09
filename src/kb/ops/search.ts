@@ -5,14 +5,13 @@ import {
 } from '../curate/community-detection.js';
 import { readCurateState } from '../curate/state.js';
 import {
-  type KbOramaDb,
   normalizeOramaTerm,
   normalizeWhitespace,
   tokenizeField,
   tokenizeQuery,
   type KbOramaDocument,
-  type KbOramaTokenizer,
 } from '../orama-factory.js';
+import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   type EntityGraph,

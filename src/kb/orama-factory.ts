@@ -1,4 +1,5 @@
-import { components, create, type AnyOrama, type DefaultTokenizer } from '@orama/orama';
+import { components, create } from '@orama/orama';
+import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './orama-schema.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -10,17 +11,6 @@ import {
 
 const ORAMA_LANGUAGE = 'english';
 
-export const ORAMA_SCHEMA = {
-  entryId: 'string',
-  slug: 'string',
-  kind: 'string',
-  freshness: 'string',
-  title: 'string',
-  body: 'string',
-  tags: 'string[]',
-  principles: 'string[]',
-} as const;
-
 export type KbOramaDocument = {
   entryId: string;
   slug: string;
@@ -31,9 +21,6 @@ export type KbOramaDocument = {
   tags: string[];
   principles: string[];
 };
-
-export type KbOramaDb = AnyOrama<typeof ORAMA_SCHEMA>;
-export type KbOramaTokenizer = DefaultTokenizer;
 
 export function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, ' ');

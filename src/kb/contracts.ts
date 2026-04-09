@@ -1,6 +1,6 @@
-import type { KbOramaDb, KbOramaTokenizer } from './orama-factory.js';
+import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './types.js';
-import type { VectorStore } from './vector/store.js';
+import type { VectorStore } from './vector/contracts.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
