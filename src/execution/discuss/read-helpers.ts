@@ -5,16 +5,16 @@
  * lookup, while this module owns the read-side helper behavior.
  */
 
-import { readDiscussSources } from '../client/readers.js';
+import { readDiscussSources } from '../../client/readers.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
   type DiscussDetailResponse,
   type DiscussSummaryDto,
   type DiscussView,
-} from '../discuss/views.js';
-import { listAttachedSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
-import type { DiscussSessionStore } from './discuss/session-store.js';
+} from '../../discuss/views.js';
+import { listAttachedSessions, type DiscussContextRegistry } from './context-registry.js';
+import type { DiscussSessionStore } from './session-store.js';
 
 export type DiscussReadHelpersDeps = {
   readonly discussRegistry: DiscussContextRegistry;

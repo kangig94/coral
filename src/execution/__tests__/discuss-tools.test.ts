@@ -17,7 +17,7 @@ import {
   handleDiscussSpeech,
   handleDiscussStart,
   handleDiscussWatch,
-} from '../discuss-tools.js';
+} from '../discuss/tools.js';
 import { getSession } from '../discuss/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';

@@ -1124,7 +1124,7 @@ describe('execution backend server', () => {
         ...options.kbToolOverrides,
       };
 
-      vi.doMock('../discuss-tools.js', () => discussTools);
+      vi.doMock('../discuss/tools.js', () => discussTools);
       vi.doMock('../kb-tools.js', () => kbTools);
 
       const { createHttpHandler } = await import('../http-handler.js');
@@ -1153,7 +1153,7 @@ describe('execution backend server', () => {
     }
 
     afterEach(() => {
-      vi.doUnmock('../discuss-tools.js');
+      vi.doUnmock('../discuss/tools.js');
       vi.doUnmock('../kb-tools.js');
     });
 
