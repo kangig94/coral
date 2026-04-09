@@ -121,48 +121,46 @@ export function parseAxisSpec(spec: string): ControversyAxis {
   for (const segment of segments) {
     const equalsIndex = segment.indexOf('=');
 
-    if (equalsIndex === -1) {
-      if (!collectingPositions || positions === undefined) {
-        throw new Error(`Expected key=value segment, received "${segment}"`);
-      }
+    if (equalsIndex !== -1) {
+      const key = segment.slice(0, equalsIndex).trim();
+      const rawValue = segment.slice(equalsIndex + 1);
 
-      positions.push(parseScalarValue(segment));
-      continue;
-    }
+      if (key === 'axis') {
+        if (axis !== undefined) {
+          throw new Error('Duplicate key: axis');
+        }
 
-    const key = segment.slice(0, equalsIndex).trim();
-    const rawValue = segment.slice(equalsIndex + 1);
-
-    if (key === 'axis') {
-      if (axis !== undefined) {
-        throw new Error('Duplicate key: axis');
-      }
-
-      axis = parseScalarValue(rawValue);
-      collectingPositions = false;
-      continue;
-    }
-
-    if (key === 'positions') {
-      if (positions !== undefined) {
-        throw new Error('Duplicate key: positions');
-      }
-
-      const trimmedValue = rawValue.trim();
-      if (trimmedValue.startsWith('"')) {
-        positions = parseScalarValue(trimmedValue)
-          .split(',')
-          .map((position) => position.trim());
+        axis = parseScalarValue(rawValue);
         collectingPositions = false;
         continue;
       }
 
-      positions = [parseScalarValue(trimmedValue)];
-      collectingPositions = true;
-      continue;
+      if (key === 'positions') {
+        if (positions !== undefined) {
+          throw new Error('Duplicate key: positions');
+        }
+
+        const trimmedValue = rawValue.trim();
+        const parsedValue = parseScalarValue(trimmedValue);
+        if (trimmedValue.startsWith('"')) {
+          positions = parsedValue.split(',').map((position) => position.trim());
+          collectingPositions = false;
+          continue;
+        }
+
+        positions = [parsedValue];
+        collectingPositions = true;
+        continue;
+      }
+
+      throw new Error(`Unknown axis key: ${key}`);
     }
 
-    throw new Error(`Unknown axis key: ${key}`);
+    if (!collectingPositions || positions === undefined) {
+      throw new Error(`Expected key=value segment, received "${segment}"`);
+    }
+
+    positions.push(parseScalarValue(segment));
   }
 
   if (axis === undefined) {

@@ -191,13 +191,8 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
     abortPromise =
       abortPromise ??
       Promise.resolve()
-        .then(async () => {
-          await options.abortJob(options.launchResult.job);
-        })
-        .then(
-          () => undefined,
-          () => undefined,
-        );
+        .then(() => options.abortJob(options.launchResult.job))
+        .then(() => undefined, () => undefined);
   };
 
   emitLaunch(options.launchResult, options.outputFormat);

@@ -61,9 +61,6 @@ function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
 }
 
-function createCliProviderRegistry(): ProviderRegistry {
-  return createBuiltInProviderRegistry();
-}
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
 type ProviderRunOptions = {
@@ -199,25 +196,19 @@ function emit<T>(result: T, outputFormat: 'text' | 'json', textFormatter?: (data
 }
 
 export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
+  let message: string;
+
   if (outputFormat === 'text') {
-    process.stderr.write(formatError(error) + '\n');
-    process.exitCode = 1;
-    return;
+    message = formatError(error);
+  } else if (error instanceof BackendToolHttpError) {
+    message = JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body });
+  } else if (error instanceof Error) {
+    message = JSON.stringify({ error: true, message: error.message });
+  } else {
+    message = JSON.stringify({ error: true, message: String(error) });
   }
 
-  if (error instanceof BackendToolHttpError) {
-    process.stderr.write(JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body }) + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  if (error instanceof Error) {
-    process.stderr.write(JSON.stringify({ error: true, message: error.message }) + '\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  process.stderr.write(JSON.stringify({ error: true, message: String(error) }) + '\n');
+  process.stderr.write(message + '\n');
   process.exitCode = 1;
 }
 
@@ -405,7 +396,7 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
   }
 }
 
-export function buildProgram(providerRegistry: ProviderRegistry = createCliProviderRegistry()): Command {
+export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();
 
   program
@@ -708,13 +699,14 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
           ...(opts.thought !== undefined ? { thought: opts.thought } : {}),
           ...(opts.content !== undefined ? { content: opts.content } : {}),
         };
-        if ('content' in args) {
+        const isSpeech = 'content' in args;
+        if (isSpeech) {
           discussSpeechSchema.parse(args);
         } else {
           discussBidSchema.parse(args);
         }
         const client = makeClient(process.cwd());
-        const result = 'content' in args
+        const result = isSpeech
           ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
           : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
         emit(result, outputFormat, formatDiscussParticipate);
@@ -988,12 +980,12 @@ export function buildProgram(providerRegistry: ProviderRegistry = createCliProvi
       const outputFormat = getOutputFormat(kbUpdateCommand);
 
       try {
+        const content =
+          opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
         const args = {
           note,
           ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(opts.contentFile !== undefined
-            ? { content: readFileSync(resolveFilePath(opts.contentFile), 'utf8') }
-            : {}),
+          ...(content !== undefined ? { content } : {}),
         };
         const client = makeClient(process.cwd());
         const result = await client.kbUpdate(args);

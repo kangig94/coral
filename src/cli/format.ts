@@ -148,10 +148,19 @@ function toKbReadDisplayResult(data: KbReadResult): KbReadDisplayResult {
 
   const ms = Date.now() - Date.parse(data.updatedAt);
   const days = Math.floor(ms / 86_400_000);
+  let age: string;
+
+  if (days === 0) {
+    age = 'today';
+  } else if (days === 1) {
+    age = '1 day ago';
+  } else {
+    age = `${days} days ago`;
+  }
 
   return {
     ...data,
-    age: days === 0 ? 'today' : days === 1 ? '1 day ago' : `${days} days ago`,
+    age,
   };
 }
 
@@ -206,26 +215,28 @@ export function formatProviderList(result: SessionListResult, options: { include
     return 'No sessions';
   }
 
-  const includeProvider = options.includeProvider === true;
-  const rows = result.sessions.map((session) =>
-    includeProvider
-      ? [
-          session.provider || '-',
-          session.sessionId,
-          session.state || '-',
-          session.name || '-',
-          session.model || '-',
-          session.cwd || '-',
-        ]
-      : [session.sessionId, session.state || '-', session.name || '-', session.model || '-', session.cwd || '-'],
-  );
+  if (options.includeProvider === true) {
+    const rows = result.sessions.map((session) => [
+      session.provider || '-',
+      session.sessionId,
+      session.state || '-',
+      session.name || '-',
+      session.model || '-',
+      session.cwd || '-',
+    ]);
 
-  return formatTable(
-    includeProvider
-      ? ['PROVIDER', 'SESSION', 'STATE', 'NAME', 'MODEL', 'CWD']
-      : ['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'],
-    rows,
-  );
+    return formatTable(['PROVIDER', 'SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
+  }
+
+  const rows = result.sessions.map((session) => [
+    session.sessionId,
+    session.state || '-',
+    session.name || '-',
+    session.model || '-',
+    session.cwd || '-',
+  ]);
+
+  return formatTable(['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {
@@ -326,22 +337,21 @@ export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'):
 export function formatKbPrinciples(data: KbPrinciplesResult, cliPrefix = 'coral-cli'): string {
   const principles = data.principles;
   const warning = normalizeKbWarning(data.warning, cliPrefix);
+  let principlesText: string;
 
   if (!isVerbosePrincipleRows(principles)) {
-    return joinLines([
-      principles.length === 0 ? 'No principles' : principles.join('\n'),
-      `Total: ${data.total}`,
-      warning === undefined ? undefined : `Warning: ${warning}`,
-    ]);
+    principlesText = principles.length === 0 ? 'No principles' : principles.join('\n');
+  } else {
+    const rows = principles.map((value) => {
+      const notes = value.notes.length === 0 ? '' : ` (${value.notes.join(', ')})`;
+      return `${value.name}${notes}: ${value.statement}`;
+    });
+
+    principlesText = rows.length === 0 ? 'No principles' : rows.join('\n');
   }
 
-  const rows = principles.map((value) => {
-    const notes = value.notes.length === 0 ? '' : ` (${value.notes.join(', ')})`;
-    return `${value.name}${notes}: ${value.statement}`;
-  });
-
   return joinLines([
-    rows.length === 0 ? 'No principles' : rows.join('\n'),
+    principlesText,
     `Total: ${data.total}`,
     warning === undefined ? undefined : `Warning: ${warning}`,
   ]);
