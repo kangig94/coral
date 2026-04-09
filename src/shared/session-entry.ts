@@ -44,7 +44,7 @@ export function isValidSessionEntry(value: unknown): value is SessionEntry {
     typeof entry.name === 'string' &&
     typeof entry.state === 'string' &&
     (entry.state === 'pending' || entry.state === 'ready' || entry.state === 'non_resumable') &&
-    typeof entry.model === 'string' &&
+    (entry.model === undefined || typeof entry.model === 'string') &&
     typeof entry.cwd === 'string' &&
     (entry.projectRoot === undefined || typeof entry.projectRoot === 'string') &&
     (entry.backendNamespace === undefined || typeof entry.backendNamespace === 'string') &&
