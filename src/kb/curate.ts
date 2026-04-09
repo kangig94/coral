@@ -70,7 +70,7 @@ import {
   writeFileAtomic,
 } from './mutation-helpers.js';
 import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
   ENTITY_TYPES,

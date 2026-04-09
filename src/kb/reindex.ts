@@ -1,5 +1,5 @@
 import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import type { ReindexResult } from './types.js';
 import { ensureVectorIndex } from './vector-sync.js';

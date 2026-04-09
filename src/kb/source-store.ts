@@ -9,7 +9,7 @@ import {
 } from './mutation-helpers.js';
 import { assertWithin } from './paths.js';
 import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './runtime.js';
+import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 import {
   deleteEntry,
   isSourceEntry,

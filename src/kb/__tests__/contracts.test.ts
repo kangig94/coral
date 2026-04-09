@@ -25,7 +25,8 @@ describe('kb contracts boundary', () => {
       expect(runtimeSource).not.toMatch(new RegExp(`export (?:interface|type) ${contractName}\\b`));
     }
 
-    expect(runtimeSource).toContain('export function runEntrySeqUpgradeGuard');
+    const entrySeqGuardSource = readKbFile('entry-seq-guard.ts');
+    expect(entrySeqGuardSource).toContain('export function runEntrySeqUpgradeGuard');
     expect(runtimeSource).toContain('export function createKbRuntime');
   });
 
