@@ -6,9 +6,10 @@ import {
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
+  parseMembersFromBody,
   parseSourceFrontmatter,
+  parseSummaryFromBody,
 } from './frontmatter.js';
-import { parseMembersFromBody, parseSummaryFromBody } from './community-detection.js';
 import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
 import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';

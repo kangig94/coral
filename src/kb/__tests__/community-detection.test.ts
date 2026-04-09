@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEntityRelationshipGraph,
   detectCommunities,
-  parseMembersFromBody,
-  parseSummaryFromBody,
   renderCommunityDocument,
 } from '../community-detection.js';
-import { extractBody, parseCommunityFrontmatter } from '../frontmatter.js';
+import { extractBody, parseCommunityFrontmatter, parseMembersFromBody, parseSummaryFromBody } from '../frontmatter.js';
 import type { EntityGraph } from '../types.js';
 
 function createEntityGraph(): EntityGraph {

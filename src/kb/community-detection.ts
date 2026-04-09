@@ -9,6 +9,8 @@ import {
   extractBody,
   extractTitle,
   parseCommunityFrontmatter,
+  parseMembersFromBody,
+  parseSummaryFromBody,
   serializeCommunityFrontmatter,
 } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
@@ -845,23 +847,6 @@ export function renderCommunityDocument(document: {
       : `\n\n${renderChildrenSection(document.children)}`;
 
   return `${frontmatter}# ${document.title}\n\n${summarySection}${renderMembersSection(document.members)}${childrenSection}\n`;
-}
-
-export function parseMembersFromBody(body: string): string[] {
-  const membersMatch = body.match(/## Members\s*\n([\s\S]*?)(?:\n##|\n*$)/);
-  if (!membersMatch) return [];
-  return membersMatch[1]
-    .split('\n')
-    .map((line) => line.replace(/^-\s*#?/, '').trim())
-    .filter(Boolean)
-    .sort(compareLocale);
-}
-
-export function parseSummaryFromBody(body: string): string | undefined {
-  const summaryMatch = body.match(/## Summary\s*\n\n([\s\S]*?)(?:\n\n## |\n*$)/);
-  if (!summaryMatch) return undefined;
-  const text = summaryMatch[1].trim();
-  return text || undefined;
 }
 
 export function buildCommunityDocuments(

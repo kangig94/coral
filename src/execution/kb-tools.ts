@@ -1,11 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CurateHandle } from '../kb/curate.js';
-import { parseMembersFromBody, parseSummaryFromBody } from '../kb/community-detection.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { z, type ZodError } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
-import { extractBody, extractPrincipleStatement } from '../kb/frontmatter.js';
+import { extractBody, extractPrincipleStatement, parseMembersFromBody, parseSummaryFromBody } from '../kb/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
 import {
   memoDir,

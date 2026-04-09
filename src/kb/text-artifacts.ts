@@ -16,7 +16,9 @@ import {
   extractPrincipleStatement,
   extractTitle,
   parseCommunityFrontmatter,
+  parseMembersFromBody,
   parseSourceFrontmatter,
+  parseSummaryFromBody,
 } from './frontmatter.js';
 import {
   buildCommunityDocuments,
@@ -26,8 +28,6 @@ import {
   detectCommunities,
   generateCommunityFiles,
   loadExistingCommunityState,
-  parseMembersFromBody,
-  parseSummaryFromBody,
 } from './community-detection.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
