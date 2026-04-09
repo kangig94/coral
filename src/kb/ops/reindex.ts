@@ -1,8 +1,8 @@
-import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
-import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
-import type { ReindexResult } from './types.js';
-import { ensureVectorIndex } from './vector-sync.js';
+import type { KbRuntime } from '../contracts.js';
+import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
+import { TextSnapshotRebuildError, rebuildTextArtifactsAndPersistRepairState } from '../curate/text-artifacts.js';
+import type { ReindexResult } from '../types.js';
+import { ensureVectorIndex } from '../vector/sync.js';
 
 export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const startedAt = Date.now();

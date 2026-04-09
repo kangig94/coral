@@ -18,7 +18,7 @@ vi.mock('node:os', async () => {
 
 async function loadMemoModules() {
   vi.resetModules();
-  const [memo, paths] = await Promise.all([import('../memo.js'), import('../paths.js')]);
+  const [memo, paths] = await Promise.all([import('../ops/memo.js'), import('../paths.js')]);
   return { ...memo, paths };
 }
 

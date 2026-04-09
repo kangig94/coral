@@ -40,7 +40,7 @@ function createIndex(noteTags: Record<string, string[]>): KbIndex {
 
 async function loadKbModules() {
   vi.resetModules();
-  const curateTags = await import('../curate-tags.js');
+  const curateTags = await import('../curate/tags.js');
   return curateTags;
 }
 

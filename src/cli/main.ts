@@ -54,7 +54,7 @@ import { launchAndFollow } from './follow.js';
 import { isJsonObject, parseAgentSpec, parseAxisSpec, parseInputJson, type JsonObject } from './parse.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { prepareSourceImport } from '../kb/source-import.js';
+import { prepareSourceImport } from '../kb/ops/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
 
 function getProviderNames(providerRegistry: ProviderRegistry): string[] {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate-state.js';
+import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate/state.js';
 import type {
   KbCachedOramaIndex,
   KbIndexMutationLane,
@@ -29,7 +29,7 @@ import {
   sourcesDir as pathsSourcesDir,
   stripMdExt,
 } from './paths.js';
-import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
+import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
 import {
   communityEntryId,
   ENTITY_TYPES,
@@ -58,7 +58,7 @@ import {
   parseOptionalTrimmedString,
   parsePositiveInteger,
 } from './validation.js';
-import { resolveEmbeddingProviderConfig } from './embedding.js';
+import { resolveEmbeddingProviderConfig } from './vector/embedding.js';
 import { loadKbNote, loadKbSource } from './read.js';
 import {
   createDuckDBVectorStore,
@@ -66,7 +66,7 @@ import {
   vectorAddonPath,
   vectorSnapshotDbPath,
   type VectorStore,
-} from './vector-store.js';
+} from './vector/store.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';

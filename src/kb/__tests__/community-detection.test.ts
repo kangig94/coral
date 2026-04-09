@@ -3,7 +3,7 @@ import {
   buildEntityRelationshipGraph,
   detectCommunities,
   renderCommunityDocument,
-} from '../community-detection.js';
+} from '../curate/community-detection.js';
 import { extractBody, parseCommunityFrontmatter, parseMembersFromBody, parseSummaryFromBody } from '../frontmatter.js';
 import type { EntityGraph } from '../types.js';
 

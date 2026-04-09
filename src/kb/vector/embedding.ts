@@ -5,11 +5,11 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { backendLog } from '../shared/backend-log.js';
-import { isRecord, TransientHttpError } from '../shared/utils.js';
-import { kbRuntimeDir } from './paths.js';
-import { loadCoralEnv } from './env.js';
-import type { EmbeddingSpec } from './vector-store.js';
+import { backendLog } from '../../shared/backend-log.js';
+import { isRecord, TransientHttpError } from '../../shared/utils.js';
+import { kbRuntimeDir } from '../paths.js';
+import { loadCoralEnv } from '../env.js';
+import type { EmbeddingSpec } from './store.js';
 
 const GEMINI_PROVIDER_NAME = 'gemini';
 const GEMINI_DEFAULT_MODEL = 'gemini-embedding-001';

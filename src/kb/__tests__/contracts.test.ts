@@ -31,11 +31,15 @@ describe('kb contracts boundary', () => {
   });
 
   it('keeps kb runtime-type consumers pointed at contracts.ts instead of runtime.ts', () => {
-    for (const fileName of ['curate-state.ts', 'mutation-helpers.ts', 'text-artifacts.ts']) {
+    for (const [fileName, contractImport] of [
+      ['curate/state.ts', "from '../contracts.js'"],
+      ['mutation-helpers.ts', "from './contracts.js'"],
+      ['curate/text-artifacts.ts', "from '../contracts.js'"],
+    ] as const) {
       const source = readKbFile(fileName);
-      expect(source).toContain("from './contracts.js'");
+      expect(source).toContain(contractImport);
       expect(source).not.toMatch(
-        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex|VectorSpecState|VectorLease|VectorTextSnapshot)[^}]*\}\s+from ['"]\.\/runtime\.js['"]/,
+        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex|VectorSpecState|VectorLease|VectorTextSnapshot)[^}]*\}\s+from ['"](?:\.\/|\.\.\/)?runtime\.js['"]/,
       );
     }
   });

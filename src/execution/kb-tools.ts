@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CurateHandle } from '../kb/curate.js';
+import type { CurateHandle } from '../kb/curate/scheduler.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { z, type ZodError } from 'zod';
-import { deleteFn as kbDeleteFn } from '../kb/delete.js';
+import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
 import { extractBody, extractPrincipleStatement, parseMembersFromBody, parseSummaryFromBody } from '../kb/frontmatter.js';
-import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
+import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/ops/memo.js';
 import {
   memoDir,
   notePathFromName,
@@ -13,13 +13,13 @@ import {
   sourcePathFromName,
   communityPathFromName,
 } from '../kb/paths.js';
-import { promote as kbPromote } from '../kb/promote.js';
+import { promote as kbPromote } from '../kb/ops/promote.js';
 import { loadKbCommunity, loadKbNote, loadKbSource } from '../kb/read.js';
-import { reindex as kbReindex } from '../kb/reindex.js';
-import { searchKb } from '../kb/search.js';
-import { deleteSource, listSources, persistPreparedSource } from '../kb/source-store.js';
+import { reindex as kbReindex } from '../kb/ops/reindex.js';
+import { searchKb } from '../kb/ops/search.js';
+import { deleteSource, listSources, persistPreparedSource } from '../kb/ops/source-store.js';
 import { isNoteEntry } from '../kb/types.js';
-import { update as kbUpdate } from '../kb/update.js';
+import { update as kbUpdate } from '../kb/ops/update.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from '../kb/validation.js';
 import {
   expandKbReadSelector,

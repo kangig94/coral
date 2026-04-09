@@ -1,9 +1,9 @@
 import type * as FsMod from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type * as MemoMod from '../../kb/memo.js';
+import type * as MemoMod from '../../kb/ops/memo.js';
 import { memoDir, notePathFromName } from '../../kb/paths.js';
-import type * as SearchMod from '../../kb/search.js';
-import type * as SourceStoreMod from '../../kb/source-store.js';
+import type * as SearchMod from '../../kb/ops/search.js';
+import type * as SourceStoreMod from '../../kb/ops/source-store.js';
 import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '../../shared/kb-read-contract.js';
 import {
   handleKbCommunityRead,
@@ -57,24 +57,24 @@ vi.mock('node:fs', async () => {
   };
 });
 
-vi.mock('../../kb/search.js', async () => {
-  const actual = await vi.importActual<typeof SearchMod>('../../kb/search.js');
+vi.mock('../../kb/ops/search.js', async () => {
+  const actual = await vi.importActual<typeof SearchMod>('../../kb/ops/search.js');
   return {
     ...actual,
     searchKb: mockState.searchKb,
   };
 });
 
-vi.mock('../../kb/source-store.js', async () => {
-  const actual = await vi.importActual<typeof SourceStoreMod>('../../kb/source-store.js');
+vi.mock('../../kb/ops/source-store.js', async () => {
+  const actual = await vi.importActual<typeof SourceStoreMod>('../../kb/ops/source-store.js');
   return {
     ...actual,
     persistPreparedSource: mockState.persistPreparedSource,
   };
 });
 
-vi.mock('../../kb/memo.js', async () => {
-  const actual = await vi.importActual<typeof MemoMod>('../../kb/memo.js');
+vi.mock('../../kb/ops/memo.js', async () => {
+  const actual = await vi.importActual<typeof MemoMod>('../../kb/ops/memo.js');
   return {
     ...actual,
     deleteMemos: mockState.deleteMemos,

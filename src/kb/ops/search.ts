@@ -2,8 +2,8 @@ import { search as oramaSearch } from '@orama/orama';
 import {
   computeCommunitySummaryInputFingerprints,
   computeCommunityTopologyFingerprint,
-} from './community-detection.js';
-import { readCurateState } from './curate-state.js';
+} from '../curate/community-detection.js';
+import { readCurateState } from '../curate/state.js';
 import {
   type KbOramaDb,
   normalizeOramaTerm,
@@ -12,8 +12,8 @@ import {
   tokenizeQuery,
   type KbOramaDocument,
   type KbOramaTokenizer,
-} from './orama-factory.js';
-import type { KbRuntime } from './contracts.js';
+} from '../orama-factory.js';
+import type { KbRuntime } from '../contracts.js';
 import {
   type EntityGraph,
   getEntry,
@@ -27,9 +27,9 @@ import {
   type KbSearchResponse,
   type KbSearchScope,
   type RelationshipType,
-} from './types.js';
-import { createEmbeddingProvider } from './embedding.js';
-import { ensureVectorIndex } from './vector-sync.js';
+} from '../types.js';
+import { createEmbeddingProvider } from '../vector/embedding.js';
+import { ensureVectorIndex } from '../vector/sync.js';
 
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
 const ORAMA_SEARCH_PROPERTIES: Array<keyof KbOramaDocument> = ['slug', 'title', 'body', 'tags', 'principles'];

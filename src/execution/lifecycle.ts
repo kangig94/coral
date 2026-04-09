@@ -43,7 +43,7 @@ import {
   type PersistedStatusRecord,
   type TerminalResult,
 } from '../shared/types.js';
-import { createCurateScheduler } from '../kb/curate.js';
+import { createCurateScheduler } from '../kb/curate/scheduler.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import type { KbSubsystem } from './kb-tools.js';

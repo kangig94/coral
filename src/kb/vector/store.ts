@@ -5,7 +5,7 @@ import {
   VECTOR_STORE_MIN_NAPI_VERSION,
   VECTOR_STORE_SCHEMA_VERSION,
   type VectorBridgeManifest,
-} from './vector-store-contract.js';
+} from './store-contract.js';
 
 const ACTIVE_POINTER_FILE = 'ACTIVE';
 const ADDON_FILE = 'coral-needle.node';

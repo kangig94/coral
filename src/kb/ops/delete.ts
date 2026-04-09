@@ -1,9 +1,9 @@
 import { rmSync } from 'node:fs';
-import { isNoEntryError } from '../shared/utils.js';
-import { deleteEntry, noteEntryId, type KbDeleteInput } from './types.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation } from './mutation-helpers.js';
-import type { KbRuntime } from './contracts.js';
-import { assertNoteSlug } from './validation.js';
+import { isNoEntryError } from '../../shared/utils.js';
+import { deleteEntry, noteEntryId, type KbDeleteInput } from '../types.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../mutation-helpers.js';
+import type { KbRuntime } from '../contracts.js';
+import { assertNoteSlug } from '../validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
   const note = assertNoteSlug(input.note, 'note');

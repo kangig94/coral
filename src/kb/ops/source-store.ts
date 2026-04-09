@@ -1,15 +1,15 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { isNoEntryError } from '../shared/utils.js';
-import { parseSourceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
+import { isNoEntryError } from '../../shared/utils.js';
+import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../frontmatter.js';
 import {
   buildSourceIndexEntry,
   commitIndexUpdate,
   recordContentAndMetadataMutation,
   writeFileAtomic,
-} from './mutation-helpers.js';
-import { assertWithin } from './paths.js';
-import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
+} from '../mutation-helpers.js';
+import { assertWithin } from '../paths.js';
+import type { KbRuntime } from '../contracts.js';
+import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
 import {
   deleteEntry,
   isSourceEntry,
@@ -17,8 +17,8 @@ import {
   sourceEntryId,
   type KbSourceDeleteInput,
   type KbSourceListResult,
-} from './types.js';
-import { compareLocale, assertSourceSlug } from './validation.js';
+} from '../types.js';
+import { compareLocale, assertSourceSlug } from '../validation.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
   const stagedPath = assertWithin(kb.sourceImportStageDir(), candidate, 'KB source staged markdown path');

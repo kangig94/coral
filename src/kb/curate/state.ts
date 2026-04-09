@@ -1,13 +1,13 @@
 import { existsSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
-import { replaceFrontmatter, replaceSourceFrontmatter } from './frontmatter.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
-import { stripMdExt } from './paths.js';
-import { loadKbNote, loadKbSource } from './read.js';
-import type { KbRuntime } from './contracts.js';
+import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../../shared/utils.js';
+import { replaceFrontmatter, replaceSourceFrontmatter } from '../frontmatter.js';
+import { sortedMarkdownEntries } from '../markdown-entries.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from '../mutation-helpers.js';
+import { stripMdExt } from '../paths.js';
+import { loadKbNote, loadKbSource } from '../read.js';
+import type { KbRuntime } from '../contracts.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -17,9 +17,9 @@ import {
   type KbEntryId,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
-} from './types.js';
-import { parseNonNegativeInteger, parsePositiveInteger } from './validation.js';
-import { backendLog } from '../shared/backend-log.js';
+} from '../types.js';
+import { parseNonNegativeInteger, parsePositiveInteger } from '../validation.js';
+import { backendLog } from '../../shared/backend-log.js';
 
 export const CURATE_STATE_FILE = 'curate-state.json';
 export const CURATE_STATE_MIGRATION_VERSION = 4;

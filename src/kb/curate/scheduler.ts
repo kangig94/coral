@@ -11,7 +11,7 @@ import {
   isStringArray,
   nowIsoString,
   unlinkIfExists,
-} from '../shared/utils.js';
+} from '../../shared/utils.js';
 import {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -30,7 +30,7 @@ import {
   type CurateRepairFrontier,
   type CurateState,
   type PendingDiscovery,
-} from './curate-state.js';
+} from './state.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,
@@ -58,9 +58,9 @@ import {
   parseSourceFrontmatter,
   replaceFrontmatter,
   replaceSourceFrontmatter,
-} from './frontmatter.js';
-import { loadKbNote, loadKbSource } from './read.js';
-import { assertNonEmptyText, assertNoteSlug, compareLocale, stripMarkdownCodeFences } from './validation.js';
+} from '../frontmatter.js';
+import { loadKbNote, loadKbSource } from '../read.js';
+import { assertNonEmptyText, assertNoteSlug, compareLocale, stripMarkdownCodeFences } from '../validation.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
@@ -68,9 +68,9 @@ import {
   markTextIndexStale,
   recordMetadataMutation,
   writeFileAtomic,
-} from './mutation-helpers.js';
-import type { KbRuntime } from './contracts.js';
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
+} from '../mutation-helpers.js';
+import type { KbRuntime } from '../contracts.js';
+import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
 import { rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
 import {
   ENTITY_TYPES,
@@ -90,8 +90,8 @@ import {
   type KbIndex,
   type NoteEntry,
   type RelationshipType,
-} from './types.js';
-import { backendLog } from '../shared/backend-log.js';
+} from '../types.js';
+import { backendLog } from '../../shared/backend-log.js';
 
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const CURATE_MIN_CLAIM_SIZE = 10;

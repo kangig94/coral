@@ -1,15 +1,15 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
-import { errorMessage } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
+import { errorMessage } from '../../shared/utils.js';
+import { backendLog } from '../../shared/backend-log.js';
 import {
   extractMalformedEntryRepair,
   readCurateState,
   writeCurateState,
   type CurateState,
   type PendingRepair,
-} from './curate-state.js';
+} from './state.js';
 import {
   deriveNoteIdentity,
   extractBody,
@@ -19,7 +19,7 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from './frontmatter.js';
+} from '../frontmatter.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,
@@ -29,13 +29,13 @@ import {
   generateCommunityFiles,
   loadExistingCommunityState,
 } from './community-detection.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from './mutation-helpers.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
-import { stripMdExt } from './paths.js';
-import { loadKbNote } from './read.js';
-import { assertCommunitySlug, assertSourceSlug } from './validation.js';
-import { createOramaDb, toOramaDocument } from './orama-factory.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from './contracts.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../mutation-helpers.js';
+import { sortedMarkdownEntries } from '../markdown-entries.js';
+import { stripMdExt } from '../paths.js';
+import { loadKbNote } from '../read.js';
+import { assertCommunitySlug, assertSourceSlug } from '../validation.js';
+import { createOramaDb, toOramaDocument } from '../orama-factory.js';
+import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../contracts.js';
 import {
   communityEntryId,
   isCommunityEntry,
@@ -46,7 +46,7 @@ import {
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type ReindexResult,
-} from './types.js';
+} from '../types.js';
 
 const INDEX_FILE = 'index.json';
 

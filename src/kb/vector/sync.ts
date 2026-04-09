@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { errorMessage, isRecord } from '../shared/utils.js';
+import { errorMessage, isRecord } from '../../shared/utils.js';
 import { chunkEntry, type ChunkSeed } from './chunking.js';
 import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from './embedding.js';
-import type { KbIndexState, KbRuntime, KbVectorSpecState, KbVectorTextSnapshot } from './contracts.js';
-import { writeFileAtomic } from './mutation-helpers.js';
-import { readActiveSnapshotId, vectorSnapshotDir, vectorSnapshotsDir, writeActiveSnapshotId } from './vector-store.js';
+import type { KbIndexState, KbRuntime, KbVectorSpecState, KbVectorTextSnapshot } from '../contracts.js';
+import { writeFileAtomic } from '../mutation-helpers.js';
+import { readActiveSnapshotId, vectorSnapshotDir, vectorSnapshotsDir, writeActiveSnapshotId } from './store.js';
 
 const VECTOR_STAGING_DIR = 'vec-staging';
 const VECTOR_MANIFEST_FILE = 'manifest.json';

@@ -1,18 +1,18 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveProjectSource } from '../infra/paths.js';
-import { isNoEntryError, unlinkIfExists } from '../shared/utils.js';
-import { parseMemoFrontmatter, serializeMemoFrontmatter } from './frontmatter.js';
+import { resolveProjectSource } from '../../infra/paths.js';
+import { isNoEntryError, unlinkIfExists } from '../../shared/utils.js';
+import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../frontmatter.js';
 import type {
   KbMemoDeleteInput,
   KbMemoDeleteResult,
   KbMemoInput,
   KbMemoListResult,
   KbMemoPurgeResult,
-} from './types.js';
-import { writeFileAtomic } from './mutation-helpers.js';
-import { memoDir } from './paths.js';
-import { compareLocale } from './validation.js';
+} from '../types.js';
+import { writeFileAtomic } from '../mutation-helpers.js';
+import { memoDir } from '../paths.js';
+import { compareLocale } from '../validation.js';
 
 function generateTimestamp(): string {
   const now = new Date();

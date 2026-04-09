@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
-import { unlinkIfExists } from '../shared/utils.js';
+import { unlinkIfExists } from '../../shared/utils.js';
 import {
   extractBody,
   extractTitle,
@@ -12,13 +12,13 @@ import {
   parseMembersFromBody,
   parseSummaryFromBody,
   serializeCommunityFrontmatter,
-} from './frontmatter.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
-import { writeFileAtomic } from './mutation-helpers.js';
-import { stripMdExt } from './paths.js';
-import { loadKbNote, loadKbSource } from './read.js';
-import type { KbRuntime } from './contracts.js';
-import { compareLocale, stripMarkdownCodeFences } from './validation.js';
+} from '../frontmatter.js';
+import { sortedMarkdownEntries } from '../markdown-entries.js';
+import { writeFileAtomic } from '../mutation-helpers.js';
+import { stripMdExt } from '../paths.js';
+import { loadKbNote, loadKbSource } from '../read.js';
+import type { KbRuntime } from '../contracts.js';
+import { compareLocale, stripMarkdownCodeFences } from '../validation.js';
 import {
   communityEntryId,
   parseKbEntryId,
@@ -27,7 +27,7 @@ import {
   type CuratableEntry,
   type EntityGraph,
   type KbIndex,
-} from './types.js';
+} from '../types.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };

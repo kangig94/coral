@@ -20,7 +20,7 @@ vi.mock('node:os', async () => {
 async function loadKbModules() {
   vi.resetModules();
   const [{ reindex }, runtime, paths, read] = await Promise.all([
-    import('../reindex.js'),
+    import('../ops/reindex.js'),
     import('../runtime.js'),
     import('../paths.js'),
     import('../read.js'),
@@ -577,7 +577,7 @@ This note has source as a bare string.
 
   it('persists malformed note and source files into pendingRepair during reindex rebuilds', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('../curate-state.js');
+    const { readCurateState } = await import('../curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.sourcesDir(), { recursive: true });
@@ -652,7 +652,7 @@ entrySeq: nope
 
   it('does not retry unchanged pendingRepair files on every runtime access', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('../curate-state.js');
+    const { readCurateState } = await import('../curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -708,7 +708,7 @@ This note has malformed frontmatter.
 
   it('automatically retries pendingRepair notes after the file changes past detectedAt without relying on directory mtimes', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState, writeCurateState } = await import('../curate-state.js');
+    const { readCurateState, writeCurateState } = await import('../curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -823,7 +823,7 @@ This note is valid now.
 
   it('explicit reindex retries pendingRepair sources even when runtime freshness checks stay quiet', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState } = await import('../curate-state.js');
+    const { readCurateState } = await import('../curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.sourcesDir(), { recursive: true });
 

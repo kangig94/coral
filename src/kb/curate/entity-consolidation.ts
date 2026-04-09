@@ -6,8 +6,8 @@ import {
   type EntityRelationship,
   type EntityType,
   type RelationshipType,
-} from './types.js';
-import { compareLocale } from './validation.js';
+} from '../types.js';
+import { compareLocale } from '../validation.js';
 
 const GENERIC_PLURAL_SEGMENTS = new Set([
   'aliases',
