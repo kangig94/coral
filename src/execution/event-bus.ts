@@ -19,12 +19,14 @@ export type EventBusEvents = {
   'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
 };
 
+const MAX_EVENT_BUS_LISTENERS = 100;
+
 /** Typed EventEmitter wrapper for execution-layer state changes. */
 export class TypedEventBus {
   private readonly emitter = new EventEmitter({ captureRejections: false });
 
   constructor() {
-    this.emitter.setMaxListeners(100);
+    this.emitter.setMaxListeners(MAX_EVENT_BUS_LISTENERS);
   }
 
   on<K extends keyof EventBusEvents>(event: K, listener: (payload: EventBusEvents[K]) => void): this {
@@ -49,7 +51,7 @@ export class TypedEventBus {
   /** Remove all listeners and reset max listener count. For test isolation. */
   reset(): this {
     this.emitter.removeAllListeners();
-    this.emitter.setMaxListeners(100);
+    this.emitter.setMaxListeners(MAX_EVENT_BUS_LISTENERS);
     return this;
   }
 }

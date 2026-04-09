@@ -42,8 +42,8 @@ import {
   WorkflowExecutionError,
 } from '../workflow/pipe-executor.js';
 import { AbortRegistry } from './abort-controller-registry.js';
-import { LaunchCoordinator, type LaunchPool } from './engine.js';
-import { TypedEventBus } from './event-bus.js';
+import type { LaunchCoordinator, LaunchPool } from './engine.js';
+import type { TypedEventBus } from './event-bus.js';
 import { type ProviderHostManager, type ProviderServerAttachment } from './host-manager.js';
 import { buildCoralInstruction } from './instruction.js';
 import { LaunchOrchestrator, WaitCoordinator } from './job-lifecycle.js';

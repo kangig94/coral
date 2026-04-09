@@ -1,10 +1,4 @@
-import type {
-  JobKind,
-  JobPhase,
-  LaunchDecision,
-  PersistedLaunchRecord,
-  ProviderRequest,
-} from '../shared/types.js';
+import type { JobKind, JobPhase, LaunchDecision, PersistedLaunchRecord, ProviderRequest } from '../shared/types.js';
 import type { AdmissionResult } from './engine.js';
 
 export const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
@@ -35,18 +29,19 @@ export function rejectLaunch(code: string, message: string): LaunchDecision {
 }
 
 export function toProviderRequest(launchRecord: PersistedLaunchRecord): ProviderRequest {
+  const { providerAction, request, sessionId } = launchRecord;
   return {
-    action: launchRecord.providerAction,
-    sessionId: launchRecord.sessionId,
-    name: launchRecord.request.name,
-    prompt: launchRecord.request.prompt,
-    conversationRef: launchRecord.request.conversationRef,
-    model: launchRecord.request.model,
-    cwd: launchRecord.request.cwd,
-    effort: launchRecord.request.effort,
-    bypassPermissions: launchRecord.request.bypassPermissions,
-    systemPrompt: launchRecord.request.systemPrompt,
-    instruction: launchRecord.request.instruction,
-    coralEnv: launchRecord.request.coralEnv,
+    action: providerAction,
+    sessionId,
+    name: request.name,
+    prompt: request.prompt,
+    conversationRef: request.conversationRef,
+    model: request.model,
+    cwd: request.cwd,
+    effort: request.effort,
+    bypassPermissions: request.bypassPermissions,
+    systemPrompt: request.systemPrompt,
+    instruction: request.instruction,
+    coralEnv: request.coralEnv,
   };
 }

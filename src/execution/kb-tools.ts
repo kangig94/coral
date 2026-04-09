@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { CurateHandle } from '../kb/curate.js';
 import { parseMembersFromBody, parseSummaryFromBody } from '../kb/community-detection.js';
 import type { KbRuntime } from '../kb/contracts.js';
-import { ZodError, z } from 'zod';
+import { z, type ZodError } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/delete.js';
 import { extractBody, extractPrincipleStatement } from '../kb/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/memo.js';
@@ -243,15 +243,14 @@ function dispatchKbReadCandidate(
 }
 
 export async function handleKbSearch(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbSearchSchema.parse(args);
-    return runKbAction(() => searchKb(kbSubsystem.kb, parsed.query, parsed.top_k ?? 20, parsed.scope ?? 'all'));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbSearchSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(() =>
+    searchKb(kbSubsystem.kb, parsed.data.query, parsed.data.top_k ?? 20, parsed.data.scope ?? 'all'),
+  );
 }
 
 export function handleKbNoteRead(slug: string, _ctx: CallerContext): ToolDomainResult {
@@ -396,25 +395,25 @@ export function handleKbPrincipleRead(slug: string, kbSubsystem?: KbSubsystem): 
 }
 
 export function handleKbRead(args: KbArgs, ctx: CallerContext, kbSubsystem?: KbSubsystem): ToolDomainResult {
+  const parsed = kbReadSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
+  }
+
   try {
-    const parsed = kbReadSchema.parse(args);
-    const selector = parseKbSelector(parsed.note);
+    const selector = parseKbSelector(parsed.data.note);
 
     for (const candidate of expandKbReadSelector(selector)) {
       const result = dispatchKbReadCandidate(candidate, ctx, kbSubsystem);
-      if (result.ok) {
-        return result;
+      if (!result.ok && result.code === 'not_found') {
+        continue;
       }
-      if (result.code !== 'not_found') {
-        return result;
-      }
+
+      return result;
     }
 
-    return domainError('not_found', `KB entry not found: ${parsed.note}`);
+    return domainError('not_found', `KB entry not found: ${parsed.data.note}`);
   } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
     return invalidRequestResult(error);
   }
 }
@@ -424,259 +423,227 @@ export async function handleKbPromote(
   kbSubsystem: KbSubsystem,
   ctx: CallerContext,
 ): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbPromoteSchema.parse(args);
-    return runKbAction(async () => {
-      const result = await kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed, () => {
-        kbSubsystem.curateScheduler.schedule();
-      });
-      kbSubsystem.curateScheduler.scheduleDeferredCommit();
-      return result;
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbPromoteSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(async () => {
+    const result = await kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+      kbSubsystem.curateScheduler.schedule();
+    });
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 export async function handleKbUpdate(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbUpdateSchema.parse(args);
-    return runKbAction(async () => {
-      const result = await kbUpdate(kbSubsystem.kb, {
-        note: parsed.note,
-        ...(parsed.title !== undefined ? { title: parsed.title } : {}),
-        ...(parsed.content !== undefined ? { content: parsed.content } : {}),
-      });
-      kbSubsystem.curateScheduler.scheduleDeferredCommit();
-      return result;
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbUpdateSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(async () => {
+    const result = await kbUpdate(kbSubsystem.kb, {
+      note: parsed.data.note,
+      ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
+      ...(parsed.data.content !== undefined ? { content: parsed.data.content } : {}),
+    });
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 export async function handleKbDelete(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbDeleteSchema.parse(args);
-    return runKbAction(async () => {
-      const result = await kbDeleteFn(kbSubsystem.kb, { note: parsed.note });
-      kbSubsystem.curateScheduler.scheduleDeferredCommit();
-      return result;
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbDeleteSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(async () => {
+    const result = await kbDeleteFn(kbSubsystem.kb, { note: parsed.data.note });
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbSourceImportSchema.parse(args);
-    return runKbAction(async () => {
-      const result = await persistPreparedSource(kbSubsystem.kb, parsed.stagedPath, parsed.slug);
-      kbSubsystem.curateScheduler.scheduleDeferredCommit();
-      return result;
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbSourceImportSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(async () => {
+    const result = await persistPreparedSource(kbSubsystem.kb, parsed.data.stagedPath, parsed.data.slug);
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 export async function handleKbSourceList(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    kbSourceListSchema.parse(args);
-    return runKbAction(() => listSources(kbSubsystem.kb));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbSourceListSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(() => listSources(kbSubsystem.kb));
 }
 
 export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbSourceDeleteSchema.parse(args);
-    return runKbAction(async () => {
-      const result = await deleteSource(kbSubsystem.kb, { slug: parsed.slug });
-      kbSubsystem.curateScheduler.scheduleDeferredCommit();
-      return result;
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbSourceDeleteSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(async () => {
+    const result = await deleteSource(kbSubsystem.kb, { slug: parsed.data.slug });
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 export async function handleKbReindex(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    kbReindexSchema.parse(args);
-    return runKbAction(() => kbReindex(kbSubsystem.kb));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbReindexSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return runKbAction(() => kbReindex(kbSubsystem.kb));
 }
 
 export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KbSubsystem): Promise<ToolDomainResult> {
-  try {
-    const parsed = kbPrinciplesSchema.parse(args);
-    return runKbAction(async () => {
-      const index = await kbSubsystem.kb.ensureIndex();
-      const allNames = Object.keys(index.principles).sort(compareLocale);
-      const total = allNames.length;
-      let names = allNames;
+  const parsed = kbPrinciplesSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
+  }
 
-      if (parsed.query?.trim()) {
-        const loweredQuery = parsed.query.toLowerCase();
-        names = allNames.filter((name) => name.toLowerCase().includes(loweredQuery));
-      }
+  return runKbAction(async () => {
+    const index = await kbSubsystem.kb.ensureIndex();
+    const allNames = Object.keys(index.principles).sort(compareLocale);
+    const total = allNames.length;
+    let names = allNames;
 
-      names = names.slice(0, parsed.top_k ?? 100);
-      if (parsed.verbose !== true) {
-        return { principles: names, total };
-      }
+    if (parsed.data.query?.trim()) {
+      const loweredQuery = parsed.data.query.toLowerCase();
+      names = allNames.filter((name) => name.toLowerCase().includes(loweredQuery));
+    }
 
-      const selected = new Set(names);
-      const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
-      const orphanRefs = new Set<string>();
+    names = names.slice(0, parsed.data.top_k ?? 100);
+    if (parsed.data.verbose !== true) {
+      return { principles: names, total };
+    }
 
-      for (const noteRecord of Object.values(index.entries)
-        .filter(isNoteEntry)
-        .sort((left, right) => compareLocale(left.slug, right.slug))) {
-        for (const principle of noteRecord.principles) {
-          if (selected.has(principle)) {
-            notesByPrinciple.get(principle)?.push(noteRecord.slug);
-            continue;
-          }
+    const selected = new Set(names);
+    const notesByPrinciple = new Map(names.map((name) => [name, [] as string[]]));
+    const orphanRefs = new Set<string>();
+    const noteEntries = Object.values(index.entries)
+      .filter(isNoteEntry)
+      .sort((left, right) => compareLocale(left.slug, right.slug));
 
-          if (!(principle in index.principles)) {
-            orphanRefs.add(principle);
-          }
+    for (const noteRecord of noteEntries) {
+      for (const principle of noteRecord.principles) {
+        if (selected.has(principle)) {
+          notesByPrinciple.get(principle)?.push(noteRecord.slug);
+          continue;
+        }
+
+        if (!(principle in index.principles)) {
+          orphanRefs.add(principle);
         }
       }
-
-      return {
-        principles: names.map((name) => ({
-          name,
-          statement: index.principles[name],
-          notes: notesByPrinciple.get(name) ?? [],
-        })),
-        total,
-        ...(orphanRefs.size === 0
-          ? {}
-          : { warning: `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}` }),
-      };
-    });
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
     }
-    throw error;
-  }
+
+    const warning =
+      orphanRefs.size === 0 ? undefined : `Orphan principle refs: ${[...orphanRefs].sort(compareLocale).join(', ')}`;
+
+    return {
+      principles: names.map((name) => ({
+        name,
+        statement: index.principles[name],
+        notes: notesByPrinciple.get(name) ?? [],
+      })),
+      total,
+      ...(warning === undefined ? {} : { warning }),
+    };
+  });
 }
 
 export function handleKbMemo(args: KbArgs, ctx: CallerContext): ToolDomainResult {
-  try {
-    const parsed = kbMemoSchema.parse(args);
-    const owner = validateOwner(parsed.owner);
-    if (!owner.ok) {
-      return owner.result;
-    }
-
-    return runKbSyncAction(() =>
-      writeMemo(ctx.projectRoot, { topic: parsed.topic, content: parsed.content, owner: parsed.owner }),
-    );
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbMemoSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  const owner = validateOwner(parsed.data.owner);
+  if (!owner.ok) {
+    return owner.result;
+  }
+
+  return runKbSyncAction(() =>
+    writeMemo(ctx.projectRoot, {
+      topic: parsed.data.topic,
+      content: parsed.data.content,
+      owner: parsed.data.owner,
+    }),
+  );
 }
 
 export function handleKbMemoList(args: KbArgs, ctx: CallerContext): ToolDomainResult {
-  try {
-    const parsed = kbMemoListSchema.parse(args);
-    const owner = validateOwner(parsed.owner);
-    if (!owner.ok) {
-      return owner.result;
-    }
-
-    return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbMemoListSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  const owner = validateOwner(parsed.data.owner);
+  if (!owner.ok) {
+    return owner.result;
+  }
+
+  return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
 }
 
 export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): ToolDomainResult {
-  try {
-    const parsed = kbMemoDeleteSchema.parse(args);
-    return handleKbMemoDeleteConsolidated(parsed, ctx);
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbMemoDeleteSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return handleKbMemoDeleteConsolidated(parsed.data, ctx);
 }
 
 export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): ToolDomainResult {
-  try {
-    const parsed = kbMemoPurgeSchema.parse(args);
-    return handleKbMemoDeleteConsolidated({ owner: parsed.owner, all: true }, ctx);
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbMemoPurgeSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  return handleKbMemoDeleteConsolidated({ owner: parsed.data.owner, all: true }, ctx);
 }
 
 export function handleKbMemoDeleteConsolidated(
   args: { pattern?: string; owner?: string; all?: boolean },
   ctx: CallerContext,
 ): ToolDomainResult {
-  try {
-    const parsed = kbMemoDeleteConsolidatedSchema.parse(args);
-    const owner = validateOwner(parsed.owner);
-    if (!owner.ok) {
-      return owner.result;
-    }
-
-    const hasPattern = parsed.pattern !== undefined;
-    const purgeAll = parsed.all === true;
-    if (hasPattern === purgeAll) {
-      return domainError('invalid_request', 'Exactly one of pattern or all=true must be provided');
-    }
-
-    if (hasPattern) {
-      return runKbSyncAction(() => deleteMemos(ctx.projectRoot, { pattern: parsed.pattern!, owner: owner.owner }));
-    }
-
-    return runKbSyncAction(() => purgeMemos(ctx.projectRoot, owner.owner));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      return toolValidationError(error);
-    }
-    throw error;
+  const parsed = kbMemoDeleteConsolidatedSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
   }
+
+  const owner = validateOwner(parsed.data.owner);
+  if (!owner.ok) {
+    return owner.result;
+  }
+
+  const hasPattern = parsed.data.pattern !== undefined;
+  const purgeAll = parsed.data.all === true;
+  if (hasPattern === purgeAll) {
+    return domainError('invalid_request', 'Exactly one of pattern or all=true must be provided');
+  }
+
+  const { pattern } = parsed.data;
+  if (pattern !== undefined) {
+    return runKbSyncAction(() => deleteMemos(ctx.projectRoot, { pattern, owner: owner.owner }));
+  }
+
+  return runKbSyncAction(() => purgeMemos(ctx.projectRoot, owner.owner));
 }

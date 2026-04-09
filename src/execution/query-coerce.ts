@@ -65,11 +65,7 @@ export const discussDeleteQuerySchema = z
   .strict();
 
 export function queryParamsToObject(params: URLSearchParams): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [key, value] of params) {
-    result[key] = value;
-  }
-  return result;
+  return Object.fromEntries(params);
 }
 
 export function buildCallerContextFromQuery(projectRoot: string, pluginRoot: string): CallerContext {

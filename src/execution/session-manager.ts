@@ -239,16 +239,18 @@ export class SessionManager {
     cwd?: string,
     projectRoot?: string,
   ): SessionEntry {
-    const options =
-      typeof optionsOrProvider === 'string'
-        ? {
-            provider: optionsOrProvider,
-            name: name ?? `session-${Date.now()}`,
-            model,
-            cwd: cwd ?? '',
-            ...(projectRoot !== undefined ? { projectRoot } : {}),
-          }
-        : optionsOrProvider;
+    let options: SessionAllocateOptions;
+    if (typeof optionsOrProvider === 'string') {
+      options = {
+        provider: optionsOrProvider,
+        name: name ?? `session-${Date.now()}`,
+        model,
+        cwd: cwd ?? '',
+        ...(projectRoot !== undefined ? { projectRoot } : {}),
+      };
+    } else {
+      options = optionsOrProvider;
+    }
     const now = nowIsoString();
     const entry: SessionEntry = {
       sessionId: randomUUID(),
@@ -331,22 +333,23 @@ export class SessionManager {
   ): Promise<boolean> {
     const release = await this.acquireSessionLock(sessionId);
     try {
+      const { expectedActiveJobId, expectedVersion, mutation } = options;
       const entry = this.readEntry(sessionId, { forceFresh: true });
       if (!entry) return false;
-      if (entry.activeJobId !== options.expectedActiveJobId) return false;
-      if (entry.version !== options.expectedVersion) return false;
+      if (entry.activeJobId !== expectedActiveJobId) return false;
+      if (entry.version !== expectedVersion) return false;
 
       entry.activeJobId = undefined;
-      entry.lastJobId = options.expectedActiveJobId;
+      entry.lastJobId = expectedActiveJobId;
       entry.lastUsedAt = nowIsoString();
-      if (options.mutation.providerContinuity) {
-        entry.providerContinuity = options.mutation.providerContinuity;
+      if (mutation.providerContinuity) {
+        entry.providerContinuity = mutation.providerContinuity;
       }
 
-      if (options.mutation.type === 'set_resumable') {
-        entry.conversationRef = options.mutation.conversationRef;
+      if (mutation.type === 'set_resumable') {
+        entry.conversationRef = mutation.conversationRef;
         entry.state = 'ready';
-      } else if (options.mutation.type === 'clear_non_resumable') {
+      } else if (mutation.type === 'clear_non_resumable') {
         entry.conversationRef = undefined;
         entry.state = 'non_resumable';
       }
@@ -410,13 +413,15 @@ export class SessionManager {
     }
 
     try {
-      const files = readdirSync(this.sessionDir).filter((file) => file.endsWith('.json'));
+      const sessionIds = readdirSync(this.sessionDir)
+        .filter((file) => file.endsWith('.json'))
+        .map((file) => file.slice(0, -5));
       this.knownSessionIds.clear();
-      for (const file of files) {
-        this.knownSessionIds.add(file.slice(0, -5));
+      for (const sessionId of sessionIds) {
+        this.knownSessionIds.add(sessionId);
       }
-      const entries = files
-        .map((file) => this.readEntry(file.slice(0, -5)))
+      const entries = sessionIds
+        .map((sessionId) => this.readEntry(sessionId))
         .filter((entry): entry is SessionEntry => entry !== null && entry.provider === provider);
       this.cacheHydrated = true;
       return entries;

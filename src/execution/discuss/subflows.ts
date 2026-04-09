@@ -92,6 +92,14 @@ export type SubflowResult = {
   shouldResume: boolean;
 };
 
+function emptyEpochEvaluation(): EpochEvaluation {
+  return {
+    convergence: 0,
+    summary: '',
+    mustAnswer: [],
+  };
+}
+
 function stripFencedCodeBlock(content: string): string {
   const trimmed = content.trim();
   const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -221,11 +229,7 @@ function parseEpochEvaluation(content: string, state: DiscussState): EpochEvalua
       mustAnswer: normalizeMustAnswerItems(state, evaluation.must_answer),
     };
   } catch {
-    return {
-      convergence: 0,
-      summary: '',
-      mustAnswer: [],
-    };
+    return emptyEpochEvaluation();
   }
 }
 
@@ -706,11 +710,7 @@ export async function evaluateEpoch(
 ): Promise<EpochEvaluation> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot) {
-    return {
-      convergence: 0,
-      summary: '',
-      mustAnswer: [],
-    };
+    return emptyEpochEvaluation();
   }
 
   const prompt = [
@@ -738,11 +738,7 @@ export async function evaluateEpoch(
     });
     return parseEpochEvaluation(result.content, snapshot.state);
   } catch {
-    return {
-      convergence: 0,
-      summary: '',
-      mustAnswer: [],
-    };
+    return emptyEpochEvaluation();
   }
 }
 

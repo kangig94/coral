@@ -83,6 +83,10 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
 }
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+const INVALID_JSON_RESPONSE = {
+  code: 'invalid_request',
+  message: 'Invalid JSON body',
+};
 const BACKEND_RECOVERING_RESPONSE = {
   code: 'backend_recovering',
   message: 'recovering — retry after 500ms',
@@ -283,6 +287,10 @@ function sendToolResult(res: ServerResponse, result: ToolDomainResult, successSt
   sendJson(res, result.ok ? successStatusCode : response.statusCode, response.body);
 }
 
+function sendInvalidJson(res: ServerResponse): void {
+  sendJson(res, 400, INVALID_JSON_RESPONSE);
+}
+
 function buildReadOnlyCallerContext(pluginRoot: string): CallerContext {
   return {
     projectRoot: '',
@@ -347,7 +355,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
       sendJson(res, 400, { code: 'invalid_request', message: error.message });
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -514,7 +522,7 @@ async function handleSessionCreate(req: IncomingMessage, res: ServerResponse, de
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -561,7 +569,7 @@ async function handleSessionMessage(
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -607,7 +615,7 @@ async function handleSessionFork(
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -648,7 +656,7 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -701,7 +709,7 @@ async function handleAbortRequest(req: IncomingMessage, res: ServerResponse, dep
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -734,7 +742,7 @@ async function handleDiscussPersonaSets(
   try {
     body = await readJsonBody(req);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -750,7 +758,7 @@ async function handleDiscussSessionCreate(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -838,7 +846,7 @@ async function handleDiscussBidRoute(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -878,7 +886,7 @@ async function handleDiscussSpeechRoute(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1150,7 +1158,7 @@ async function handleKbNoteCreate(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1176,7 +1184,7 @@ async function handleKbSourceCreate(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1202,7 +1210,7 @@ async function handleKbMemoCreate(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1215,16 +1223,12 @@ async function handleKbMemoCreate(
     return;
   }
 
-  sendToolResult(
-    res,
-    handleKbMemo(
-      request.ctx.coralEnv.CORAL_OWNER === undefined
-        ? request.args
-        : { ...request.args, owner: request.ctx.coralEnv.CORAL_OWNER },
-      request.ctx,
-    ),
-    201,
-  );
+  const args =
+    request.ctx.coralEnv.CORAL_OWNER === undefined
+      ? request.args
+      : { ...request.args, owner: request.ctx.coralEnv.CORAL_OWNER };
+
+  sendToolResult(res, handleKbMemo(args, request.ctx), 201);
 }
 
 async function handleKbIndex(
@@ -1236,7 +1240,7 @@ async function handleKbIndex(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1269,7 +1273,7 @@ async function handleKbNoteUpdateRoute(
   try {
     request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
   } catch {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Invalid JSON body' });
+    sendInvalidJson(res);
     return;
   }
 
@@ -1691,7 +1695,12 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     if (req.method === 'GET' && req.url === '/health') {
       const env = collectCoralEnv();
       const lifecycleState = runtimeState.getLifecycle();
-      const status = idleTimer.isDraining ? 'draining' : lifecycleState === 'running' ? 'ok' : lifecycleState;
+      let status: string = lifecycleState;
+      if (idleTimer.isDraining) {
+        status = 'draining';
+      } else if (lifecycleState === 'running') {
+        status = 'ok';
+      }
 
       const kbInitError = runtimeState.getKbInitError();
       sendJson(res, 200, {

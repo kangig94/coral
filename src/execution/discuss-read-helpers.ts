@@ -22,28 +22,25 @@ export type DiscussReadHelpersDeps = {
   readonly resolveProjectSource: (projectRoot: string) => string;
 };
 
-export function knownDiscussSources(deps: DiscussReadHelpersDeps): Set<string> {
-  const sources = new Set<string>();
-  for (const source of readDiscussSources()) {
-    sources.add(source);
-  }
-  for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
+function collectDiscussSources(
+  deps: DiscussReadHelpersDeps,
+  liveSessions: ReturnType<typeof listAttachedSessions>,
+): Set<string> {
+  const sources = new Set(readDiscussSources());
+  for (const liveSession of liveSessions) {
     sources.add(deps.resolveProjectSource(liveSession.projectRoot));
   }
   return sources;
 }
 
+export function knownDiscussSources(deps: DiscussReadHelpersDeps): Set<string> {
+  return collectDiscussSources(deps, listAttachedSessions(deps.discussRegistry));
+}
+
 export function listDiscussSessions(deps: DiscussReadHelpersDeps): DiscussSummaryDto[] {
   const results = new Map<string, DiscussSummaryDto>();
   const liveSessions = listAttachedSessions(deps.discussRegistry);
-
-  const sources = new Set<string>();
-  for (const source of readDiscussSources()) {
-    sources.add(source);
-  }
-  for (const liveSession of liveSessions) {
-    sources.add(deps.resolveProjectSource(liveSession.projectRoot));
-  }
+  const sources = collectDiscussSources(deps, liveSessions);
 
   for (const source of sources) {
     for (const summary of deps.getDiscussStoreForSource(source).listSummariesFromIndex()) {
@@ -62,11 +59,7 @@ export function listDiscussSessions(deps: DiscussReadHelpersDeps): DiscussSummar
   return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function isLiveDiscussSession(
-  deps: DiscussReadHelpersDeps,
-  source: string,
-  sessionId: string,
-): boolean {
+export function isLiveDiscussSession(deps: DiscussReadHelpersDeps, source: string, sessionId: string): boolean {
   for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
     if (liveSession.sessionId === sessionId && deps.resolveProjectSource(liveSession.projectRoot) === source) {
       return true;

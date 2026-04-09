@@ -47,6 +47,13 @@ function unexpectedDiscussError(error: unknown): ToolDomainResult {
   return domainError('discuss_error', error instanceof Error ? error.message : 'unexpected error');
 }
 
+function handleDiscussOperationError(error: unknown): ToolDomainResult {
+  if (error instanceof DiscussManagerError) {
+    return discussManagerError(error);
+  }
+  return unexpectedDiscussError(error);
+}
+
 function executeDiscussSeed(args: DiscussSeedArgs): ToolDomainResult {
   const seeded = seedPersonas(args);
   if (!seeded.ok) {
@@ -85,10 +92,7 @@ async function executeDiscussAbort(
     await discussOperations.abortDiscussSession(helpers.getDiscussContext(context), args.session);
     return domainSuccess({ ok: true, session: args.session });
   } catch (error: unknown) {
-    if (error instanceof DiscussManagerError) {
-      return discussManagerError(error);
-    }
-    return unexpectedDiscussError(error);
+    return handleDiscussOperationError(error);
   }
 }
 
@@ -102,10 +106,7 @@ function executeDiscussWatch(
       discussOperations.getWatchState(helpers.getDiscussContext(context), args.session, args.cursor),
     );
   } catch (error: unknown) {
-    if (error instanceof DiscussManagerError) {
-      return discussManagerError(error);
-    }
-    return unexpectedDiscussError(error);
+    return handleDiscussOperationError(error);
   }
 }
 
@@ -126,10 +127,7 @@ async function executeDiscussBid(
       ),
     );
   } catch (error: unknown) {
-    if (error instanceof DiscussManagerError) {
-      return discussManagerError(error);
-    }
-    return unexpectedDiscussError(error);
+    return handleDiscussOperationError(error);
   }
 }
 
@@ -149,10 +147,7 @@ async function executeDiscussSpeech(
       ),
     );
   } catch (error: unknown) {
-    if (error instanceof DiscussManagerError) {
-      return discussManagerError(error);
-    }
-    return unexpectedDiscussError(error);
+    return handleDiscussOperationError(error);
   }
 }
 
@@ -240,7 +235,9 @@ export async function handleDiscussParticipate(
     return toolValidationError(parsed.error);
   }
 
-  return isDiscussSpeechArgs(parsed.data)
-    ? executeDiscussSpeech(parsed.data, context, helpers)
-    : executeDiscussBid(parsed.data, context, helpers);
+  if (isDiscussSpeechArgs(parsed.data)) {
+    return executeDiscussSpeech(parsed.data, context, helpers);
+  }
+
+  return executeDiscussBid(parsed.data, context, helpers);
 }

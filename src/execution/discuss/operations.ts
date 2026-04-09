@@ -10,7 +10,7 @@ import type { BidResult, DiscussCreateInput, SpeechResult } from '../../discuss/
 import { buildWatchEvents } from '../../discuss/projections.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import { buildAgentExecutionConfig, hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './executor.js';
+import { buildAgentExecutionConfig, isManualParticipant } from './executor.js';
 import * as discussLoop from './loop.js';
 import {
   ABORT_REASON,
@@ -48,20 +48,13 @@ function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolea
   return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';
 }
 
-function shouldAttachRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
-  return isWithinLiveSessionBoundary(snapshot);
-}
-
 function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
-  if (snapshot.runtime.controlPhase === 'synthesize') {
-    return true;
-  }
-
-  if (snapshot.runtime.controlPhase === 'evaluate_epoch') {
-    return true;
-  }
-
-  if (snapshot.runtime.controlPhase === 'collect_follow_up') {
+  const { controlPhase } = snapshot.runtime;
+  if (
+    controlPhase === 'synthesize' ||
+    controlPhase === 'evaluate_epoch' ||
+    controlPhase === 'collect_follow_up'
+  ) {
     return true;
   }
 
@@ -76,23 +69,11 @@ function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boole
     return !isManualParticipant(snapshot, snapshot.state.current_speaker);
   }
 
-  if (snapshot.runtime.controlPhase === 'observer_wait') {
+  if (controlPhase === 'observer_wait') {
     return true;
   }
 
-  if (snapshot.state.status !== 'bidding') {
-    return false;
-  }
-
-  if (hasActiveBidWork(snapshot)) {
-    return true;
-  }
-
-  if (hasPendingAutoBidders(snapshot)) {
-    return true;
-  }
-
-  return true;
+  return snapshot.state.status === 'bidding';
 }
 
 function buildAbortEndEventsForShutdown(
@@ -353,7 +334,7 @@ export async function recoverPersistedSessionsFromStore(
       continue;
     }
 
-    if (!shouldAttachRecoveredSession(snapshot)) {
+    if (!isWithinLiveSessionBoundary(snapshot)) {
       continue;
     }
 
