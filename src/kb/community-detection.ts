@@ -183,14 +183,6 @@ function communitySlugFromReference(reference: string): string {
   return reference;
 }
 
-function communityReferenceSortValue(reference: string): string {
-  return communitySlugFromReference(reference);
-}
-
-function memberFingerprintSignature(members: string[]): string {
-  return computeCommunityMembershipFingerprint(members);
-}
-
 function internalWeightedDegree(
   node: string,
   memberSet: ReadonlySet<string>,
@@ -280,10 +272,6 @@ function normalizeEntityGraph(index: KbIndex): EntityGraph {
   };
 }
 
-function normalizeRelationshipEvidence(evidence: string[]): string[] {
-  return uniqueSorted(evidence);
-}
-
 export function seededRng(seed: number): () => number {
   let state = seed >>> 0;
 
@@ -326,7 +314,7 @@ export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph
       continue;
     }
 
-    const evidence = normalizeRelationshipEvidence(relationship.evidence);
+    const evidence = uniqueSorted(relationship.evidence);
     const contribution = evidence.length;
     if (contribution === 0) {
       continue;
@@ -440,8 +428,8 @@ function partitionGroupsForLevel(nodes: string[], partition: number[]): Partitio
       members: uniqueSorted(group.members),
     }))
     .sort((left, right) => {
-      const leftFingerprint = memberFingerprintSignature(left.members);
-      const rightFingerprint = memberFingerprintSignature(right.members);
+      const leftFingerprint = computeCommunityMembershipFingerprint(left.members);
+      const rightFingerprint = computeCommunityMembershipFingerprint(right.members);
       const fingerprintCompare = compareLocale(leftFingerprint, rightFingerprint);
       if (fingerprintCompare !== 0) {
         return fingerprintCompare;
@@ -483,7 +471,7 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
         ...(parentGroup === undefined ? {} : { parentKey: `${level + 1}:${parentGroup.id}` }),
         ...(parentGroup === undefined
           ? {}
-          : { parentMembershipFingerprint: memberFingerprintSignature(parentGroup.members) }),
+          : { parentMembershipFingerprint: computeCommunityMembershipFingerprint(parentGroup.members) }),
         childKeys: [],
       });
     }
@@ -506,8 +494,8 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
     }
 
     const fingerprintCompare = compareLocale(
-      memberFingerprintSignature(left.members),
-      memberFingerprintSignature(right.members),
+      computeCommunityMembershipFingerprint(left.members),
+      computeCommunityMembershipFingerprint(right.members),
     );
     if (fingerprintCompare !== 0) {
       return fingerprintCompare;
@@ -617,7 +605,7 @@ function buildCarryOverSignature(
 ): string {
   return [
     String(community.level),
-    memberFingerprintSignature(community.members),
+    computeCommunityMembershipFingerprint(community.members),
     community.parentMembershipFingerprint ?? '',
   ].join('\u0000');
 }
@@ -632,7 +620,7 @@ function priorParentMembershipFingerprint(
 
   const parentSlug = communitySlugFromReference(community.parent);
   const parent = priorBySlug.get(parentSlug);
-  return parent === undefined ? undefined : memberFingerprintSignature(parent.members);
+  return parent === undefined ? undefined : computeCommunityMembershipFingerprint(parent.members);
 }
 
 function assignCommunitySlugs(
@@ -678,7 +666,7 @@ function assignCommunitySlugs(
   });
 
   for (const community of sortedCommunities) {
-    const key = community.key ?? `${community.level}:${memberFingerprintSignature(community.members)}`;
+    const key = community.key ?? `${community.level}:${computeCommunityMembershipFingerprint(community.members)}`;
     const reusable = reusablePriorSlugs.get(buildCarryOverSignature(community));
     const carriedSlug = reusable?.shift();
 
@@ -1053,7 +1041,7 @@ function childCommunitiesForCommunity(
   communitiesBySlug: ReadonlyMap<string, SummaryFingerprintCommunity>,
 ): ChildCommunitySummary[] {
   const childReferences = [...(community.children ?? [])].sort((left, right) =>
-    compareLocale(communityReferenceSortValue(left), communityReferenceSortValue(right)),
+    compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)),
   );
 
   return childReferences.map((reference) => {

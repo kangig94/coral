@@ -233,13 +233,7 @@ function extractHtmlTitle(html: string): string | undefined {
     return normalizeTitle(titleText)
   }
 
-  const h1Match = html.match(HTML_H1_PATTERN)?.[1]
-  const h1Text = h1Match ? htmlFragmentToText(h1Match) : undefined
-  if (h1Text) {
-    return normalizeTitle(h1Text)
-  }
-
-  return undefined
+  return extractFirstHtmlH1(html)
 }
 
 function extractFirstHtmlH1(html: string): string | undefined {

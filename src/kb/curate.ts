@@ -367,10 +367,7 @@ function parseJsonArray(raw: string): ParsedArrayResult {
   try {
     parsed = JSON.parse(normalized) as unknown;
   } catch {
-    return {
-      entries: [],
-      parseFailed: true,
-    };
+    parsed = null;
   }
 
   if (!Array.isArray(parsed)) {
@@ -906,24 +903,13 @@ type PreparedDiscoveryBatch = {
 };
 
 function sameDiscoverySelection(left: NoteClaimCandidate[], right: NoteClaimCandidate[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((candidate, index) => {
-    const other = right[index];
-    return other !== undefined && compareCursor(candidate.cursor, other.cursor) === 0;
-  });
-}
-
-function effectiveDiscoveryThrough(requestedProcessedThrough: CurateCursor, state: CurateState): CurateCursor | null {
-  if (state.processedThrough === null) {
-    return null;
-  }
-
-  return compareCursor(requestedProcessedThrough, state.processedThrough) <= 0
-    ? requestedProcessedThrough
-    : state.processedThrough;
+  return (
+    left.length === right.length &&
+    left.every((candidate, index) => {
+      const other = right[index];
+      return other !== undefined && compareCursor(candidate.cursor, other.cursor) === 0;
+    })
+  );
 }
 
 function shouldRunDiscoveryBatch(
@@ -945,10 +931,14 @@ function prepareDiscoveryBatch(
   requestedProcessedThrough: CurateCursor,
 ): PreparedDiscoveryBatch | null {
   const normalizedState = normalizeCurateStateRepairFrontier(state);
-  const processedThrough = effectiveDiscoveryThrough(requestedProcessedThrough, normalizedState);
-  if (processedThrough === null) {
+  const currentProcessedThrough = normalizedState.processedThrough;
+  if (currentProcessedThrough === null) {
     return null;
   }
+  const processedThrough =
+    compareCursor(requestedProcessedThrough, currentProcessedThrough) <= 0
+      ? requestedProcessedThrough
+      : currentProcessedThrough;
 
   const repairFrontier = getCurateRepairFrontier(normalizedState.pendingRepair);
   const allClassified = filterCandidatesBeforeRepairFrontier(
@@ -2690,7 +2680,6 @@ async function runCommunitySubphase(
         communitySummaryInputFingerprints: normalizedFingerprints,
       });
       summaryStateChanged = true;
-      currentState = readCurateState(kb);
     }
 
     if (pendingArtifactRebuild || (topologyNeedsRefresh && summaryStateChanged)) {
@@ -2701,7 +2690,6 @@ async function runCommunitySubphase(
       });
       pendingArtifactRebuild = false;
       summaryStateChanged = false;
-      currentState = readCurateState(kb);
     }
 
     const communitiesBySlug = new Map(activeCommunities.map((community) => [community.slug, community] as const));
@@ -2794,8 +2782,6 @@ async function runCommunitySubphase(
         contentSeq: rebuildState.contentSeq,
         metadataSeq: rebuildState.metadataSeq,
       });
-      pendingArtifactRebuild = false;
-      summaryStateChanged = false;
     }
 
     currentState = readCurateState(kb);
@@ -2998,7 +2984,7 @@ async function runPrincipleDiscovery(
       }
     }
 
-    state = recordDiscoveryAttemptLocked(kb, state, refreshedBatch.batch.nextHighSeq, refreshedBatch.batch.nextOffset);
+    recordDiscoveryAttemptLocked(kb, state, refreshedBatch.batch.nextHighSeq, refreshedBatch.batch.nextOffset);
   });
 }
 
@@ -3237,7 +3223,7 @@ export function createCurateScheduler({
 
   function scheduleDeferredCommit(): void {
     if (!isGitRepo()) return;
-    if (deferredCommitTimer !== null) return; // already scheduled
+    if (deferredCommitTimer !== null) return;
     deferredCommitTimer = setTimeout(() => {
       deferredCommitTimer = null;
       void gitAutoCommitAsync('auto: kb mutation');
@@ -3453,15 +3439,14 @@ export function createCurateScheduler({
       clearTimeout(debounceTimer);
     }
     if (scheduleDebounceMs <= 0) {
-      setTimeout(() => {
-        launchQueuedRun();
-      }, 0);
-    } else {
-      debounceTimer = setTimeout(() => {
-        debounceTimer = null;
-        launchQueuedRun();
-      }, scheduleDebounceMs);
+      setTimeout(launchQueuedRun, 0);
+      return;
     }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      launchQueuedRun();
+    }, scheduleDebounceMs);
   }
 
   async function stop(): Promise<void> {

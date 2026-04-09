@@ -186,14 +186,12 @@ function diffManifest(
   const changedEntries: VectorSnapshotEntry[] = [];
   for (const [entryId, desiredEntry] of desiredEntries) {
     const currentEntry = currentManifest?.entries[entryId];
+    const desiredChunkIds = desiredEntry.chunks.map((chunk) => chunk.id);
     if (
       currentEntry === undefined ||
       currentEntry.entryKind !== desiredEntry.entryKind ||
       currentEntry.contentHash !== desiredEntry.contentHash ||
-      !arraysEqual(
-        currentEntry.chunkIds,
-        desiredEntry.chunks.map((chunk) => chunk.id),
-      )
+      !arraysEqual(currentEntry.chunkIds, desiredChunkIds)
     ) {
       changedEntries.push(desiredEntry);
     }
@@ -433,6 +431,7 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
     return buildResult(kb.readIndexState(), desiredSpec.specId);
   }
 
+  const snapshotToInstall = stagedSnapshot!;
   try {
     await kb.withMutationLock(async () => {
       if (kb.readIndexState().contentSeq !== startContentSeq) {
@@ -444,13 +443,13 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
         return;
       }
 
-      const finalSnapshotDir = vectorSnapshotDir(kb.runtimeDir, desiredSpec.specId, stagedSnapshot!.snapshotId);
+      const finalSnapshotDir = vectorSnapshotDir(kb.runtimeDir, desiredSpec.specId, snapshotToInstall.snapshotId);
       mkdirSync(vectorSnapshotsDir(kb.runtimeDir, desiredSpec.specId), { recursive: true });
       rmSync(finalSnapshotDir, { recursive: true, force: true });
-      renameSync(stagedSnapshot!.stagingDir, finalSnapshotDir);
-      writeActiveSnapshotId(kb.runtimeDir, desiredSpec.specId, stagedSnapshot!.snapshotId);
-      await kb.activateVectorSnapshot(desiredSpec.specId, stagedSnapshot!.snapshotId);
-      kb.recordVectorSyncSuccess(desiredSpec.specId, startContentSeq, stagedSnapshot!.snapshotId);
+      renameSync(snapshotToInstall.stagingDir, finalSnapshotDir);
+      writeActiveSnapshotId(kb.runtimeDir, desiredSpec.specId, snapshotToInstall.snapshotId);
+      await kb.activateVectorSnapshot(desiredSpec.specId, snapshotToInstall.snapshotId);
+      kb.recordVectorSyncSuccess(desiredSpec.specId, startContentSeq, snapshotToInstall.snapshotId);
     });
   } catch (error: unknown) {
     kb.recordVectorSyncFailure(

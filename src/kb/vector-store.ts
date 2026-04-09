@@ -230,11 +230,7 @@ export function readActiveSnapshotId(runtimeDir: string, specId: string): string
 
 export function resolveActiveSnapshotDbPath(runtimeDir: string, specId: string): string | null {
   const snapshotId = readActiveSnapshotId(runtimeDir, specId);
-  if (snapshotId === null) {
-    return null;
-  }
-
-  return vectorSnapshotDbPath(runtimeDir, specId, snapshotId);
+  return snapshotId === null ? null : vectorSnapshotDbPath(runtimeDir, specId, snapshotId);
 }
 
 export function prepareSnapshotDbPath(runtimeDir: string, specId: string, snapshotId: string): string {
@@ -323,10 +319,7 @@ export class DuckDBVectorStore implements VectorStore {
 
   async getActiveSpec(): Promise<EmbeddingSpec | null> {
     const spec = this.addon.getActiveSpec();
-    if (spec === null) {
-      return null;
-    }
-    if (!isEmbeddingSpec(spec)) {
+    if (spec !== null && !isEmbeddingSpec(spec)) {
       throw new Error('Invalid embedding spec payload from native vector store.');
     }
     return spec;
@@ -380,16 +373,14 @@ export class DuckDBVectorStore implements VectorStore {
   }
 
   private ensureInitialized(): void {
-    if (this.dbPath !== null) {
-      return;
+    if (this.dbPath === null) {
+      throw new Error('Vector store is not initialized.');
     }
-    throw new Error('Vector store is not initialized.');
   }
 }
 
 export function createDuckDBVectorStore(options: VectorStoreFactoryOptions): DuckDBVectorStore | null {
-  const manifest = readVectorBridgeManifest(options.pluginRoot);
-  if (manifest === null) {
+  if (readVectorBridgeManifest(options.pluginRoot) === null) {
     return null;
   }
 

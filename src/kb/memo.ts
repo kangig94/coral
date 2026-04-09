@@ -165,6 +165,5 @@ export function deleteMemos(projectRoot: string, input: KbMemoDeleteInput): KbMe
 }
 
 export function purgeMemos(projectRoot: string, owner?: string): KbMemoPurgeResult {
-  const { deleted, count } = deleteMemos(projectRoot, { pattern: '*', owner });
-  return { deleted: count };
+  return { deleted: deleteMemos(projectRoot, { pattern: '*', owner }).count };
 }

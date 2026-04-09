@@ -193,12 +193,6 @@ function resolveOpenAIEndpoint(baseUrl: string): string {
   return trimmed.endsWith('/embeddings') ? trimmed : `${trimmed}/embeddings`;
 }
 
-function computeRawSpecId(provider: string, model: string, dims: number, normalization: EmbeddingSpec['normalization']): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ provider, model, dims, normalization }))
-    .digest('hex');
-}
-
 function buildGeminiHeaders(apiKey: string): HeadersInit {
   return {
     'content-type': 'application/json',
@@ -287,7 +281,6 @@ async function ensureLocalModel(model: SupportedLocalOnnxModel): Promise<string>
     return modelPath;
   }
 
-  mkdirSync(dirname(modelPath), { recursive: true });
   await downloadFile(LOCAL_ONNX_MODELS[model].downloadUrl, modelPath);
   return modelPath;
 }
@@ -364,7 +357,9 @@ export function computeSpecId(
   dims: number,
   normalization: EmbeddingSpec['normalization'],
 ): string {
-  return computeRawSpecId(provider, model, dims, normalization);
+  return createHash('sha256')
+    .update(JSON.stringify({ provider, model, dims, normalization }))
+    .digest('hex');
 }
 
 export class GeminiEmbeddingProvider implements EmbeddingProvider {
@@ -626,18 +621,15 @@ export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null
     );
   }
 
+  const name = configuredProvider ?? LOCAL_ONNX_PROVIDER_NAME;
+  const dims = LOCAL_ONNX_MODELS[configuredModel].dims;
   return {
     kind: 'local-onnx',
-    name: configuredProvider ?? LOCAL_ONNX_PROVIDER_NAME,
+    name,
     model: configuredModel,
-    dims: LOCAL_ONNX_MODELS[configuredModel].dims,
+    dims,
     normalization: NORMALIZATION,
-    specId: computeSpecId(
-      configuredProvider ?? LOCAL_ONNX_PROVIDER_NAME,
-      configuredModel,
-      LOCAL_ONNX_MODELS[configuredModel].dims,
-      NORMALIZATION,
-    ),
+    specId: computeSpecId(name, configuredModel, dims, NORMALIZATION),
     apiKey: null,
     baseUrl: null,
   };
@@ -678,20 +670,21 @@ export async function createEmbeddingProvider(
       return warnAndReturnNull(`onnxruntime-node is not installed in the KB runtime dir: ${runtimeDir}`);
     }
 
+    const model = resolvedConfig.model as SupportedLocalOnnxModel;
     let modelPath: string;
     try {
-      modelPath = await ensureLocalModel(resolvedConfig.model as SupportedLocalOnnxModel);
+      modelPath = await ensureLocalModel(model);
     } catch (error: unknown) {
       return warnAndReturnNull(
-        `Failed to download local ONNX model "${resolvedConfig.model}" to ${localModelPath(
-          resolvedConfig.model as SupportedLocalOnnxModel,
-        )}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to download local ONNX model "${resolvedConfig.model}" to ${localModelPath(model)}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     }
 
     return new LocalOnnxProvider(
       resolvedConfig.name,
-      resolvedConfig.model as SupportedLocalOnnxModel,
+      model,
       resolvedConfig.dims,
       ort,
       modelPath,

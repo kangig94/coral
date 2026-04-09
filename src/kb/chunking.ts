@@ -16,10 +16,6 @@ function chunkHash(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
-function makeChunkId(entryId: string, chunkIndex: number): string {
-  return `${entryId}::${chunkIndex}`;
-}
-
 function splitSections(body: string): string[] {
   const trimmed = body.trim();
   if (trimmed === '') {
@@ -42,7 +38,7 @@ function splitSections(body: string): string[] {
     sections.push(current.join('\n').trim());
   }
 
-  return sections.length === 0 ? [''] : sections;
+  return sections;
 }
 
 function splitOversizeParagraph(paragraph: string): string[] {
@@ -103,22 +99,18 @@ function splitAtParagraphBoundaries(prefix: string, section: string): string[] {
   return chunks.length === 0 ? [prefixed] : chunks;
 }
 
-function titlePrefix(title: string): string {
-  return `# ${title}\n\n`;
-}
-
 export function chunkEntry(entry: EntryRecord, body: string): ChunkSeed[] {
   if (entry.kind === 'community') {
     return [];
   }
 
   const entryId = entry.kind === 'note' ? noteEntryId(entry.slug) : sourceEntryId(entry.slug);
-  const prefix = titlePrefix(entry.title);
+  const prefix = `# ${entry.title}\n\n`;
   const sections = entry.kind === 'note' ? [body.trim()] : splitSections(body);
   const texts = sections.flatMap((section) => splitAtParagraphBoundaries(prefix, section));
 
   return texts.map((text, chunkIndex) => ({
-    id: makeChunkId(entryId, chunkIndex),
+    id: `${entryId}::${chunkIndex}`,
     entryId,
     entryKind: entry.kind,
     chunkIndex,

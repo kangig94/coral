@@ -139,8 +139,8 @@ function areCommunityDocumentsFreshForState(
   kb: Pick<KbRuntime, 'curateStatePath' | 'notePath' | 'sourcePath'>,
   index: KbIndex,
 ): boolean {
-  const hasCommunityEntries = Object.values(index.entries).some((entry) => entry.kind === 'community');
-  if (!hasCommunityEntries) {
+  const communityEntries = Object.values(index.entries).filter(isCommunityEntry);
+  if (communityEntries.length === 0) {
     return true;
   }
 
@@ -150,16 +150,14 @@ function areCommunityDocumentsFreshForState(
   }
 
   try {
-    const communities = Object.values(index.entries)
-      .filter(isCommunityEntry)
-      .map((community) => ({
-        slug: community.slug,
-        title: community.title,
-        level: community.level,
-        members: community.members,
-        ...(community.children === undefined ? {} : { children: community.children }),
-        ...(community.summary === undefined ? {} : { summary: community.summary }),
-      }));
+    const communities = communityEntries.map((community) => ({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.children === undefined ? {} : { children: community.children }),
+      ...(community.summary === undefined ? {} : { summary: community.summary }),
+    }));
     const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, kb, index);
     const storedFingerprints = state.communitySummaryInputFingerprints ?? {};
     const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
@@ -455,15 +453,14 @@ function buildCounts(
   ReindexResult,
   'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
 > {
+  const entityMeta = index.entityMeta ?? {};
   const uniqueTags = new Set([
     ...notes.flatMap((note) => note.tags),
     ...sources.flatMap((source) => source.tags),
     ...communities.flatMap((community) => community.members),
   ]);
-  const entityNames = Object.keys(index.entityMeta ?? {});
-  const coveredTags = [...uniqueTags].filter((tag) =>
-    Object.prototype.hasOwnProperty.call(index.entityMeta ?? {}, tag),
-  ).length;
+  const entityNames = Object.keys(entityMeta);
+  const coveredTags = [...uniqueTags].filter((tag) => Object.prototype.hasOwnProperty.call(entityMeta, tag)).length;
   return {
     notes: notes.length,
     sources: sources.length,
@@ -534,14 +531,16 @@ export async function rebuildTextArtifacts(
   const communities = loadCommunities(kb);
   const index = buildKbIndex(kb, notes, sources, communities, principles);
   const counts = buildCounts(notes, sources, communities, principles, index);
+  const pendingRepairState = pendingRepair.length === 0 ? null : pendingRepair;
+  const curateState = readCurateState(kb);
   const projectedCommunityState = topologyRefresh.shouldPersistState
     ? {
-        ...readCurateState(kb),
+        ...curateState,
         communityTopologyHash: topologyRefresh.topologyHash,
         communitySummaryTopologyHash: topologyRefresh.topologyHash,
         communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
       }
-    : readCurateState(kb);
+    : curateState;
   const communityFresh = areCommunityDocumentsFreshForState(projectedCommunityState, kb, index);
   const { db, tokenizer } = await createOramaDb();
 
@@ -558,7 +557,7 @@ export async function rebuildTextArtifacts(
     const reason = `KB text index rebuild failed: ${errorMessage(error)}`;
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts, pendingRepair.length === 0 ? null : pendingRepair);
+    throw new TextSnapshotRebuildError(reason, counts, pendingRepairState);
   }
 
   const nextState = kb.recordReindexSuccess(startState, rebuildInfo.externalMutation);
@@ -571,7 +570,7 @@ export async function rebuildTextArtifacts(
     const reason = 'KB text index freshness changed during rebuild.';
     kb.invalidateTextSnapshot(reason);
     kb.invalidateKbCache();
-    throw new TextSnapshotRebuildError(reason, counts, pendingRepair.length === 0 ? null : pendingRepair);
+    throw new TextSnapshotRebuildError(reason, counts, pendingRepairState);
   }
 
   kb.installRebuiltArtifacts(index, { db, tokenizer });
@@ -592,7 +591,7 @@ export async function rebuildTextArtifacts(
     communities,
     principles,
     counts,
-    pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
+    pendingRepair: pendingRepairState,
   };
 }
 

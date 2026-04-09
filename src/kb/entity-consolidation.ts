@@ -197,14 +197,6 @@ function compareCanonicalKeyPreference(left: string, right: string): number {
   return rightSegments - leftSegments || right.length - left.length || compareLocale(left, right);
 }
 
-function preferredCanonicalKey(existing: string | undefined, candidate: string): string {
-  if (existing === undefined) {
-    return candidate;
-  }
-
-  return compareCanonicalKeyPreference(candidate, existing) < 0 ? candidate : existing;
-}
-
 function buildAliasTargetMap(
   candidates: EntityCandidate[],
   observedKeys: ReadonlySet<string>,
@@ -232,7 +224,10 @@ function buildAliasTargetMap(
         continue;
       }
 
-      aliasTargets.set(aliasKey, preferredCanonicalKey(aliasTargets.get(aliasKey), canonicalKey));
+      const existingTarget = aliasTargets.get(aliasKey);
+      if (existingTarget === undefined || compareCanonicalKeyPreference(canonicalKey, existingTarget) < 0) {
+        aliasTargets.set(aliasKey, canonicalKey);
+      }
     }
   }
 

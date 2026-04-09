@@ -567,8 +567,15 @@ function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scop
     return hits.filter((hit) => hit.kind !== 'community');
   }
 
-  const targetKind = scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : 'community';
-  return hits.filter((hit) => hit.kind === targetKind);
+  if (scope === 'notes') {
+    return hits.filter((hit) => hit.kind === 'note');
+  }
+
+  if (scope === 'sources') {
+    return hits.filter((hit) => hit.kind === 'source');
+  }
+
+  return hits.filter((hit) => hit.kind === 'community');
 }
 
 function areCommunityResultsFresh(
@@ -825,21 +832,16 @@ function toVectorOnlyResult(hit: ResolvedKbSearchEntry, communityContext?: strin
   );
 }
 
-function toHybridResult(hit: HybridKbSearchHit, query: QueryContext, communityContext?: string[]): KbResult {
+function toHybridResult(
+  hit: ResolvedKbSearchHit | HybridKbSearchHit,
+  query: QueryContext,
+  communityContext?: string[],
+): KbResult {
   if (hit.document === null) {
     return toVectorOnlyResult(hit, communityContext);
   }
 
-  return withCommunityContext(
-    toResult(
-      {
-        ...hit,
-        document: hit.document,
-      },
-      query,
-    ),
-    communityContext,
-  );
+  return withCommunityContext(toResult(hit as ResolvedKbSearchHit, query), communityContext);
 }
 
 function buildTextResponse(
@@ -855,7 +857,7 @@ function buildTextResponse(
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
 
   return {
-    results: finalHits.map((hit) => toHybridResult(hit as HybridKbSearchHit, query, communityContext.get(hit.entryId))),
+    results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'text',
     ...(warning === undefined ? {} : { warning }),
   };
@@ -885,7 +887,19 @@ function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {
     return false;
   }
 
-  return scope === 'all' || (scope === 'notes' ? kind === 'note' : scope === 'sources' ? kind === 'source' : false);
+  if (scope === 'all') {
+    return true;
+  }
+
+  if (scope === 'notes') {
+    return kind === 'note';
+  }
+
+  if (scope === 'sources') {
+    return kind === 'source';
+  }
+
+  return false;
 }
 
 function aggregateVectorHits(

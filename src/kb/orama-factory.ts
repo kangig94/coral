@@ -60,12 +60,7 @@ export function tokenizeQuery(oramaTerm: string, tokenizer: KbOramaTokenizer): s
 }
 
 export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): string[] {
-  const normalized = normalizeOramaTerm(value);
-  if (!normalized) {
-    return [];
-  }
-
-  return uniqueTokens(tokenizer.tokenize(normalized, ORAMA_LANGUAGE));
+  return tokenizeQuery(normalizeOramaTerm(value), tokenizer);
 }
 
 export function toOramaDocument(

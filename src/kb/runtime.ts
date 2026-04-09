@@ -347,17 +347,17 @@ function parseIndex(value: unknown): KbIndex {
     }
 
     if (rawEntry.kind === 'note') {
-      entries[entryId as keyof KbIndex['entries']] = parseNoteIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseNoteIndexEntry(entryId, rawEntry);
       continue;
     }
 
     if (rawEntry.kind === 'source') {
-      entries[entryId as keyof KbIndex['entries']] = parseSourceIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseSourceIndexEntry(entryId, rawEntry);
       continue;
     }
 
     if (rawEntry.kind === 'community') {
-      entries[entryId as keyof KbIndex['entries']] = parseCommunityIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseCommunityIndexEntry(entryId, rawEntry);
       continue;
     }
 
@@ -526,7 +526,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly runtimeDir: string;
   vectorStore: VectorStore | null = null;
 
-  private indexCache: { index: KbIndex | null; mtime: number } | null = null;
+  private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
   private vectorPluginRoot: string | null = null;
@@ -647,11 +647,11 @@ class KbRuntimeImpl implements KbRuntime {
       this.cachedOramaIndex = null;
     }
 
-    let desiredSpecId: string | null = null;
+    let desiredSpecId: string | null;
     try {
       desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
     } catch {
-      desiredSpecId = null;
+      return;
     }
 
     if (desiredSpecId === null) {
@@ -794,22 +794,23 @@ class KbRuntimeImpl implements KbRuntime {
       return this.indexCache.index;
     }
 
+    const indexPath = this.indexPath();
     try {
-      const raw = readFileSync(this.indexPath(), 'utf-8');
+      const raw = readFileSync(indexPath, 'utf-8');
       let parsed: KbIndex;
       try {
         parsed = parseIndex(JSON.parse(raw) as unknown);
       } catch {
-        this.indexCache = { index: null, mtime: 0 };
+        this.indexCache = { index: null };
         this.cachedOramaIndex = null;
-        rmSync(this.indexPath(), { force: true });
+        rmSync(indexPath, { force: true });
         return null;
       }
-      this.indexCache = { index: parsed, mtime: statSync(this.indexPath()).mtimeMs };
+      this.indexCache = { index: parsed };
       return parsed;
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
-        this.indexCache = { index: null, mtime: 0 };
+        this.indexCache = { index: null };
         return null;
       }
       throw error;
@@ -933,6 +934,7 @@ class KbRuntimeImpl implements KbRuntime {
   recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState {
     const state = this.readIndexState();
     const current = state.vector.bySpec[specId];
+    const nextActiveSnapshotId = activeSnapshotId ?? current?.activeSnapshotId;
     const nextState: KbIndexState = {
       ...state,
       vector: {
@@ -941,11 +943,7 @@ class KbRuntimeImpl implements KbRuntime {
           [specId]: {
             indexedSeq: current?.indexedSeq ?? 0,
             staleReason: reason,
-            ...(activeSnapshotId === undefined
-              ? current?.activeSnapshotId === undefined
-                ? {}
-                : { activeSnapshotId: current.activeSnapshotId }
-              : { activeSnapshotId }),
+            ...(nextActiveSnapshotId === undefined ? {} : { activeSnapshotId: nextActiveSnapshotId }),
           },
         },
       },
@@ -996,21 +994,20 @@ class KbRuntimeImpl implements KbRuntime {
       const state = this.readIndexStateIfPresent();
       const startState = captureIndexStateSnapshot(state);
 
-      if (this.textArtifactsNeedRebuild(state)) {
+      let needsRebuild = this.textArtifactsNeedRebuild(state);
+      if (!needsRebuild && this.cachedOramaIndex === null) {
+        try {
+          this.installOramaCache(await this.loadOramaSnapshot());
+        } catch {
+          needsRebuild = true;
+        }
+      }
+
+      if (needsRebuild) {
         try {
           await rebuildTextArtifactsAndPersistRepairState(this, startState);
         } catch (error: unknown) {
           throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-        }
-      } else if (this.cachedOramaIndex === null) {
-        try {
-          this.installOramaCache(await this.loadOramaSnapshot());
-        } catch {
-          try {
-            await rebuildTextArtifactsAndPersistRepairState(this, startState);
-          } catch (error: unknown) {
-            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-          }
         }
       }
 
@@ -1027,24 +1024,25 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot> {
+    let rebuilt: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>> | null = null;
     if (this.textArtifactsNeedRebuild()) {
-      const result = await rebuildTextArtifactsAndPersistRepairState(
+      rebuilt = await rebuildTextArtifactsAndPersistRepairState(
         this,
         captureIndexStateSnapshot(this.readIndexState()),
       );
-      return this.snapshotFromRebuildResult(result);
-    }
-
-    if (this.cachedOramaIndex === null) {
+    } else if (this.cachedOramaIndex === null) {
       try {
         this.installOramaCache(await this.loadOramaSnapshot());
       } catch {
-        const result = await rebuildTextArtifactsAndPersistRepairState(
+        rebuilt = await rebuildTextArtifactsAndPersistRepairState(
           this,
           captureIndexStateSnapshot(this.readIndexState()),
         );
-        return this.snapshotFromRebuildResult(result);
       }
+    }
+
+    if (rebuilt !== null) {
+      return this.snapshotFromRebuildResult(rebuilt);
     }
 
     const stateAfterArtifacts = this.readIndexStateIfPresent();
@@ -1208,7 +1206,7 @@ class KbRuntimeImpl implements KbRuntime {
 
   /** Install an already-validated index into the in-memory cache. */
   private installIndexCache(validated: KbIndex): KbIndex {
-    this.indexCache = { index: validated, mtime: Date.now() };
+    this.indexCache = { index: validated };
     return validated;
   }
 
@@ -1237,7 +1235,7 @@ class KbRuntimeImpl implements KbRuntime {
   private pendingRepairNeedsRetry(): boolean {
     // Cache the curate-state read to avoid per-request disk I/O.
     // Invalidated when curate-state.json mtime changes (any repair/curate write).
-    const curateStatePath = join(this.runtimeDir, 'curate-state.json');
+    const curateStatePath = this.curateStatePath();
     let curateStateMtime: number;
     try {
       curateStateMtime = statSync(curateStatePath).mtimeMs;
