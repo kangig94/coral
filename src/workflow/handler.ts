@@ -33,17 +33,19 @@ interface WorkflowService {
 function normalizeAst(ast: PipelineAST, defaultProviderName: string): PipelineAST {
   return ast.map((step) =>
     step.map((atom) => {
+      const provider = atom.provider ?? defaultProviderName;
+
       if (atom.kind === 'prompt') {
         return {
           ...atom,
-          provider: atom.provider ?? defaultProviderName,
+          provider,
         };
       }
 
       return {
         ...atom,
         namespace: atom.namespace ?? 'coral',
-        provider: atom.provider ?? defaultProviderName,
+        provider,
       };
     }),
   );
@@ -121,6 +123,10 @@ export async function handleWorkflow(
   }
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
-  const effectiveContext = owner ? { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } } : ctx;
+  if (!owner) {
+    return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.work_dir);
+  }
+
+  const effectiveContext = { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } };
   return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.work_dir);
 }

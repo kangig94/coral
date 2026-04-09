@@ -44,6 +44,13 @@ function isProvider(value: string): boolean {
   return providerIdentPattern.test(value);
 }
 
+function parseProviderName(providerText: string, atomText: string): string {
+  const providerName = providerText.trim();
+  if (!providerName) throw new Error(`Expected provider after "@": "${atomText}"`);
+  if (!isProvider(providerName)) throw new Error(`Unknown provider "${providerName}" in "${atomText}"`);
+  return providerName;
+}
+
 function hasUnquotedChar(text: string, target: string): boolean {
   let found = false;
 
@@ -55,10 +62,6 @@ function hasUnquotedChar(text: string, target: string): boolean {
   });
 
   return found;
-}
-
-function hasUnquotedParentheses(text: string): boolean {
-  return hasUnquotedChar(text, '(') || hasUnquotedChar(text, ')');
 }
 
 function splitByComma(text: string): string[] {
@@ -77,10 +80,6 @@ function splitByComma(text: string): string[] {
 
   parts.push(current);
   return parts.map((part) => part.trim());
-}
-
-function hasTopLevelComma(text: string): boolean {
-  return hasUnquotedChar(text, ',');
 }
 
 function parsePromptLiteral(atomText: string): PromptAtom {
@@ -105,10 +104,7 @@ function parsePromptLiteral(atomText: string): PromptAtom {
 
   let provider: string | undefined;
   if (rest.startsWith('@')) {
-    const providerText = rest.slice(1).trim();
-    if (!providerText) throw new Error(`Expected provider after "@": "${atomText}"`);
-    if (!isProvider(providerText)) throw new Error(`Unknown provider "${providerText}" in "${atomText}"`);
-    provider = providerText;
+    provider = parseProviderName(rest.slice(1), atomText);
   } else if (rest) {
     throw new Error(`Invalid prompt literal "${atomText}"`);
   }
@@ -138,10 +134,7 @@ function parseAtom(rawAtom: string): PipeAtom {
   let qualified = atomText;
   if (atFirst >= 0) {
     qualified = atomText.slice(0, atFirst).trim();
-    const providerText = atomText.slice(atFirst + 1).trim();
-    if (!providerText) throw new Error(`Expected provider after "@": "${atomText}"`);
-    if (!isProvider(providerText)) throw new Error(`Unknown provider "${providerText}" in "${atomText}"`);
-    provider = providerText;
+    provider = parseProviderName(atomText.slice(atFirst + 1), atomText);
   }
 
   if (!qualified) throw new Error(`Expected agent name in "${atomText}"`);
@@ -173,7 +166,7 @@ function parseAtom(rawAtom: string): PipeAtom {
 function parseParallelStep(rawStep: string): PipeStep {
   const content = rawStep.slice(1, -1).trim();
   if (!content) throw new Error('Parallel group cannot be empty');
-  if (hasUnquotedParentheses(content)) {
+  if (hasUnquotedChar(content, '(') || hasUnquotedChar(content, ')')) {
     throw new Error(`Nested groups are not allowed: "${rawStep}"`);
   }
 
@@ -192,14 +185,16 @@ function parseStep(rawStep: string): PipeStep {
   const startsGroup = stepText.startsWith('(');
   const endsGroup = stepText.endsWith(')');
 
-  if (startsGroup || endsGroup) {
-    if (!startsGroup || !endsGroup) throw new Error(`Mismatched parentheses in step "${stepText}"`);
-    return parseParallelStep(stepText);
+  if (!startsGroup && !endsGroup) {
+    if (hasUnquotedChar(stepText, ',')) {
+      throw new Error(`Parallel steps must be wrapped in parentheses: "${stepText}"`);
+    }
+
+    return [parseAtom(stepText)];
   }
 
-  if (hasTopLevelComma(stepText)) throw new Error(`Parallel steps must be wrapped in parentheses: "${stepText}"`);
-
-  return [parseAtom(stepText)];
+  if (!startsGroup || !endsGroup) throw new Error(`Mismatched parentheses in step "${stepText}"`);
+  return parseParallelStep(stepText);
 }
 
 function splitSteps(expression: string): string[] {
