@@ -209,28 +209,11 @@ export class LaunchCoordinator {
 
   spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
     const pool = options.pool ?? 'default';
-    const usingReservedPermit =
-      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-      options.permitGranted || (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
     let internalPermitJobId: string | null = null;
-
-    if (!usingReservedPermit) {
-      const activeLaunches = this.getActiveMap(pool);
-      const queuedLaunches = this.getQueue(pool);
-      const globalActive = activeLaunches.size;
-      const globalLimit = getActiveLimit(pool);
-      if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-        return Promise.reject(
-          new CliBusyError({
-            error: 'busy',
-            provider: options.provider,
-            globalActive,
-            globalLimit,
-          }),
-        );
-      }
-      internalPermitJobId = `spawncli-${randomUUID()}`;
-      activeLaunches.set(internalPermitJobId, options.provider);
+    try {
+      internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, 'spawncli');
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
 
     return new Promise((resolve, reject) => {
@@ -390,15 +373,45 @@ export class LaunchCoordinator {
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, string> {
-    return this.pools.get(pool)!.active;
+    return (this.pools.get(pool) as PoolState).active;
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
-    return this.pools.get(pool)!.queued;
+    return (this.pools.get(pool) as PoolState).queued;
   }
 
   private hasLaunchCapacity(pool: LaunchPool): boolean {
     return this.getActiveMap(pool).size < getActiveLimit(pool);
+  }
+
+  private reserveInternalPermitOrThrow(
+    options: Pick<SpawnCliOptions, 'permitGranted' | 'signal' | 'provider'>,
+    pool: LaunchPool,
+    prefix: string,
+  ): string | null {
+    const usingReservedPermit =
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
+      options.permitGranted || (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
+    if (usingReservedPermit) {
+      return null;
+    }
+
+    const activeLaunches = this.getActiveMap(pool);
+    const queuedLaunches = this.getQueue(pool);
+    const globalActive = activeLaunches.size;
+    const globalLimit = getActiveLimit(pool);
+    if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
+      throw new CliBusyError({
+        error: 'busy',
+        provider: options.provider,
+        globalActive,
+        globalLimit,
+      });
+    }
+
+    const internalPermitJobId = `${prefix}-${randomUUID()}`;
+    activeLaunches.set(internalPermitJobId, options.provider);
+    return internalPermitJobId;
   }
 
   private queuedHandle(entry: QueuedLaunchEntry, pool: LaunchPool): QueuedHandle {
@@ -598,33 +611,15 @@ export class LaunchCoordinator {
 
   private async spawnDurableJobAsync(options: SpawnDurableJobOptions): Promise<CliExecResult> {
     const pool = options.pool ?? 'default';
-    const usingReservedPermit =
-      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- boolean OR: false must fall through
-      options.permitGranted || (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
-    let internalPermitJobId: string | null = null;
-
-    if (!usingReservedPermit) {
-      const activeLaunches = this.getActiveMap(pool);
-      const queuedLaunches = this.getQueue(pool);
-      const globalActive = activeLaunches.size;
-      const globalLimit = getActiveLimit(pool);
-      if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
-        return Promise.reject(
-          new CliBusyError({
-            error: 'busy',
-            provider: options.provider,
-            globalActive,
-            globalLimit,
-          }),
-        );
-      }
-      internalPermitJobId = `spawndurable-${randomUUID()}`;
-      activeLaunches.set(internalPermitJobId, options.provider);
+    let internalPermitJobId: string | null;
+    try {
+      internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, 'spawndurable');
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
 
     let abortHandler: (() => void) | null = null;
     let killTimer: NodeJS.Timeout | null = null;
-    let durablePid: number | null = null;
     let cleanupKey: symbol | null = null;
 
     try {
@@ -642,7 +637,6 @@ export class LaunchCoordinator {
         pool,
         env: options.extraEnv,
       });
-      durablePid = durable.pid;
       cleanupKey = Symbol();
       this.cleanupHandles.set(cleanupKey, () => {
         safeKillPid(durable.pid, 'SIGTERM');

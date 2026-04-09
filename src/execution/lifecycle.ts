@@ -366,7 +366,14 @@ export async function createKbSubsystem({
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 export function resolveClientHost(bindHost: string): string {
   const override = process.env.CORAL_BACKEND_ADVERTISE_HOST;
-  const host = override ?? (bindHost === '0.0.0.0' ? '127.0.0.1' : bindHost === '::' ? '::1' : bindHost);
+  let host = bindHost;
+  if (override !== undefined) {
+    host = override;
+  } else if (bindHost === '0.0.0.0') {
+    host = '127.0.0.1';
+  } else if (bindHost === '::') {
+    host = '::1';
+  }
   return host.includes(':') ? `[${host}]` : host;
 }
 
@@ -474,9 +481,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     launchCoordinator,
     providerRegistry,
     server,
-    getExecutionService,
     getRecoveryService,
-    listExecutionServices,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -895,54 +900,59 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         if (preStatus && !belongsToNamespace(preStatus, namespace)) continue;
 
         const classification = classifyRecoverableJob(progressStore, jobId);
-        if (classification === 'incompatible') {
-          const status = progressStore.readStatus(jobId);
-          if (status) incompatibleJobs.push(status);
-          continue;
-        }
-        if (classification === 'stale_running') {
-          const status = progressStore.readStatus(jobId);
-          if (status) ghostLaunchJobs.push(status);
-          continue;
-        }
-        if (classification === 'incomplete') {
-          // Crash between launch.json write and status.json — delete directory
-          try {
-            rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
-          } catch {
-            /* best-effort */
-          }
-          log(`Deleted incomplete admission: ${jobId}\n`);
-          continue;
-        }
-        if (classification === 'queued') {
-          const launchRecord = progressStore.readLaunchRecord(jobId);
-          if (launchRecord) {
-            queuedRecoverable.push({ jobId, launchRecord });
-            recoveryRegistry.register(jobId, launchRecord);
-          }
-          continue;
-        }
-        if (classification === 'running' || classification === 'stale_dead') {
-          const launchRecord = progressStore.readLaunchRecord(jobId);
-          const runtimeRecord = progressStore.readRuntimeRecord(jobId);
-          if (launchRecord && runtimeRecord) {
-            runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
-            if (isAppServerRuntime(runtimeRecord)) {
-              recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
-                const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-                const service = getRecoveryService(ctx);
-                void service.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
-                  log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
-                });
-              });
-            } else {
-              recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
+        switch (classification) {
+          case 'incompatible':
+          case 'stale_running': {
+            const status = progressStore.readStatus(jobId);
+            if (status) {
+              if (classification === 'incompatible') {
+                incompatibleJobs.push(status);
+              } else {
+                ghostLaunchJobs.push(status);
+              }
             }
+            continue;
           }
-          continue;
+          case 'incomplete':
+            // Crash between launch.json write and status.json — delete directory
+            try {
+              rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+            } catch {
+              /* best-effort */
+            }
+            log(`Deleted incomplete admission: ${jobId}\n`);
+            continue;
+          case 'queued': {
+            const launchRecord = progressStore.readLaunchRecord(jobId);
+            if (launchRecord) {
+              queuedRecoverable.push({ jobId, launchRecord });
+              recoveryRegistry.register(jobId, launchRecord);
+            }
+            continue;
+          }
+          case 'running':
+          case 'stale_dead': {
+            const launchRecord = progressStore.readLaunchRecord(jobId);
+            const runtimeRecord = progressStore.readRuntimeRecord(jobId);
+            if (launchRecord && runtimeRecord) {
+              runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
+              if (isAppServerRuntime(runtimeRecord)) {
+                recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
+                  const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
+                  const service = getRecoveryService(ctx);
+                  void service.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
+                    log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
+                  });
+                });
+              } else {
+                recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
+              }
+            }
+            continue;
+          }
+          default:
+            continue;
         }
-        // 'terminal' or null — no action needed
       }
 
       // Mark incompatible old-format jobs and release their session claims

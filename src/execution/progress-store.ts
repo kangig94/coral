@@ -509,34 +509,28 @@ export class ProgressStore {
     }
   }
 
-  /** Check if a launch.json exists for a job. */
-  hasLaunchRecord(jobId: string): boolean {
+  private hasJobFile(jobId: string, fileName: string): boolean {
     try {
-      statSync(join(this.jobDir(jobId), LAUNCH_FILE));
+      statSync(join(this.jobDir(jobId), fileName));
       return true;
     } catch {
       return false;
     }
+  }
+
+  /** Check if a launch.json exists for a job. */
+  hasLaunchRecord(jobId: string): boolean {
+    return this.hasJobFile(jobId, LAUNCH_FILE);
   }
 
   /** Check if a runtime.json exists for a job. */
   hasRuntimeRecord(jobId: string): boolean {
-    try {
-      statSync(join(this.jobDir(jobId), RUNTIME_FILE));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.hasJobFile(jobId, RUNTIME_FILE);
   }
 
   /** Check if an exit.json exists for a job. */
   hasExitRecord(jobId: string): boolean {
-    try {
-      statSync(join(this.jobDir(jobId), EXIT_FILE));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.hasJobFile(jobId, EXIT_FILE);
   }
 
   // ── Progress replay ─────────────────────────────────────────────────────

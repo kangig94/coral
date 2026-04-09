@@ -229,7 +229,12 @@ function sortSummaryIndexRows(rows: DiscussSummaryIndexRow[]): DiscussSummaryInd
 
 function buildSummaryIndexData(source: string, rows: DiscussSummaryIndexRow[]): DiscussSummaryIndexData {
   const sessions = sortSummaryIndexRows(rows);
-  const updatedAt = sessions.reduce((latest, session) => (session.updatedAt > latest ? session.updatedAt : latest), '');
+  let updatedAt = '';
+  for (const session of sessions) {
+    if (session.updatedAt > updatedAt) {
+      updatedAt = session.updatedAt;
+    }
+  }
 
   return {
     source,

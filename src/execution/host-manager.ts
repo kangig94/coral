@@ -293,23 +293,19 @@ export class DefaultProviderHostManager implements ProviderHostManager {
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+
+      const finish = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        waiter.cleanup();
+        callback();
+      };
+
       const waiter: ProviderServerWaiter = {
-        resolve: () => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          waiter.cleanup();
-          resolve();
-        },
-        reject: (error: Error) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          waiter.cleanup();
-          reject(error);
-        },
+        resolve: () => finish(resolve),
+        reject: (error: Error) => finish(() => reject(error)),
         cleanup: () => {
           signal?.removeEventListener('abort', onAbort);
           const index = entry.waiters.indexOf(waiter);
@@ -443,7 +439,8 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   }
 
   private isHostIdleFromStats(entry: ProviderHostEntry): boolean {
-    return entry.hostStats?.liveControllers === 0 && entry.hostStats.activeTurns === 0;
+    const hostStats = entry.hostStats;
+    return hostStats !== null && hostStats.liveControllers === 0 && hostStats.activeTurns === 0;
   }
 
   private maybeArmIdleTimer(entry: ProviderHostEntry): void {
@@ -453,10 +450,8 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     if (entry.waiters.length > 0 || this.activeLeaseCount(entry) > 0) {
       return;
     }
-    if (this.usesHostStats(entry)) {
-      if (!this.isHostIdleFromStats(entry)) {
-        return;
-      }
+    if (this.usesHostStats(entry) && !this.isHostIdleFromStats(entry)) {
+      return;
     }
 
     this.clearIdleTimer(entry);

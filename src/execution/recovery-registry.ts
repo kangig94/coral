@@ -31,16 +31,16 @@ export class RecoveryRegistry {
 
     // Install abort delegate: queued → noop (cancel handled by service after adoption),
     // running → kill PID from runtimeRecord
-    if (isDurableCliRuntime(runtimeRecord)) {
-      const pid = runtimeRecord.pid;
-      this.abortHandlers.set(jobId, () => {
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch {
-          /* pid already exited */
-        }
-      });
-    }
+    if (!isDurableCliRuntime(runtimeRecord)) return;
+
+    const pid = runtimeRecord.pid;
+    this.abortHandlers.set(jobId, () => {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        /* pid already exited */
+      }
+    });
   }
 
   has(jobId: string): boolean {
@@ -84,9 +84,12 @@ export class RecoveryRegistry {
     const byProject = new Map<string, RecoveryEntry[]>();
     for (const [, entry] of this.entries) {
       const key = entry.launchRecord.projectRoot;
-      const list = byProject.get(key) ?? [];
-      list.push(entry);
-      byProject.set(key, list);
+      const existing = byProject.get(key);
+      if (existing) {
+        existing.push(entry);
+        continue;
+      }
+      byProject.set(key, [entry]);
     }
     return byProject;
   }
