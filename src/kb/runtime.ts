@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
@@ -60,13 +60,13 @@ import {
   parsePositiveInteger,
 } from './validation.js';
 import { resolveEmbeddingProviderConfig } from './vector/embedding.js';
-import { loadKbNote, loadKbSource } from './read.js';
 import {
-  createDuckDBVectorStore,
-  readActiveSnapshotId,
-  vectorAddonPath,
-  vectorSnapshotDbPath,
-} from './vector/store.js';
+  type ActiveVectorHandleInfo,
+  type OpenedVectorStore,
+  VectorHandleLifecycle,
+} from './vector/handle-lifecycle.js';
+import { loadKbNote, loadKbSource } from './read.js';
+import { readActiveSnapshotId } from './vector/store.js';
 import type { VectorStore } from './vector/contracts.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
@@ -466,31 +466,6 @@ function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState 
 
 import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 
-type OpenedVectorStore = {
-  store: VectorStore;
-  close(): Promise<void>;
-};
-
-type RuntimeVectorHandle = OpenedVectorStore & {
-  specId: string;
-  snapshotId: string;
-  generation: number;
-  leaseCount: number;
-  retired: boolean;
-  closeTimer: NodeJS.Timeout | null;
-  closed: boolean;
-};
-
-function readVectorDrainTimeoutMs(): number {
-  const raw = process.env.CORAL_VECTOR_DRAIN_TIMEOUT_MS;
-  if (raw === undefined) {
-    return 30_000;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
-}
-
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
@@ -499,17 +474,20 @@ class KbRuntimeImpl implements KbRuntime {
   private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
-  private vectorPluginRoot: string | null = null;
-  private activeVectorHandle: RuntimeVectorHandle | null = null;
+  private readonly vectorLifecycle: VectorHandleLifecycle;
   private upgradeGuardDone = false;
   private pendingRepairCache: { mtime: number; result: boolean } | null = null;
-  private nextVectorGeneration = 1;
-  private readonly retiredVectorHandles = new Set<RuntimeVectorHandle>();
-  private readonly vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
 
   constructor({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
+    this.vectorLifecycle = new VectorHandleLifecycle({
+      runtimeDir: this.runtimeDir,
+      getVectorStatus: (specId) => this.getVectorStatus(specId),
+      syncVectorStore: (store) => {
+        this.vectorStore = store;
+      },
+    });
 
     mkdirSync(this.runtimeDir, { recursive: true });
     runEntrySeqUpgradeGuard(this);
@@ -597,10 +575,9 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async initVectorStore(pluginRoot: string): Promise<void> {
-    this.vectorPluginRoot = pluginRoot;
+    this.vectorLifecycle.setPluginRoot(pluginRoot);
     rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
     await this.closeVectorStores();
-    this.vectorStore = null;
     mkdirSync(this.runtimeDir, { recursive: true });
     if (!this.upgradeGuardDone) {
       runEntrySeqUpgradeGuard(this);
@@ -641,122 +618,23 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async openVectorStore(dbPath: string, handleToken: string): Promise<OpenedVectorStore | null> {
-    if (this.vectorPluginRoot === null) {
-      return null;
-    }
-
-    const sourceAddonPath = vectorAddonPath(this.runtimeDir);
-    if (!existsSync(sourceAddonPath)) {
-      return null;
-    }
-
-    const addonDir = this.vectorHandleDir(handleToken);
-    const addonPath = this.vectorHandleAddonPath(handleToken);
-    mkdirSync(addonDir, { recursive: true });
-    copyFileSync(sourceAddonPath, addonPath);
-
-    const store = createDuckDBVectorStore({
-      pluginRoot: this.vectorPluginRoot,
-      runtimeDir: this.runtimeDir,
-      addonPath,
-    });
-    if (store === null) {
-      rmSync(addonDir, { recursive: true, force: true });
-      return null;
-    }
-
-    try {
-      await store.init(dbPath);
-    } catch (error: unknown) {
-      await store.close().catch(() => {});
-      rmSync(addonDir, { recursive: true, force: true });
-      throw error;
-    }
-
-    return {
-      store,
-      async close() {
-        await store.close().catch(() => {});
-        rmSync(addonDir, { recursive: true, force: true });
-      },
-    };
+    return this.vectorLifecycle.open(dbPath, handleToken);
   }
 
   async activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
-    const opened = await this.openVectorStore(
-      vectorSnapshotDbPath(this.runtimeDir, specId, snapshotId),
-      this.makeHandleToken(`active-${specId}-${snapshotId}`),
-    );
-    if (opened === null) {
-      throw new Error('KB vector store is unavailable.');
-    }
-
-    this.publishVectorHandle({
-      ...opened,
-      specId,
-      snapshotId,
-      generation: this.nextVectorGeneration,
-      leaseCount: 0,
-      retired: false,
-      closeTimer: null,
-      closed: false,
-    });
-    this.nextVectorGeneration += 1;
+    await this.vectorLifecycle.activate(specId, snapshotId);
   }
 
   async acquireVectorLease(): Promise<KbVectorLease | null> {
-    const handle = this.activeVectorHandle;
-    if (handle === null || handle.closed) {
-      return null;
-    }
-
-    handle.leaseCount += 1;
-    const vectorStatus = this.getVectorStatus(handle.specId);
-    let released = false;
-
-    return {
-      store: handle.store,
-      specId: handle.specId,
-      snapshotId: handle.snapshotId,
-      generation: handle.generation,
-      vectorStatus,
-      release: async () => {
-        if (released) {
-          return;
-        }
-        released = true;
-        handle.leaseCount = Math.max(0, handle.leaseCount - 1);
-        await this.maybeCloseRetiredVectorHandle(handle);
-      },
-    };
+    return this.vectorLifecycle.acquireLease();
   }
 
   async closeVectorStores(): Promise<void> {
-    const handles = [
-      ...(this.activeVectorHandle === null ? [] : [this.activeVectorHandle]),
-      ...this.retiredVectorHandles,
-    ];
-
-    this.activeVectorHandle = null;
-    this.vectorStore = null;
-    this.retiredVectorHandles.clear();
-
-    for (const handle of handles) {
-      await this.forceCloseRuntimeVectorHandle(handle).catch(() => {});
-    }
+    await this.vectorLifecycle.closeAll();
   }
 
-  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null {
-    const handle = this.activeVectorHandle;
-    if (handle === null || handle.closed) {
-      return null;
-    }
-
-    return {
-      specId: handle.specId,
-      snapshotId: handle.snapshotId,
-      generation: handle.generation,
-    };
+  getActiveVectorHandleInfo(): ActiveVectorHandleInfo | null {
+    return this.vectorLifecycle.getActiveInfo();
   }
 
   readIndex(): KbIndex | null {
@@ -1072,81 +950,6 @@ class KbRuntimeImpl implements KbRuntime {
 
   private oramaIndexPath(): string {
     return join(this.runtimeDir, ORAMA_INDEX_FILE);
-  }
-
-  private vectorHandleDir(handleToken: string): string {
-    return join(this.runtimeDir, 'vec', 'handles', handleToken);
-  }
-
-  private vectorHandleAddonPath(handleToken: string): string {
-    return join(this.vectorHandleDir(handleToken), 'coral-needle.node');
-  }
-
-  private makeHandleToken(prefix: string): string {
-    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  private async forceCloseRuntimeVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
-    if (handle.closed) {
-      return;
-    }
-
-    handle.closed = true;
-    if (handle.closeTimer !== null) {
-      clearTimeout(handle.closeTimer);
-      handle.closeTimer = null;
-    }
-
-    if (this.activeVectorHandle?.generation === handle.generation) {
-      this.activeVectorHandle = null;
-      this.vectorStore = null;
-    }
-
-    this.retiredVectorHandles.delete(handle);
-    await handle.close();
-  }
-
-  private async maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
-    if (!handle.retired || handle.leaseCount !== 0) {
-      return;
-    }
-
-    await this.forceCloseRuntimeVectorHandle(handle);
-  }
-
-  private scheduleRetiredHandleClose(handle: RuntimeVectorHandle): void {
-    if (handle.closeTimer !== null || handle.closed) {
-      return;
-    }
-
-    handle.closeTimer = setTimeout(() => {
-      if (handle.closed || handle.leaseCount === 0) {
-        void this.maybeCloseRetiredVectorHandle(handle);
-        return;
-      }
-
-      process.stderr.write(
-        `Warning: forcing close of retired KB vector handle after ${this.vectorDrainTimeoutMs}ms drain timeout.\n`,
-      );
-      void this.forceCloseRuntimeVectorHandle(handle);
-    }, this.vectorDrainTimeoutMs);
-    handle.closeTimer.unref?.();
-  }
-
-  private retireVectorHandle(handle: RuntimeVectorHandle): void {
-    handle.retired = true;
-    this.retiredVectorHandles.add(handle);
-    this.scheduleRetiredHandleClose(handle);
-    void this.maybeCloseRetiredVectorHandle(handle);
-  }
-
-  private publishVectorHandle(handle: RuntimeVectorHandle): void {
-    const previous = this.activeVectorHandle;
-    this.activeVectorHandle = handle;
-    this.vectorStore = handle.store;
-    if (previous !== null && previous.generation !== handle.generation) {
-      this.retireVectorHandle(previous);
-    }
   }
 
   private captureVectorTextSnapshot(): KbVectorTextSnapshot {
