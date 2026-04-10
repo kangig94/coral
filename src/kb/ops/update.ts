@@ -1,11 +1,11 @@
-import { nowIsoString } from '../shared/utils.js';
-import { serializeNote } from './frontmatter.js';
-import { loadKbNote } from './read.js';
-import { runEntrySeqUpgradeGuard } from './runtime.js';
-import { noteEntryId, setEntry, type KbUpdateInput } from './types.js';
-import { assertNonEmptyText, assertNoteSlug } from './validation.js';
-import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from './mutation-helpers.js';
-import type { KbRuntime } from './contracts.js';
+import { nowIsoString } from '../../shared/utils.js';
+import { serializeNote } from '../frontmatter.js';
+import { loadKbNote } from '../read.js';
+import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
+import { noteEntryId, setEntry, type KbUpdateInput } from '../types.js';
+import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
+import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from '../mutation-helpers.js';
+import type { KbRuntime } from '../contracts.js';
 
 export async function applyNoteUpdateLocked(
   rt: KbRuntime,

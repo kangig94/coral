@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { errorMessage } from '../shared/utils.js';
-import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../discuss/schemas.js';
-import { DiscussManagerError, type DiscussContext } from './discuss/context.js';
-import * as discussOperations from './discuss/operations.js';
-import { seedPersonas } from '../discuss/persona-seed.js';
-import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
-import type { CallerContext } from '../shared/request-context.js';
+import { errorMessage } from '../../shared/utils.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
+import { DiscussManagerError, type DiscussContext } from './context.js';
+import * as discussOperations from './operations.js';
+import { seedPersonas } from '../../discuss/persona-seed.js';
+import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
+import type { CallerContext } from '../../shared/request-context.js';
 
 const discussSessionSchema = z.object({
   session: z.string().min(1),

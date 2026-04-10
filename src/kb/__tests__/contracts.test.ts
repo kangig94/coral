@@ -25,16 +25,21 @@ describe('kb contracts boundary', () => {
       expect(runtimeSource).not.toMatch(new RegExp(`export (?:interface|type) ${contractName}\\b`));
     }
 
-    expect(runtimeSource).toContain('export function runEntrySeqUpgradeGuard');
+    const entrySeqGuardSource = readKbFile('entry-seq-guard.ts');
+    expect(entrySeqGuardSource).toContain('export function runEntrySeqUpgradeGuard');
     expect(runtimeSource).toContain('export function createKbRuntime');
   });
 
   it('keeps kb runtime-type consumers pointed at contracts.ts instead of runtime.ts', () => {
-    for (const fileName of ['curate-state.ts', 'mutation-helpers.ts', 'text-artifacts.ts']) {
+    for (const [fileName, contractImport] of [
+      ['curate/state.ts', "from '../contracts.js'"],
+      ['mutation-helpers.ts', "from './contracts.js'"],
+      ['curate/text-artifacts.ts', "from '../contracts.js'"],
+    ] as const) {
       const source = readKbFile(fileName);
-      expect(source).toContain("from './contracts.js'");
+      expect(source).toContain(contractImport);
       expect(source).not.toMatch(
-        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex|VectorSpecState|VectorLease|VectorTextSnapshot)[^}]*\}\s+from ['"]\.\/runtime\.js['"]/,
+        /import\s+type\s+\{[^}]*Kb(?:Runtime|IndexState|CachedOramaIndex|VectorSpecState|VectorLease|VectorTextSnapshot)[^}]*\}\s+from ['"](?:\.\/|\.\.\/)?runtime\.js['"]/,
       );
     }
   });

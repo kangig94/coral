@@ -74,16 +74,14 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       };
     });
     if (response.status === 200) {
-      if (isBackendHealth(body) && body.namespace === info.namespace) {
-        const { namespace: _namespace, queueDepth: _queueDepth, ...health } = body;
-        return { status: 'ok', health };
+      if (!isBackendHealth(body) || body.namespace !== info.namespace) {
+        return { status: 'not_running' };
       }
-      return { status: 'not_running' };
+
+      const { namespace: _namespace, queueDepth: _queueDepth, ...health } = body;
+      return { status: 'ok', health };
     }
-    if (response.status === 503) {
-      return { status: 'shutting_down' };
-    }
-    if (TransientHttpError.isTransientStatus(response.status)) {
+    if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
       return { status: 'shutting_down' };
     }
     if (response.status === 401) return { status: 'unauthorized' };

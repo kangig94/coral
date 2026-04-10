@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ExistingGeneratedCommunity } from '../community-detection.js';
+import type { ExistingGeneratedCommunity } from '../curate/community-detection.js';
 import type { EntityGraph, KbIndex } from '../types.js';
 
 async function loadCommunityDetectionWithMock(
@@ -20,7 +20,7 @@ async function loadCommunityDetectionWithMock(
     }));
   }
 
-  return import('../community-detection.js');
+  return import('../curate/community-detection.js');
 }
 
 afterEach(() => {

@@ -659,18 +659,34 @@ export class BackendClient {
     return describeHttpError(response.status, response.statusText);
   }
 
-  private async getRoute<T>(path: string, context?: CallerContext): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle(context);
+  private async requestRoute<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    path: string,
+    handle: BackendHandle,
+    body?: string,
+  ): Promise<T> {
+    const { port, host, token } = handle;
+    const headers: Record<string, string> = {
+      'X-Coral-Backend-Token': token,
+    };
+
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
 
     try {
       return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}${path}`, {
-          method: 'GET',
-          headers: {
-            'X-Coral-Backend-Token': token,
-          },
+        const request: RequestInit = {
+          method,
+          headers,
           signal,
-        });
+        };
+
+        if (body !== undefined) {
+          request.body = body;
+        }
+
+        const response = await fetch(`http://${host}:${port}${path}`, request);
         const responseBody = await parseJsonResponse(response);
 
         if (response.ok) {
@@ -682,6 +698,11 @@ export class BackendClient {
     } catch (error) {
       throwBackendCommunicationError(error);
     }
+  }
+
+  private async getRoute<T>(path: string, context?: CallerContext): Promise<T> {
+    const handle = await this.resolveBackendHandle(context);
+    return this.requestRoute('GET', path, handle);
   }
 
   private async putRoute<T>(
@@ -690,57 +711,15 @@ export class BackendClient {
     context?: CallerContext,
     options: { injectContext?: boolean } = {},
   ): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle(context);
+    const handle = await this.resolveBackendHandle(context);
     const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
     const body = JSON.stringify(payload);
-
-    try {
-      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}${path}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': token,
-          },
-          body,
-          signal,
-        });
-        const responseBody = await parseJsonResponse(response);
-
-        if (response.ok) {
-          return responseBody as T;
-        }
-
-        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
-      });
-    } catch (error) {
-      throwBackendCommunicationError(error);
-    }
+    return this.requestRoute('PUT', path, handle, body);
   }
 
   private async deleteRoute<T>(path: string, context?: CallerContext): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle(context);
-
-    try {
-      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}${path}`, {
-          method: 'DELETE',
-          headers: {
-            'X-Coral-Backend-Token': token,
-          },
-          signal,
-        });
-        const responseBody = await parseJsonResponse(response);
-
-        if (response.ok) {
-          return responseBody as T;
-        }
-
-        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
-      });
-    } catch (error) {
-      throwBackendCommunicationError(error);
-    }
+    const handle = await this.resolveBackendHandle(context);
+    return this.requestRoute('DELETE', path, handle);
   }
 
   private async postRoute<T>(
@@ -749,32 +728,10 @@ export class BackendClient {
     context?: CallerContext,
     options: { injectContext?: boolean } = {},
   ): Promise<T> {
-    const { port, host, token } = await this.resolveBackendHandle(context);
+    const handle = await this.resolveBackendHandle(context);
     const payload = context && options.injectContext !== false ? this.buildRequestBody(args, context) : args;
     const body = JSON.stringify(payload);
-
-    try {
-      return await withAbortTimeout(TOOL_TIMEOUT_MS, async (signal) => {
-        const response = await fetch(`http://${host}:${port}${path}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': token,
-          },
-          body,
-          signal,
-        });
-        const responseBody = await parseJsonResponse(response);
-
-        if (response.ok) {
-          return responseBody as T;
-        }
-
-        throw new BackendToolHttpError(this.describeError(response, responseBody), response.status, responseBody);
-      });
-    } catch (error) {
-      throwBackendCommunicationError(error);
-    }
+    return this.requestRoute('POST', path, handle, body);
   }
 
   private kbReadByKind(kind: KbReadKind, slug: string, context?: CallerContext): Promise<KbReadResult> {
@@ -828,9 +785,8 @@ export class BackendClient {
           const parsed = parseSseBlock(block);
           if (!parsed) return;
           const event = parseWaitStreamEvent(parsed.event, parsed.data);
-          if (event) {
-            controller.enqueue(event);
-          }
+          if (!event) return;
+          controller.enqueue(event);
         };
 
         const pump = async (): Promise<void> => {

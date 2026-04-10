@@ -32,7 +32,7 @@ import {
   listDiscussSessions,
   loadDiscussDetail,
   type DiscussReadHelpersDeps,
-} from './discuss-read-helpers.js';
+} from './discuss/read-helpers.js';
 import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
 import type { KbSubsystem } from './kb-tools.js';

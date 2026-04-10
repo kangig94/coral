@@ -6,9 +6,10 @@ import {
   extractPrincipleStatement,
   extractTitle,
   parseFrontmatter,
+  parseMembersFromBody,
   parseSourceFrontmatter,
+  parseSummaryFromBody,
 } from './frontmatter.js';
-import { parseMembersFromBody, parseSummaryFromBody } from './community-detection.js';
 import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
 import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
@@ -149,20 +150,18 @@ export function readEntry(input: KbReadInput, projectRoot?: string): KbReadResul
 
   if (selector.kind === 'source') {
     const sourceEntry = readSourceEntry(selector.slug);
-    if (sourceEntry !== null) {
-      return sourceEntry;
+    if (sourceEntry === null) {
+      throw new Error(`KB entry not found: ${input.note}`);
     }
-
-    throw new Error(`KB entry not found: ${input.note}`);
+    return sourceEntry;
   }
 
   if (selector.kind === 'community') {
     const communityEntry = readCommunityEntry(selector.slug);
-    if (communityEntry !== null) {
-      return communityEntry;
+    if (communityEntry === null) {
+      throw new Error(`KB entry not found: ${input.note}`);
     }
-
-    throw new Error(`KB entry not found: ${input.note}`);
+    return communityEntry;
   }
 
   const note = selector.slug;

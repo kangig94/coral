@@ -2,18 +2,17 @@ import { search as oramaSearch } from '@orama/orama';
 import {
   computeCommunitySummaryInputFingerprints,
   computeCommunityTopologyFingerprint,
-} from './community-detection.js';
-import { readCurateState } from './curate-state.js';
+} from '../curate/community-detection.js';
+import { readCurateState } from '../curate/state.js';
 import {
-  type KbOramaDb,
   normalizeOramaTerm,
   normalizeWhitespace,
   tokenizeField,
   tokenizeQuery,
   type KbOramaDocument,
-  type KbOramaTokenizer,
-} from './orama-factory.js';
-import type { KbRuntime } from './contracts.js';
+} from '../orama-factory.js';
+import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
+import type { KbRuntime } from '../contracts.js';
 import {
   type EntityGraph,
   getEntry,
@@ -27,9 +26,9 @@ import {
   type KbSearchResponse,
   type KbSearchScope,
   type RelationshipType,
-} from './types.js';
-import { createEmbeddingProvider } from './embedding.js';
-import { ensureVectorIndex } from './vector-sync.js';
+} from '../types.js';
+import { createEmbeddingProvider } from '../vector/embedding.js';
+import { ensureVectorIndex } from '../vector/sync.js';
 
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
 const ORAMA_SEARCH_PROPERTIES: Array<keyof KbOramaDocument> = ['slug', 'title', 'body', 'tags', 'principles'];
@@ -567,8 +566,15 @@ function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scop
     return hits.filter((hit) => hit.kind !== 'community');
   }
 
-  const targetKind = scope === 'notes' ? 'note' : scope === 'sources' ? 'source' : 'community';
-  return hits.filter((hit) => hit.kind === targetKind);
+  if (scope === 'notes') {
+    return hits.filter((hit) => hit.kind === 'note');
+  }
+
+  if (scope === 'sources') {
+    return hits.filter((hit) => hit.kind === 'source');
+  }
+
+  return hits.filter((hit) => hit.kind === 'community');
 }
 
 function areCommunityResultsFresh(
@@ -825,21 +831,16 @@ function toVectorOnlyResult(hit: ResolvedKbSearchEntry, communityContext?: strin
   );
 }
 
-function toHybridResult(hit: HybridKbSearchHit, query: QueryContext, communityContext?: string[]): KbResult {
+function toHybridResult(
+  hit: ResolvedKbSearchHit | HybridKbSearchHit,
+  query: QueryContext,
+  communityContext?: string[],
+): KbResult {
   if (hit.document === null) {
     return toVectorOnlyResult(hit, communityContext);
   }
 
-  return withCommunityContext(
-    toResult(
-      {
-        ...hit,
-        document: hit.document,
-      },
-      query,
-    ),
-    communityContext,
-  );
+  return withCommunityContext(toResult(hit as ResolvedKbSearchHit, query), communityContext);
 }
 
 function buildTextResponse(
@@ -855,7 +856,7 @@ function buildTextResponse(
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
 
   return {
-    results: finalHits.map((hit) => toHybridResult(hit as HybridKbSearchHit, query, communityContext.get(hit.entryId))),
+    results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'text',
     ...(warning === undefined ? {} : { warning }),
   };
@@ -885,7 +886,19 @@ function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {
     return false;
   }
 
-  return scope === 'all' || (scope === 'notes' ? kind === 'note' : scope === 'sources' ? kind === 'source' : false);
+  if (scope === 'all') {
+    return true;
+  }
+
+  if (scope === 'notes') {
+    return kind === 'note';
+  }
+
+  if (scope === 'sources') {
+    return kind === 'source';
+  }
+
+  return false;
 }
 
 function aggregateVectorHits(

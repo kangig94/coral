@@ -20,9 +20,9 @@ vi.mock('node:os', async () => {
 async function loadKbModules() {
   vi.resetModules();
   const [{ promote }, { update }, { deleteFn }, { readEntry }, runtime, paths, frontmatter] = await Promise.all([
-    import('../promote.js'),
-    import('../update.js'),
-    import('../delete.js'),
+    import('../ops/promote.js'),
+    import('../ops/update.js'),
+    import('../ops/delete.js'),
     import('../read.js'),
     import('../runtime.js'),
     import('../paths.js'),

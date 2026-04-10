@@ -1,9 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate-state.js';
+import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate/state.js';
 import type {
   KbCachedOramaIndex,
   KbIndexMutationLane,
@@ -16,7 +16,8 @@ import type {
 import { normalizeCommunityChildren, normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
-import { createOramaDb, type KbOramaDb, type KbOramaTokenizer } from './orama-factory.js';
+import { createOramaDb } from './orama-factory.js';
+import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import {
   communityPathFromName,
   communitiesDir as pathsCommunitiesDir,
@@ -29,7 +30,7 @@ import {
   sourcesDir as pathsSourcesDir,
   stripMdExt,
 } from './paths.js';
-import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './text-artifacts.js';
+import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
 import {
   communityEntryId,
   ENTITY_TYPES,
@@ -58,15 +59,16 @@ import {
   parseOptionalTrimmedString,
   parsePositiveInteger,
 } from './validation.js';
-import { resolveEmbeddingProviderConfig } from './embedding.js';
-import { loadKbNote, loadKbSource } from './read.js';
+import { resolveEmbeddingProviderConfig } from './vector/embedding.js';
 import {
-  createDuckDBVectorStore,
-  readActiveSnapshotId,
-  vectorAddonPath,
-  vectorSnapshotDbPath,
-  type VectorStore,
-} from './vector-store.js';
+  type ActiveVectorHandleInfo,
+  type OpenedVectorStore,
+  VectorHandleLifecycle,
+} from './vector/handle-lifecycle.js';
+import { loadKbNote, loadKbSource } from './read.js';
+import { readActiveSnapshotId } from './vector/store.js';
+import type { VectorStore } from './vector/contracts.js';
+import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
@@ -150,7 +152,6 @@ function emptyIndex(): KbIndex {
   };
 }
 
-type EntrySeqGuardTarget = Pick<KbRuntime, 'notePath' | 'notesDir'>;
 
 function parseStringArray(value: unknown): string[] {
   if (!isStringArray(value)) {
@@ -347,17 +348,17 @@ function parseIndex(value: unknown): KbIndex {
     }
 
     if (rawEntry.kind === 'note') {
-      entries[entryId as keyof KbIndex['entries']] = parseNoteIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseNoteIndexEntry(entryId, rawEntry);
       continue;
     }
 
     if (rawEntry.kind === 'source') {
-      entries[entryId as keyof KbIndex['entries']] = parseSourceIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseSourceIndexEntry(entryId, rawEntry);
       continue;
     }
 
     if (rawEntry.kind === 'community') {
-      entries[entryId as keyof KbIndex['entries']] = parseCommunityIndexEntry(entryId, rawEntry);
+      entries[entryId] = parseCommunityIndexEntry(entryId, rawEntry);
       continue;
     }
 
@@ -464,82 +465,28 @@ function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState 
   return state !== null && state.textStaleReason === undefined;
 }
 
-/**
- * Rewrite legacy `mutationSeqAtPromote` frontmatter to `entrySeq`.
- * Idempotent: rewrites only files that still have the legacy key, so
- * a second invocation is a no-op and does not change directory mtimes.
- * This means it cannot cause a rebuild loop even though it runs before
- * the freshness check in `ensureIndex()`.
- */
-export function runEntrySeqUpgradeGuard(target: EntrySeqGuardTarget): boolean {
-  let changed = false;
-
-  for (const entry of sortedMarkdownEntries(target.notesDir())) {
-    const notePath = target.notePath(stripMdExt(entry));
-    const raw = readFileSync(notePath, 'utf-8');
-    let rewritten: string | null;
-
-    try {
-      rewritten = rewriteLegacyNoteFrontmatter(raw);
-    } catch {
-      continue;
-    }
-
-    if (rewritten === null) {
-      continue;
-    }
-
-    writeFileAtomic(notePath, rewritten);
-    changed = true;
-  }
-
-  return changed;
-}
-
-type OpenedVectorStore = {
-  store: VectorStore;
-  close(): Promise<void>;
-};
-
-type RuntimeVectorHandle = OpenedVectorStore & {
-  specId: string;
-  snapshotId: string;
-  generation: number;
-  leaseCount: number;
-  retired: boolean;
-  closeTimer: NodeJS.Timeout | null;
-  closed: boolean;
-};
-
-function readVectorDrainTimeoutMs(): number {
-  const raw = process.env.CORAL_VECTOR_DRAIN_TIMEOUT_MS;
-  if (raw === undefined) {
-    return 30_000;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
-}
-
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   vectorStore: VectorStore | null = null;
 
-  private indexCache: { index: KbIndex | null; mtime: number } | null = null;
+  private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
-  private vectorPluginRoot: string | null = null;
-  private activeVectorHandle: RuntimeVectorHandle | null = null;
+  private readonly vectorLifecycle: VectorHandleLifecycle;
   private upgradeGuardDone = false;
   private pendingRepairCache: { mtime: number; result: boolean } | null = null;
-  private nextVectorGeneration = 1;
-  private readonly retiredVectorHandles = new Set<RuntimeVectorHandle>();
-  private readonly vectorDrainTimeoutMs = readVectorDrainTimeoutMs();
 
   constructor({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
+    this.vectorLifecycle = new VectorHandleLifecycle({
+      runtimeDir: this.runtimeDir,
+      getVectorStatus: (specId) => this.getVectorStatus(specId),
+      syncVectorStore: (store) => {
+        this.vectorStore = store;
+      },
+    });
 
     mkdirSync(this.runtimeDir, { recursive: true });
     runEntrySeqUpgradeGuard(this);
@@ -627,10 +574,9 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async initVectorStore(pluginRoot: string): Promise<void> {
-    this.vectorPluginRoot = pluginRoot;
+    this.vectorLifecycle.setPluginRoot(pluginRoot);
     rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
     await this.closeVectorStores();
-    this.vectorStore = null;
     mkdirSync(this.runtimeDir, { recursive: true });
     if (!this.upgradeGuardDone) {
       runEntrySeqUpgradeGuard(this);
@@ -647,11 +593,11 @@ class KbRuntimeImpl implements KbRuntime {
       this.cachedOramaIndex = null;
     }
 
-    let desiredSpecId: string | null = null;
+    let desiredSpecId: string | null;
     try {
       desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
     } catch {
-      desiredSpecId = null;
+      return;
     }
 
     if (desiredSpecId === null) {
@@ -671,122 +617,23 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async openVectorStore(dbPath: string, handleToken: string): Promise<OpenedVectorStore | null> {
-    if (this.vectorPluginRoot === null) {
-      return null;
-    }
-
-    const sourceAddonPath = vectorAddonPath(this.runtimeDir);
-    if (!existsSync(sourceAddonPath)) {
-      return null;
-    }
-
-    const addonDir = this.vectorHandleDir(handleToken);
-    const addonPath = this.vectorHandleAddonPath(handleToken);
-    mkdirSync(addonDir, { recursive: true });
-    copyFileSync(sourceAddonPath, addonPath);
-
-    const store = createDuckDBVectorStore({
-      pluginRoot: this.vectorPluginRoot,
-      runtimeDir: this.runtimeDir,
-      addonPath,
-    });
-    if (store === null) {
-      rmSync(addonDir, { recursive: true, force: true });
-      return null;
-    }
-
-    try {
-      await store.init(dbPath);
-    } catch (error: unknown) {
-      await store.close().catch(() => {});
-      rmSync(addonDir, { recursive: true, force: true });
-      throw error;
-    }
-
-    return {
-      store,
-      async close() {
-        await store.close().catch(() => {});
-        rmSync(addonDir, { recursive: true, force: true });
-      },
-    };
+    return this.vectorLifecycle.open(dbPath, handleToken);
   }
 
   async activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
-    const opened = await this.openVectorStore(
-      vectorSnapshotDbPath(this.runtimeDir, specId, snapshotId),
-      this.makeHandleToken(`active-${specId}-${snapshotId}`),
-    );
-    if (opened === null) {
-      throw new Error('KB vector store is unavailable.');
-    }
-
-    this.publishVectorHandle({
-      ...opened,
-      specId,
-      snapshotId,
-      generation: this.nextVectorGeneration,
-      leaseCount: 0,
-      retired: false,
-      closeTimer: null,
-      closed: false,
-    });
-    this.nextVectorGeneration += 1;
+    await this.vectorLifecycle.activate(specId, snapshotId);
   }
 
   async acquireVectorLease(): Promise<KbVectorLease | null> {
-    const handle = this.activeVectorHandle;
-    if (handle === null || handle.closed) {
-      return null;
-    }
-
-    handle.leaseCount += 1;
-    const vectorStatus = this.getVectorStatus(handle.specId);
-    let released = false;
-
-    return {
-      store: handle.store,
-      specId: handle.specId,
-      snapshotId: handle.snapshotId,
-      generation: handle.generation,
-      vectorStatus,
-      release: async () => {
-        if (released) {
-          return;
-        }
-        released = true;
-        handle.leaseCount = Math.max(0, handle.leaseCount - 1);
-        await this.maybeCloseRetiredVectorHandle(handle);
-      },
-    };
+    return this.vectorLifecycle.acquireLease();
   }
 
   async closeVectorStores(): Promise<void> {
-    const handles = [
-      ...(this.activeVectorHandle === null ? [] : [this.activeVectorHandle]),
-      ...this.retiredVectorHandles,
-    ];
-
-    this.activeVectorHandle = null;
-    this.vectorStore = null;
-    this.retiredVectorHandles.clear();
-
-    for (const handle of handles) {
-      await this.forceCloseRuntimeVectorHandle(handle).catch(() => {});
-    }
+    await this.vectorLifecycle.closeAll();
   }
 
-  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null {
-    const handle = this.activeVectorHandle;
-    if (handle === null || handle.closed) {
-      return null;
-    }
-
-    return {
-      specId: handle.specId,
-      snapshotId: handle.snapshotId,
-      generation: handle.generation,
-    };
+  getActiveVectorHandleInfo(): ActiveVectorHandleInfo | null {
+    return this.vectorLifecycle.getActiveInfo();
   }
 
   readIndex(): KbIndex | null {
@@ -794,22 +641,23 @@ class KbRuntimeImpl implements KbRuntime {
       return this.indexCache.index;
     }
 
+    const indexPath = this.indexPath();
     try {
-      const raw = readFileSync(this.indexPath(), 'utf-8');
+      const raw = readFileSync(indexPath, 'utf-8');
       let parsed: KbIndex;
       try {
         parsed = parseIndex(JSON.parse(raw) as unknown);
       } catch {
-        this.indexCache = { index: null, mtime: 0 };
+        this.indexCache = { index: null };
         this.cachedOramaIndex = null;
-        rmSync(this.indexPath(), { force: true });
+        rmSync(indexPath, { force: true });
         return null;
       }
-      this.indexCache = { index: parsed, mtime: statSync(this.indexPath()).mtimeMs };
+      this.indexCache = { index: parsed };
       return parsed;
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
-        this.indexCache = { index: null, mtime: 0 };
+        this.indexCache = { index: null };
         return null;
       }
       throw error;
@@ -933,6 +781,7 @@ class KbRuntimeImpl implements KbRuntime {
   recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState {
     const state = this.readIndexState();
     const current = state.vector.bySpec[specId];
+    const nextActiveSnapshotId = activeSnapshotId ?? current?.activeSnapshotId;
     const nextState: KbIndexState = {
       ...state,
       vector: {
@@ -941,11 +790,7 @@ class KbRuntimeImpl implements KbRuntime {
           [specId]: {
             indexedSeq: current?.indexedSeq ?? 0,
             staleReason: reason,
-            ...(activeSnapshotId === undefined
-              ? current?.activeSnapshotId === undefined
-                ? {}
-                : { activeSnapshotId: current.activeSnapshotId }
-              : { activeSnapshotId }),
+            ...(nextActiveSnapshotId === undefined ? {} : { activeSnapshotId: nextActiveSnapshotId }),
           },
         },
       },
@@ -996,21 +841,20 @@ class KbRuntimeImpl implements KbRuntime {
       const state = this.readIndexStateIfPresent();
       const startState = captureIndexStateSnapshot(state);
 
-      if (this.textArtifactsNeedRebuild(state)) {
+      let needsRebuild = this.textArtifactsNeedRebuild(state);
+      if (!needsRebuild && this.cachedOramaIndex === null) {
+        try {
+          this.installOramaCache(await this.loadOramaSnapshot());
+        } catch {
+          needsRebuild = true;
+        }
+      }
+
+      if (needsRebuild) {
         try {
           await rebuildTextArtifactsAndPersistRepairState(this, startState);
         } catch (error: unknown) {
           throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-        }
-      } else if (this.cachedOramaIndex === null) {
-        try {
-          this.installOramaCache(await this.loadOramaSnapshot());
-        } catch {
-          try {
-            await rebuildTextArtifactsAndPersistRepairState(this, startState);
-          } catch (error: unknown) {
-            throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-          }
         }
       }
 
@@ -1027,24 +871,25 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot> {
+    let rebuilt: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>> | null = null;
     if (this.textArtifactsNeedRebuild()) {
-      const result = await rebuildTextArtifactsAndPersistRepairState(
+      rebuilt = await rebuildTextArtifactsAndPersistRepairState(
         this,
         captureIndexStateSnapshot(this.readIndexState()),
       );
-      return this.snapshotFromRebuildResult(result);
-    }
-
-    if (this.cachedOramaIndex === null) {
+    } else if (this.cachedOramaIndex === null) {
       try {
         this.installOramaCache(await this.loadOramaSnapshot());
       } catch {
-        const result = await rebuildTextArtifactsAndPersistRepairState(
+        rebuilt = await rebuildTextArtifactsAndPersistRepairState(
           this,
           captureIndexStateSnapshot(this.readIndexState()),
         );
-        return this.snapshotFromRebuildResult(result);
       }
+    }
+
+    if (rebuilt !== null) {
+      return this.snapshotFromRebuildResult(rebuilt);
     }
 
     const stateAfterArtifacts = this.readIndexStateIfPresent();
@@ -1106,81 +951,6 @@ class KbRuntimeImpl implements KbRuntime {
     return join(this.runtimeDir, ORAMA_INDEX_FILE);
   }
 
-  private vectorHandleDir(handleToken: string): string {
-    return join(this.runtimeDir, 'vec', 'handles', handleToken);
-  }
-
-  private vectorHandleAddonPath(handleToken: string): string {
-    return join(this.vectorHandleDir(handleToken), 'coral-needle.node');
-  }
-
-  private makeHandleToken(prefix: string): string {
-    return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  private async forceCloseRuntimeVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
-    if (handle.closed) {
-      return;
-    }
-
-    handle.closed = true;
-    if (handle.closeTimer !== null) {
-      clearTimeout(handle.closeTimer);
-      handle.closeTimer = null;
-    }
-
-    if (this.activeVectorHandle?.generation === handle.generation) {
-      this.activeVectorHandle = null;
-      this.vectorStore = null;
-    }
-
-    this.retiredVectorHandles.delete(handle);
-    await handle.close();
-  }
-
-  private async maybeCloseRetiredVectorHandle(handle: RuntimeVectorHandle): Promise<void> {
-    if (!handle.retired || handle.leaseCount !== 0) {
-      return;
-    }
-
-    await this.forceCloseRuntimeVectorHandle(handle);
-  }
-
-  private scheduleRetiredHandleClose(handle: RuntimeVectorHandle): void {
-    if (handle.closeTimer !== null || handle.closed) {
-      return;
-    }
-
-    handle.closeTimer = setTimeout(() => {
-      if (handle.closed || handle.leaseCount === 0) {
-        void this.maybeCloseRetiredVectorHandle(handle);
-        return;
-      }
-
-      process.stderr.write(
-        `Warning: forcing close of retired KB vector handle after ${this.vectorDrainTimeoutMs}ms drain timeout.\n`,
-      );
-      void this.forceCloseRuntimeVectorHandle(handle);
-    }, this.vectorDrainTimeoutMs);
-    handle.closeTimer.unref?.();
-  }
-
-  private retireVectorHandle(handle: RuntimeVectorHandle): void {
-    handle.retired = true;
-    this.retiredVectorHandles.add(handle);
-    this.scheduleRetiredHandleClose(handle);
-    void this.maybeCloseRetiredVectorHandle(handle);
-  }
-
-  private publishVectorHandle(handle: RuntimeVectorHandle): void {
-    const previous = this.activeVectorHandle;
-    this.activeVectorHandle = handle;
-    this.vectorStore = handle.store;
-    if (previous !== null && previous.generation !== handle.generation) {
-      this.retireVectorHandle(previous);
-    }
-  }
-
   private captureVectorTextSnapshot(): KbVectorTextSnapshot {
     const index = this.readIndex() ?? emptyIndex();
     const notes: KbVectorTextSnapshot['notes'] = [];
@@ -1208,7 +978,7 @@ class KbRuntimeImpl implements KbRuntime {
 
   /** Install an already-validated index into the in-memory cache. */
   private installIndexCache(validated: KbIndex): KbIndex {
-    this.indexCache = { index: validated, mtime: Date.now() };
+    this.indexCache = { index: validated };
     return validated;
   }
 
@@ -1237,7 +1007,7 @@ class KbRuntimeImpl implements KbRuntime {
   private pendingRepairNeedsRetry(): boolean {
     // Cache the curate-state read to avoid per-request disk I/O.
     // Invalidated when curate-state.json mtime changes (any repair/curate write).
-    const curateStatePath = join(this.runtimeDir, 'curate-state.json');
+    const curateStatePath = this.curateStatePath();
     let curateStateMtime: number;
     try {
       curateStateMtime = statSync(curateStatePath).mtimeMs;

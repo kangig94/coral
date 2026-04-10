@@ -5,53 +5,12 @@ import {
   VECTOR_STORE_MIN_NAPI_VERSION,
   VECTOR_STORE_SCHEMA_VERSION,
   type VectorBridgeManifest,
-} from './vector-store-contract.js';
+} from './store-contract.js';
+import type { ChunkRecord, EmbeddingSpec, VectorStore } from './contracts.js';
 
 const ACTIVE_POINTER_FILE = 'ACTIVE';
 const ADDON_FILE = 'coral-needle.node';
 const STORE_FILE = 'store.duckdb';
-
-export type EmbeddingSpec = {
-  specId: string;
-  provider: string;
-  model: string;
-  dims: number;
-  normalization: 'l2' | 'none';
-  createdAt: string;
-};
-
-export type ChunkRecord = {
-  id: string;
-  entryId: string;
-  entryKind: string;
-  chunkIndex: number;
-  text: string;
-  contentHash: string;
-  vector: Float32Array;
-  specId: string;
-};
-
-export interface VectorStore {
-  init(dbPath: string): Promise<void>;
-  close(): Promise<void>;
-  upsertChunks(chunks: ChunkRecord[]): Promise<void>;
-  removeByEntryId(entryId: string): Promise<void>;
-  searchVector(
-    query: Float32Array,
-    candidateK: number,
-  ): Promise<Array<{ chunkId: string; entryId: string; score: number }>>;
-  buildIndex(engineName?: string): Promise<void>;
-  getActiveSpec(): Promise<EmbeddingSpec | null>;
-  setActiveSpec(spec: EmbeddingSpec): Promise<void>;
-  stats(): Promise<{
-    chunkCount: number;
-    specId: string | null;
-    engineName: string;
-    addonVersion: string;
-    napiVersion: number;
-    schemaVersion: number;
-  }>;
-}
 
 type NativeVectorStoreAddon = {
   initStore(dbPath: string): void;
@@ -230,11 +189,7 @@ export function readActiveSnapshotId(runtimeDir: string, specId: string): string
 
 export function resolveActiveSnapshotDbPath(runtimeDir: string, specId: string): string | null {
   const snapshotId = readActiveSnapshotId(runtimeDir, specId);
-  if (snapshotId === null) {
-    return null;
-  }
-
-  return vectorSnapshotDbPath(runtimeDir, specId, snapshotId);
+  return snapshotId === null ? null : vectorSnapshotDbPath(runtimeDir, specId, snapshotId);
 }
 
 export function prepareSnapshotDbPath(runtimeDir: string, specId: string, snapshotId: string): string {
@@ -323,10 +278,7 @@ export class DuckDBVectorStore implements VectorStore {
 
   async getActiveSpec(): Promise<EmbeddingSpec | null> {
     const spec = this.addon.getActiveSpec();
-    if (spec === null) {
-      return null;
-    }
-    if (!isEmbeddingSpec(spec)) {
+    if (spec !== null && !isEmbeddingSpec(spec)) {
       throw new Error('Invalid embedding spec payload from native vector store.');
     }
     return spec;
@@ -380,16 +332,14 @@ export class DuckDBVectorStore implements VectorStore {
   }
 
   private ensureInitialized(): void {
-    if (this.dbPath !== null) {
-      return;
+    if (this.dbPath === null) {
+      throw new Error('Vector store is not initialized.');
     }
-    throw new Error('Vector store is not initialized.');
   }
 }
 
 export function createDuckDBVectorStore(options: VectorStoreFactoryOptions): DuckDBVectorStore | null {
-  const manifest = readVectorBridgeManifest(options.pluginRoot);
-  if (manifest === null) {
+  if (readVectorBridgeManifest(options.pluginRoot) === null) {
     return null;
   }
 

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCurateScheduler, type CurateHandle } from '../curate.js';
+import { createCurateScheduler, type CurateHandle } from '../curate/scheduler.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   applyAddPendingDiscovery,
@@ -19,7 +19,7 @@ import {
   readCurateState,
   writeCurateState,
   type CurateState,
-} from '../curate-state.js';
+} from '../curate/state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../types.js';

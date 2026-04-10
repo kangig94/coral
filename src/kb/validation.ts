@@ -73,11 +73,9 @@ export function parseOptionalTrimmedString(value: unknown, label: string): strin
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be a string`);
-  }
-  const normalized = value.trim();
-  return normalized ? normalized : undefined;
+
+  const normalized = assertString(value, label).trim();
+  return normalized || undefined;
 }
 
 export function assertCommunitySlug(value: unknown, label: string): string {

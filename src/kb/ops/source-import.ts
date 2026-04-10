@@ -4,11 +4,11 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, extname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { nowIsoString } from '../shared/utils.js'
-import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from './frontmatter.js'
-import { kbRuntimeDir, sourceImportStageDir } from './paths.js'
-import type { KbSourceFrontmatter } from './types.js'
-import { assertNonEmptyText, assertSourceSlug } from './validation.js'
+import { nowIsoString } from '../../shared/utils.js'
+import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../frontmatter.js'
+import { kbRuntimeDir, sourceImportStageDir } from '../paths.js'
+import type { KbSourceFrontmatter } from '../types.js'
+import { assertNonEmptyText, assertSourceSlug } from '../validation.js'
 
 const execFileP = promisify(execFile)
 const LOCAL_BIN_DIR = join(homedir(), '.local', 'bin')
@@ -233,13 +233,7 @@ function extractHtmlTitle(html: string): string | undefined {
     return normalizeTitle(titleText)
   }
 
-  const h1Match = html.match(HTML_H1_PATTERN)?.[1]
-  const h1Text = h1Match ? htmlFragmentToText(h1Match) : undefined
-  if (h1Text) {
-    return normalizeTitle(h1Text)
-  }
-
-  return undefined
+  return extractFirstHtmlH1(html)
 }
 
 function extractFirstHtmlH1(html: string): string | undefined {

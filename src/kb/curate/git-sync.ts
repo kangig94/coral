@@ -1,0 +1,290 @@
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import type { KbRuntime } from '../contracts.js';
+import { writeFileAtomic } from '../mutation-helpers.js';
+import { runCurateClaude } from './operations.js';
+import type { SpawnCliFn } from './types.js';
+
+const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
+const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
+const DEFERRED_COMMIT_DELAY_MS = 60_000;
+
+export type GitSyncController = {
+  ensureKbGitignore(): void;
+  gitSync(signal?: AbortSignal): Promise<void>;
+  gitPush(): Promise<void>;
+  gitAutoCommit(message: string): void;
+  gitAutoCommitAsync(message: string): Promise<void>;
+  scheduleDeferredCommit(): void;
+  cancelDeferredCommit(): void;
+};
+
+export function createGitSyncController({
+  kb,
+  spawnCli,
+}: {
+  kb: KbRuntime;
+  spawnCli: SpawnCliFn;
+}): GitSyncController {
+  let cachedIsGitRepo: boolean | null = null;
+  let deferredCommitTimer: NodeJS.Timeout | null = null;
+  const root = kb.markdownRoot;
+
+  function git(args: string[], timeoutMs = 15000): string {
+    return execFileSync('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+  }
+
+  const execFileP = promisify(execFile);
+
+  async function gitAsync(args: string[], timeoutMs = 15000): Promise<string> {
+    const { stdout } = await execFileP('git', ['-C', root, ...args], {
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return stdout;
+  }
+
+  function gitCommit(message: string): void {
+    try {
+      git(['commit', '-m', message], 10000);
+    } catch {
+      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit', '-m', message], 10000);
+    }
+  }
+
+  function isGitRepo(): boolean {
+    if (cachedIsGitRepo !== null) {
+      return cachedIsGitRepo;
+    }
+    try {
+      git(['rev-parse', '--is-inside-work-tree'], 5000);
+      cachedIsGitRepo = true;
+    } catch {
+      cachedIsGitRepo = false;
+    }
+    return cachedIsGitRepo;
+  }
+
+  function isGitSyncEnabled(): boolean {
+    if (process.env.CORAL_KB_GIT_SYNC !== '1') {
+      return false;
+    }
+    try {
+      return git(['remote'], 5000).trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function getDefaultBranch(): string {
+    try {
+      const ref = git(['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], 5000).trim();
+      return ref.replace(/^origin\//, '') || 'main';
+    } catch {
+      return 'main';
+    }
+  }
+
+  function hasStagedChanges(): boolean {
+    try {
+      git(['diff', '--cached', '--quiet'], 5000);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function hasConflictMarkers(): boolean {
+    try {
+      git(['diff', '--check'], 5000);
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  function kbGitPaths(): string[] {
+    return ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json', '.gitignore'].filter((entry) =>
+      existsSync(join(root, entry.replace(/\/$/, ''))),
+    );
+  }
+
+  function ensureKbGitignore(): void {
+    const gitignorePath = join(root, '.gitignore');
+    try {
+      let existing = '';
+      try {
+        existing = readFileSync(gitignorePath, 'utf-8');
+      } catch {
+        /* no file */
+      }
+      const lines = existing.split('\n');
+      const missing = GITIGNORE_ENTRIES.filter((entry) => !lines.some((line) => line.trim() === entry));
+      if (missing.length === 0) {
+        return;
+      }
+
+      const suffix = `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`;
+      const newContent = existing.length === 0 ? suffix : `${existing}\n${suffix}`;
+      writeFileAtomic(gitignorePath, newContent);
+    } catch {
+      // best-effort
+    }
+  }
+
+  async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
+    const prompt =
+      'Git rebase conflict in KB repository. Resolve all conflicts in the working tree:' +
+      ' keep both changes where possible, prefer the incoming (remote) version for' +
+      ' frontmatter metadata (tags, principles, updatedAt), and preserve local body' +
+      ' content. Stage all resolved files with git add.';
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await runCurateClaude(
+          kb,
+          spawnCli,
+          prompt,
+          ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'],
+          signal,
+        );
+      } catch {
+        return false;
+      }
+
+      if (hasConflictMarkers()) {
+        continue;
+      }
+
+      try {
+        git(['add', '-A'], 5000);
+        git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'rebase', '--continue'], 30000);
+        return true;
+      } catch {
+        // Another conflicting commit may remain.
+      }
+    }
+
+    return false;
+  }
+
+  async function gitSync(signal?: AbortSignal): Promise<void> {
+    if (!isGitRepo() || !isGitSyncEnabled()) {
+      return;
+    }
+
+    cancelDeferredCommit();
+    const branch = getDefaultBranch();
+
+    try {
+      await gitAsync(['fetch', 'origin'], 30000);
+
+      try {
+        if (git(['status', '--porcelain'], 5000).trim().length > 0) {
+          git(['add', '-A'], 5000);
+          gitCommit('auto: pre-sync snapshot');
+        }
+      } catch {
+        // commit failure — proceed with rebase anyway
+      }
+
+      try {
+        await gitAsync(['rebase', `origin/${branch}`]);
+      } catch {
+        if (!(await resolveConflictsWithClaude(signal))) {
+          try {
+            git(['rebase', '--abort'], 5000);
+          } catch {
+            /* no-op */
+          }
+        }
+      }
+    } catch {
+      // Offline or no remote; continue with local state.
+    }
+  }
+
+  async function gitPush(): Promise<void> {
+    if (!isGitRepo() || !isGitSyncEnabled()) {
+      return;
+    }
+    try {
+      await gitAsync(['push', 'origin', getDefaultBranch()], 30000);
+    } catch {
+      /* next cycle */
+    }
+  }
+
+  function gitAutoCommit(message: string): void {
+    if (!isGitRepo()) {
+      return;
+    }
+    try {
+      const paths = kbGitPaths();
+      if (paths.length === 0) {
+        return;
+      }
+      git(['add', ...paths], 10000);
+      if (!hasStagedChanges()) {
+        return;
+      }
+      gitCommit(message);
+    } catch {
+      // best-effort
+    }
+  }
+
+  async function gitAutoCommitAsync(message: string): Promise<void> {
+    if (!isGitRepo()) {
+      return;
+    }
+    try {
+      const paths = kbGitPaths();
+      if (paths.length === 0) {
+        return;
+      }
+      await gitAsync(['add', ...paths], 10000);
+      if (!hasStagedChanges()) {
+        return;
+      }
+      gitCommit(message);
+    } catch {
+      // best-effort
+    }
+  }
+
+  function scheduleDeferredCommit(): void {
+    if (!isGitRepo() || deferredCommitTimer !== null) {
+      return;
+    }
+    deferredCommitTimer = setTimeout(() => {
+      deferredCommitTimer = null;
+      void gitAutoCommitAsync('auto: kb mutation');
+    }, DEFERRED_COMMIT_DELAY_MS);
+    deferredCommitTimer.unref?.();
+  }
+
+  function cancelDeferredCommit(): void {
+    if (deferredCommitTimer !== null) {
+      clearTimeout(deferredCommitTimer);
+      deferredCommitTimer = null;
+    }
+  }
+
+  return {
+    ensureKbGitignore,
+    gitSync,
+    gitPush,
+    gitAutoCommit,
+    gitAutoCommitAsync,
+    scheduleDeferredCommit,
+    cancelDeferredCommit,
+  };
+}

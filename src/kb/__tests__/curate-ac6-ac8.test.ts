@@ -4,11 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate.js';
+import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate/scheduler.js';
 import type { KbRuntime } from '../contracts.js';
-import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '../curate-state.js';
+import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '../curate/state.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
-import { reindex } from '../reindex.js';
+import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
 

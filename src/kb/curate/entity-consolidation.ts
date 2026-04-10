@@ -6,8 +6,9 @@ import {
   type EntityRelationship,
   type EntityType,
   type RelationshipType,
-} from './types.js';
-import { compareLocale } from './validation.js';
+} from '../types.js';
+import { compareLocale } from '../validation.js';
+import { uniqueTrimmedList } from './shared.js';
 
 const GENERIC_PLURAL_SEGMENTS = new Set([
   'aliases',
@@ -66,23 +67,6 @@ export type EntityConsolidationDelta = {
   }>;
   relationships?: EntityRelationship[];
 };
-
-function uniqueTrimmedList(values: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-
-    seen.add(trimmed);
-    normalized.push(trimmed);
-  }
-
-  return normalized;
-}
 
 function normalizeEntityId(value: string): string {
   return value
@@ -197,14 +181,6 @@ function compareCanonicalKeyPreference(left: string, right: string): number {
   return rightSegments - leftSegments || right.length - left.length || compareLocale(left, right);
 }
 
-function preferredCanonicalKey(existing: string | undefined, candidate: string): string {
-  if (existing === undefined) {
-    return candidate;
-  }
-
-  return compareCanonicalKeyPreference(candidate, existing) < 0 ? candidate : existing;
-}
-
 function buildAliasTargetMap(
   candidates: EntityCandidate[],
   observedKeys: ReadonlySet<string>,
@@ -232,7 +208,10 @@ function buildAliasTargetMap(
         continue;
       }
 
-      aliasTargets.set(aliasKey, preferredCanonicalKey(aliasTargets.get(aliasKey), canonicalKey));
+      const existingTarget = aliasTargets.get(aliasKey);
+      if (existingTarget === undefined || compareCanonicalKeyPreference(canonicalKey, existingTarget) < 0) {
+        aliasTargets.set(aliasKey, canonicalKey);
+      }
     }
   }
 

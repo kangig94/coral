@@ -160,18 +160,7 @@ function writeCheckpoint(
           provider: data.provider,
           stepIndex: data.stepIndex,
           stepPrompt: data.stepPrompt,
-          atoms: data.launchedAtoms.map((a) => ({
-            jobId: a.jobId,
-            sessionId: a.sessionId,
-            providerName: a.providerName,
-            coralOp: a.coralOp,
-            agent: a.agent,
-            tagName: a.tagName,
-            stepIndex: a.stepIndex,
-            atomIndex: a.atomIndex,
-            atomKey: a.atomKey,
-            kind: a.kind,
-          })),
+          atoms: data.launchedAtoms.map((atom) => ({ ...atom })),
           completedOutputs: Object.fromEntries(data.completedOutputs),
           completedStepDetails: [...data.completedStepDetails],
           cursor: { ...data.cursor.jobs },
@@ -867,8 +856,12 @@ async function handleStepLaunchFailure(
   });
   const baseStepDetails =
     launchError instanceof WorkflowExecutionError ? launchError.stepDetails : options.completedStepDetails;
-  const message =
-    launchError instanceof Error ? launchError.message : typeof launchError === 'string' ? launchError : 'Unknown error';
+  let message = 'Unknown error';
+  if (launchError instanceof Error) {
+    message = launchError.message;
+  } else if (typeof launchError === 'string') {
+    message = launchError;
+  }
   const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
   throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
 }
@@ -996,33 +989,16 @@ export async function resumePipeline(
   const onProgress = options.onProgress ?? (() => {});
   const staleTimeoutMs = options.staleTimeoutMs ?? DEFAULT_STALE_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
-
-  // Reconstruct state from checkpoint
   const stepDetails: StepDetail[] = [...checkpoint.completedStepDetails];
   let stepPrompt = checkpoint.stepPrompt;
   const activeStepIndex = checkpoint.stepIndex;
   const allLaunchedAtoms: LaunchedAtom[] = [];
 
-  // Reconstruct launched atoms for the active step
   const activeAtoms: LaunchedAtom[] = checkpoint.atoms
     .filter((a) => a.stepIndex === activeStepIndex)
-    .map((a) => ({
-      jobId: a.jobId,
-      sessionId: a.sessionId,
-      providerName: a.providerName,
-      coralOp: a.coralOp,
-      agent: a.agent,
-      tagName: a.tagName,
-      stepIndex: a.stepIndex,
-      atomIndex: a.atomIndex,
-      atomKey: a.atomKey,
-      kind: a.kind,
-    }));
+    .map((atom) => ({ ...atom }));
 
-  // Completed outputs from checkpoint
   const alreadyCompleted = new Map(Object.entries(checkpoint.completedOutputs));
-
-  // Pending atoms = those not yet completed
   const pendingAtoms = activeAtoms.filter((a) => !alreadyCompleted.has(a.atomKey));
 
   allLaunchedAtoms.push(...activeAtoms);
@@ -1036,7 +1012,6 @@ export async function resumePipeline(
   );
 
   try {
-    // Resume waiting on the active step if there are pending atoms
     if (pendingAtoms.length > 0) {
       onProgress(`resuming step ${activeStepIndex} (${pendingAtoms.length} pending atoms)`);
 
@@ -1065,12 +1040,10 @@ export async function resumePipeline(
         onStaleSwap: checkpointFromWaitState,
       });
 
-      // Merge already-completed outputs with newly completed ones
       for (const [key, value] of stepResults) {
         alreadyCompleted.set(key, value);
       }
 
-      // Build step details from all atoms in the active step
       const orderedStepDetails = buildStepDetailsForAtoms(activeAtoms, alreadyCompleted);
       stepDetails.push(...orderedStepDetails);
       stepPrompt = formatStepOutput(
@@ -1083,7 +1056,6 @@ export async function resumePipeline(
       checkpointStepCompletion(persistCheckpoint, activeStepIndex, stepPrompt, activeAtoms, alreadyCompleted);
       onProgress(`step ${activeStepIndex} completed (resumed)`);
     } else if (activeAtoms.length > 0) {
-      // All atoms were already completed before restart — just rebuild the step output
       const orderedStepDetails = buildStepDetailsForAtoms(activeAtoms, alreadyCompleted);
       stepDetails.push(...orderedStepDetails);
       stepPrompt = formatStepOutput(
@@ -1095,7 +1067,6 @@ export async function resumePipeline(
       onProgress(`step ${activeStepIndex} already completed, skipping`);
     }
 
-    // Launch subsequent steps through normal execution
     for (let stepIndex = activeStepIndex + 1; stepIndex < ast.length; stepIndex += 1) {
       const step = ast[stepIndex];
       onProgress(`step ${stepIndex} started`);
@@ -1188,9 +1159,7 @@ export async function executePipeline(
     stepDetails,
   );
 
-  // Initial checkpoint — coordinator start (empty state)
-  const emptyCursor: WaitCursor = { jobs: {} };
-  persistCheckpoint(0, stepPrompt, [], new Map(), emptyCursor, new Map(), new Map(), new Set());
+  persistCheckpoint(0, stepPrompt, [], new Map(), { jobs: {} }, new Map(), new Map(), new Set());
 
   try {
     for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {

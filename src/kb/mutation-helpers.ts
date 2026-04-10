@@ -2,7 +2,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { KbIndexMutationLane, KbIndexState, KbRuntime } from './contracts.js';
+import type { KbIndexState, KbRuntime } from './contracts.js';
 import {
   type EntityMeta,
   type EntityRelationship,
@@ -21,7 +21,7 @@ type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
 type CommunityIndexEntrySource = Omit<CommunityEntry, 'kind'>;
 
 export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
-  const entry: NoteEntry = {
+  return {
     kind: 'note',
     slug: meta.slug,
     title: meta.title,
@@ -31,17 +31,12 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     related: [...(meta.related ?? [])],
+    ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
-
-  if (meta.entrySeq !== undefined) {
-    entry.entrySeq = meta.entrySeq;
-  }
-
-  return entry;
 }
 
 export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry {
-  const entry: SourceEntry = {
+  return {
     kind: 'source',
     slug: meta.slug,
     title: meta.title,
@@ -49,20 +44,13 @@ export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry
     tags: [...meta.tags],
     importedAt: meta.importedAt,
     related: [...(meta.related ?? [])],
+    ...(meta.url === undefined ? {} : { url: meta.url }),
+    ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
-
-  if (meta.url !== undefined) {
-    entry.url = meta.url;
-  }
-  if (meta.entrySeq !== undefined) {
-    entry.entrySeq = meta.entrySeq;
-  }
-
-  return entry;
 }
 
 export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): CommunityEntry {
-  const entry: CommunityEntry = {
+  return {
     kind: 'community',
     slug: meta.slug,
     title: meta.title,
@@ -70,19 +58,10 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     members: [...meta.members],
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
+    ...(meta.parent === undefined ? {} : { parent: meta.parent }),
+    ...(meta.children === undefined ? {} : { children: [...meta.children] }),
+    ...(meta.summary === undefined ? {} : { summary: meta.summary }),
   };
-
-  if (meta.parent !== undefined) {
-    entry.parent = meta.parent;
-  }
-  if (meta.children !== undefined) {
-    entry.children = [...meta.children];
-  }
-  if (meta.summary !== undefined) {
-    entry.summary = meta.summary;
-  }
-
-  return entry;
 }
 
 export function writeFileAtomic(filePath: string, payload: string): void {
@@ -119,7 +98,7 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
   };
 }
 
-function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
+export function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
   return Object.fromEntries(
     Object.entries(entityMeta).map(([entity, meta]) => [
       entity,
@@ -132,7 +111,7 @@ function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<s
   );
 }
 
-function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {
+export function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {
   return {
     source: relationship.source,
     target: relationship.target,
@@ -172,27 +151,19 @@ export function commitIndexUpdate(
   rt.writeIndex(nextIndex);
 }
 
-function recordMutation(
-  rt: Pick<KbRuntime, 'recordMutationCommitted'>,
-  lane: KbIndexMutationLane,
-  reason: string,
-): KbIndexState {
-  return rt.recordMutationCommitted(lane, reason);
-}
-
 export function recordContentMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
-  return recordMutation(rt, 'content', reason);
+  return rt.recordMutationCommitted('content', reason);
 }
 
 export function recordMetadataMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
-  return recordMutation(rt, 'metadata', reason);
+  return rt.recordMutationCommitted('metadata', reason);
 }
 
 export function recordContentAndMetadataMutation(
   rt: Pick<KbRuntime, 'recordMutationCommitted'>,
   reason: string,
 ): KbIndexState {
-  return recordMutation(rt, 'both', reason);
+  return rt.recordMutationCommitted('both', reason);
 }
 
 export function markTextIndexStale(invalidate: (reason: string) => KbIndexState, reason: string): void {

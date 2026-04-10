@@ -22,8 +22,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('../vector-sync.js', async () => {
-  const actual = await vi.importActual<typeof import('../vector-sync.js')>('../vector-sync.js');
+vi.mock('../vector/sync.js', async () => {
+  const actual = await vi.importActual<typeof import('../vector/sync.js')>('../vector/sync.js');
   return {
     ...actual,
     ensureVectorIndex: (...args: Parameters<typeof actual.ensureVectorIndex>) =>
@@ -31,8 +31,8 @@ vi.mock('../vector-sync.js', async () => {
   };
 });
 
-vi.mock('../embedding.js', async () => {
-  const actual = await vi.importActual<typeof import('../embedding.js')>('../embedding.js');
+vi.mock('../vector/embedding.js', async () => {
+  const actual = await vi.importActual<typeof import('../vector/embedding.js')>('../vector/embedding.js');
   return {
     ...actual,
     createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
@@ -45,8 +45,8 @@ vi.mock('../embedding.js', async () => {
 async function loadKbModules() {
   vi.resetModules();
   const [{ searchKb }, { reindex }, runtime, paths] = await Promise.all([
-    import('../search.js'),
-    import('../reindex.js'),
+    import('../ops/search.js'),
+    import('../ops/reindex.js'),
     import('../runtime.js'),
     import('../paths.js'),
   ]);
@@ -211,7 +211,7 @@ async function ensureFreshCommunityIndex(
 
 async function markCommunityStateFresh(kb: { readIndex: () => any }) {
   const [{ computeCommunitySummaryInputFingerprints, computeCommunityTopologyFingerprint }, { readCurateState, writeCurateState }] =
-    await Promise.all([import('../community-detection.js'), import('../curate-state.js')]);
+    await Promise.all([import('../curate/community-detection.js'), import('../curate/state.js')]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
 
@@ -589,7 +589,7 @@ describe('kb search', () => {
 
   it('filters stale community documents at query time for all and community scopes', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState, writeCurateState } = await import('../curate-state.js');
+    const { readCurateState, writeCurateState } = await import('../curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.communitiesDir(), { recursive: true });
