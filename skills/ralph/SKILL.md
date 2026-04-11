@@ -43,6 +43,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     | Verify subagent output independently | Trust "agent said success" |
     | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
     | Output `<promise>` only after ALL verification passes | Output false promise to escape the loop |
+    | Run `coral-cli wait` in the foreground | Dispatch `wait` with `run_in_background: true` |
   </Constraints>
   <Protocol>
     ⛔ HARD GATE: Complete Step 1 BEFORE any file reads, searches, or analysis.
@@ -166,7 +167,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        go into one Codex call; independent ACs get separate parallel calls.
        `coral-cli codex -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d --output-format json`
        Do NOT pass `--session`. Collect all job IDs.
-    2. `coral-cli wait --jobs "<job-id list>" --output-format json --embed` → read each terminal JSON line; use `event.result.content` when present, otherwise `Read(event.result.path)` as best-effort recovery.
+    2. `coral-cli wait --jobs "<job-id list>" --output-format json --embed` (foreground only) → read each terminal JSON line; use `event.result.content` when present, otherwise `Read(event.result.path)` as best-effort recovery.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
@@ -193,7 +194,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
        ⛔ Do not promote KB notes. Implementation only.
        1. `coral-cli codex -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d --output-format json`
-          → `coral-cli wait --jobs "<job>" --output-format json --embed` → read `event.result.content`; if absent, `Read(event.result.path)` is best-effort recovery.
+          → `coral-cli wait --jobs "<job>" --output-format json --embed` (foreground only) → read `event.result.content`; if absent, `Read(event.result.path)` is best-effort recovery.
           Do NOT pass `--session`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run codex. If met → report completion.
