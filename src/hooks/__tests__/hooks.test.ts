@@ -392,6 +392,116 @@ describe('cli-resolve.mjs', () => {
     expect(rewritten).toBe(expectedRewrittenCommand(command));
     expect(extractTempInputPaths(rewritten)).toHaveLength(0);
   });
+
+  it('wraps unquoted tokens containing parentheses in single quotes after rewriting the quoted prompt', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli codex agent -i "hello" func(x)';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(tempPaths).toHaveLength(1);
+    expect(readFileSync(tempPaths[0], 'utf-8')).toBe('hello');
+    expect(rewritten).toContain("'func(x)'");
+    expect(rewritten).not.toMatch(/\sfunc\(x\)(\s|$)/);
+  });
+
+  it('wraps unquoted parenthesized tokens even when the -i value itself is unquoted', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli codex agent -i Check func(x)';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(extractTempInputPaths(rewritten)).toHaveLength(0);
+    expect(rewritten).toContain(' -i Check ');
+    expect(rewritten).toContain("'func(x)'");
+  });
+
+  it.each([
+    ['square brackets', 'arr[0]'],
+    ['curly braces', '{a,b}'],
+    ['mixed brackets and parens', 'fn(x)[0]'],
+  ])('wraps unquoted tokens containing %s after a quoted -i value', (_label, orphanToken) => {
+    const fixture = createFixture();
+    const command = `coral-cli codex agent -i "hello" ${orphanToken}`;
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(tempPaths).toHaveLength(1);
+    expect(rewritten).toContain(`'${orphanToken}'`);
+  });
+
+  it('leaves tokens without shell metacharacters untouched', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli codex agent -i hello world';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(rewritten).toBe(expectedRewrittenCommand(command));
+  });
+
+  it('preserves the workflow -e expression with parens inside double quotes', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli workflow -e "(a,b)" -s "do thing" -c "ctx"';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    expect(result.status).toBe(0);
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(rewritten).toContain('-e "(a,b)"');
+    expect(tempPaths).toHaveLength(2);
+    expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8')).sort()).toEqual(['ctx', 'do thing']);
+  });
 });
 
 describe('session-start.mjs', () => {

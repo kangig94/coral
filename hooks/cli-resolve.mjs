@@ -264,6 +264,34 @@ function applyReplacements(command, replacements) {
   return output;
 }
 
+// Shell-grammar characters that cause parse errors when they appear in an unquoted token.
+// Parentheses open subshells and braces start brace-expansion / function blocks — both can
+// abort zsh parsing before the command runs. Glob characters like `*` and `?` are omitted
+// because unmatched globs fall back to literal under default shell options rather than
+// breaking the grammar.
+const UNSAFE_UNQUOTED_METACHARS = /[()[\]{}]/u;
+
+function wrapUnsafeUnquotedTokens(command) {
+  const tokens = tokenizeShell(command);
+  if (tokens === null) return command;
+
+  const replacements = [];
+  for (const token of tokens) {
+    const hasUnsafeUnquotedSegment = token.segments.some(
+      (segment) => segment.kind === 'unquoted' && UNSAFE_UNQUOTED_METACHARS.test(segment.value),
+    );
+    if (!hasUnsafeUnquotedSegment) continue;
+
+    replacements.push({
+      start: token.start,
+      end: token.end,
+      text: shellQuote(token.value),
+    });
+  }
+
+  return applyReplacements(command, replacements);
+}
+
 function analyzeSeparateValue(tokens, index) {
   const valueToken = tokens[index + 1];
   if (valueToken === undefined) return null;
@@ -375,8 +403,9 @@ try {
   const cliPath = join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs');
   const rewritten = `${match[1]}node "${cliPath}"${match[2]}${match[3]}`;
   const commandWithInlineTextResolved = rewriteInlineTextArgs(rewritten, input);
+  const commandSafeForShell = wrapUnsafeUnquotedTokens(commandWithInlineTextResolved);
 
-  const updatedInput = { ...input.tool_input, command: commandWithInlineTextResolved };
+  const updatedInput = { ...input.tool_input, command: commandSafeForShell };
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',

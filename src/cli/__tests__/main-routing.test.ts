@@ -516,6 +516,7 @@ describe('cli main routing', () => {
         'node',
         'coral-cli',
         'workflow',
+        '-e',
         '(architect)',
         '-s',
         promptFile,
@@ -556,6 +557,127 @@ describe('cli main routing', () => {
       unlinkSync(promptFile);
       unlinkSync(contextFile);
     }
+  });
+
+  it('joins variadic -i tokens into a single prompt for provider launches', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-variadic',
+      session: 'session-variadic',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'architect', '-i', 'check', 'func(x)', 'behavior']);
+
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'check func(x) behavior', {
+      agent: 'architect',
+    });
+  });
+
+  it('joins the contents of multiple variadic -i file paths', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const randomSuffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const firstFile = join(tmpdir(), `coral-variadic-first-${randomSuffix}.txt`);
+    const secondFile = join(tmpdir(), `coral-variadic-second-${randomSuffix}.txt`);
+
+    writeFileSync(firstFile, 'first content');
+    writeFileSync(secondFile, 'second content');
+    try {
+      mockState.createSession.mockResolvedValueOnce({
+        launchState: 'running',
+        job: 'job-multi-file',
+        session: 'session-multi-file',
+      });
+      mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'codex',
+        'architect',
+        '-i',
+        firstFile,
+        secondFile,
+      ]);
+
+      expect(mockState.createSession).toHaveBeenCalledWith('codex', 'first content second content', {
+        agent: 'architect',
+      });
+    } finally {
+      unlinkSync(firstFile);
+      unlinkSync(secondFile);
+    }
+  });
+
+  it('reads a hook-materialized temp file alongside literal tokens passed as variadic -i values', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const materializedPromptFile = join(
+      tmpdir(),
+      `coral-materialized-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`,
+    );
+
+    writeFileSync(materializedPromptFile, 'hello');
+    try {
+      mockState.createSession.mockResolvedValueOnce({
+        launchState: 'running',
+        job: 'job-mixed',
+        session: 'session-mixed',
+      });
+      mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+      await program.parseAsync([
+        'node',
+        'coral-cli',
+        'codex',
+        'architect',
+        '-i',
+        materializedPromptFile,
+        'func(x)',
+      ]);
+
+      expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hello func(x)', {
+        agent: 'architect',
+      });
+    } finally {
+      unlinkSync(materializedPromptFile);
+    }
+  });
+
+  it('joins variadic workflow -s and -c tokens into single fields', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.workflow.mockResolvedValueOnce({
+      launchState: 'queued',
+      job: 'job-workflow-variadic',
+      session: 'session-workflow-variadic',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'workflow',
+      '-e',
+      '(architect)',
+      '-s',
+      'start',
+      'the',
+      'thing',
+      '-c',
+      'shared',
+      'ctx',
+    ]);
+
+    expect(mockState.workflow).toHaveBeenCalledWith('(architect)', {
+      startPrompt: 'start the thing',
+      context: 'shared ctx',
+    });
   });
 
   it('treats discuss backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
