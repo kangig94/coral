@@ -64,7 +64,7 @@ function getProviderNames(providerRegistry: ProviderRegistry): string[] {
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
 type ProviderRunOptions = {
-  input?: string;
+  input?: string[];
   session?: string;
   workDir?: string;
   model?: string;
@@ -90,8 +90,8 @@ type AbortOptions = {
 
 type WorkflowOptions = {
   expression?: string;
-  startPrompt?: string;
-  context?: string;
+  startPrompt?: string[];
+  context?: string[];
   provider?: string;
   workDir?: string;
   detach?: boolean;
@@ -166,8 +166,14 @@ function resolveFilePath(filePath: string): string {
   return filePath;
 }
 
-function resolveInput(value: string): string {
-  return existsSync(value) ? readFileSync(value, 'utf8') : value;
+function resolveInput(values: string[]): string {
+  // Each token is resolved independently: existing files are read, other tokens stay literal.
+  // Multi-value inputs are joined with spaces, which recovers prompts that a shell split into
+  // multiple argv entries (e.g. unquoted `-i hello world`) and prompts that the cli-resolve
+  // hook partially materialized into a temp file alongside adjacent literal tokens.
+  return values
+    .map((token) => (existsSync(token) ? readFileSync(token, 'utf8') : token))
+    .join(' ');
 }
 
 function makeClient(projectRoot: string): BackendClient {
@@ -349,7 +355,7 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
     const provider = program.command(providerName).description(`${providerName} provider operations`);
     provider
       .argument('[agent]', 'Agent name (omit for raw execution)')
-      .option('-i, --input <text-or-file>', 'Prompt text or file path')
+      .option('-i, --input <text-or-file...>', 'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
       .option('-s, --session <id>', 'Session ID')
       .option('-w, --work-dir <path>', 'Working directory')
       .option('-m, --model <model>', 'Model override')
@@ -522,25 +528,24 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
   const workflowCommand = program.command('workflow');
   workflowCommand
     .description('Execute a workflow pipeline')
-    .argument('[expression]', 'Pipeline DSL expression')
-    .option('-e, --expression <expr>', 'Pipeline DSL expression (flag alternative)')
-    .option('-s, --start-prompt <text-or-file>', 'Start prompt text or file path')
-    .option('-c, --context <text-or-file>', 'Shared context text or file path')
+    .option('-e, --expression <expr>', 'Pipeline DSL expression')
+    .option('-s, --start-prompt <text-or-file...>', 'Start prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
+    .option('-c, --context <text-or-file...>', 'Shared context text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
     .option('-p, --provider <name>', 'Provider name (registered provider)')
     .option('-w, --work-dir <path>', 'Working directory')
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
-    .action(async (posExpression: string | undefined, opts: WorkflowOptions) => {
+    .action(async (opts: WorkflowOptions) => {
       const outputFormat = getOutputFormat(workflowCommand);
 
       try {
-        const expression = opts.expression ?? posExpression;
+        const { expression } = opts;
 
         if (expression === undefined) {
-          throw new Error('expression is required (positional or -e)');
+          throw new Error('expression is required (-e, --expression)');
         }
         if (opts.startPrompt === undefined) {
-          throw new Error('start prompt is required (-s)');
+          throw new Error('start prompt is required (-s, --start-prompt)');
         }
 
         const payload = {

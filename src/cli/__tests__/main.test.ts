@@ -122,42 +122,29 @@ describe('cli main — wait --jobs validation', () => {
   });
 });
 
-describe('cli main — workflow positional and flag args', () => {
-  it('shows workflow help without a positional prompt argument', () => {
+describe('cli main — workflow flag surface', () => {
+  it('shows workflow help with -e expression and variadic -s/-c flags', () => {
     const { stdout, status } = runCli(['workflow', '--help']);
 
     expect(status).toBe(0);
-    expect(stdout).toContain('[expression]');
-    expect(stdout).toContain('--start-prompt');
-    expect(stdout).not.toContain('[prompt]');
+    expect(stdout).toContain('-e, --expression');
+    expect(stdout).toContain('-s, --start-prompt');
+    expect(stdout).toContain('-c, --context');
+    expect(stdout).not.toContain('[expression]');
   });
 
-  it('exits 1 when expression is missing', () => {
+  it('exits 1 when -e expression is missing', () => {
     const { stderr, status } = runCli(['workflow']);
 
     expect(status).toBe(1);
-    expect(stderr).toContain('expression is required');
+    expect(stderr).toContain('expression is required (-e, --expression)');
   });
 
-  it('exits 1 when start prompt is missing', () => {
-    const { stderr, status } = runCli(['workflow', 'architect']);
-
-    expect(status).toBe(1);
-    expect(stderr).toContain('start prompt is required');
-  });
-
-  it('exits 1 when only -e flag is provided without start prompt', () => {
+  it('exits 1 when -e is provided without -s start prompt', () => {
     const { stderr, status } = runCli(['workflow', '-e', 'architect']);
 
     expect(status).toBe(1);
     expect(stderr).toContain('start prompt is required');
-  });
-
-  it('does not accept a positional workflow prompt anymore', () => {
-    const { stderr, status } = runCli(['workflow', 'architect', 'hi']);
-
-    expect(status).toBe(1);
-    expect(stderr).toContain('too many arguments');
   });
 });
 
