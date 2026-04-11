@@ -57,7 +57,16 @@ import {
   type ClaimJobOptions,
 } from './job-lifecycle-contracts.js';
 import { ProgressStore } from './progress-store.js';
-import { resolveCoralContent, stripAgentMetadata, parseAgentMeta } from './resolver.js';
+import {
+  parseAgentRef,
+  resolveAgent,
+  stripAgentMetadata,
+  parseAgentMeta,
+  InvalidAgentRefError,
+  AgentNotFoundError,
+  AgentNamespaceNotFoundError,
+  type AgentResolutionContext,
+} from './agent-resolution.js';
 import { SessionManager, type SessionAllocateOptions } from './session-manager.js';
 
 declare const __PLUGIN_ROOT__: string;
@@ -186,14 +195,26 @@ function buildSessionControllerProfile(
   };
 }
 
-function resolveAgentLaunchProfile(agentName: string): ResolvedAgentLaunchProfile {
-  const { content } = resolveCoralContent(agentName);
-  const meta = parseAgentMeta(content);
-  const instruction = buildCoralInstruction(stripAgentMetadata(content));
+function mapResolverError(err: unknown): LaunchDecision | null {
+  if (err instanceof InvalidAgentRefError) return rejectLaunch('invalid_agent', err.message);
+  if (err instanceof AgentNotFoundError) return rejectLaunch('agent_not_found', err.message);
+  if (err instanceof AgentNamespaceNotFoundError) return rejectLaunch('agent_namespace_not_found', err.message);
+  return null;
+}
+
+function resolveAgentLaunchProfile(
+  agentIdent: string,
+  resolutionCtx: AgentResolutionContext,
+): ResolvedAgentLaunchProfile {
+  const ref = parseAgentRef(agentIdent);
+  const resolved = resolveAgent(ref, resolutionCtx);
+  const meta = parseAgentMeta(resolved.content);
+  const instruction = buildCoralInstruction(stripAgentMetadata(resolved.content));
+  const canonicalName = resolved.ref.name;
 
   return {
-    agentName,
-    name: agentName,
+    agentName: canonicalName,
+    name: canonicalName,
     model: meta.model,
     instruction,
   };
@@ -260,6 +281,9 @@ export type ExecutionServiceDeps = {
   launchCoordinator: LaunchCoordinator;
   eventBus: TypedEventBus;
   providerRegistry: ProviderRegistry;
+  pluginRegistry: {
+    discoverPluginRoot: (namespace: string) => string | null;
+  };
 };
 
 function resolveBackendNamespace(pluginRoot: string): string {
@@ -347,6 +371,7 @@ export class ExecutionService implements RecoveryCapableService {
   private readonly launchCoordinator: LaunchCoordinator;
   private readonly eventBus: TypedEventBus;
   private readonly providerRegistry: ProviderRegistry;
+  private readonly pluginRegistry: ExecutionServiceDeps['pluginRegistry'];
   private readonly launchOrchestrator: LaunchOrchestrator;
   private readonly waitCoordinator: WaitCoordinator;
 
@@ -361,6 +386,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.providerHostManager = deps.providerHostManager;
     this.launchCoordinator = deps.launchCoordinator;
     this.providerRegistry = deps.providerRegistry;
+    this.pluginRegistry = deps.pluginRegistry;
     this.launchOrchestrator = new LaunchOrchestrator({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
@@ -926,7 +952,20 @@ export class ExecutionService implements RecoveryCapableService {
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const resolvedAgent = input.agent ? resolveAgentLaunchProfile(input.agent) : null;
+    let resolvedAgent: ResolvedAgentLaunchProfile | null = null;
+    if (input.agent) {
+      try {
+        resolvedAgent = resolveAgentLaunchProfile(input.agent, {
+          projectRoot: ctx.projectRoot,
+          coralPluginRoot: ctx.pluginRoot,
+          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+        });
+      } catch (err) {
+        const rejection = mapResolverError(err);
+        if (rejection) return rejection;
+        throw err;
+      }
+    }
     const effectiveCoralEnv = buildEffectiveCoralEnv(ctx.coralEnv, { effort: input.effort });
     const cwd = input.cwd ?? ctx.projectRoot;
     const requestName = resolvedAgent?.name ?? input.name;
@@ -1033,11 +1072,25 @@ export class ExecutionService implements RecoveryCapableService {
     input: CoralInput,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
+    // CRITICAL: force the coral namespace to preserve workflow atom identity
+    // against project overrides when internal coral workflows dispatch agents.
+    const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const effort = input.effort;
     const cwd = input.cwd ?? ctx.projectRoot;
 
     if (input.sessionId) {
-      const resolvedAgent = resolveAgentLaunchProfile(coralName);
+      let resolvedAgent: ResolvedAgentLaunchProfile;
+      try {
+        resolvedAgent = resolveAgentLaunchProfile(forcedIdent, {
+          projectRoot: ctx.projectRoot,
+          coralPluginRoot: ctx.pluginRoot,
+          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+        });
+      } catch (err) {
+        const rejection = mapResolverError(err);
+        if (rejection) return rejection;
+        throw err;
+      }
       return this.resume(
         providerName,
         {
@@ -1060,7 +1113,7 @@ export class ExecutionService implements RecoveryCapableService {
       providerName,
       {
         prompt: input.prompt,
-        agent: coralName,
+        agent: forcedIdent,
         cwd,
         effort,
         bypassPermissions: input.bypassPermissions ?? true,

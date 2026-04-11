@@ -50,6 +50,11 @@ export function launchToHttp(
     case 'preflight_failed':
       statusCode = 503;
       break;
+    case 'invalid_agent':
+      statusCode = 400;
+      break;
+    case 'agent_not_found':
+    case 'agent_namespace_not_found':
     case 'unknown_provider':
     case 'session_not_found':
       statusCode = 404;

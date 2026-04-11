@@ -275,8 +275,9 @@ describe('cli main routing', () => {
   });
 
   it.each([
-    ['debugger', 'coral:debugger'],
-    ['coral:debugger', 'coral:debugger'],
+    ['architect', 'architect'],
+    ['coral:architect', 'coral:architect'],
+    ['project:my-local', 'project:my-local'],
     ['other:agent', 'other:agent'],
   ])('dispatches provider agent launches with full op preservation for %s', async (agent, expectedOp) => {
     const { buildProgram } = await loadMainModule();
@@ -314,6 +315,38 @@ describe('cli main routing', () => {
     });
   });
 
+  it('preserves explicit coral:architect for codex agent launches', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-coral-architect',
+      session: 'session-coral-architect',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:architect', '-i', 'hi']);
+
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:architect' });
+  });
+
+  it('preserves explicit coral:debugger for codex agent launches', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-coral-debugger',
+      session: 'session-coral-debugger',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'codex', 'coral:debugger', '-i', 'hi']);
+
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { agent: 'coral:debugger' });
+  });
+
   it('dispatches provider agent launches for the claude provider', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
@@ -327,7 +360,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'claude', 'debugger', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', { agent: 'coral:debugger' });
+    expect(mockState.createSession).toHaveBeenCalledWith('claude', 'hi', { agent: 'debugger' });
   });
 
   it('keeps detach launches on the one-shot path and honors -f json', async () => {

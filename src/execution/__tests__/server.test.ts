@@ -2217,6 +2217,122 @@ describe('execution backend server', () => {
       });
     });
 
+    it('accepts POST /sessions with namespaced coral agents', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-x', session: 'session-x' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hi',
+              projectRoot: '/tmp/project',
+              agent: 'coral:architect',
+            }),
+          });
+
+          expect(response.status).toBe(201);
+          expect(await response.json()).toEqual({
+            session: 'session-x',
+            job: 'job-x',
+            launchState: 'running',
+          });
+          expect(fakeService.start).toHaveBeenCalledWith(
+            'codex',
+            expect.objectContaining({
+              prompt: 'hi',
+              agent: 'coral:architect',
+            }),
+            expect.objectContaining({
+              projectRoot: '/tmp/project',
+            }),
+          );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects POST /sessions invalid agent identifiers at the schema boundary', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService();
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hi',
+              projectRoot: '/tmp/project',
+              agent: 'INVALID!',
+            }),
+          });
+
+          expect(response.status).toBe(400);
+          expect(await response.json()).toMatchObject({
+            code: 'invalid_request',
+            message: expect.any(String),
+          });
+          expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('maps agent_not_found launch rejections from POST /sessions to 404', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({
+            status: 'rejected',
+            code: 'agent_not_found',
+            message: 'Agent "coral:does-not-exist" not found',
+          })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hi',
+              projectRoot: '/tmp/project',
+              agent: 'coral:does-not-exist',
+            }),
+          });
+
+          expect(response.status).toBe(404);
+          expect(await response.json()).toEqual({
+            code: 'agent_not_found',
+            message: 'Agent "coral:does-not-exist" not found',
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
     it('routes POST /sessions/:id/messages through service.resumeBySessionId', async () => {
       const fakeService = createFakeExecutionService({
         resumeBySessionId: vi.fn(async () => ({ status: 'queued', job: 'job-message', session: 'session-1' })),
