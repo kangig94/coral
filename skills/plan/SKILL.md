@@ -128,7 +128,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     **4a. Workflow Dispatch**
 
     ```
-    expression = "(architect, critic)" or "(architect, critic) -> resolver" when --deep
+    expression = "(coral:architect, coral:critic)" or "(coral:architect, coral:critic) -> coral:resolver" when --deep
     startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
     sharedContext = (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes."
     launch = Bash(`coral-cli workflow "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d --output-format json`)

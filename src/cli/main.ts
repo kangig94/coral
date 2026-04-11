@@ -170,10 +170,6 @@ function resolveInput(value: string): string {
   return existsSync(value) ? readFileSync(value, 'utf8') : value;
 }
 
-function buildAgentOp(agent: string): string {
-  return agent.includes(':') ? agent : `coral:${agent}`;
-}
-
 function makeClient(projectRoot: string): BackendClient {
   const defaultContext: CallerContext = { pluginRoot, projectRoot, coralEnv: collectCoralEnv() };
   return new BackendClient({
@@ -386,7 +382,7 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
             : await client.createSession(
                 providerName,
                 prompt,
-                agent ? { agent: buildAgentOp(agent), ...requestOptions } : requestOptions,
+                agent ? { agent, ...requestOptions } : requestOptions,
               );
           await handleLaunchResult(result, opts.detach, outputFormat, client);
         } catch (error) {

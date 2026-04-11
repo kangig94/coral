@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { identPattern, providerIdentPattern } from './utils.js';
+import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from './utils.js';
 
 const modelNameSchema = z
   .string()
@@ -25,6 +25,16 @@ export const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
+export const agentIdentSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.endsWith('.md') ? value.slice(0, -3) : value),
+  z
+    .string()
+    .regex(
+      AGENT_IDENT_RE,
+      'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)',
+    ),
+);
+
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
 const effortLevelSchema = z.enum(['low', 'medium', 'high', 'max']);
@@ -47,7 +57,7 @@ export const sessionCreateSchema = z
     prompt: promptSchema,
     projectRoot: projectRootSchema,
     model: modelSchema,
-    agent: z.string().min(1, 'Agent is required').optional(),
+    agent: agentIdentSchema.optional(),
     workDir: cwdSchema,
     owner: ownerSchema.optional(),
     effort: effortLevelSchema.optional(),

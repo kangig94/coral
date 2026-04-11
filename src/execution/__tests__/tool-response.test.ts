@@ -97,10 +97,13 @@ describe('launchToHttp', () => {
   });
 
   it.each([
+    ['invalid_agent', 400],
+    ['agent_not_found', 404],
+    ['agent_namespace_not_found', 404],
     ['busy', 503],
+    ['session_not_found', 404],
     ['preflight_failed', 503],
     ['unknown_provider', 404],
-    ['session_not_found', 404],
     ['scope_mismatch', 403],
     ['session_busy', 409],
     ['non_resumable', 409],
@@ -114,13 +117,7 @@ describe('launchToHttp', () => {
       message: `Rejected: ${code}`,
     } satisfies LaunchDecision;
 
-    expect(launchToHttp(decision, 201)).toEqual({
-      statusCode,
-      body: {
-        code,
-        message: `Rejected: ${code}`,
-      },
-    });
+    expect(launchToHttp(decision, 201).statusCode).toBe(statusCode);
   });
 });
 

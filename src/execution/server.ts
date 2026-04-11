@@ -37,6 +37,7 @@ import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
 import type { KbSubsystem } from './kb-tools.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
+import { createPluginRegistry } from '../infra/plugin-registry.js';
 import type {
   EventStreamHandlers,
   ExecutionServiceLike,
@@ -121,6 +122,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator();
   const eventBus = options.eventBus ?? options.progressStore?.getEventBus() ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const pluginRegistry = createPluginRegistry();
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const progressStore = options.progressStore ?? new ProgressStore(eventBus);
   const providerHostManager =
@@ -211,6 +213,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       launchCoordinator,
       eventBus,
       providerRegistry,
+      pluginRegistry,
     });
     services.set(key, created);
     return created;

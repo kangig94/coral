@@ -70,6 +70,8 @@ export function assertOwnerId(value: unknown, label = 'owner'): string {
 
 export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
 
+export const AGENT_IDENT_RE = /^(?:[a-z0-9][a-z0-9-]*:)?[a-z0-9][a-z0-9-]*$/;
+
 /** Parse an optional non-empty string from an unknown value. */
 export function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;

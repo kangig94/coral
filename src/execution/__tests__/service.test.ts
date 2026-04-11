@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as ResolverMod from '../resolver.js';
+import type * as AgentResolutionMod from '../agent-resolution.js';
 import type {
   AppServerRuntimeRecord,
   DurableCliRuntimeRecord,
@@ -21,6 +21,12 @@ import type { Provider } from '../../providers/types.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
+import {
+  AgentNamespaceNotFoundError,
+  AgentNotFoundError,
+  InvalidAgentRefError,
+  type AgentRef,
+} from '../agent-resolution.js';
 import {
   LaunchCoordinator,
   MAX_WORKERS,
@@ -39,7 +45,7 @@ const mockState = vi.hoisted(() => ({
   tmpHome: '',
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-service-test-tmp`,
   getNewProvider: vi.fn(),
-  resolveCoralContent: vi.fn(),
+  resolveAgent: vi.fn(),
 }));
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 
@@ -56,11 +62,11 @@ vi.mock('../../providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('../resolver.js', async () => {
-  const actual = await vi.importActual<typeof ResolverMod>('../resolver.js');
+vi.mock('../agent-resolution.js', async () => {
+  const actual = await vi.importActual<typeof AgentResolutionMod>('../agent-resolution.js');
   return {
     ...actual,
-    resolveCoralContent: mockState.resolveCoralContent,
+    resolveAgent: mockState.resolveAgent,
   };
 });
 
@@ -110,6 +116,7 @@ function createService(
     progressStore?: ProgressStore;
     bundleHash?: string;
     providerHostManager?: ProviderHostManager;
+    pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
   return new ExecutionService(ctx, {
@@ -123,7 +130,17 @@ function createService(
       getAll: () => [],
       registerBuiltIns: () => {},
     } as never,
+    pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
   });
+}
+
+function createResolvedAgent(ref: AgentRef, content: string) {
+  return {
+    ref: { namespace: ref.namespace ?? 'coral', name: ref.name },
+    source: 'agent' as const,
+    content,
+    path: `/tmp/${ref.name}.md`,
+  };
 }
 
 function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
@@ -441,7 +458,7 @@ describe('ExecutionService', () => {
     launchCoordinator = new LaunchCoordinator();
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
-    mockState.resolveCoralContent.mockReset();
+    mockState.resolveAgent.mockReset();
   });
 
   afterEach(async () => {
@@ -459,7 +476,7 @@ describe('ExecutionService', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mockState.getNewProvider.mockReset();
-    mockState.resolveCoralContent.mockReset();
+    mockState.resolveAgent.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -994,16 +1011,71 @@ describe('ExecutionService', () => {
     });
   });
 
+  it('start rejects invalid agent refs from the resolver', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation(() => {
+      throw new InvalidAgentRefError('Invalid mocked agent ref');
+    });
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
+
+    expect(decision).toEqual({
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'invalid_agent',
+      message: 'Invalid mocked agent ref',
+    });
+  });
+
+  it('start rejects missing agents from the resolver', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation(() => {
+      throw new AgentNotFoundError('Agent "architect" not found');
+    });
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
+
+    expect(decision).toEqual({
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'agent_not_found',
+      message: 'Agent "architect" not found',
+    });
+  });
+
+  it('start rejects unknown agent namespaces from the resolver', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation(() => {
+      throw new AgentNamespaceNotFoundError('Plugin namespace "other" not found');
+    });
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
+
+    expect(decision).toEqual({
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'agent_namespace_not_found',
+      message: 'Plugin namespace "other" not found',
+    });
+  });
+
   it('start resolves agent metadata before allocation and persists the agent profile', async () => {
     realizePluginRoot(ctx);
     const never = new Promise<ProviderResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockReturnValue({
-      type: 'agent',
-      content: '---\nmodel: gpt-5.4\neffort: high\n---\nArchitect instruction',
-      path: '/tmp/architect.md',
-    });
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent(
+        { namespace: 'coral', name: 'architect' },
+        '---\nmodel: gpt-5.4\neffort: high\n---\nArchitect instruction',
+      ),
+    );
     const service = createService(ctx);
 
     const decision = await service.start('codex', { prompt: 'hello', agent: 'architect' }, ctx);
@@ -1014,7 +1086,10 @@ describe('ExecutionService', () => {
     }
     trackJob(decision.job);
 
-    expect(mockState.resolveCoralContent).toHaveBeenCalledWith('architect');
+    expect(mockState.resolveAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: null, name: 'architect' }),
+      expect.anything(),
+    );
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
     const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
 
@@ -1634,14 +1709,12 @@ describe('ExecutionService', () => {
     });
   });
 
-  it('coralDispatch resolves coral content and injects a system instruction', async () => {
+  it('coralDispatch resolves coral agent content and injects a system instruction', async () => {
     const { provider, execute } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockReturnValue({
-      type: 'agent',
-      content: '---\nname: sample\n---\nInjected coral content',
-      path: '/tmp/sample.md',
-    });
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent({ namespace: 'coral', name: 'sample' }, '---\nname: sample\n---\nInjected coral content'),
+    );
     const service = createService(ctx);
 
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello' }, ctx);
@@ -1650,7 +1723,10 @@ describe('ExecutionService', () => {
     if (decision.status === 'running') {
       trackJob(decision.job);
     }
-    expect(mockState.resolveCoralContent).toHaveBeenCalledWith('sample');
+    expect(mockState.resolveAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: 'coral', name: 'sample' }),
+      expect.anything(),
+    );
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
     expect(request).toMatchObject({
       action: 'exec',
@@ -1662,6 +1738,26 @@ describe('ExecutionService', () => {
         channel: 'system',
       },
     });
+  });
+
+  it('coralDispatch forces the coral namespace for bare workflow atoms', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent({ namespace: 'coral', name: 'architect' }, 'Injected coral architect content'),
+    );
+    const service = createService(ctx);
+
+    const decision = await service.coralDispatch('codex', 'architect', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status === 'running') {
+      trackJob(decision.job);
+    }
+    expect(mockState.resolveAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: 'coral', name: 'architect' }),
+      expect.anything(),
+    );
   });
 
   it('waitStream yields progress and terminal events in order', async () => {
@@ -1857,11 +1953,9 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockImplementation((name: string) => ({
-      type: 'agent',
-      content: `Injected ${name} content`,
-      path: `/tmp/${name}.md`,
-    }));
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
 
     const service = createService(ctx);
     const decision = await service.executeWorkflow(
@@ -1933,11 +2027,9 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockImplementation((name: string) => ({
-      type: 'agent',
-      content: `Injected ${name} content`,
-      path: `/tmp/${name}.md`,
-    }));
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
 
     const service = createService(ctx);
     const workDir = join(mockState.tmpHome, 'child-workdir');
@@ -1973,11 +2065,9 @@ describe('ExecutionService', () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockImplementation((name: string) => ({
-      type: 'agent',
-      content: `Injected ${name} content`,
-      path: `/tmp/${name}.md`,
-    }));
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
 
     const service = createService(ctx);
     for (const jobId of getActiveJobIds()) {
@@ -2023,11 +2113,9 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockImplementation((name: string) => ({
-      type: 'agent',
-      content: `Injected ${name} content`,
-      path: `/tmp/${name}.md`,
-    }));
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
 
     const service = createService(ctx);
     const decision = await service.executeWorkflow(
@@ -2088,11 +2176,9 @@ describe('ExecutionService', () => {
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
-    mockState.resolveCoralContent.mockImplementation((name: string) => ({
-      type: 'agent',
-      content: `Injected ${name} content`,
-      path: `/tmp/${name}.md`,
-    }));
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
 
     const service = createService(ctx);
     const decision = await service.executeWorkflow(
@@ -3029,7 +3115,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
     mockState.getNewProvider.mockReset();
-    mockState.resolveCoralContent.mockReset();
+    mockState.resolveAgent.mockReset();
   });
 
   afterEach(() => {
@@ -3042,7 +3128,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     vi.restoreAllMocks();
     mockState.getNewProvider.mockReset();
-    mockState.resolveCoralContent.mockReset();
+    mockState.resolveAgent.mockReset();
   });
 
   describe('ExecutionService.resume() adversarial', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   abortInputSchema,
+  agentIdentSchema,
   jobAbortSchema,
   jobWaitSchema,
   sessionCreateSchema,
@@ -9,6 +10,45 @@ import {
   waitInputSchema,
   workflowRequestSchema,
 } from '../schemas.js';
+
+const AGENT_IDENT_CASES: ReadonlyArray<
+  readonly [input: string, accepted: boolean, canonicalForm: string | null]
+> = [
+  ['architect', true, 'architect'],
+  ['coral:architect', true, 'coral:architect'],
+  ['my-plugin:my-agent', true, 'my-plugin:my-agent'],
+  ['ns-1:agent-2', true, 'ns-1:agent-2'],
+  ['architect.md', true, 'architect'],
+  ['coral:architect.md', true, 'coral:architect'],
+  ['a.md', true, 'a'],
+  ['coral:', false, null],
+  ['MyAgent', false, null],
+  ['', false, null],
+  ['INVALID!', false, null],
+  ['architect.md.md', false, null],
+  ['.md', false, null],
+] as const;
+
+describe('agentIdentSchema', () => {
+  it.each(AGENT_IDENT_CASES)(
+    'parses %s with accepted=%s and canonical form %s',
+    (input, accepted, canonicalForm) => {
+      const result = agentIdentSchema.safeParse(input);
+
+      expect(result.success).toBe(accepted);
+      if (accepted) {
+        if (!result.success) {
+          throw new Error(`Expected ${input} to be accepted by agentIdentSchema`);
+        }
+        expect(result.data).toBe(canonicalForm);
+      }
+    },
+  );
+
+  it.skip('TODO(AC2): cross-check agentIdentSchema and parseAgentRef against the shared table', () => {
+    // Enable once src/execution/agent-resolution.ts exports parseAgentRef/formatAgentRef.
+  });
+});
 
 describe('sessionCreateSchema', () => {
   it('parses the minimal session create body and defaults bypassPermissions to false', () => {
@@ -54,12 +94,34 @@ describe('sessionCreateSchema', () => {
     });
   });
 
+  it('normalizes a trailing .md suffix on agent names', () => {
+    const parsed = sessionCreateSchema.parse({
+      provider: 'claude',
+      prompt: 'Analyze this change',
+      projectRoot: '/tmp/project',
+      agent: 'architect.md',
+    });
+
+    expect(parsed.agent).toBe('architect');
+  });
+
   it('rejects invalid provider names', () => {
     expect(() =>
       sessionCreateSchema.parse({
         provider: 'Claude',
         prompt: 'Analyze this change',
         projectRoot: '/tmp/project',
+      }),
+    ).toThrow();
+  });
+
+  it.each(['coral:', 'MyAgent', ''] as const)('rejects invalid agent %s', (agent) => {
+    expect(() =>
+      sessionCreateSchema.parse({
+        provider: 'codex',
+        prompt: 'Analyze this change',
+        projectRoot: '/tmp/project',
+        agent,
       }),
     ).toThrow();
   });
