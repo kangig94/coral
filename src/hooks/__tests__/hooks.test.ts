@@ -703,7 +703,7 @@ describe('cli-resolve.mjs', () => {
     });
 
     const output = expectCliResolveOutput(result);
-    const { updatedInput } = output.hookSpecificOutput;
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(40_000);
     expect(updatedInput.run_in_background).toBe(false);
   });
@@ -716,7 +716,7 @@ describe('cli-resolve.mjs', () => {
     });
 
     const output = expectCliResolveOutput(result);
-    const { updatedInput } = output.hookSpecificOutput;
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(610_000);
     expect(updatedInput.run_in_background).toBe(false);
   });
@@ -729,7 +729,7 @@ describe('cli-resolve.mjs', () => {
     });
 
     const output = expectCliResolveOutput(result);
-    const { updatedInput } = output.hookSpecificOutput;
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBeUndefined();
     expect(updatedInput.run_in_background).toBeUndefined();
   });
