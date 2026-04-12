@@ -4,10 +4,13 @@
 
 ```bash
 npm install
-npm run build     # TypeScript compile + esbuild bundle
+npm run build     # TypeScript compile + esbuild bundle (prod flavor)
+npm run build:dev # TypeScript compile + esbuild bundle (dev flavor)
 npm test          # Run tests with vitest
 npm run dev       # TypeScript watch mode
 ```
+
+See [docs/dev-setup.md](docs/dev-setup.md) for parallel dev/prod daemon setup.
 
 ## Git Workflow
 

@@ -11,7 +11,8 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
 | `CORAL_EFFORT` | _(none)_ | Global effort override when provider-specific effort is unset |
-| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers |
+| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
+| `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
