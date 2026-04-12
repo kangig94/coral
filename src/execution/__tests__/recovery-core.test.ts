@@ -605,7 +605,7 @@ describe('planRecovery', () => {
     expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
   })
 
-  it('deterministic_action_order_for_identical_snapshot', () => {
+  it('produces identical output for identical input snapshots', () => {
     const snapshot = new InMemoryRecoverySnapshot()
       .addJob({
         jobId: 'running-a',
@@ -786,5 +786,44 @@ describe('planRecovery', () => {
 
     expect(thrown).toBeNull()
     expect(result).toEqual([])
+  })
+
+  it('produces same actions with peerDaemonAlive true', () => {
+    const launchRecord = makeLaunch('running-job')
+    const runtimeRecord = makeRuntime('running-job', { pid: 5001 })
+    const snapshot = new InMemoryRecoverySnapshot().addJob({
+      jobId: 'running-job',
+      status: makeStatus('running-job', 'running'),
+      launch: launchRecord,
+      runtime: runtimeRecord,
+      hasLaunch: true,
+      hasRuntime: true,
+    })
+
+    const withPeer = planRecovery(snapshot, { ...DEFAULT_INVARIANTS, peerDaemonAlive: true })
+    const withoutPeer = planRecovery(snapshot, { ...DEFAULT_INVARIANTS, peerDaemonAlive: false })
+
+    expect(withPeer).toEqual(withoutPeer)
+  })
+
+  it('produces same actions with custom pidLivenessProbe', () => {
+    const launchRecord = makeLaunch('running-job')
+    const runtimeRecord = makeRuntime('running-job', { pid: 6001 })
+    const snapshot = new InMemoryRecoverySnapshot().addJob({
+      jobId: 'running-job',
+      status: makeStatus('running-job', 'running'),
+      launch: launchRecord,
+      runtime: runtimeRecord,
+      hasLaunch: true,
+      hasRuntime: true,
+    })
+
+    const withProbe = planRecovery(snapshot, {
+      ...DEFAULT_INVARIANTS,
+      pidLivenessProbe: () => 'alive',
+    })
+    const withoutProbe = planRecovery(snapshot, DEFAULT_INVARIANTS)
+
+    expect(withProbe).toEqual(withoutProbe)
   })
 })

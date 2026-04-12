@@ -81,6 +81,7 @@ export class ProgressStore {
    * store operates on a namespace-bounded view by construction — no
    * downstream filter is required to avoid cross-namespace contamination.
    */
+  // Overloads: (ns, runtime, eventBus?) is canonical; (ns, eventBus, runtime) is supported for migration compatibility.
   constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'time'>, eventBus?: TypedEventBus);
   constructor(namespace: string, eventBus: TypedEventBus, runtime: Pick<Runtime, 'storage' | 'time'>);
   constructor(

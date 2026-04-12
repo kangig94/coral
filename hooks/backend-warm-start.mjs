@@ -38,6 +38,7 @@ async function readLiveBackendFlavor(info) {
     const response = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
+      signal: AbortSignal.timeout(3000),
     });
     if (!response.ok) return null;
 
@@ -57,6 +58,7 @@ async function requestBackendShutdown(info) {
     await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': info.token },
+      signal: AbortSignal.timeout(3000),
     });
   } catch {}
 }

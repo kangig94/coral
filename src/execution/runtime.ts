@@ -27,6 +27,7 @@ import {
   sessionBase,
 } from '../infra/paths.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
+import type { LaunchPool } from './engine.js';
 
 const ENV_BUDGET_FALLBACK_BYTES = 2 * 1024 * 1024;
 const ENV_BUDGET_HEADROOM_RATIO = 0.8;
@@ -191,8 +192,6 @@ export type RuntimeSpawnOptions = {
   mode: RuntimeSpawnMode;
 };
 
-export type LaunchPool = 'default' | 'discuss' | 'curate';
-
 export type DurableLaunchOptions = {
   provider: string;
   command: string;
@@ -339,16 +338,7 @@ export function createRealRuntime(): Runtime {
       const runtimeRecord = await waitForRuntimeRecord({
         storage,
         time,
-        process: {
-          isAlive: (pid) => {
-            try {
-              process.kill(pid, 0);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-        },
+        process: { isAlive: processIsAlive },
         runtimePath,
         pid: wrapper.pid,
       });

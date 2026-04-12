@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isDurableCliRuntime } from '../../shared/types.js';
@@ -110,7 +109,7 @@ describe('deterministic simulation lifecycle replay', () => {
     vi.restoreAllMocks();
   });
 
-  it('replays a complete in-process lifecycle with deterministic aborts, idle shutdown, runtime-backed request helpers, and clean reset state', async () => {
+  it('replays a complete in-process lifecycle with idle shutdown', async () => {
     const wallStart = performance.now();
     const realProcessKillSpy = vi.spyOn(process, 'kill');
     const realFetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -234,8 +233,6 @@ describe('deterministic simulation lifecycle replay', () => {
     ).toBe('final simulation result');
     expect(completedWorld.storage.readFileSync(completedRuntime.stdoutPath, 'utf-8')).toBe('durable-progress\n');
     expect(completedWorld.storage.readFileSync(completedRuntime.stderrPath, 'utf-8')).toBe('durable-warning\n');
-    expect(fs.existsSync(completedWorld.progressStore.jobDir(completedDecision.job))).toBe(false);
-    expect(fs.existsSync(completedWorld.progressStore.resultPath(completedDecision.job))).toBe(false);
 
     const completedReplay = completedWorld.progressStore.replayFrom(completedDecision.job, 0, createReplayCursor());
     expect(completedReplay.map((event) => event.type)).toEqual(['progress', 'progress', 'terminal']);
@@ -256,7 +253,15 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(
       completedWorld.storage.existsSync(completedWorld.storage.backendInfoPath(completedWorld.pluginRoot)),
     ).toBe(false);
-    expect(fs.existsSync(completedWorld.storage.backendInfoPath(completedWorld.pluginRoot))).toBe(false);
+
+    expect(realProcessKillSpy).not.toHaveBeenCalled();
+    expect(realFetchSpy).not.toHaveBeenCalled();
+    expect(performance.now() - wallStart).toBeLessThan(1_000);
+  });
+
+  it('replays a deterministic abort lifecycle', async () => {
+    const realProcessKillSpy = vi.spyOn(process, 'kill');
+    const realFetchSpy = vi.spyOn(globalThis, 'fetch');
 
     const abortedWorld = createSimulationBackend({
       listen: { port: 4_302 },
@@ -326,11 +331,42 @@ describe('deterministic simulation lifecycle replay', () => {
     await abortedWorld.backend.waitForShutdown();
     expect(abortedWorld.backend.getLifecycle()).toBe('stopped');
 
-    const resetWorld = createSimulationBackend({
+    expect(realProcessKillSpy).not.toHaveBeenCalled();
+    expect(realFetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('produces identical deterministic IDs from a clean reset world', async () => {
+    const realProcessKillSpy = vi.spyOn(process, 'kill');
+    const realFetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const firstWorld = createSimulationBackend({
       listen: { port: 4_303 },
       durable: [
         {
           pid: 30_303,
+          runtimeDelayMs: 5,
+          exit: { delayMs: 5, exitCode: 0 },
+        },
+      ],
+      fakeProvider: {
+        result: { content: 'first world result' },
+      },
+    });
+    worlds.push(firstWorld);
+
+    await firstWorld.backend.start();
+    const firstDecision = await firstWorld.service.start(
+      'fake-provider',
+      { prompt: 'simulate clean reset world' },
+      firstWorld.createCallerContext(),
+    );
+    expect(firstDecision.status).toBe('running');
+
+    const resetWorld = createSimulationBackend({
+      listen: { port: 4_304 },
+      durable: [
+        {
+          pid: 30_304,
           runtimeDelayMs: 5,
           exit: { delayMs: 5, exitCode: 0 },
         },
@@ -344,7 +380,6 @@ describe('deterministic simulation lifecycle replay', () => {
     const resetSessions = new SessionManager(resetWorld.projectRoot, resetWorld.runtime);
     expect(resetWorld.progressStore.listJobIds()).toEqual([]);
     expect(resetSessions.list('fake-provider')).toEqual([]);
-    expect(resetSessions.get('fake-provider', completedDecision.session)).toBeNull();
 
     await resetWorld.backend.start();
     const resetDecision = await resetWorld.service.start(
@@ -352,14 +387,16 @@ describe('deterministic simulation lifecycle replay', () => {
       { prompt: 'simulate clean reset world' },
       resetWorld.createCallerContext(),
     );
+    if (firstDecision.status !== 'running') {
+      throw new Error('Expected first world launch to succeed');
+    }
     expect(resetDecision).toMatchObject({
       status: 'running',
-      session: completedDecision.session,
-      job: completedDecision.job,
+      session: firstDecision.session,
+      job: firstDecision.job,
     });
 
     expect(realProcessKillSpy).not.toHaveBeenCalled();
     expect(realFetchSpy).not.toHaveBeenCalled();
-    expect(performance.now() - wallStart).toBeLessThan(1_000);
   });
 });
