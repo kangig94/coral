@@ -1,4 +1,4 @@
-import { execSync, spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild } from 'node:child_process';
 import { randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
@@ -17,7 +17,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
-import { backendLog } from '../shared/backend-log.js';
+import {
+  parsePassthrough,
+  resolveEnvBudgetBytes,
+  shedIfOverBudget,
+  stripInternalCoralKeys,
+} from '../shared/env-sanitize.js';
 import {
   backendInfoPath,
   backendLockPath,
@@ -29,8 +34,6 @@ import {
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
 import type { LaunchPool } from './engine.js';
 
-const ENV_BUDGET_FALLBACK_BYTES = 2 * 1024 * 1024;
-const ENV_BUDGET_HEADROOM_RATIO = 0.8;
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
@@ -410,104 +413,18 @@ function captureEnvState(): CapturedEnvState {
     }
   }
 
+  const stripped = stripInternalCoralKeys(fullEnv);
+  const budget = resolveEnvBudgetBytes();
+  const passthrough = parsePassthrough(coralEnv.CORAL_ENV_PASSTHROUGH);
+
   return {
     fullEnv: Object.freeze({ ...fullEnv }),
-    inheritedEnv: Object.freeze(shedIfOverBudget(stripInternalCoralKeys(fullEnv), coralEnv.CORAL_ENV_PASSTHROUGH)),
+    inheritedEnv: Object.freeze(shedIfOverBudget(stripped, budget, passthrough)),
     coralEnv: Object.freeze(coralEnv),
     pid: process.pid,
     platform: process.platform,
     cwd: process.cwd(),
   };
-}
-
-function stripInternalCoralKeys(env: Record<string, string>): Record<string, string> {
-  const stripped: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (key.startsWith('CORAL_')) continue;
-    stripped[key] = value;
-  }
-  return stripped;
-}
-
-function parsePassthrough(raw: string | undefined): Set<string> {
-  if (!raw) return new Set<string>();
-  return new Set(
-    raw
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
-}
-
-function measureEnv(env: Record<string, string>): number {
-  let size = 0;
-  for (const [key, value] of Object.entries(env)) {
-    size += key.length + 1 + value.length + 1;
-  }
-  return size;
-}
-
-function shedIfOverBudget(base: Record<string, string>, passthroughRaw: string | undefined): Record<string, string> {
-  const budget = resolveEnvBudgetBytes();
-  const originalSize = measureEnv(base);
-  if (originalSize <= budget) {
-    return base;
-  }
-
-  const passthrough = parsePassthrough(passthroughRaw);
-  const originalCount = Object.keys(base).length;
-  const entries = Object.entries(base).sort((left, right) => right[1].length - left[1].length);
-  const kept: Record<string, string> = {};
-  let currentSize = originalSize;
-  let shedCount = 0;
-  const shedNames: string[] = [];
-
-  for (const [key, value] of entries) {
-    if (currentSize <= budget || passthrough.has(key)) {
-      kept[key] = value;
-      continue;
-    }
-
-    currentSize -= key.length + 1 + value.length + 1;
-    shedCount += 1;
-    if (shedNames.length < 10) {
-      shedNames.push(key);
-    }
-  }
-
-  const shedList = shedNames.join(', ') + (shedCount > shedNames.length ? `, ... (+${shedCount - shedNames.length} more)` : '');
-  backendLog.warn(
-    `child-env: shed ${shedCount}/${originalCount} vars ` +
-      `(${(originalSize / 1024).toFixed(0)}KB -> ${(currentSize / 1024).toFixed(0)}KB, ` +
-      `budget=${(budget / 1024).toFixed(0)}KB) [${shedList}]` +
-      (shedCount > 0 ? ' - set CORAL_ENV_PASSTHROUGH=VAR1,VAR2 to protect specific vars' : ''),
-  );
-
-  return kept;
-}
-
-function resolveEnvBudgetBytes(): number {
-  let argMax: number | undefined;
-
-  try {
-    argMax = parseInt(readFileSync('/proc/sys/kernel/argmax', 'utf8').trim(), 10);
-  } catch {
-    /* procfs unavailable */
-  }
-
-  if (!argMax || Number.isNaN(argMax)) {
-    try {
-      argMax = parseInt(execSync('getconf ARG_MAX', { encoding: 'utf8', timeout: 2_000 }).trim(), 10);
-    } catch {
-      /* getconf unavailable */
-    }
-  }
-
-  if (!argMax || Number.isNaN(argMax) || argMax <= 0) {
-    argMax = ENV_BUDGET_FALLBACK_BYTES;
-  }
-
-  return Math.floor(argMax * ENV_BUDGET_HEADROOM_RATIO);
 }
 
 function toNodeStdio(mode: RuntimeSpawnMode): ['pipe' | 'ignore', 'pipe' | 'ignore', 'pipe' | 'ignore'] {
