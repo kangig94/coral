@@ -26,17 +26,21 @@ Key modules and their roles in the current Coral runtime.
 
 | Module | Responsibility |
 | --- | --- |
-| `server.ts` | Backend server composition, subsystem wiring, lifecycle ownership |
+| `runtime.ts` | `Runtime` interface (6 subports: `time`, `storage`, `paths`, `process`, `ids`, `env`) + `RealRuntime` production implementation. All execution I/O routes through this single world, swapped once at `createBackendServer()`. |
+| `server.ts` | Backend server composition root. `createBackendServer({ runtime?, bootSnapshot?, ... })` wires `LifecycleDeps` and threads the runtime downward. `bootSnapshot` is the sole channel for boot identity (version, bundleHash, instanceId, token, etc.). |
 | `http-handler.ts` | HTTP route parsing and request handling |
-| `service.ts` | `ExecutionService`: session create (with optional agent), `resumeBySessionId`/`forkBySessionId` (provider-less continuation), workflow delegation, wait handling |
-| `engine.ts` | `LaunchCoordinator`: child-process tracking, queues, timeouts, process cleanup |
-| `lifecycle.ts` | Startup, recovery, shutdown, drain handling |
-| `host-manager.ts` | Provider host runtime management |
+| `service.ts` | `ExecutionService`: session create (with optional agent), resume/fork, workflow delegation, wait handling. Receives root-resolved `backendNamespace` from deps (no ambient fallback). |
+| `engine.ts` | `LaunchCoordinator({ runtime })`: child-process tracking, queues, timeouts. Worker limits (`MAX_WORKERS`, `DISCUSS_MAX_WORKERS`) are lazy getters via `RuntimeEnv`. `DurableExecutionTransport` seam for the durable wrapper protocol. |
+| `lifecycle.ts` | Startup, recovery, shutdown, drain. `LifecycleDeps` includes `runtime` field + boot seams (`createServerFn`, `listenFn`, `recoverPersistedDiscussFn`, etc.). |
+| `recovery-core.ts` | Pure `planRecovery()` → `RecoveryPlan { register: RegisterAction[], cleanup: CleanupAction[] }`. Type-safe action classification. |
+| `idle-timer.ts` | `IdleTimer({ time: RuntimeTimePort, timeoutMs })`: time-injectable idle tracking. |
+| `backend-lock.ts` | Backend singleton lock with `BackendLockRuntime` (storage + paths + time + ownership verifier). |
+| `host-manager.ts` | Provider host runtime management (runtime-backed spawn) |
 | `event-bus.ts` | Typed backend event bus |
-| `progress-store.ts` | Job status/progress/result persistence |
-| `session-manager.ts` | Persisted provider sessions with agent profile storage and cross-shard `getById()` |
-| `session-index.ts` | Namespace-aware session indexing (authoritative on stored `backendNamespace`) |
-| `resolver.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
+| `progress-store.ts` | Namespace-bound job persistence. Constructor: `(namespace, runtime, eventBus?)`. Lazy hydration via `ensureHydrated()`. Instance-scoped `enqueueSequence`. |
+| `session-manager.ts` | Persisted provider sessions. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
+| `session-index.ts` | Namespace-aware session indexing |
+| `agent-resolution.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
 | `instruction.ts` | Converts resolved content into provider instructions |
 | `tool-response.ts` | Shared domain result contract used by HTTP routes |
 | `discuss-tools.ts` | Dedicated discuss action handlers for `/discuss/:action` |
@@ -103,13 +107,18 @@ Key modules and their roles in the current Coral runtime.
 
 | Module | Responsibility |
 | --- | --- |
-| `src/shared/utils.ts` | Shared utility helpers such as `assertOwnerId()`, `collectCoralEnv()`, `readBundleHash()`, `isRecord()`, `tryExclusiveWrite()` |
+| `src/shared/utils.ts` | Shared utility helpers: `readBundleHash()`, `readBuildFlavor()`, `isRecord()`, `nowIsoString()` |
+| `src/shared/env-sanitize.ts` | Pure env sanitization: ARG_MAX budget resolution, CORAL_* stripping, env shedding |
 | `src/shared/types.ts` | Shared runtime contracts: jobs, sessions, wait events, workflow metadata |
 | `src/shared/session-entry.ts` | Session contract validation and lenient reading |
-| `src/shared/fs-lock.ts` | Cross-process directory locking |
+| `src/shared/fs-lock.ts` | Cross-process directory locking (runtime-aware async path + legacy sync path) |
+| `src/shared/file-tail.ts` | Incremental file tailing for progress streams (runtime-backed storage) |
+| `src/shared/child-env.ts` | `buildChildEnv()` for appserver provider (delegates to env-sanitize.ts) |
+| `src/shared/node-process.ts` | Client-side PID liveness check (EPERM-aware) |
+| `src/shared/test-deferred.ts` | Shared test utility: `createDeferred<T>()` |
 | `src/shared/sse-parser.ts` | SSE and HTTP parsing helpers for wait/follow flows |
-| `src/infra/paths.ts` | Canonical path resolution for runtime data |
-| `src/infra/backend-info.ts` | Backend connection info persistence |
+| `src/infra/paths.ts` | Canonical path resolution + `setBuildFlavor()`/`currentBuildFlavor()` for KB isolation |
+| `src/infra/backend-info.ts` | Backend connection info persistence (`BackendInfo` includes `flavor` field) |
 
 ## Dependency Outline
 

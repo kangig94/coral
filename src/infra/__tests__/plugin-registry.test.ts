@@ -1,5 +1,5 @@
 import type * as NodeFs from 'node:fs';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -162,7 +162,15 @@ describe('createPluginRegistry', () => {
       },
     });
 
-    const registry = createPluginRegistry();
+    const registry = createPluginRegistry({
+      storage: {
+        readFileSync: (path, encoding) => readFileSync(path, encoding),
+        existsSync: (path) => existsSync(path),
+      },
+      env: {
+        get: (key) => process.env[key],
+      },
+    });
 
     expect(registry.discoverPluginRoot('foo')).toBe(cachedRoot);
     expect(registry.discoverPluginRoot('foo')).toBe(cachedRoot);

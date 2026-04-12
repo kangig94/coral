@@ -22,7 +22,8 @@ Claude Code plugin providing structured agents, Codex and Claude CLI integration
 
 **Build Commands**:
 ```bash
-npm run build        # tsc + esbuild bundle
+npm run build        # tsc + esbuild bundle (prod flavor)
+npm run build:dev    # tsc + esbuild bundle (dev flavor)
 npm test             # vitest run
 npm run dev          # tsc --watch
 ```

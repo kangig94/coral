@@ -4,6 +4,9 @@
       "Bash(node *coral-cli*)"
     ]
   },
+  "env": {
+    "CORAL_FLAVOR": "dev"
+  },
   "hooks": {
     "SessionStart": [
       {

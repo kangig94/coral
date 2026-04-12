@@ -14,7 +14,7 @@
 |-----------|-------|----------|-------------------|
 | `src/bridge/` | L2 | Legacy transport bridge pending deletion | Transitional only — do not add new dependencies or features here |
 | `src/cli/` | L2 | Commander CLI client (parallel Bash-tool client) | CLI wiring — changes affect CLI subcommands, not backend logic |
-| `src/execution/` | L1 | Persistent HTTP backend daemon (lifecycle, routing, service, engine, sessions) | Backend core — changes affect all providers and job lifecycle |
+| `src/execution/` | L1 | Persistent HTTP backend daemon (runtime, lifecycle, routing, service, engine, sessions, recovery-core) | Backend core — all I/O routes through `Runtime` interface (6 subports: time, storage, paths, process, ids, env) |
 | `src/execution/discuss/` | L1 | Discuss runtime (operations, loop, subflows, persistence, registry) | Discuss runtime — imperative shell around the discuss domain core |
 | `src/providers/` | L0 | Provider adapter system (registry, bootstrap, types) | Adapter framework — changes affect provider discovery and wiring |
 | `src/providers/codex/` | L0 | Codex adapter (schemas, executor, parser, detection) | Provider adapter — preserve Codex wire-compatibility |
@@ -22,7 +22,7 @@
 | `src/discuss/` | L0 | Domain core: state machine, reducer, events, projections, schemas | Functional core — pure state functions, zero I/O |
 | `src/kb/` | L0 | Knowledge base: search, mutation, curation, Orama indexing | KB domain — changes affect search ranking and note lifecycle |
 | `src/workflow/` | L0 | Pipeline executor: parser, AST, launch/retry/wait | Workflow engine — dependency-injected via ExecutionService |
-| `src/shared/` | L0 | Shared utilities (schemas, types, SSE parser, neutral helpers) | Changes affect CLI, execution, and provider consumers |
+| `src/shared/` | L0 | Shared utilities (schemas, types, SSE parser, env-sanitize, test-deferred, node-process) | Changes affect CLI, execution, and provider consumers |
 | `src/infra/` | L0 | Path resolution, backend connection info | Infrastructure — changes affect all layers |
 | `src/client/` | L0 | Public barrel for external consumers (readers, discuss DTOs, lifecycle) | Public API surface — changes affect coral-reef and CLI |
 | `agents/` | — | Agent markdown definitions (Claude-native + Codex delegation + discuss) | Follow agent template structure |
@@ -38,6 +38,10 @@ Key rules:
 
 ## Module Structure
 
-Dependency direction is strict: `execution/server.ts` is the backend daemon composition root (HTTP server, dedicated routes, job lifecycle); `cli/bootstrap.ts` is the CLI client entry point; plugin skills and hooks invoke CLI surfaces rather than backend internals directly. Lower modules never import from upper modules. See `docs/architecture.md` for the current dependency graph.
+Dependency direction is strict: `execution/server.ts` is the backend daemon composition root; `cli/bootstrap.ts` is the CLI client entry point; plugin skills and hooks invoke CLI surfaces rather than backend internals directly. Lower modules never import from upper modules. See `docs/architecture.md` for the current dependency graph.
+
+The backend execution layer follows a **single Runtime world** pattern (FoundationDB-style): `execution/runtime.ts` defines 6 I/O subports (`time`, `storage`, `paths`, `process`, `ids`, `env`), and `createBackendServer()` swaps the entire world once at the composition root. All ~25 execution modules route I/O through this interface. `SimulationRuntime` provides deterministic virtual implementations for testing.
 
 The discuss system follows a **Functional Core / Imperative Shell** pattern: `src/discuss/state-machine.ts` and `src/discuss/reducer.ts` contain pure state transitions with zero I/O; `src/execution/discuss/` handles all runtime I/O, persistence, and loop control.
+
+The recovery system follows the same pattern: `execution/recovery-core.ts` contains pure `planRecovery()` returning `RecoveryPlan { register, cleanup }`; `execution/lifecycle.ts` applies the plan imperatively.
