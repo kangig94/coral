@@ -182,7 +182,7 @@ describe('execution SessionIndex', () => {
       'utf-8',
     );
 
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('ns-visible');
     progressStore.initJob({
       jobId: 'job-visible',
       sessionId: visible.sessionId,

@@ -9,7 +9,7 @@
  */
 
 import type { Server, ServerResponse } from 'node:http';
-import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -34,13 +34,14 @@ import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { type RecoveryCapableService } from './service.js';
 import {
   isAppServerRuntime,
-  belongsToNamespace,
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
+  type PersistedExitRecord,
   type PersistedLaunchRecord,
   type PersistedRuntimeRecord,
   type PersistedStatusRecord,
+  type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
 import { createCurateScheduler } from '../kb/curate/scheduler.js';
@@ -50,6 +51,7 @@ import type { KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
+import { planRecovery, type JobStoreSnapshot, type RecoveryAction, type RecoveryInvariants } from './recovery-core.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,7 +61,6 @@ export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
-export const ORPHANED_JOB_NOTICE = 'Unclean shutdown - orphaned job';
 export const OLD_FORMAT_NOTICE =
   'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
 export const GHOST_LAUNCH_NOTICE =
@@ -92,16 +93,6 @@ export class StartupInterruptedError extends Error {
     this.name = 'StartupInterruptedError';
   }
 }
-
-export type RecoveryClass =
-  | 'incompatible'
-  | 'queued'
-  | 'running'
-  | 'terminal'
-  | 'incomplete'
-  | 'stale_dead'
-  | 'stale_running'
-  | null;
 
 // ---------------------------------------------------------------------------
 // Standalone helpers (pure functions, no closure state)
@@ -169,16 +160,6 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): P
   return results;
 }
 
-export function hasJobDir(progressStore: ProgressStore, jobId: string): boolean {
-  try {
-    statSync(progressStore.jobDir(jobId));
-    return true;
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return false;
-    throw error;
-  }
-}
-
 export function readSessionRefs(shardDir: string): Array<{ sessionId: string; provider: string }> {
   try {
     return readdirSync(shardDir, { withFileTypes: true })
@@ -201,50 +182,6 @@ export function readSessionRefs(shardDir: string): Array<{ sessionId: string; pr
   }
 }
 
-/**
- * Classify a job for recovery purposes.
- * - 'incompatible': live phase but missing launch.json (predates durable snapshot system)
- * - 'terminal': already finished, no recovery needed
- * - 'incomplete': launch.json exists but no status record (partial admission)
- * - 'queued': launch.json exists, phase is queued, no runtime.json yet
- * - 'running': launch.json + runtime.json exist, phase is running/launching, process may be alive
- * - 'stale_dead': like running but exit.json already written (process exited uncleanly)
- * - 'stale_running': launch.json exists, phase is launching/running, but runtime.json was never written
- * - null: unrecognized state
- */
-export function classifyRecoverableJob(progressStore: ProgressStore, jobId: string): RecoveryClass {
-  const status = progressStore.readStatus(jobId);
-  const hasLaunch = progressStore.hasLaunchRecord(jobId);
-
-  // Incomplete admission: launch.json exists but no status.json (crash between writes)
-  if (!status) return hasLaunch ? 'incomplete' : null;
-
-  const hasRuntime = progressStore.hasRuntimeRecord(jobId);
-  const hasExit = progressStore.hasExitRecord(jobId);
-
-  // Terminal jobs need no recovery
-  if (isTerminalPhase(status.phase)) return 'terminal';
-
-  // Incompatible old-format: live phase but no launch.json
-  if (isLivePhase(status.phase) && !hasLaunch) return 'incompatible';
-
-  // Queued recoverable: launch.json exists, phase is queued, no runtime.json
-  if (hasLaunch && status.phase === 'queued' && !hasRuntime) return 'queued';
-
-  // Ghost launch: launch.json exists, job entered a live launch phase, but wrapper never committed runtime.json
-  if (hasLaunch && !hasRuntime && (status.phase === 'launching' || status.phase === 'running')) {
-    return 'stale_running';
-  }
-
-  // Running recoverable: launch.json and runtime.json exist, phase is running/launching
-  if (hasLaunch && hasRuntime && (status.phase === 'running' || status.phase === 'launching')) {
-    if (hasExit) return 'stale_dead';
-    return 'running';
-  }
-
-  return null;
-}
-
 export function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
@@ -265,44 +202,6 @@ export function markJobAsError(
     progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
   } catch {
     progressStore.markTerminalStatus(status.jobId, terminalResult, 'error');
-  }
-}
-
-export function recoverOrphanedJobs(
-  progressStore: ProgressStore,
-  namespace: string,
-  log: (message: string) => void,
-  eventBus: TypedEventBus,
-): void {
-  for (const shardDir of SessionManager.listShards()) {
-    try {
-      const sessionManager = SessionManager.openShard(shardDir, eventBus);
-      for (const sessionRef of readSessionRefs(shardDir)) {
-        try {
-          const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
-          if (!session?.activeJobId) continue;
-          if (hasJobDir(progressStore, session.activeJobId)) continue;
-          sessionManager.releaseJob(session.sessionId, session.activeJobId);
-          log(`Recovered orphaned session claim: ${session.sessionId}\n`);
-        } catch (err) {
-          log(`Failed to recover orphaned session ${sessionRef.sessionId}: ${formatError(err)}\n`);
-        }
-      }
-    } catch (err) {
-      log(`Failed to scan session shard ${shardDir}: ${formatError(err)}\n`);
-    }
-  }
-
-  for (const status of listLiveJobs(progressStore, namespace)) {
-    try {
-      const notice = progressStore.hasLaunchRecord(status.jobId) ? ORPHANED_JOB_NOTICE : OLD_FORMAT_NOTICE;
-      markJobAsError(progressStore, status, notice, log);
-      const sessionManager = new SessionManager(status.projectRoot, eventBus);
-      sessionManager.releaseJob(status.sessionId, status.jobId);
-      log(`Recovered orphaned job: ${status.jobId}\n`);
-    } catch (err) {
-      log(`Failed to recover orphaned job ${status.jobId}: ${formatError(err)}\n`);
-    }
   }
 }
 
@@ -437,7 +336,6 @@ export type LifecycleDeps = {
   readonly removeLockIfOwnerFn: typeof removeLockIfOwner;
 
   // Recovery hooks (injectable for tests)
-  readonly recoverOrphanedJobsFn: (namespace: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
@@ -489,7 +387,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     removeLockIfOwnerFn,
-    recoverOrphanedJobsFn: _recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     terminateAllFn,
@@ -554,6 +451,173 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       await providerHostManager.drainForHandoff();
     } catch (error: unknown) {
       log(`Failed to drain provider servers during handoff: ${formatError(error)}\n`);
+    }
+  }
+
+  function buildRecoverySnapshot(
+    progressStore: ProgressStore,
+    namespace: string,
+    eventBus: TypedEventBus,
+  ): JobStoreSnapshot {
+    const jobIds = Object.freeze([...progressStore.listJobIds()]);
+    const hasLaunchByJob = new Map<string, boolean>();
+    const hasRuntimeByJob = new Map<string, boolean>();
+    const hasExitByJob = new Map<string, boolean>();
+    const statusesByJob = new Map<string, PersistedStatusRecord | null>();
+    const launchesByJob = new Map<string, PersistedLaunchRecord | null>();
+    const runtimesByJob = new Map<string, PersistedRuntimeRecord | null>();
+    const exitsByJob = new Map<string, PersistedExitRecord | null>();
+    const terminalPayloadsByJob = new Map<string, TerminalResult | null>();
+
+    for (const jobId of jobIds) {
+      let status = progressStore.readStatus(jobId);
+      if (status && isLivePhase(status.phase) && readBackendNamespace(status) === null) {
+        status = withBackendNamespace(status, namespace);
+        progressStore.writeStatus(jobId, status);
+      }
+
+      hasLaunchByJob.set(jobId, progressStore.hasLaunchRecord(jobId));
+      hasRuntimeByJob.set(jobId, progressStore.hasRuntimeRecord(jobId));
+      hasExitByJob.set(jobId, progressStore.hasExitRecord(jobId));
+      statusesByJob.set(jobId, status);
+      launchesByJob.set(jobId, progressStore.readLaunchRecord(jobId));
+      runtimesByJob.set(jobId, progressStore.readRuntimeRecord(jobId));
+      exitsByJob.set(jobId, progressStore.readExitRecord(jobId));
+      terminalPayloadsByJob.set(jobId, progressStore.readTerminalPayload(jobId));
+    }
+
+    const sessionRefs: Array<{ shardDir: string; sessionId: string; provider: string }> = [];
+    const sessionsByRef = new Map<string, SessionEntry | null>();
+    const sessionKey = (shardDir: string, provider: string, sessionId: string): string =>
+      `${shardDir}\u0000${provider}\u0000${sessionId}`;
+
+    for (const shardDir of SessionManager.listShards()) {
+      try {
+        const sessionManager = SessionManager.openShard(shardDir, eventBus);
+        for (const sessionRef of readSessionRefs(shardDir)) {
+          try {
+            sessionRefs.push({ shardDir, ...sessionRef });
+            sessionsByRef.set(
+              sessionKey(shardDir, sessionRef.provider, sessionRef.sessionId),
+              sessionManager.get(sessionRef.provider, sessionRef.sessionId),
+            );
+          } catch (error: unknown) {
+            log(`Failed to check session ${sessionRef.sessionId}: ${formatError(error)}\n`);
+          }
+        }
+      } catch (error: unknown) {
+        log(`Failed to scan session shard ${shardDir}: ${formatError(error)}\n`);
+      }
+    }
+
+    const snapshot: JobStoreSnapshot = {
+      jobIds,
+      currentNamespace: namespace,
+      hasLaunch: (jobId: string): boolean => hasLaunchByJob.get(jobId) === true,
+      hasRuntime: (jobId: string): boolean => hasRuntimeByJob.get(jobId) === true,
+      hasExit: (jobId: string): boolean => hasExitByJob.get(jobId) === true,
+      readStatus: (jobId: string): PersistedStatusRecord | null => statusesByJob.get(jobId) ?? null,
+      readLaunch: (jobId: string): PersistedLaunchRecord | null => launchesByJob.get(jobId) ?? null,
+      readRuntime: (jobId: string): PersistedRuntimeRecord | null => runtimesByJob.get(jobId) ?? null,
+      readExit: (jobId: string): PersistedExitRecord | null => exitsByJob.get(jobId) ?? null,
+      readTerminalPayload: (jobId: string): TerminalResult | null => terminalPayloadsByJob.get(jobId) ?? null,
+      listSessionRefs: (): Array<{ shardDir: string; sessionId: string; provider: string }> => [...sessionRefs],
+      readSession: (shardDir: string, provider: string, sessionId: string): SessionEntry | null =>
+        sessionsByRef.get(sessionKey(shardDir, provider, sessionId)) ?? null,
+    };
+
+    return Object.freeze(snapshot);
+  }
+
+  function applyRecoveryAction(
+    action: RecoveryAction,
+    progressStore: ProgressStore,
+    recoveryRegistry: RecoveryRegistry,
+    queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }>,
+    runningRecoverable: Array<{
+      jobId: string;
+      launchRecord: PersistedLaunchRecord;
+      runtimeRecord: PersistedRuntimeRecord;
+    }>,
+    log: (message: string) => void,
+    eventBus: TypedEventBus,
+  ): void {
+    switch (action.type) {
+      case 'deleteIncompleteDir':
+        rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
+        log(`Deleted incomplete admission: ${action.jobId}\n`);
+        return;
+      case 'markError': {
+        markJobAsError(progressStore, action.status, action.notice, log);
+        new SessionManager(action.status.projectRoot, eventBus).releaseJob(action.status.sessionId, action.status.jobId);
+        if (action.notice === OLD_FORMAT_NOTICE) {
+          log(`Marked incompatible old-format job: ${action.jobId}\n`);
+        } else if (action.notice === GHOST_LAUNCH_NOTICE) {
+          log(`Marked ghost launch job: ${action.jobId}\n`);
+        } else {
+          log(`Marked recovery job as error: ${action.jobId}\n`);
+        }
+        return;
+      }
+      case 'registerQueued':
+        recoveryRegistry.register(action.jobId, action.launchRecord);
+        queuedRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord });
+        return;
+      case 'registerRunning':
+        if (isAppServerRuntime(action.runtimeRecord)) {
+          const runtimeRecord = action.runtimeRecord;
+          recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () => {
+            const ctx: CallerContext = { projectRoot: action.launchRecord.projectRoot, pluginRoot, coralEnv: {} };
+            const service = getRecoveryService(ctx);
+            void service.interruptAppServerJob(action.launchRecord, runtimeRecord).catch((error: unknown) => {
+              log(`Failed to interrupt recovered app-server job ${action.jobId}: ${formatError(error)}\n`);
+            });
+          });
+        } else {
+          recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
+        }
+        runningRecoverable.push({
+          jobId: action.jobId,
+          launchRecord: action.launchRecord,
+          runtimeRecord: action.runtimeRecord,
+        });
+        return;
+      case 'releaseSessionClaim': {
+        SessionManager.openShard(action.shardDir, eventBus).releaseJob(action.sessionId, action.jobId);
+        const status = progressStore.readStatus(action.jobId);
+        if (status && isTerminalPhase(status.phase)) {
+          log(`Released terminal session claim: ${action.sessionId}\n`);
+        } else {
+          log(`Released orphaned session claim: ${action.sessionId}\n`);
+        }
+        return;
+      }
+    }
+  }
+
+  function logRecoveryActionFailure(action: RecoveryAction, error: unknown, log: (message: string) => void): void {
+    switch (action.type) {
+      case 'deleteIncompleteDir':
+        log(`Failed to delete incomplete admission ${action.jobId}: ${formatError(error)}\n`);
+        return;
+      case 'markError':
+        if (action.notice === OLD_FORMAT_NOTICE) {
+          log(`Failed to handle incompatible job ${action.jobId}: ${formatError(error)}\n`);
+        } else if (action.notice === GHOST_LAUNCH_NOTICE) {
+          log(`Failed to handle ghost launch job ${action.jobId}: ${formatError(error)}\n`);
+        } else {
+          log(`Failed to handle recovery error-mark job ${action.jobId}: ${formatError(error)}\n`);
+        }
+        return;
+      case 'registerQueued':
+        log(`Failed to register queued recovery job ${action.jobId}: ${formatError(error)}\n`);
+        return;
+      case 'registerRunning':
+        log(`Failed to register running recovery job ${action.jobId}: ${formatError(error)}\n`);
+        return;
+      case 'releaseSessionClaim':
+        log(`Failed to release session claim ${action.sessionId}: ${formatError(error)}\n`);
+        return;
     }
   }
 
@@ -700,15 +764,31 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
                     );
                   });
               } else {
-                service.completeRecoveredJob(
-                  jobId,
-                  launchRecord.sessionId,
-                  {
-                    content: '',
-                    exitCode: exitRecord.exitCode,
-                  },
-                  exitRecord.exitCode === 0 ? 'completed' : 'error',
-                );
+                const persistedPayload = progressStore.readTerminalPayload(jobId);
+                if (persistedPayload !== null) {
+                  const phase: 'aborted' | 'completed' | 'error' =
+                    persistedPayload.aborted === true ? 'aborted' : exitRecord.exitCode === 0 ? 'completed' : 'error';
+                  const payload: TerminalResult =
+                    persistedPayload.exitCode === undefined
+                      ? { ...persistedPayload, exitCode: exitRecord.exitCode }
+                      : persistedPayload;
+                  // NOTE: `conversationRef` is deliberately omitted. `TerminalResult`
+                  // has no `conversationRef` channel, and `completeRecoveredJob`
+                  // treats `{ conversationRef? | nonResumable? }` as mutually exclusive.
+                  service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, {
+                    nonResumable: persistedPayload.nonResumable === true,
+                  });
+                } else {
+                  service.completeRecoveredJob(
+                    jobId,
+                    launchRecord.sessionId,
+                    {
+                      content: '',
+                      exitCode: exitRecord.exitCode,
+                    },
+                    exitRecord.exitCode === 0 ? 'completed' : 'error',
+                  );
+                }
               }
             } else {
               // PID dead + no exit.json = wrapper lost
@@ -886,120 +966,52 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Scan recoverable jobs and install recovery registry + launch fence
       runtimeState.setLaunchFenceActive(true);
       recoveryRegistry = new RecoveryRegistry();
-      const incompatibleJobs: PersistedStatusRecord[] = [];
-      const ghostLaunchJobs: PersistedStatusRecord[] = [];
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
       const runningRecoverable: Array<{
         jobId: string;
         launchRecord: PersistedLaunchRecord;
         runtimeRecord: PersistedRuntimeRecord;
       }> = [];
+      const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
+      const invariants: RecoveryInvariants = {
+        peerDaemonAlive: false,
+        kbInitialized: true,
+      };
+      const actions = planRecovery(snapshot, invariants);
 
-      for (const jobId of progressStore.listJobIds()) {
-        const preStatus = progressStore.readStatus(jobId);
-        if (preStatus && !belongsToNamespace(preStatus, namespace)) continue;
-
-        const classification = classifyRecoverableJob(progressStore, jobId);
-        switch (classification) {
-          case 'incompatible':
-          case 'stale_running': {
-            const status = progressStore.readStatus(jobId);
-            if (status) {
-              if (classification === 'incompatible') {
-                incompatibleJobs.push(status);
-              } else {
-                ghostLaunchJobs.push(status);
-              }
-            }
-            continue;
+      for (const action of actions) {
+        if (action.type === 'registerRunning' || action.type === 'registerQueued') {
+          try {
+            applyRecoveryAction(
+              action,
+              progressStore,
+              recoveryRegistry,
+              queuedRecoverable,
+              runningRecoverable,
+              log,
+              eventBus,
+            );
+          } catch (error: unknown) {
+            logRecoveryActionFailure(action, error, log);
           }
-          case 'incomplete':
-            // Crash between launch.json write and status.json — delete directory
-            try {
-              rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
-            } catch {
-              /* best-effort */
-            }
-            log(`Deleted incomplete admission: ${jobId}\n`);
-            continue;
-          case 'queued': {
-            const launchRecord = progressStore.readLaunchRecord(jobId);
-            if (launchRecord) {
-              queuedRecoverable.push({ jobId, launchRecord });
-              recoveryRegistry.register(jobId, launchRecord);
-            }
-            continue;
-          }
-          case 'running':
-          case 'stale_dead': {
-            const launchRecord = progressStore.readLaunchRecord(jobId);
-            const runtimeRecord = progressStore.readRuntimeRecord(jobId);
-            if (launchRecord && runtimeRecord) {
-              runningRecoverable.push({ jobId, launchRecord, runtimeRecord });
-              if (isAppServerRuntime(runtimeRecord)) {
-                recoveryRegistry.register(jobId, launchRecord, runtimeRecord, () => {
-                  const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
-                  const service = getRecoveryService(ctx);
-                  void service.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
-                    log(`Failed to interrupt recovered app-server job ${jobId}: ${formatError(error)}\n`);
-                  });
-                });
-              } else {
-                recoveryRegistry.register(jobId, launchRecord, runtimeRecord);
-              }
-            }
-            continue;
-          }
-          default:
-            continue;
         }
       }
 
-      // Mark incompatible old-format jobs and release their session claims
-      for (const status of incompatibleJobs) {
-        try {
-          markJobAsError(progressStore, status, OLD_FORMAT_NOTICE, log);
-          const sessionManager = new SessionManager(status.projectRoot, eventBus);
-          sessionManager.releaseJob(status.sessionId, status.jobId);
-          log(`Marked incompatible old-format job: ${status.jobId}\n`);
-        } catch (err) {
-          log(`Failed to handle incompatible job ${status.jobId}: ${formatError(err)}\n`);
-        }
-      }
-
-      for (const status of ghostLaunchJobs) {
-        try {
-          markJobAsError(progressStore, status, GHOST_LAUNCH_NOTICE, log);
-          const sessionManager = new SessionManager(status.projectRoot, eventBus);
-          sessionManager.releaseJob(status.sessionId, status.jobId);
-          log(`Marked ghost launch job: ${status.jobId}\n`);
-        } catch (err) {
-          log(`Failed to handle ghost launch job ${status.jobId}: ${formatError(err)}\n`);
-        }
-      }
-
-      // Release terminal-but-still-claimed sessions
-      for (const shardDir of SessionManager.listShards()) {
-        try {
-          const sessionManager = SessionManager.openShard(shardDir, eventBus);
-          for (const sessionRef of readSessionRefs(shardDir)) {
-            try {
-              const session = sessionManager.get(sessionRef.provider, sessionRef.sessionId);
-              if (!session?.activeJobId) continue;
-              const jobStatus = progressStore.readStatus(session.activeJobId);
-              if (jobStatus && isTerminalPhase(jobStatus.phase)) {
-                sessionManager.releaseJob(session.sessionId, session.activeJobId);
-                log(`Released terminal session claim: ${session.sessionId}\n`);
-              } else if (!hasJobDir(progressStore, session.activeJobId)) {
-                sessionManager.releaseJob(session.sessionId, session.activeJobId);
-                log(`Released orphaned session claim: ${session.sessionId}\n`);
-              }
-            } catch (err) {
-              log(`Failed to check session ${sessionRef.sessionId}: ${formatError(err)}\n`);
-            }
+      for (const action of actions) {
+        if (action.type !== 'registerRunning' && action.type !== 'registerQueued') {
+          try {
+            applyRecoveryAction(
+              action,
+              progressStore,
+              recoveryRegistry,
+              queuedRecoverable,
+              runningRecoverable,
+              log,
+              eventBus,
+            );
+          } catch (error: unknown) {
+            logRecoveryActionFailure(action, error, log);
           }
-        } catch (err) {
-          log(`Failed to scan session shard ${shardDir}: ${formatError(err)}\n`);
         }
       }
 

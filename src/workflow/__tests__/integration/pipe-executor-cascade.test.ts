@@ -81,7 +81,7 @@ describe('pipe executor coral cascade invariant', () => {
       const executionSvc = new ExecutionService(
         { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
         {
-          progressStore: new ProgressStore(eventBus),
+          progressStore: new ProgressStore('test-ns', eventBus),
           bundleHash: 'pipe-executor-cascade-test',
           providerHostManager: createProviderHostManager({
             spawnProviderServer: async () => {

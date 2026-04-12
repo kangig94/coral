@@ -215,7 +215,7 @@ describe('agent wire contract', () => {
 
     const launchCoordinator = new LaunchCoordinator();
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore(eventBus);
+    const progressStore = new ProgressStore('test-ns', eventBus);
     const sessionIndex = new SessionIndex();
     const pluginRegistry = createPluginRegistry();
     const providerHostManager = createProviderHostManager({

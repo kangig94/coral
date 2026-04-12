@@ -51,7 +51,6 @@ import {
   closeServer as defaultCloseServer,
   createKbSubsystem as defaultCreateKbSubsystem,
   listen as defaultListen,
-  recoverOrphanedJobs,
   cleanupStaleJobs,
   markJobsAsError,
   createLifecycle,
@@ -81,7 +80,6 @@ type BackendServerOptions = {
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
   closeServerFn?: (server: Server) => Promise<void>;
-  recoverOrphanedJobsFn?: (namespace: string) => void;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   terminateAllFn?: () => void;
@@ -124,7 +122,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const pluginRegistry = createPluginRegistry();
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore = options.progressStore ?? new ProgressStore(eventBus);
+  const progressStore = options.progressStore ?? new ProgressStore(namespace, eventBus);
   const providerHostManager =
     options.providerHostManager ??
     createProviderHostManager({
@@ -146,11 +144,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
   const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
-  const recoverOrphanedJobsFn =
-    options.recoverOrphanedJobsFn ??
-    ((currentNamespace: string) => {
-      recoverOrphanedJobs(progressStore, currentNamespace, log, eventBus);
-    });
   const cleanupStaleJobsFn =
     options.cleanupStaleJobsFn ??
     ((currentBundleHash: string) => {
@@ -427,7 +420,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     removeLockIfOwnerFn,
-    recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     terminateAllFn,

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { JOBS_DIR } from '../infra/paths.js';
 import {
   isLivePhase,
+  readBackendNamespace,
   type JobKind,
   type JobPhase,
   type LaunchState,
@@ -66,6 +67,7 @@ export function createReplayCursor(): ReplayCursor {
 export { formatElapsed } from '../shared/format-progress.js';
 
 export class ProgressStore {
+  private readonly namespace: string;
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
@@ -76,18 +78,56 @@ export class ProgressStore {
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
 
-  constructor(eventBus: TypedEventBus = new TypedEventBus()) {
+  /**
+   * One store per backend namespace. The constructor scans JOBS_DIR and
+   * adopts only jobs that either (a) match this namespace, or (b) are legacy
+   * records with no namespace field (adoptable on first access). Foreign
+   * namespaces are excluded at discovery time, so every consumer of this
+   * store operates on a namespace-bounded view by construction — no
+   * downstream filter is required to avoid cross-namespace contamination.
+   */
+  constructor(namespace: string, eventBus: TypedEventBus = new TypedEventBus()) {
+    this.namespace = namespace;
     this.eventBus = eventBus;
     try {
       for (const entry of readdirSync(JOBS_DIR, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          this.knownJobIds.add(entry.name);
-        }
+        if (!entry.isDirectory()) continue;
+        if (!this.ownsJobOnDisk(entry.name)) continue;
+        this.knownJobIds.add(entry.name);
       }
     } catch (error: unknown) {
       if (!isNoEntryError(error)) {
         throw error;
       }
+    }
+  }
+
+  /** Returns the backend namespace this store is bound to. */
+  getNamespace(): string {
+    return this.namespace;
+  }
+
+  /**
+   * Decide whether a job directory on disk should be owned by this store.
+   *
+   * Inclusion rules (all satisfy "this store may act on the job"):
+   *   - status namespace matches this store            → my job
+   *   - status namespace is null (legacy)              → adoptable
+   *   - status is unreadable or corrupt                → garbage this store
+   *     may need to clean up (ownership undetermined; treated as adoptable
+   *     so that recovery can reclaim or delete the directory)
+   *
+   * The only exclusion is a readable status with an explicit foreign
+   * namespace, which belongs to another live store and must not be touched.
+   */
+  private ownsJobOnDisk(jobId: string): boolean {
+    try {
+      const data = readFileSync(join(JOBS_DIR, jobId, STATUS_FILE), 'utf-8');
+      const record = JSON.parse(data) as PersistedStatusRecord;
+      const ns = readBackendNamespace(record);
+      return ns === null || ns === this.namespace;
+    } catch {
+      return true;
     }
   }
 
@@ -446,6 +486,39 @@ export class ProgressStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Read the last terminal payload from progress.jsonl. Returns null if not found or unreadable.
+   *
+   * Per-line parse failures are skipped silently — a malformed tail line (e.g. partial write
+   * during a daemon crash) must NOT discard an already-found earlier terminal payload, since
+   * that would silently re-introduce the Case (a) content-loss bug under a narrower failure mode.
+   */
+  readTerminalPayload(jobId: string): TerminalResult | null {
+    let data: string;
+    try {
+      data = readFileSync(this.progressPath(jobId), 'utf-8');
+    } catch {
+      return null;
+    }
+    if (data.length === 0) return null;
+
+    let lastTerminal: TerminalResult | null = null;
+    for (const line of data.split('\n')) {
+      if (line.length === 0) continue;
+      let record: PersistedProgressRecord;
+      try {
+        record = JSON.parse(line) as PersistedProgressRecord;
+      } catch {
+        continue;
+      }
+      if (record !== null && typeof record === 'object' && record.type === 'terminal') {
+        lastTerminal = 'result' in record ? (record.result ?? null) : null;
+      }
+    }
+
+    return lastTerminal;
   }
 
   /** Write workflow-state.json checkpoint. Best-effort — missing job dir is not fatal. */

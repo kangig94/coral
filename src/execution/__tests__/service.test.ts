@@ -35,7 +35,7 @@ import {
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
-import { JOBS_DIR, jobResultPath, type ProgressStore } from '../progress-store.js';
+import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import { SessionManager } from '../session-manager.js';
 import type { CallerContext } from '../../shared/request-context.js';
@@ -120,7 +120,7 @@ function createService(
   } = {},
 ): ExecutionService {
   return new ExecutionService(ctx, {
-    progressStore: options.progressStore,
+    progressStore: options.progressStore ?? new ProgressStore('test-ns'),
     bundleHash: options.bundleHash,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ spawnProviderServer }),
     launchCoordinator,

@@ -56,7 +56,7 @@ import {
   type AcceptedAdmission,
   type ClaimJobOptions,
 } from './job-lifecycle-contracts.js';
-import { ProgressStore } from './progress-store.js';
+import type { ProgressStore } from './progress-store.js';
 import {
   parseAgentRef,
   resolveAgent,
@@ -275,7 +275,7 @@ function buildInterruptedAppServerReport(options: {
 }
 
 export type ExecutionServiceDeps = {
-  progressStore?: ProgressStore;
+  progressStore: ProgressStore;
   bundleHash?: string;
   providerHostManager: ProviderHostManager;
   launchCoordinator: LaunchCoordinator;
@@ -382,7 +382,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.abortRegistry = new AbortRegistry();
     this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
     this.bundleHash = deps.bundleHash ?? 'unknown';
-    this.progressStore = deps.progressStore ?? new ProgressStore(this.eventBus);
+    this.progressStore = deps.progressStore;
     this.providerHostManager = deps.providerHostManager;
     this.launchCoordinator = deps.launchCoordinator;
     this.providerRegistry = deps.providerRegistry;
