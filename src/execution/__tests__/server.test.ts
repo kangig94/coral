@@ -468,15 +468,19 @@ describe('execution backend server', () => {
 
   async function startBackendServer(overrides: Parameters<ServerModule['createBackendServer']>[0] = {}) {
     const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
+    const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
     controller = serverModule.createBackendServer({
-      instanceId: 'execution-backend-instance-1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+        ...bootOverrides,
+      },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
-      ...overrides,
+      ...restOverrides,
     });
     const started = await controller.start();
     return {
@@ -668,11 +672,13 @@ describe('execution backend server', () => {
       spawnProviderServer,
     });
     controller = serverModule.createBackendServer({
-      instanceId: 'execution-backend-instance-1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
       progressStore,
@@ -844,11 +850,13 @@ describe('execution backend server', () => {
 
     controller = serverModule.createBackendServer({
       pluginRoot,
-      instanceId: 'execution-backend-instance-1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
       createKbSubsystemFn,
       cleanupStaleJobsFn: () => {},
     });
@@ -3692,11 +3700,13 @@ describe('execution backend server', () => {
       const startupRegistry = createDiscussContextRegistry();
 
       controller = serverModule.createBackendServer({
-        instanceId: 'execution-backend-instance-1',
-        token: 'test-token',
-        version: '9.9.9',
-        bundleHash: 'testhash1234',
-        log: () => {},
+        bootSnapshot: {
+          instanceId: 'execution-backend-instance-1',
+          token: 'test-token',
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          log: () => {},
+        },
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,

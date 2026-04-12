@@ -95,12 +95,6 @@ export type BackendServerOptions = {
   bootSnapshot?: BackendBootSnapshot;
   progressStore?: ProgressStore;
   pluginRoot?: string;
-  version?: string;
-  bundleHash?: string;
-  instanceId?: string;
-  token?: string;
-  now?: () => number;
-  log?: (message: string) => void;
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
   createServerFn?: CreateServerFn;
@@ -221,12 +215,12 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
   const resolveProjectSourceFn = options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
-  const version = options.version ?? bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
-  const bundleHash = options.bundleHash ?? bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
+  const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
+  const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(resolvedPluginRoot);
   setBuildFlavor(flavor);
-  const instanceId = options.instanceId ?? bootSnapshot.instanceId ?? runtime.ids.uuid();
-  const token = options.token ?? bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
+  const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
+  const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
   const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
   const backendPid = bootSnapshot.pid ?? runtime.env.pid();
@@ -254,10 +248,9 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
   const sessionIndex = new SessionIndex(runtime);
-  const now = options.now ?? bootSnapshot.now ?? (() => runtime.time.now());
+  const now = bootSnapshot.now ?? (() => runtime.time.now());
   backendLog.init({ version, bundleHash });
   const log =
-    options.log ??
     bootSnapshot.log ??
     ((message: string) => {
       backendLog.raw(message);

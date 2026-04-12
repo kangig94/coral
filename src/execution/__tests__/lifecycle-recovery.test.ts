@@ -1655,11 +1655,13 @@ describe('lifecycle recovery characterization', () => {
 
     const controller = modules.serverModule.createBackendServer({
       pluginRoot,
-      instanceId: 'backend-recovery-window',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'backend-recovery-window',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
       progressStore,
       createExecutionService: (ctx) => getOrCreateService(ctx.projectRoot) as never,
       createKbSubsystemFn: async () => createMockKbSubsystem(),

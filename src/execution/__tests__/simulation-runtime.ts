@@ -1601,9 +1601,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     providerRegistry,
     providerHostManager,
     resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
-    version: DEFAULT_VERSION,
-    bundleHash: DEFAULT_BUNDLE_HASH,
     bootSnapshot: {
+      version: DEFAULT_VERSION,
+      bundleHash: DEFAULT_BUNDLE_HASH,
       flavor: 'dev',
       now: () => runtime.time.now(),
       pid: runtime.env.pid(),
