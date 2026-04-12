@@ -961,10 +961,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       for (const store of discussStores.values()) {
         store.dispose();
       }
-      runtimeState.setLifecycle('stopped');
-      removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
-      removeLockIfOwnerFn(pluginRoot, instanceId);
-      onStopped?.();
     })()
       .catch((error) => {
         onFatalShutdownError?.(error);
@@ -974,6 +970,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         runtimeState.setLifecycle('stopped');
         removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
         removeLockIfOwnerFn(pluginRoot, instanceId);
+        onStopped?.();
       });
 
     return shutdownPromise;

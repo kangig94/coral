@@ -76,39 +76,19 @@ renameSync(runtimeTmp, runtimeFinal);
 if (prompt) child.stdin.write(prompt);
 child.stdin.end();
 
-child.on('close', (code, signal) => {
+function writeExit(code, signal, exitCode) {
   try { closeSync(stdoutFd); } catch {}
   try { closeSync(stderrFd); } catch {}
-
-  const exitRecord = {
-    exitCode: code,
-    signal: signal || null,
-    endTime: new Date().toISOString(),
-  };
+  const exitRecord = { exitCode: code, signal: signal || null, endTime: new Date().toISOString() };
   const exitTmp = join(jobDir, 'exit.json.tmp');
   const exitFinal = join(jobDir, 'exit.json');
   writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
   renameSync(exitTmp, exitFinal);
+  process.exit(exitCode);
+}
 
-  process.exit(0);
-});
-
-child.on('error', () => {
-  try { closeSync(stdoutFd); } catch {}
-  try { closeSync(stderrFd); } catch {}
-
-  const exitRecord = {
-    exitCode: null,
-    signal: null,
-    endTime: new Date().toISOString(),
-  };
-  const exitTmp = join(jobDir, 'exit.json.tmp');
-  const exitFinal = join(jobDir, 'exit.json');
-  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
-  renameSync(exitTmp, exitFinal);
-
-  process.exit(1);
-});
+child.on('close', (code, signal) => writeExit(code, signal, 0));
+child.on('error', () => writeExit(null, null, 1));
 `.trim();
 
 export interface RuntimeTimerHandle {
@@ -583,7 +563,11 @@ function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err) {
+      if ((err as { code: string }).code === 'EPERM') return true;
+      if ((err as { code: string }).code === 'ESRCH') return false;
+    }
     return false;
   }
 }

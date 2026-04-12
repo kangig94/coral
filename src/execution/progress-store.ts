@@ -111,7 +111,7 @@ export class ProgressStore {
   }
 
   /**
-   * Decide whether a job directory on disk should be owned by this store.
+   * Read status.json from disk and return it if this store owns the job.
    *
    * Inclusion rules (all satisfy "this store may act on the job"):
    *   - status namespace matches this store            → my job
@@ -122,15 +122,19 @@ export class ProgressStore {
    *
    * The only exclusion is a readable status with an explicit foreign
    * namespace, which belongs to another live store and must not be touched.
+   *
+   * Returns the parsed record if owned (or null for corrupt/missing but owned),
+   * or undefined if the job belongs to a foreign namespace.
    */
-  private ownsJobOnDisk(jobId: string): boolean {
+  private readOwnedStatus(jobId: string): PersistedStatusRecord | null | undefined {
     try {
       const record = this.readStatusFromDisk(jobId);
-      if (!record) return true;
+      if (!record) return null;
       const ns = readBackendNamespace(record);
-      return ns === null || ns === this.namespace;
+      if (ns !== null && ns !== this.namespace) return undefined;
+      return record;
     } catch {
-      return true;
+      return null;
     }
   }
 
@@ -671,9 +675,9 @@ export class ProgressStore {
     try {
       for (const entry of this.storage.readdirSync(this.storage.jobsDir(), { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        if (!this.ownsJobOnDisk(entry.name)) continue;
+        const record = this.readOwnedStatus(entry.name);
+        if (record === undefined) continue;
         this.knownJobIds.add(entry.name);
-        const record = this.readStatusFromDisk(entry.name);
         if (record && !this.statusCache.has(entry.name)) {
           this.statusCache.set(entry.name, { ...record });
           if (isLivePhase(record.phase)) this.liveCount++;
