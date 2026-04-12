@@ -243,6 +243,43 @@ function detectCommandShape(tokens) {
   return null;
 }
 
+function detectWaitTimeoutSeconds(command) {
+  const tokens = tokenizeShell(command);
+  if (tokens === null || tokens.length < 3) return null;
+
+  let index = 2;
+  while (index < tokens.length) {
+    const width = getGlobalOptionWidth(tokens, index);
+    if (width === null) return null;
+    if (width > 0) { index += width; continue; }
+    break;
+  }
+
+  if (index >= tokens.length || tokens[index].value !== 'wait') return null;
+
+  const DEFAULT_WAIT_TIMEOUT = 600;
+
+  for (let i = index + 1; i < tokens.length; i += 1) {
+    if (isExactToken(tokens[i], '--timeout')) {
+      const next = tokens[i + 1];
+      if (next === undefined) return DEFAULT_WAIT_TIMEOUT;
+      const parsed = parseInt(next.value, 10);
+      return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+    }
+    const inline = getInlineValueSegments(tokens[i], '--timeout=');
+    if (inline !== null) {
+      const analysis = analyzeValueSegments(inline);
+      if (analysis.value !== undefined) {
+        const parsed = parseInt(analysis.value, 10);
+        return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+      }
+      return DEFAULT_WAIT_TIMEOUT;
+    }
+  }
+
+  return DEFAULT_WAIT_TIMEOUT;
+}
+
 function resolveExistingPath(candidate, cwd) {
   return existsSync(resolve(cwd, candidate));
 }
@@ -407,6 +444,13 @@ try {
   const commandSafeForShell = wrapUnsafeUnquotedTokens(commandWithInlineTextResolved);
 
   const updatedInput = { ...input.tool_input, command: commandSafeForShell };
+
+  const waitTimeoutSeconds = detectWaitTimeoutSeconds(commandSafeForShell);
+  if (waitTimeoutSeconds !== null) {
+    updatedInput.timeout = (waitTimeoutSeconds + 10) * 1000;
+    updatedInput.run_in_background = false;
+  }
+
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',

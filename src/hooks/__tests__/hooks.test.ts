@@ -694,6 +694,45 @@ describe('cli-resolve.mjs', () => {
     expect(tempPaths).toHaveLength(2);
     expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8')).sort()).toEqual(['ctx', 'do thing']);
   });
+
+  it('forces timeout and run_in_background on wait commands with explicit --timeout', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli wait --jobs jb-1 --timeout 30' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const { updatedInput } = output.hookSpecificOutput;
+    expect(updatedInput.timeout).toBe(40_000);
+    expect(updatedInput.run_in_background).toBe(false);
+  });
+
+  it('forces default timeout on wait commands without --timeout flag', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli wait --jobs jb-1' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const { updatedInput } = output.hookSpecificOutput;
+    expect(updatedInput.timeout).toBe(610_000);
+    expect(updatedInput.run_in_background).toBe(false);
+  });
+
+  it('does not force timeout on non-wait commands', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli codex architect -i "plan this"' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const { updatedInput } = output.hookSpecificOutput;
+    expect(updatedInput.timeout).toBeUndefined();
+    expect(updatedInput.run_in_background).toBeUndefined();
+  });
 });
 
 describe('session-start.mjs', () => {
