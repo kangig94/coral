@@ -8,7 +8,7 @@ import type {
   TerminalResult,
 } from '../../shared/types.js'
 import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from '../lifecycle.js'
-import type { JobStoreSnapshot, RecoveryAction, RecoveryInvariants } from '../recovery-core.js'
+import type { JobStoreSnapshot, RecoveryAction, RecoveryInvariants, RecoveryPlan } from '../recovery-core.js'
 import { planRecovery } from '../recovery-core.js'
 
 const NOW = '2026-04-12T00:00:00.000Z'
@@ -306,7 +306,9 @@ describe('planRecovery', () => {
         hasLaunch: true,
       })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'incomplete-job' },
     ])
   })
@@ -319,7 +321,9 @@ describe('planRecovery', () => {
       hasLaunch: false,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       {
         type: 'markError',
         jobId: 'incompatible-job',
@@ -339,7 +343,9 @@ describe('planRecovery', () => {
       hasRuntime: false,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       {
         type: 'markError',
         jobId: 'ghost-job',
@@ -359,13 +365,15 @@ describe('planRecovery', () => {
       hasRuntime: false,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([
       {
         type: 'registerQueued',
         jobId: 'queued-job',
         launchRecord,
       },
     ])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns registerRunning for running recoverable jobs', () => {
@@ -380,7 +388,8 @@ describe('planRecovery', () => {
       hasRuntime: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([
       {
         type: 'registerRunning',
         jobId: 'running-job',
@@ -388,6 +397,7 @@ describe('planRecovery', () => {
         runtimeRecord,
       },
     ])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns registerRunning for stale_dead jobs', () => {
@@ -404,7 +414,8 @@ describe('planRecovery', () => {
       hasExit: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([
       {
         type: 'registerRunning',
         jobId: 'stale-dead-job',
@@ -412,6 +423,7 @@ describe('planRecovery', () => {
         runtimeRecord,
       },
     ])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns no action for terminal jobs', () => {
@@ -424,7 +436,9 @@ describe('planRecovery', () => {
       hasRuntime: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns no action for foreign-namespace jobs', () => {
@@ -437,13 +451,15 @@ describe('planRecovery', () => {
       hasRuntime: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns registerRunning for app-server runtimes', () => {
     const launchRecord = makeLaunch('app-server-job')
     const runtimeRecord = makeAppServerRuntime()
-    const [action] = planRecovery(
+    const plan = planRecovery(
       new InMemoryRecoverySnapshot().addJob({
         jobId: 'app-server-job',
         status: makeStatus('app-server-job', 'running'),
@@ -455,12 +471,13 @@ describe('planRecovery', () => {
       DEFAULT_INVARIANTS,
     )
 
-    expect(action).toEqual({
+    expect(plan.register[0]).toEqual({
       type: 'registerRunning',
       jobId: 'app-server-job',
       launchRecord,
       runtimeRecord,
     })
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns releaseSessionClaim for terminal active job claims', () => {
@@ -476,7 +493,9 @@ describe('planRecovery', () => {
         activeJobId: 'terminal-claimed-job',
       })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
         shardDir: '/sessions/a',
@@ -494,7 +513,9 @@ describe('planRecovery', () => {
       activeJobId: 'missing-job',
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
         shardDir: '/sessions/a',
@@ -517,7 +538,9 @@ describe('planRecovery', () => {
         activeJobId: 'foreign-terminal-job',
       })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
         shardDir: '/sessions/foreign',
@@ -544,7 +567,8 @@ describe('planRecovery', () => {
         activeJobId: 'live-job',
       })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([
       {
         type: 'registerRunning',
         jobId: 'live-job',
@@ -552,6 +576,7 @@ describe('planRecovery', () => {
         runtimeRecord: makeRuntime('live-job'),
       },
     ])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('treats corrupt status reads as incomplete admission when launch exists', () => {
@@ -562,7 +587,9 @@ describe('planRecovery', () => {
       hasLaunch: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'corrupt-status-job' },
     ])
   })
@@ -576,7 +603,9 @@ describe('planRecovery', () => {
       hasRuntime: false,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('suppresses running recovery when runtime.json parses as null', () => {
@@ -589,7 +618,9 @@ describe('planRecovery', () => {
       hasRuntime: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('returns no action for unrecognized classifier rows', () => {
@@ -602,7 +633,9 @@ describe('planRecovery', () => {
       hasRuntime: true,
     })
 
-    expect(planRecovery(snapshot, DEFAULT_INVARIANTS)).toEqual([])
+    const plan = planRecovery(snapshot, DEFAULT_INVARIANTS)
+    expect(plan.register).toEqual([])
+    expect(plan.cleanup).toEqual([])
   })
 
   it('produces identical output for identical input snapshots', () => {
@@ -639,7 +672,8 @@ describe('planRecovery', () => {
     const first = planRecovery(snapshot, DEFAULT_INVARIANTS)
     const second = planRecovery(snapshot, DEFAULT_INVARIANTS)
 
-    expect(first).toEqual(second)
+    expect(first.register).toEqual(second.register)
+    expect(first.cleanup).toEqual(second.cleanup)
   })
 
   it('orders actions by registration bridge contract', () => {
@@ -652,7 +686,7 @@ describe('planRecovery', () => {
     const staleDeadLaunch = makeLaunch('stale-dead', { enqueueSequence: 50 })
     const staleDeadRuntime = makeRuntime('stale-dead', { pid: 4003 })
 
-    const actions = planRecovery(
+    const plan = planRecovery(
       new InMemoryRecoverySnapshot()
         .addJob({
           jobId: 'running-second',
@@ -731,12 +765,14 @@ describe('planRecovery', () => {
       DEFAULT_INVARIANTS,
     )
 
-    expect(summarizeActions(actions)).toEqual([
+    expect(summarizeActions(plan.register)).toEqual([
       { type: 'registerRunning', jobId: 'running-second', transport: 'durable-cli' },
       { type: 'registerRunning', jobId: 'running-first', transport: 'durable-cli' },
       { type: 'registerRunning', jobId: 'stale-dead', transport: 'durable-cli' },
       { type: 'registerQueued', jobId: 'queued-early', enqueueSequence: 1 },
       { type: 'registerQueued', jobId: 'queued-late', enqueueSequence: 9 },
+    ])
+    expect(summarizeActions(plan.cleanup)).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'incomplete' },
       { type: 'markError', jobId: 'incompatible', notice: OLD_FORMAT_NOTICE },
       { type: 'markError', jobId: 'ghost', notice: GHOST_LAUNCH_NOTICE },
@@ -776,7 +812,7 @@ describe('planRecovery', () => {
     }
 
     let thrown: unknown = null
-    let result: RecoveryAction[] = []
+    let result: RecoveryPlan = { register: [], cleanup: [] }
 
     try {
       result = planRecovery(snapshot, DEFAULT_INVARIANTS)
@@ -785,7 +821,8 @@ describe('planRecovery', () => {
     }
 
     expect(thrown).toBeNull()
-    expect(result).toEqual([])
+    expect(result.register).toEqual([])
+    expect(result.cleanup).toEqual([])
   })
 
   it('produces same actions with peerDaemonAlive true', () => {
@@ -803,7 +840,8 @@ describe('planRecovery', () => {
     const withPeer = planRecovery(snapshot, { ...DEFAULT_INVARIANTS, peerDaemonAlive: true })
     const withoutPeer = planRecovery(snapshot, { ...DEFAULT_INVARIANTS, peerDaemonAlive: false })
 
-    expect(withPeer).toEqual(withoutPeer)
+    expect(withPeer.register).toEqual(withoutPeer.register)
+    expect(withPeer.cleanup).toEqual(withoutPeer.cleanup)
   })
 
   it('produces same actions with custom pidLivenessProbe', () => {
@@ -824,6 +862,7 @@ describe('planRecovery', () => {
     })
     const withoutProbe = planRecovery(snapshot, DEFAULT_INVARIANTS)
 
-    expect(withProbe).toEqual(withoutProbe)
+    expect(withProbe.register).toEqual(withoutProbe.register)
+    expect(withProbe.cleanup).toEqual(withoutProbe.cleanup)
   })
 })

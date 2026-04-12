@@ -1027,41 +1027,37 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         peerDaemonAlive: false,
         kbInitialized: true,
       };
-      const actions = planRecovery(snapshot, invariants);
+      const plan = planRecovery(snapshot, invariants);
 
-      for (const action of actions) {
-        if (action.type === 'registerRunning' || action.type === 'registerQueued') {
-          try {
-            applyRecoveryAction(
-              action,
-              progressStore,
-              recoveryRegistry,
-              queuedRecoverable,
-              runningRecoverable,
-              log,
-              eventBus,
-            );
-          } catch (error: unknown) {
-            logRecoveryActionFailure(action, error, log);
-          }
+      for (const action of plan.register) {
+        try {
+          applyRecoveryAction(
+            action,
+            progressStore,
+            recoveryRegistry,
+            queuedRecoverable,
+            runningRecoverable,
+            log,
+            eventBus,
+          );
+        } catch (error: unknown) {
+          logRecoveryActionFailure(action, error, log);
         }
       }
 
-      for (const action of actions) {
-        if (action.type !== 'registerRunning' && action.type !== 'registerQueued') {
-          try {
-            applyRecoveryAction(
-              action,
-              progressStore,
-              recoveryRegistry,
-              queuedRecoverable,
-              runningRecoverable,
-              log,
-              eventBus,
-            );
-          } catch (error: unknown) {
-            logRecoveryActionFailure(action, error, log);
-          }
+      for (const action of plan.cleanup) {
+        try {
+          applyRecoveryAction(
+            action,
+            progressStore,
+            recoveryRegistry,
+            queuedRecoverable,
+            runningRecoverable,
+            log,
+            eventBus,
+          );
+        } catch (error: unknown) {
+          logRecoveryActionFailure(action, error, log);
         }
       }
 

@@ -58,6 +58,14 @@ export type RecoveryAction =
     }
   | { type: 'releaseSessionClaim'; shardDir: string; sessionId: string; jobId: string };
 
+export type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
+export type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
+
+export type RecoveryPlan = {
+  register: RegisterAction[];
+  cleanup: CleanupAction[];
+};
+
 export const CRASH_POINTS = {
   GHOST_LAUNCH: 'ghost launch window',
   INCOMPATIBLE_FORMAT: 'pre-handoff format',
@@ -187,7 +195,7 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
   },
 ];
 
-export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInvariants): RecoveryAction[] {
+export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInvariants): RecoveryPlan {
   try {
     const normalizedInvariants: RecoveryInvariants = {
       peerDaemonAlive: invariants?.peerDaemonAlive ?? false,
@@ -197,11 +205,11 @@ export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInv
     };
 
     const jobIds = readJobIds(snapshot);
-    const registerRunning: RecoveryAction[] = [];
+    const registerRunning: RegisterAction[] = [];
     const registerQueued: Array<Extract<RecoveryAction, { type: 'registerQueued' }>> = [];
-    const deleteIncomplete: RecoveryAction[] = [];
-    const markIncompatible: RecoveryAction[] = [];
-    const markStaleRunning: RecoveryAction[] = [];
+    const deleteIncomplete: CleanupAction[] = [];
+    const markIncompatible: CleanupAction[] = [];
+    const markStaleRunning: CleanupAction[] = [];
 
     for (const jobId of jobIds) {
       const row = buildJobRow(snapshot, jobId);
@@ -211,19 +219,19 @@ export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInv
       switch (classified.description) {
         case 'running':
         case 'stale_dead':
-          registerRunning.push(classified.action);
+          registerRunning.push(classified.action as RegisterAction);
           break;
         case 'queued':
           registerQueued.push(classified.action as Extract<RecoveryAction, { type: 'registerQueued' }>);
           break;
         case 'incomplete admission':
-          deleteIncomplete.push(classified.action);
+          deleteIncomplete.push(classified.action as CleanupAction);
           break;
         case 'incompatible':
-          markIncompatible.push(classified.action);
+          markIncompatible.push(classified.action as CleanupAction);
           break;
         case 'stale_running':
-          markStaleRunning.push(classified.action);
+          markStaleRunning.push(classified.action as CleanupAction);
           break;
         default:
           break;
@@ -232,16 +240,12 @@ export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInv
 
     registerQueued.sort((left, right) => left.launchRecord.enqueueSequence - right.launchRecord.enqueueSequence);
 
-    return [
-      ...registerRunning,
-      ...registerQueued,
-      ...deleteIncomplete,
-      ...markIncompatible,
-      ...markStaleRunning,
-      ...planSessionClaimReleases(snapshot, jobIds),
-    ];
+    return {
+      register: [...registerRunning, ...registerQueued],
+      cleanup: [...deleteIncomplete, ...markIncompatible, ...markStaleRunning, ...planSessionClaimReleases(snapshot, jobIds)],
+    };
   } catch {
-    return [];
+    return { register: [], cleanup: [] };
   }
 }
 
@@ -280,9 +284,9 @@ function buildJobRow(snapshot: JobStoreSnapshot, jobId: string): RecoveryJobRow 
   };
 }
 
-function planSessionClaimReleases(snapshot: JobStoreSnapshot, jobIds: readonly string[]): RecoveryAction[] {
+function planSessionClaimReleases(snapshot: JobStoreSnapshot, jobIds: readonly string[]): CleanupAction[] {
   const knownJobIds = new Set(jobIds);
-  const actions: RecoveryAction[] = [];
+  const actions: CleanupAction[] = [];
 
   for (const ref of readSessionRefs(snapshot)) {
     const session = safeCall(() => snapshot.readSession(ref.shardDir, ref.provider, ref.sessionId), null);
