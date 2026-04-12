@@ -1,9 +1,12 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+const BACKEND_WARM_START_HOOK = join(process.cwd(), 'hooks', 'backend-warm-start.mjs');
 const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
 const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
 const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
@@ -110,6 +113,15 @@ function createFixture(): HookFixture {
   return fixture;
 }
 
+async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(filePath)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
 function runHook(
   hookPath: string,
   stdinJson: object,
@@ -142,6 +154,55 @@ function runHook(
     stderr: result.stderr ?? '',
     status: result.status ?? 0,
   };
+}
+
+async function runHookAsync(
+  hookPath: string,
+  stdinJson: object,
+  envOverrides: Record<string, string | undefined> = {},
+): Promise<HookRunResult> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.CORAL_CHILD;
+
+  for (const [key, value] of Object.entries(envOverrides)) {
+    if (value === undefined) {
+      delete env[key];
+      continue;
+    }
+
+    env[key] = value;
+  }
+
+  return await new Promise<HookRunResult>((resolve, reject) => {
+    const child = spawn('node', [hookPath], {
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.setEncoding('utf-8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+
+    child.stderr.setEncoding('utf-8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+
+    child.once('error', reject);
+    child.once('close', (status) => {
+      resolve({
+        stdout,
+        stderr,
+        status: status ?? 0,
+      });
+    });
+
+    child.stdin.end(JSON.stringify(stdinJson));
+  });
 }
 
 function parseHookOutput(stdout: string): HookOutput | null {
@@ -272,6 +333,137 @@ function listSnapshots(snapshotDir: string): string[] {
     .map((fileName) => join(snapshotDir, fileName))
     .sort((left, right) => left.localeCompare(right));
 }
+
+describe('backend-warm-start.mjs', () => {
+  async function setupWarmStartFixture(expectedFlavor: 'prod' | 'dev', liveFlavor: 'prod' | 'dev') {
+    const fixture = createFixture();
+    const markerPath = join(fixture.pluginRoot, 'spawned.txt');
+    const token = `${expectedFlavor}-${liveFlavor}-token`;
+
+    mkdirSync(join(fixture.pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(fixture.pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'test-hash', flavor: expectedFlavor }),
+      'utf-8',
+    );
+    writeFileSync(
+      join(fixture.pluginRoot, 'bridge', 'coral-backend.cjs'),
+      `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'spawned')\n`,
+      'utf-8',
+    );
+
+    const namespace = createHash('sha256').update(realpathSync(fixture.pluginRoot)).digest('hex').slice(0, 12);
+    const installDir = join(fixture.root, '.claude', 'coral', 'installations', namespace);
+    mkdirSync(installDir, { recursive: true });
+
+    let shutdownCount = 0;
+    const server = createServer((req, res) => {
+      if (req.headers['x-coral-backend-token'] !== token) {
+        res.statusCode = 401;
+        res.end();
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/health') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            status: 'ok',
+            version: '0.0.0',
+            bundleHash: 'test-hash',
+            flavor: liveFlavor,
+            instanceId: `${liveFlavor}-instance`,
+            namespace,
+            uptimeMs: 1,
+            active: 0,
+            activeJobs: 0,
+            inflightRequests: 0,
+            queueDepth: 0,
+          }),
+        );
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/admin/shutdown') {
+        shutdownCount += 1;
+        res.statusCode = 200;
+        res.end(JSON.stringify({ status: 'draining' }));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Expected TCP address for backend-warm-start test');
+    }
+
+    writeFileSync(
+      join(installDir, 'backend.json'),
+      JSON.stringify({
+        pid: process.pid,
+        port: address.port,
+        host: '127.0.0.1',
+        token,
+        version: '0.0.0',
+        bundleHash: 'test-hash',
+        flavor: liveFlavor,
+        instanceId: `${liveFlavor}-instance`,
+        namespace,
+        startedAt: Date.now(),
+      }),
+      'utf-8',
+    );
+
+    return {
+      fixture,
+      markerPath,
+      shutdownCount: () => shutdownCount,
+      closeServer: async () =>
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        }),
+    };
+  }
+
+  it('exits early without spawning when the live backend already matches the manifest flavor', async () => {
+    const setup = await setupWarmStartFixture('prod', 'prod');
+    try {
+      const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
+        HOME: setup.fixture.root,
+        CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+      });
+
+      expect(result.status).toBe(0);
+      expect(await waitForFile(setup.markerPath)).toBe(false);
+      expect(setup.shutdownCount()).toBe(0);
+    } finally {
+      await setup.closeServer();
+    }
+  });
+
+  it('requests shutdown and spawns a replacement when the live backend flavor differs from the manifest flavor', async () => {
+    const setup = await setupWarmStartFixture('dev', 'prod');
+    try {
+      const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
+        HOME: setup.fixture.root,
+        CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+      });
+
+      expect(result.status).toBe(0);
+      expect(await waitForFile(setup.markerPath)).toBe(true);
+      expect(setup.shutdownCount()).toBe(1);
+    } finally {
+      await setup.closeServer();
+    }
+  });
+});
 
 describe('cli-resolve.mjs', () => {
   const cliBundle = join(process.cwd(), 'bridge', 'coral-cli.cjs');

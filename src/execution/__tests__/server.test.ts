@@ -297,15 +297,17 @@ async function loadExecutionModules(): Promise<{
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
+  infraPaths: typeof import('../../infra/paths.js');
 }> {
   vi.resetModules();
-  const [serverModule, backendInfo, backendLock, lifecycleModule] = await Promise.all([
+  const [serverModule, backendInfo, backendLock, lifecycleModule, infraPaths] = await Promise.all([
     import('../server.js'),
     import('../../infra/backend-info.js'),
     import('../backend-lock.js'),
     import('../lifecycle.js'),
+    import('../../infra/paths.js'),
   ]);
-  return { serverModule, backendInfo, backendLock, lifecycleModule };
+  return { serverModule, backendInfo, backendLock, lifecycleModule, infraPaths };
 }
 
 function stubLaunchRecord(
@@ -486,6 +488,50 @@ describe('execution backend server', () => {
     return store;
   }
 
+  it('defaults legacy backend info flavor to prod and preserves flavored writes', async () => {
+    const { backendInfo } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('backend-info-flavor');
+    const namespace = pluginRootNamespace(pluginRoot);
+
+    backendInfo.writeBackendInfo(pluginRoot, {
+      pid: process.pid,
+      port: 4100,
+      host: '127.0.0.1',
+      token: 'test-token',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'dev',
+      instanceId: 'backend-info-dev',
+      namespace,
+      startedAt: 1,
+    });
+    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
+      host: '127.0.0.1',
+      flavor: 'dev',
+      namespace,
+    });
+
+    writeFileSync(
+      backendInfo.backendInfoPath(pluginRoot),
+      JSON.stringify({
+        pid: process.pid,
+        port: 4101,
+        token: 'legacy-token',
+        version: '9.9.9',
+        bundleHash: 'legacyhash1234',
+        instanceId: 'backend-info-legacy',
+        namespace,
+        startedAt: 2,
+      }),
+      'utf-8',
+    );
+    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
+      host: '127.0.0.1',
+      flavor: 'prod',
+      namespace,
+    });
+  });
+
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
@@ -495,10 +541,12 @@ describe('execution backend server', () => {
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
+    expect(backend.started.flavor).toBe('prod');
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
       bundleHash: 'testhash1234',
+      flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
       active: 0,
       activeJobs: 0,
@@ -683,14 +731,14 @@ describe('execution backend server', () => {
     codexLeaseB.release();
   });
 
-  it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
+  it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
     const progressStore = new ProgressStore('test-ns');
     const backend = await startBackendServer({
       progressStore,
     });
 
     createdJobIds.add('job-local-health');
-    createdJobIds.add('job-stale-health');
+    createdJobIds.add('job-foreign-health');
     progressStore.initJob({
       jobId: 'job-local-health',
       sessionId: 'session-local-health',
@@ -709,22 +757,22 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
     progressStore.initJob({
-      jobId: 'job-stale-health',
-      sessionId: 'session-stale-health',
+      jobId: 'job-foreign-health',
+      sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
-      bundleHash: 'oldhash9999',
+      backendNamespace: foreignBackendNamespace,
+      bundleHash: 'testhash1234',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
-      jobId: 'job-stale-health',
-      sessionId: 'session-stale-health',
+      jobId: 'job-foreign-health',
+      sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      backendNamespace: foreignBackendNamespace,
     });
-    stubRuntimeRecord(progressStore, { jobId: 'job-stale-health' });
+    stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -764,6 +812,38 @@ describe('execution backend server', () => {
     expect(initOrder).toBeDefined();
     expect(watchOrder).toBeDefined();
     expect(initOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(watchOrder ?? Number.POSITIVE_INFINITY);
+  });
+
+  it('sets the settled build flavor before KB initialization starts', async () => {
+    const { serverModule, infraPaths } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('kb-init-build-flavor');
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'testhash1234', flavor: 'dev' }),
+      'utf-8',
+    );
+
+    const createKbSubsystemFn = vi.fn(async () => {
+      expect(infraPaths.currentBuildFlavor()).toBe('dev');
+      return createMockKbSubsystem();
+    });
+
+    controller = serverModule.createBackendServer({
+      pluginRoot,
+      instanceId: 'execution-backend-instance-1',
+      token: 'test-token',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      log: () => {},
+      createKbSubsystemFn,
+      cleanupStaleJobsFn: () => {},
+    });
+
+    const started = await controller.start();
+
+    expect(started.flavor).toBe('dev');
+    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
   });
 
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
@@ -1026,6 +1106,7 @@ describe('execution backend server', () => {
           namespace: testBackendNamespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
           now: () => Date.now(),
@@ -3417,6 +3498,7 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',
           now: () => 1,
@@ -3689,6 +3771,7 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-1',
           token: 'test-token',
           now: () => 1,
@@ -3804,6 +3887,7 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-app-server',
           token: 'test-token',
           now: () => 1,
@@ -3945,6 +4029,7 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-2',
           token: 'test-token',
           now: () => 1,
@@ -4019,6 +4104,7 @@ describe('execution backend server', () => {
           namespace: testBackendNamespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
           now: () => Date.now(),

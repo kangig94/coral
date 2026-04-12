@@ -74,7 +74,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       };
     });
     if (response.status === 200) {
-      if (!isBackendHealth(body) || body.namespace !== info.namespace) {
+      if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
         return { status: 'not_running' };
       }
 

@@ -5,9 +5,9 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { formatError, readBundleHash } from '../shared/utils.js';
+import { formatError, readBuildFlavor, readBundleHash } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
+import { pluginRootNamespace, resolveProjectSource, setBuildFlavor } from '../infra/paths.js';
 import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
 import { LaunchCoordinator } from './engine.js';
 import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
@@ -75,7 +75,13 @@ type BackendServerOptions = {
     ctx: CallerContext,
     deps: ExecutionServiceDeps,
   ) => ExecutionServiceLike;
-  acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
+  acquireLockFn?: (
+    pluginRoot: string,
+    instanceId: string,
+    version: string,
+    bundleHash: string,
+    flavor: 'prod' | 'dev',
+  ) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
   removeLockIfOwnerFn?: typeof removeLockIfOwner;
@@ -114,6 +120,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const namespace = pluginRootNamespace(resolvedPluginRoot);
   const version = options.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = options.bundleHash ?? readBundleHash(resolvedPluginRoot);
+  const flavor = readBuildFlavor(resolvedPluginRoot);
+  setBuildFlavor(flavor);
   const instanceId = options.instanceId ?? randomUUID();
   const token = options.token ?? randomBytes(32).toString('hex');
   const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
@@ -340,6 +348,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       namespace,
       version,
       bundleHash,
+      flavor,
       instanceId,
       token,
       now,

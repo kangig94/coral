@@ -12,6 +12,7 @@ export type BackendInfo = {
   token: string;
   version: string;
   bundleHash: string;
+  flavor: 'prod' | 'dev';
   instanceId: string;
   namespace: string;
   startedAt: number;
@@ -32,6 +33,7 @@ function isBackendInfo(value: unknown): value is BackendInfo {
     record.version.length > 0 &&
     typeof record.bundleHash === 'string' &&
     record.bundleHash.length > 0 &&
+    (record.flavor === 'prod' || record.flavor === 'dev') &&
     typeof record.instanceId === 'string' &&
     record.instanceId.length > 0 &&
     typeof record.namespace === 'string' &&
@@ -68,9 +70,13 @@ export function readBackendInfo(pluginRoot: string): BackendInfo | null {
   try {
     const raw = readFileSync(backendInfoPath(pluginRoot), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    if (!isBackendInfo(parsed)) return null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const record = parsed as Record<string, unknown>;
     // Default host for legacy backend.json files written before host field was added
-    if (!parsed.host) (parsed as Record<string, unknown>).host = '127.0.0.1';
+    if (!record.host) record.host = '127.0.0.1';
+    // Legacy backend.json files predate flavor; default them to prod on read.
+    if (!('flavor' in record)) record.flavor = 'prod';
+    if (!isBackendInfo(parsed)) return null;
     return parsed;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;

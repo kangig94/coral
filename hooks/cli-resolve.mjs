@@ -5,8 +5,9 @@ import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
 exitIfChildProcess();
+exitIfWrongFlavor();
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const KNOWN_PROVIDER_COMMANDS = new Set(['codex', 'claude']);

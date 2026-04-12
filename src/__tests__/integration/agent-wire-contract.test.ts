@@ -252,6 +252,7 @@ describe('agent wire contract', () => {
         namespace: pluginRootNamespace(coralPluginRoot),
         version: '0.0.0-test',
         bundleHash: 'agent-wire-contract-bundle',
+        flavor: 'prod',
         instanceId: 'agent-wire-contract-instance',
         token: 'agent-wire-contract-token',
         now: () => Date.now(),

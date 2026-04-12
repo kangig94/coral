@@ -55,6 +55,20 @@ describe('kb detection and paths', () => {
     expect(kb.markdownRoot).toBe(join(mockState.tmpHome, 'configured-kb'));
   });
 
+  it('derives default markdown and runtime KB roots from the settled build flavor', async () => {
+    const { paths, infraPaths } = await loadKbModules();
+
+    expect(infraPaths.currentBuildFlavor()).toBe('prod');
+    expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb'));
+    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
+
+    infraPaths.setBuildFlavor('dev');
+
+    expect(infraPaths.currentBuildFlavor()).toBe('dev');
+    expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
+    expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev'));
+  });
+
   it('falls back to text-only startup when the vector store is unavailable', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
@@ -73,7 +87,8 @@ describe('kb detection and paths', () => {
 
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
-    const { createKbRuntime, paths } = await loadKbModules();
+    const { createKbRuntime, paths, infraPaths } = await loadKbModules();
+    infraPaths.setBuildFlavor('dev');
     const kb = createKbRuntime({
       markdownRoot: process.env.CORAL_KB_PATH,
       runtimeDir: paths.kbRuntimeDir(),
@@ -81,7 +96,7 @@ describe('kb detection and paths', () => {
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
     const markdownRoot = join(mockState.tmpHome, 'vault');
-    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data', 'kb');
+    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data', 'kb-dev');
     const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
     const principlePath = join(markdownRoot, 'principles', 'contract-first-design.md');
 

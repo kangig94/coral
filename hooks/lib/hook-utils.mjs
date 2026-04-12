@@ -1,10 +1,34 @@
 import { execSync } from 'node:child_process';
-import { readdirSync, statSync, unlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export function exitIfChildProcess() {
   if (process.env.CORAL_CHILD === '1') process.exit(0);
+}
+
+let _cachedFlavor;
+
+export function buildFlavor() {
+  if (_cachedFlavor !== undefined) return _cachedFlavor;
+  try {
+    const here = fileURLToPath(import.meta.url);
+    const manifest = resolve(dirname(here), '..', '..', 'bridge', 'manifest.json');
+    _cachedFlavor = JSON.parse(readFileSync(manifest, 'utf8')).flavor === 'dev' ? 'dev' : 'prod';
+  } catch {
+    _cachedFlavor = 'prod';
+  }
+  return _cachedFlavor;
+}
+
+export function exitIfWrongFlavor() {
+  const want = process.env.CORAL_FLAVOR;
+  if (want !== undefined && want !== 'prod' && want !== 'dev') {
+    process.stderr.write(`[coral] CORAL_FLAVOR='${want}' is not recognized (expected 'prod' or 'dev')\n`);
+    process.exit(1);
+  }
+  if (buildFlavor() !== (want ?? 'prod')) process.exit(0);
 }
 
 export function readStdin() {
@@ -40,7 +64,7 @@ export function coralProjectDir(projectDir) {
 export function resolveKbRoot() {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
-  return join(homedir(), '.coral', 'kb');
+  return join(homedir(), '.coral', buildFlavor() === 'dev' ? 'kb-dev' : 'kb');
 }
 
 const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;

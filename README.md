@@ -18,6 +18,17 @@ Coral is a CLI-first plugin backed by a persistent HTTP daemon for orchestration
 npm install -g @openai/codex
 ```
 
+## Local Dev
+
+To keep the marketplace prod install active while testing a local checkout, build the dev bundle, register the local hook template in `.claude/settings.local.json`, and select the dev flavor for your shell session.
+
+```bash
+npm run build:dev
+export CORAL_FLAVOR=dev
+```
+
+Use [docs/dev-setup.md](docs/dev-setup.md) for the full three-step flow and [docs/examples/settings.local.json](docs/examples/settings.local.json) for the local hook template.
+
 ## Try It Now
 
 Run this on any existing project:
@@ -211,7 +222,7 @@ gpt-5.4  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 ## Knowledge Base
 
-Coral learns from every session. Root causes, gotchas, patterns — captured as memos, reviewed, and promoted to permanent knowledge at `~/.coral/kb/`. The next session checks the KB before debugging from scratch. Mistakes aren't repeated.
+Coral learns from every session. Root causes, gotchas, and patterns stay searchable so the next session can check prior work before debugging from scratch. The default KB markdown root is flavor-split: prod uses `~/.coral/kb/`, dev uses `~/.coral/kb-dev/`, and the matching runtime state lives under `~/.coral/data/kb/` or `~/.coral/data/kb-dev/`.
 
 - **Semantic search**: `/coral:equip kb` activates vector search with hybrid BM25 + embedding retrieval (Gemini, OpenAI, or local ONNX models)
 
@@ -219,7 +230,8 @@ Coral learns from every session. Root causes, gotchas, patterns — captured as 
 
 | Variable | Default | Description |
 |---|---|---|
-| `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB storage path |
+| `CORAL_FLAVOR` | `prod` when unset | Hook selector for prod/dev coexistence |
+| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | Custom KB markdown root |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
@@ -246,6 +258,7 @@ Set in `.claude/settings.json` (persists across sessions):
 ## Documentation
 
 - [Architecture](docs/architecture.md) — System structure and data flow
+- [Dev Setup](docs/dev-setup.md) — Local dev build + hook registration flow
 - [Core Modules](docs/core-modules.md) — TypeScript module details
 - [Agents](docs/agents.md) — Agent definitions and routing
 - [Hooks](docs/hooks.md) — Hook system and lifecycle events

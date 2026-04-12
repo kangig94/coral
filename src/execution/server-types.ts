@@ -6,6 +6,7 @@ export type BackendServerInfo = {
   token: string;
   version: string;
   bundleHash: string;
+  flavor: 'prod' | 'dev';
   namespace: string;
   instanceId: string;
   startedAt: number;

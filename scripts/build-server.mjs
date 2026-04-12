@@ -1,9 +1,20 @@
 import * as esbuild from 'esbuild';
 import { createHash } from 'crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 
 mkdirSync('bridge', { recursive: true });
 
+function parseFlavor(argv) {
+  const index = argv.indexOf('--flavor');
+  if (index === -1) return 'prod';
+
+  const value = argv[index + 1];
+  if (value === 'prod' || value === 'dev') return value;
+
+  throw new Error("--flavor must be followed by 'prod' or 'dev'");
+}
+
+const flavor = parseFlavor(process.argv.slice(2));
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
 // Sync version to .claude-plugin/ (single source of truth: package.json)
@@ -65,10 +76,14 @@ console.log('Built bridge/coral-claude-appserver.cjs');
 
 // Write bundle manifest with content hash for version-independent change detection
 const backendHash = createHash('sha256').update(readFileSync('bridge/coral-backend.cjs')).digest('hex').slice(0, 16);
+const manifestPath = 'bridge/manifest.json';
+const manifestTmp = manifestPath + '.tmp';
 
 writeFileSync(
-  'bridge/manifest.json',
+  manifestTmp,
   JSON.stringify({
     bundleHash: backendHash,
+    flavor,
   }) + '\n',
 );
+renameSync(manifestTmp, manifestPath);

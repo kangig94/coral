@@ -14,8 +14,9 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { exitIfChildProcess, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, sweepStale } from './lib/hook-utils.mjs';
 exitIfChildProcess();
+exitIfWrongFlavor();
 
 const DEFAULT_STATE = {
   prompt: '',
@@ -245,4 +246,3 @@ function normalizeWhitespace(text) {
 function writeJson(value) {
   console.log(JSON.stringify(value));
 }
-

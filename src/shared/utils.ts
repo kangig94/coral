@@ -124,6 +124,17 @@ export function readBundleHash(pluginRoot: string): string {
   return 'unknown';
 }
 
+export function readBuildFlavor(pluginRoot: string): 'prod' | 'dev' {
+  try {
+    const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed) && parsed.flavor === 'dev') return 'dev';
+  } catch {
+    /* fall through */
+  }
+  return 'prod';
+}
+
 export const nowIsoString = (): string => new Date().toISOString();
 
 /** Race a promise against a timeout. Returns true if the promise settles first, false on timeout. */

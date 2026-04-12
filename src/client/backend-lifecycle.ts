@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../infra/paths.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-info.js';
-import { isNoEntryError, isProcessAlive, isRecord, readBundleHash, tryExclusiveWrite } from '../shared/utils.js';
+import { isNoEntryError, isProcessAlive, isRecord, readBuildFlavor, readBundleHash, tryExclusiveWrite } from '../shared/utils.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 
 const STARTUP_POLL_MS = 200;
@@ -79,6 +79,7 @@ async function readHealthyBackendInfo(root: string, info = readBackendInfo(root)
     health.namespace !== expectedNamespace ||
     health.namespace !== info.namespace ||
     health.bundleHash !== info.bundleHash ||
+    health.flavor !== info.flavor ||
     health.instanceId !== info.instanceId
   ) {
     return null;
@@ -101,12 +102,18 @@ async function requestBackendShutdown(info: BackendInfo): Promise<void> {
   }
 }
 
-function tryAcquireReplacementLock(root: string, version: string, bundleHash: string): ReplacementLock | null {
+function tryAcquireReplacementLock(
+  root: string,
+  version: string,
+  bundleHash: string,
+  flavor: 'prod' | 'dev',
+): ReplacementLock | null {
   const payload = JSON.stringify({
     instanceId: `proxy-replacement-${process.pid}-${Date.now()}`,
     pid: process.pid,
     version,
     bundleHash,
+    flavor,
     startedAt: Date.now(),
   });
   if (!tryExclusiveWrite(backendLockPath(root), payload)) return null;
@@ -180,11 +187,17 @@ async function waitForReplacementBackend(
   root: string,
   oldInstanceId: string | null,
   expectedHash: string,
+  expectedFlavor: 'prod' | 'dev',
   deadline: number,
 ): Promise<BackendInfo> {
   while (Date.now() < deadline) {
     const info = await readHealthyBackendInfo(root);
-    if (info && info.bundleHash === expectedHash && (oldInstanceId === null || info.instanceId !== oldInstanceId)) {
+    if (
+      info &&
+      info.bundleHash === expectedHash &&
+      info.flavor === expectedFlavor &&
+      (oldInstanceId === null || info.instanceId !== oldInstanceId)
+    ) {
       return info;
     }
     await delay(STARTUP_POLL_MS);
@@ -211,7 +224,8 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   const existingInfo = readBackendInfo(root);
   const existingHealthy = await readHealthyBackendInfo(root, existingInfo);
   const expectedHash = readBundleHash(root);
-  if (existingHealthy && existingHealthy.bundleHash === expectedHash) {
+  const expectedFlavor = readBuildFlavor(root);
+  if (existingHealthy && existingHealthy.bundleHash === expectedHash && existingHealthy.flavor === expectedFlavor) {
     return summarizeBackend(existingHealthy);
   }
 
@@ -230,18 +244,22 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     if (healthy) {
       if (
         healthy.bundleHash === expectedHash &&
+        healthy.flavor === expectedFlavor &&
         (replacedInstanceId === null || healthy.instanceId !== replacedInstanceId)
       ) {
         return summarizeBackend(healthy);
       }
 
-      if (healthy.bundleHash !== expectedHash && !shutdownRequestedFor.has(healthy.instanceId)) {
+      if (
+        (healthy.bundleHash !== expectedHash || healthy.flavor !== expectedFlavor) &&
+        !shutdownRequestedFor.has(healthy.instanceId)
+      ) {
         shutdownRequestedFor.add(healthy.instanceId);
         await requestBackendShutdown(healthy);
       }
     }
 
-    const replacementLock = tryAcquireReplacementLock(root, version, expectedHash);
+    const replacementLock = tryAcquireReplacementLock(root, version, expectedHash, expectedFlavor);
     if (!replacementLock) {
       tryRemoveStaleLock(root);
       await delay(STARTUP_POLL_MS);
@@ -256,7 +274,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     }
     const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
     return summarizeBackend(
-      await waitForReplacementBackend(root, replacedInstanceId, expectedHash, replacementDeadline),
+      await waitForReplacementBackend(root, replacedInstanceId, expectedHash, expectedFlavor, replacementDeadline),
     );
   }
 

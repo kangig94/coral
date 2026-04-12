@@ -17,6 +17,7 @@ export type LockRecord = {
   pid: number;
   version: string;
   bundleHash: string;
+  flavor: 'prod' | 'dev';
   startedAt: number;
 };
 
@@ -44,6 +45,7 @@ function isLockRecord(value: unknown): value is LockRecord {
     record.version.length > 0 &&
     typeof record.bundleHash === 'string' &&
     record.bundleHash.length > 0 &&
+    (record.flavor === 'prod' || record.flavor === 'dev') &&
     Number.isFinite(record.startedAt) &&
     (record.startedAt as number) > 0
   );
@@ -70,7 +72,7 @@ function readLockSnapshot(pluginRoot: string): LockSnapshot | null {
 
 function snapshotKey(snapshot: LockSnapshot): string {
   if (snapshot.record) {
-    return `${snapshot.record.instanceId}:${snapshot.record.pid}:${snapshot.record.version}:${snapshot.record.startedAt}`;
+    return `${snapshot.record.instanceId}:${snapshot.record.pid}:${snapshot.record.version}:${snapshot.record.flavor}:${snapshot.record.startedAt}`;
   }
   return `invalid:${snapshot.raw}`;
 }
@@ -87,6 +89,7 @@ async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord):
     info.instanceId !== record.instanceId ||
     info.pid !== record.pid ||
     info.bundleHash !== record.bundleHash ||
+    info.flavor !== record.flavor ||
     info.namespace !== expectedNamespace
   ) {
     return false;
@@ -111,6 +114,7 @@ async function isMatchingHealthyBackend(pluginRoot: string, record: LockRecord):
     return (
       payload.status === 'ok' &&
       payload.bundleHash === record.bundleHash &&
+      payload.flavor === record.flavor &&
       payload.instanceId === record.instanceId &&
       payload.namespace === expectedNamespace
     );
@@ -165,12 +169,14 @@ export async function acquireLock(
   instanceId: string,
   version: string,
   bundleHash: string,
+  flavor: 'prod' | 'dev',
 ): Promise<void> {
   const record: LockRecord = {
     instanceId,
     pid: process.pid,
     version,
     bundleHash,
+    flavor,
     startedAt: Date.now(),
   };
 

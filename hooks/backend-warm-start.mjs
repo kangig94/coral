@@ -4,8 +4,65 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { exitIfChildProcess, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+
+function readManifestFlavor(pluginRoot) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8'));
+    return manifest?.flavor === 'dev' ? 'dev' : 'prod';
+  } catch {
+    return 'prod';
+  }
+}
+
+function recordFlavor(record) {
+  return record?.flavor === 'dev' ? 'dev' : 'prod';
+}
+
+function hasLivePid(record) {
+  if (!record || typeof record.pid !== 'number' || record.pid <= 0) return false;
+  try {
+    process.kill(record.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readLiveBackendFlavor(info) {
+  if (!info || typeof info.host !== 'string' || typeof info.port !== 'number' || typeof info.token !== 'string') {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+      method: 'GET',
+      headers: { 'X-Coral-Backend-Token': info.token },
+    });
+    if (!response.ok) return null;
+
+    const body = await response.json();
+    return body?.flavor === 'dev' ? 'dev' : body?.flavor === 'prod' ? 'prod' : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requestBackendShutdown(info) {
+  if (!info || typeof info.host !== 'string' || typeof info.port !== 'number' || typeof info.token !== 'string') {
+    return;
+  }
+
+  try {
+    await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': info.token },
+    });
+  } catch {}
+}
+
 exitIfChildProcess();
+exitIfWrongFlavor();
 
 try {
   await readStdin();
@@ -20,23 +77,27 @@ try {
     process.exit(0);
   }
 
+  const expectedFlavor = readManifestFlavor(canonicalPluginRoot);
   const namespace = createHash('sha256').update(canonicalPluginRoot).digest('hex').slice(0, 12);
   const installDir = join(homedir(), '.claude', 'coral', 'installations', namespace);
 
-  // Skip if backend already running (backend.json with live pid)
+  // Skip only when the live backend already matches this build flavor.
+  // Wrong-flavor daemons must be shut down so replacement can proceed.
   try {
     const info = JSON.parse(readFileSync(join(installDir, 'backend.json'), 'utf-8'));
-    if (info && typeof info.pid === 'number' && info.pid > 0) {
-      process.kill(info.pid, 0);
-      process.exit(0);
+    if (hasLivePid(info)) {
+      const liveFlavor = (await readLiveBackendFlavor(info)) ?? recordFlavor(info);
+      if (liveFlavor === expectedFlavor) {
+        process.exit(0);
+      }
+      await requestBackendShutdown(info);
     }
   } catch {}
 
-  // Skip if another process is already starting a backend (lock with live pid)
+  // Skip only when a same-flavor backend start is already in flight.
   try {
     const lock = JSON.parse(readFileSync(join(installDir, 'backend.lock'), 'utf-8'));
-    if (lock && typeof lock.pid === 'number' && lock.pid > 0) {
-      process.kill(lock.pid, 0);
+    if (hasLivePid(lock) && recordFlavor(lock) === expectedFlavor) {
       process.exit(0);
     }
   } catch {}

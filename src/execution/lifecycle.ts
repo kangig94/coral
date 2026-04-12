@@ -330,6 +330,7 @@ export type LifecycleDeps = {
     instanceId: string,
     version: string,
     bundleHash: string,
+    flavor: 'prod' | 'dev',
   ) => Promise<void>;
   readonly writeBackendInfoFn: typeof writeBackendInfo;
   readonly removeBackendInfoIfOwnerFn: typeof removeBackendInfoIfOwner;
@@ -398,7 +399,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     onFatalShutdownError,
   } = deps;
 
-  const { pluginRoot, namespace, version, bundleHash, instanceId, now, log } = identity;
+  const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now, log } = identity;
 
   let shutdownPromise: Promise<void> | null = null;
   let started = false;
@@ -939,7 +940,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     };
 
     try {
-      await acquireLockFn(pluginRoot, instanceId, version, bundleHash);
+      await acquireLockFn(pluginRoot, instanceId, version, bundleHash, flavor);
       assertStartupStillActive();
       registerBuiltInProviders(providerRegistry);
       try {
@@ -1079,6 +1080,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         token: identity.token,
         version,
         bundleHash,
+        flavor,
         namespace,
         instanceId,
         startedAt,
@@ -1137,6 +1139,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         token: identity.token,
         version,
         bundleHash,
+        flavor,
         namespace,
         instanceId,
         startedAt,

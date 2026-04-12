@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../../shared/utils.js';
@@ -33,7 +33,6 @@ const LENIENT_ENTRY_SEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['
 type CurateStateTarget = Pick<KbRuntime, 'curateStatePath'> | string;
 type CurateStateRuntime = Pick<
   KbRuntime,
-  | 'markdownRoot'
   | 'curateStatePath'
   | 'notesDir'
   | 'notePath'
@@ -951,16 +950,6 @@ export function isClaimStale(state: CurateState, now: string): boolean {
 
 export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
   await kb.withMutationLock(() => {
-    const legacyPath = join(kb.markdownRoot, CURATE_STATE_FILE);
-    const currentPath = kb.curateStatePath();
-    if (legacyPath !== currentPath && existsSync(legacyPath) && !existsSync(currentPath)) {
-      try {
-        renameSync(legacyPath, currentPath);
-      } catch {
-        /* best-effort */
-      }
-    }
-
     const rawState = readRawCurateState(kb);
     const strictState =
       rawState === undefined

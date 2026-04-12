@@ -29,6 +29,7 @@ export interface BackendIdentity {
   readonly namespace: string;
   readonly version: string;
   readonly bundleHash: string;
+  readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
   readonly now: () => number;

@@ -1,5 +1,5 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { coralRoot, kbRoot, projectDataDir } from '../infra/paths.js';
+import { coralRoot, currentBuildFlavor, kbRoot, projectDataDir } from '../infra/paths.js';
 
 /** Strip trailing `.md` extension if present. Idempotent. */
 export function stripMdExt(name: string): string {
@@ -33,7 +33,7 @@ export function communitiesDir(root: string = kbRoot()): string {
 }
 
 export function kbRuntimeDir(): string {
-  return join(coralRoot(), 'data', 'kb');
+  return join(coralRoot(), 'data', currentBuildFlavor() === 'dev' ? 'kb-dev' : 'kb');
 }
 
 export function sourcesDir(root: string = kbRoot()): string {

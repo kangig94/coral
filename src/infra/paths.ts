@@ -12,6 +12,7 @@ function coralHome(): string {
 
 const namespaceCache = new Map<string, string>();
 const projectSourceCache = new Map<string, string>();
+let _buildFlavor: 'prod' | 'dev' = 'prod';
 
 function fallbackProjectSource(projectRoot: string): string {
   return `local/${basename(projectRoot)}`;
@@ -46,10 +47,18 @@ export function coralRoot(): string {
   return join(homedir(), '.coral');
 }
 
+export function setBuildFlavor(flavor: 'prod' | 'dev'): void {
+  _buildFlavor = flavor;
+}
+
+export function currentBuildFlavor(): 'prod' | 'dev' {
+  return _buildFlavor;
+}
+
 export function kbRoot(): string {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
-  return join(coralRoot(), 'kb');
+  return join(coralRoot(), currentBuildFlavor() === 'dev' ? 'kb-dev' : 'kb');
 }
 
 export function kbDir(): string {
