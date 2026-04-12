@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { backendInfoPath } from './paths.js';
-import type { RuntimePathsPort, RuntimeStoragePort } from '../execution/runtime.js';
+import type { RuntimeEnvPort, RuntimePathsPort, RuntimeStoragePort } from '../execution/runtime.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 export { backendInfoPath } from './paths.js';
@@ -44,39 +44,55 @@ function isBackendInfo(value: unknown): value is BackendInfo {
   );
 }
 
-type BackendInfoStorage = Pick<RuntimeStoragePort, 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'>;
+type BackendInfoStorage = Pick<
+  RuntimeStoragePort,
+  'chmodSync' | 'mkdirSync' | 'readFileSync' | 'renameSync' | 'unlinkSync' | 'writeFileSync'
+>;
 type BackendInfoPaths = Pick<RuntimePathsPort, 'backendInfoPath'>;
+type BackendInfoEnv = Pick<RuntimeEnvPort, 'platform'>;
 type BackendInfoRuntime = {
   storage: BackendInfoStorage;
   paths: BackendInfoPaths;
+  env?: BackendInfoEnv;
 };
-
 function resolveInfoPath(pluginRoot: string, runtime?: BackendInfoRuntime): string {
   return runtime?.paths.backendInfoPath(pluginRoot) ?? backendInfoPath(pluginRoot);
 }
 
-export function writeBackendInfo(pluginRoot: string, info: BackendInfo, runtime?: BackendInfoRuntime): void {
-  const infoPath = resolveInfoPath(pluginRoot, runtime);
-  const payload = JSON.stringify(info);
-  if (runtime) {
-    runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 });
-    return;
-  }
+function defaultStorage(): BackendInfoStorage {
+  return { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync };
+}
 
-  mkdirSync(dirname(infoPath), { recursive: true });
+function defaultEnv(): BackendInfoEnv {
+  return { platform: () => process.platform };
+}
+
+function resolveBackendInfoRuntime(runtime?: BackendInfoRuntime): Required<BackendInfoRuntime> {
+  return {
+    storage: runtime?.storage ?? defaultStorage(),
+    paths: runtime?.paths ?? { backendInfoPath },
+    env: runtime?.env ?? defaultEnv(),
+  };
+}
+
+export function writeBackendInfo(pluginRoot: string, info: BackendInfo, runtime?: BackendInfoRuntime): void {
+  const deps = resolveBackendInfoRuntime(runtime);
+  const infoPath = resolveInfoPath(pluginRoot, deps);
+  const payload = JSON.stringify(info);
+  deps.storage.mkdirSync(dirname(infoPath), { recursive: true });
 
   const tmpPath = `${infoPath}.tmp`;
   try {
-    writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
+    deps.storage.writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
   } catch (error: unknown) {
     if (isNoEntryError(error)) return; // parent dir removed — not fatal
     throw error;
   }
-  renameSync(tmpPath, infoPath);
+  deps.storage.renameSync(tmpPath, infoPath);
 
-  if (process.platform !== 'win32') {
+  if (deps.env.platform() !== 'win32') {
     try {
-      chmodSync(infoPath, 0o600);
+      deps.storage.chmodSync(infoPath, 0o600);
     } catch {
       /* best-effort */
     }
@@ -84,9 +100,9 @@ export function writeBackendInfo(pluginRoot: string, info: BackendInfo, runtime?
 }
 
 export function readBackendInfo(pluginRoot: string, runtime?: BackendInfoRuntime): BackendInfo | null {
+  const deps = resolveBackendInfoRuntime(runtime);
   try {
-    const raw =
-      runtime?.storage.readFileSync(resolveInfoPath(pluginRoot, runtime), 'utf-8') ?? readFileSync(backendInfoPath(pluginRoot), 'utf-8');
+    const raw = deps.storage.readFileSync(resolveInfoPath(pluginRoot, deps), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
@@ -103,16 +119,13 @@ export function readBackendInfo(pluginRoot: string, runtime?: BackendInfoRuntime
 }
 
 export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string, runtime?: BackendInfoRuntime): void {
-  const info = readBackendInfo(pluginRoot, runtime);
+  const deps = resolveBackendInfoRuntime(runtime);
+  const info = readBackendInfo(pluginRoot, deps);
   if (!info || info.instanceId !== instanceId) return;
 
   try {
-    const infoPath = resolveInfoPath(pluginRoot, runtime);
-    if (runtime) {
-      runtime.storage.unlinkSync(infoPath);
-    } else {
-      unlinkSync(infoPath);
-    }
+    const infoPath = resolveInfoPath(pluginRoot, deps);
+    deps.storage.unlinkSync(infoPath);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

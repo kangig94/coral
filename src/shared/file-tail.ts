@@ -6,12 +6,18 @@ export type FileTailChunk = {
   newOffset: number;
 };
 
+type FileTailStorage = Pick<RuntimeStoragePort, 'statSync' | 'openSync' | 'readSync' | 'closeSync'>;
+
+function defaultStorage(): FileTailStorage {
+  return { closeSync, openSync, readSync, statSync };
+}
+
 export function readAppendedLines(
   path: string,
   fromOffset: number,
-  storage?: Pick<RuntimeStoragePort, 'statSync' | 'openSync' | 'readSync' | 'closeSync'>,
+  storage?: FileTailStorage,
 ): FileTailChunk {
-  const reader = storage ?? { statSync, openSync, readSync, closeSync };
+  const reader = storage ?? defaultStorage();
   try {
     const stats = reader.statSync(path);
     if (stats.size <= fromOffset) {

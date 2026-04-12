@@ -25,12 +25,19 @@ export interface LenientSessionEntry {
   provenanceState: ProvenanceState;
 }
 
+type SessionEntryStorage = Pick<RuntimeStoragePort, 'readFileSync'>;
+
+function defaultStorage(): SessionEntryStorage {
+  return { readFileSync };
+}
+
 function readSessionJson(
   sessionPath: string,
-  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+  storage?: SessionEntryStorage,
 ): unknown | null {
   try {
-    return JSON.parse((storage?.readFileSync(sessionPath, 'utf-8') ?? readFileSync(sessionPath, 'utf-8')) as string) as unknown;
+    const reader = storage ?? defaultStorage();
+    return JSON.parse(reader.readFileSync(sessionPath, 'utf-8')) as unknown;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;
     throw error;
@@ -71,7 +78,7 @@ export function isValidSessionEntry(value: unknown): value is SessionEntry {
 
 export function readSessionEntry(
   sessionPath: string,
-  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+  storage?: SessionEntryStorage,
 ): SessionEntry | null {
   const entry = readSessionJson(sessionPath, storage);
   if (entry === null) return null;
@@ -80,7 +87,7 @@ export function readSessionEntry(
 
 export function readSessionEntryLenient(
   sessionPath: string,
-  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+  storage?: SessionEntryStorage,
 ): LenientSessionEntry | null {
   const entry = readSessionJson(sessionPath, storage);
   if (!isRecord(entry) || typeof entry.sessionId !== 'string') return null;
