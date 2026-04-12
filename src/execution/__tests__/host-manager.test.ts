@@ -3,18 +3,9 @@ import type { ProviderServerHandle } from '../engine.js';
 import { DefaultProviderHostManager, hostKeyFromSpec } from '../host-manager.js';
 import { createRealRuntime } from '../runtime.js';
 import type { ProviderServerSpec } from '../../providers/types.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 const runtime = createRealRuntime();
-
-function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 function createFakeProviderServerHandle(options?: {
   generation?: number;

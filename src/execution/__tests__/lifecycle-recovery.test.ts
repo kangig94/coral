@@ -17,6 +17,7 @@ import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../discuss/operations.js'
 import type * as DiscussContextRegistryModule from '../discuss/context-registry.js'
 import { createRealRuntime } from '../runtime.js'
+import { createDeferred } from '../../shared/test-deferred.js'
 
 const runtime = createRealRuntime()
 
@@ -52,14 +53,6 @@ type LoadedModules = {
 
 function createLaunchCoordinator(modules: LoadedModules): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
   return new modules.engineModule.LaunchCoordinator({ runtime })
-}
-
-function createDeferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>((done) => {
-    resolve = done
-  })
-  return { promise, resolve }
 }
 
 async function loadModules(): Promise<LoadedModules> {

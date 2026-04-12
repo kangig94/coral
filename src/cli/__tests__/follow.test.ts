@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { TerminalResult, WaitStreamEvent } from '../../shared/types.js';
 import type * as FollowMod from '../follow.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 const mockState = vi.hoisted(() => ({
   ensureBackend: vi.fn(),
@@ -18,22 +19,6 @@ vi.mock('../../client/backend-helpers.js', () => ({
 }));
 
 type FollowModule = typeof FollowMod;
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-};
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-  return { promise, resolve, reject };
-}
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');

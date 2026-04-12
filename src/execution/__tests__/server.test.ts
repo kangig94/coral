@@ -14,6 +14,7 @@ import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
 import type { ProviderServerHandle } from '../engine.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
@@ -70,14 +71,6 @@ type ServerModule = typeof ServerMod;
 type BackendInfoModule = typeof BackendInfoMod;
 type BackendLockModule = typeof BackendLockMod;
 type LifecycleModule = typeof LifecycleMod;
-
-function createDeferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 type FakeExecutionService = {
   start: ReturnType<typeof vi.fn>;

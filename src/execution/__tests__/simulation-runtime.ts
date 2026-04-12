@@ -10,6 +10,7 @@ import type { Provider } from '../../providers/types.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { nowIsoString } from '../../shared/utils.js';
+import { createDeferred, type Deferred } from '../../shared/test-deferred.js';
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
@@ -73,12 +74,6 @@ type DirectoryNode = {
 type OpenFile = {
   path: string;
   position: number;
-};
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (error: unknown) => void;
 };
 
 type TimerRecord = {
@@ -194,16 +189,6 @@ type RegisteredProcess = {
   complete: (outcome: ProcessExitOutcome) => void;
   waitForExit: Deferred<PersistedExitRecord> | null;
 };
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 function normalizePathForStorage(path: string): string {
   const normalized = normalize(path.replace(/\\/g, '/'));
