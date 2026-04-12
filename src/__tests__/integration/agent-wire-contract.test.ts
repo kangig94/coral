@@ -11,9 +11,10 @@ import { TypedEventBus } from '../../execution/event-bus.js';
 import { createHttpHandler } from '../../execution/http-handler.js';
 import { createProviderHostManager } from '../../execution/host-manager.js';
 import { ProgressStore } from '../../execution/progress-store.js';
+import { createRealRuntime } from '../../execution/runtime.js';
 import { ExecutionService } from '../../execution/service.js';
 import { SessionIndex } from '../../execution/session-index.js';
-import { pluginRootNamespace } from '../../infra/paths.js';
+import { pluginRootNamespace, resolveProjectSource } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/types.js';
@@ -213,12 +214,19 @@ describe('agent wire contract', () => {
     };
     providerRegistry.register(fakeProvider);
 
-    const launchCoordinator = new LaunchCoordinator();
+    const runtime = createRealRuntime();
+    const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('test-ns', eventBus);
-    const sessionIndex = new SessionIndex();
-    const pluginRegistry = createPluginRegistry();
+    const progressStore = new ProgressStore('test-ns', eventBus, runtime);
+    const sessionIndex = new SessionIndex(runtime);
+    const pluginRegistry = createPluginRegistry({
+      storage: runtime.storage,
+      env: runtime.env,
+      registryPath,
+      homeDir: tmpHome,
+    });
     const providerHostManager = createProviderHostManager({
+      runtime,
       spawnProviderServer: async () => {
         throw new Error('Provider host manager should not be used in agent wire-contract integration test');
       },
@@ -234,8 +242,10 @@ describe('agent wire contract', () => {
       }
 
       const created = new ExecutionService(ctx, {
+        runtime,
         progressStore,
         bundleHash: 'agent-wire-contract-bundle',
+        backendNamespace: pluginRootNamespace(coralPluginRoot),
         providerHostManager,
         launchCoordinator,
         eventBus,
@@ -258,6 +268,7 @@ describe('agent wire contract', () => {
         now: () => Date.now(),
         log: () => {},
       },
+      runtime,
       runtimeState,
       idleTimer: idleTimer as never,
       progressStore,
@@ -265,6 +276,8 @@ describe('agent wire contract', () => {
       activeLaunchCount: () => launchCoordinator.active,
       queueDepth: () => launchCoordinator.queueDepth(),
       streamResponses: new Set(),
+      coralEnvSnapshot: {},
+      resolveProjectSource: resolveProjectSource,
       isDrainRequested: () => false,
       requestDrain: () => {},
       getExecutionService,

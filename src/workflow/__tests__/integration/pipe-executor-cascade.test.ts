@@ -7,7 +7,9 @@ import { LaunchCoordinator } from '../../../execution/engine.js';
 import { TypedEventBus } from '../../../execution/event-bus.js';
 import { createProviderHostManager } from '../../../execution/host-manager.js';
 import { ProgressStore } from '../../../execution/progress-store.js';
+import { createRealRuntime } from '../../../execution/runtime.js';
 import { ExecutionService } from '../../../execution/service.js';
+import { pluginRootNamespace } from '../../../infra/paths.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import type { CallerContext } from '../../../shared/request-context.js';
@@ -48,11 +50,13 @@ describe('pipe executor coral cascade invariant', () => {
       expect(existsSync(coralArchitectPath)).toBe(true);
       expect(readFileSync(projectArchitectPath, 'utf8')).toContain(SENTINEL_PROJECT);
       expect(readFileSync(coralArchitectPath, 'utf8')).toContain(SENTINEL_CORAL);
+      const runtime = createRealRuntime();
 
       const resolutionCtx = {
         projectRoot,
         coralPluginRoot,
         discoverPluginRoot: () => null,
+        storage: runtime.storage,
       };
 
       const bareResolved = resolveAgent(parseAgentRef('architect'), resolutionCtx);
@@ -81,14 +85,17 @@ describe('pipe executor coral cascade invariant', () => {
       const executionSvc = new ExecutionService(
         { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
         {
-          progressStore: new ProgressStore('test-ns', eventBus),
+          runtime,
+          progressStore: new ProgressStore('test-ns', eventBus, runtime),
           bundleHash: 'pipe-executor-cascade-test',
+          backendNamespace: pluginRootNamespace(coralPluginRoot),
           providerHostManager: createProviderHostManager({
+            runtime,
             spawnProviderServer: async () => {
               throw new Error('Provider host manager should not be used in pipe executor cascade test');
             },
           }),
-          launchCoordinator: new LaunchCoordinator(),
+          launchCoordinator: new LaunchCoordinator({ runtime }),
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },

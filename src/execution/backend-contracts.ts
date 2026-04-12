@@ -19,6 +19,7 @@ import type { ExecutionService } from './service.js';
 import type { KbSubsystem } from './kb-tools.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import type { Runtime } from './runtime.js';
 
 // ---------------------------------------------------------------------------
 // BackendIdentity — immutable config/identity for a backend instance
@@ -74,6 +75,7 @@ export type ScopeCheckResult = {
 export interface HttpHandlerDeps {
   // Identity / config
   readonly identity: BackendIdentity;
+  readonly runtime: Pick<Runtime, 'ids' | 'time'>;
 
   // Shared runtime state (read-only from HTTP perspective)
   readonly runtimeState: ReadonlyBackendRuntimeState;
@@ -85,6 +87,8 @@ export interface HttpHandlerDeps {
   readonly activeLaunchCount: () => number;
   readonly queueDepth: () => number;
   readonly streamResponses: Set<ServerResponse>;
+  readonly coralEnvSnapshot: Readonly<Record<string, string>>;
+  readonly resolveProjectSource: (projectRoot: string) => string;
 
   // Drain admission fence — immediately true after /admin/shutdown, before lifecycle flips
   isDrainRequested(): boolean;

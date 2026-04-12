@@ -15,10 +15,12 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { SessionManager } from '../session-manager.js';
+import { SessionManager, getSessionById, listSessionShards } from '../session-manager.js';
 import { TypedEventBus } from '../event-bus.js';
+import { createRealRuntime } from '../runtime.js';
 
 let eventBus: TypedEventBus;
+const runtime = createRealRuntime();
 
 describe('execution SessionManager', () => {
   beforeEach(() => {
@@ -35,7 +37,7 @@ describe('execution SessionManager', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, eventBus), workDir };
+    return { mgr: new SessionManager(workDir, runtime, eventBus), workDir };
   }
 
   it('allocate creates an entry with state pending', () => {
@@ -375,9 +377,9 @@ describe('execution SessionManager', () => {
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
     const shardDir = resolveSessionDir(tmpHome);
 
-    expect(SessionManager.listShards()).toContain(shardDir);
+    expect(listSessionShards(runtime.storage)).toContain(shardDir);
 
-    const shardMgr = SessionManager.openShard(shardDir);
+    const shardMgr = SessionManager.openShard(shardDir, runtime);
     expect(shardMgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
       provider: 'codex',
@@ -405,12 +407,12 @@ describe('execution SessionManager', () => {
       backendNamespace: 'ns-b',
     });
 
-    expect(SessionManager.getById(sessionA.sessionId)).toMatchObject({
+    expect(getSessionById(sessionA.sessionId, runtime)).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
       backendNamespace: 'ns-a',
     });
-    expect(SessionManager.getById(sessionB.sessionId)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',
       backendNamespace: 'ns-b',
@@ -418,12 +420,12 @@ describe('execution SessionManager', () => {
 
     beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
 
-    expect(SessionManager.getById(sessionB.sessionId)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
       sessionId: sessionB.sessionId,
       state: 'ready',
       conversationRef: 'thread-2',
     });
-    expect(SessionManager.getById('missing-session-id')).toBeNull();
+    expect(getSessionById('missing-session-id', runtime)).toBeNull();
   });
 });
 
@@ -449,7 +451,7 @@ describe('SessionManager adversarial', () => {
   function setup(name: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, name);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir), workDir };
+    return { mgr: new SessionManager(workDir, runtime), workDir };
   }
 
   it('claimForJobSync returns false for a session that does not exist', () => {
@@ -519,7 +521,7 @@ describe('SessionManager adversarial', () => {
     writeFileSync(join(sessionDir, `${entry.sessionId}.json`), '{ not valid json }', 'utf-8');
 
     // A fresh manager (no cache) should gracefully handle the corrupt file
-    const freshMgr = SessionManager.openShard(sessionDir);
+    const freshMgr = SessionManager.openShard(sessionDir, runtime);
     expect(() => freshMgr.get('codex', entry.sessionId)).not.toThrow();
     expect(freshMgr.get('codex', entry.sessionId)).toBeNull();
   });

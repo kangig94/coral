@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
 import { ensureBackend } from '../backend-lifecycle.js';
-import { isProcessAlive, tryExclusiveWrite } from '../../shared/utils.js';
+import { tryExclusiveWrite } from '../../shared/utils.js';
+import { isProcessAlive } from '../../shared/node-process.js';
 
 const tempRoots: string[] = [];
 const STARTUP_POLL_MS = 200;

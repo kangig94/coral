@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { backendInfoPath } from './paths.js';
+import type { RuntimeStoragePort } from '../execution/runtime.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 export { backendInfoPath } from './paths.js';
@@ -43,12 +44,26 @@ function isBackendInfo(value: unknown): value is BackendInfo {
   );
 }
 
-export function writeBackendInfo(pluginRoot: string, info: BackendInfo): void {
-  const infoPath = backendInfoPath(pluginRoot);
+type BackendInfoStorage = Pick<
+  RuntimeStoragePort,
+  'backendInfoPath' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
+>;
+
+function resolveInfoPath(pluginRoot: string, storage?: BackendInfoStorage): string {
+  return storage?.backendInfoPath(pluginRoot) ?? backendInfoPath(pluginRoot);
+}
+
+export function writeBackendInfo(pluginRoot: string, info: BackendInfo, storage?: BackendInfoStorage): void {
+  const infoPath = resolveInfoPath(pluginRoot, storage);
+  const payload = JSON.stringify(info);
+  if (storage) {
+    storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 });
+    return;
+  }
+
   mkdirSync(dirname(infoPath), { recursive: true });
 
   const tmpPath = `${infoPath}.tmp`;
-  const payload = JSON.stringify(info);
   try {
     writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
   } catch (error: unknown) {
@@ -66,9 +81,9 @@ export function writeBackendInfo(pluginRoot: string, info: BackendInfo): void {
   }
 }
 
-export function readBackendInfo(pluginRoot: string): BackendInfo | null {
+export function readBackendInfo(pluginRoot: string, storage?: BackendInfoStorage): BackendInfo | null {
   try {
-    const raw = readFileSync(backendInfoPath(pluginRoot), 'utf-8');
+    const raw = storage?.readFileSync(resolveInfoPath(pluginRoot, storage), 'utf-8') ?? readFileSync(backendInfoPath(pluginRoot), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
@@ -84,12 +99,17 @@ export function readBackendInfo(pluginRoot: string): BackendInfo | null {
   }
 }
 
-export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string): void {
-  const info = readBackendInfo(pluginRoot);
+export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string, storage?: BackendInfoStorage): void {
+  const info = readBackendInfo(pluginRoot, storage);
   if (!info || info.instanceId !== instanceId) return;
 
   try {
-    unlinkSync(backendInfoPath(pluginRoot));
+    const infoPath = resolveInfoPath(pluginRoot, storage);
+    if (storage) {
+      storage.unlinkSync(infoPath);
+    } else {
+      unlinkSync(infoPath);
+    }
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;

@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-import { pluginRootNamespace } from '../infra/paths.js';
 import type {
   Provider,
   ProviderContinuityBlob,
@@ -30,7 +28,7 @@ import {
   type WaitStreamEvent,
   type WorkflowResultMeta,
 } from '../shared/types.js';
-import { errorMessage } from '../shared/utils.js';
+import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { PipelineAST } from '../workflow/types.js';
 import type { WorkflowInput } from '../workflow/schemas.js';
@@ -67,9 +65,8 @@ import {
   AgentNamespaceNotFoundError,
   type AgentResolutionContext,
 } from './agent-resolution.js';
-import { SessionManager, type SessionAllocateOptions } from './session-manager.js';
-
-declare const __PLUGIN_ROOT__: string;
+import { SessionManager, getSessionById, type SessionAllocateOptions } from './session-manager.js';
+import type { Runtime } from './runtime.js';
 
 interface ExecInput {
   prompt: string;
@@ -132,7 +129,6 @@ interface ListResult {
 }
 
 const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
-const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd();
 
 type ResolvedAgentLaunchProfile = {
   agentName: string;
@@ -275,8 +271,10 @@ function buildInterruptedAppServerReport(options: {
 }
 
 export type ExecutionServiceDeps = {
+  runtime: Runtime;
   progressStore: ProgressStore;
   bundleHash?: string;
+  backendNamespace: string;
   providerHostManager: ProviderHostManager;
   launchCoordinator: LaunchCoordinator;
   eventBus: TypedEventBus;
@@ -285,14 +283,6 @@ export type ExecutionServiceDeps = {
     discoverPluginRoot: (namespace: string) => string | null;
   };
 };
-
-function resolveBackendNamespace(pluginRoot: string): string {
-  try {
-    return pluginRootNamespace(pluginRoot);
-  } catch {
-    return pluginRootNamespace(defaultPluginRoot);
-  }
-}
 
 function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -360,6 +350,7 @@ export interface RecoveryCapableService {
 }
 
 export class ExecutionService implements RecoveryCapableService {
+  private readonly runtime: Runtime;
   private readonly sessionManager: SessionManager;
   private readonly abortRegistry: AbortRegistry;
   private readonly backendNamespace: string;
@@ -377,10 +368,11 @@ export class ExecutionService implements RecoveryCapableService {
 
   constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
     this.projectRoot = ctx.projectRoot;
+    this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    this.sessionManager = new SessionManager(ctx.projectRoot, this.eventBus);
-    this.abortRegistry = new AbortRegistry();
-    this.backendNamespace = resolveBackendNamespace(ctx.pluginRoot);
+    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime, this.eventBus);
+    this.abortRegistry = new AbortRegistry(deps.runtime.ids);
+    this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
     this.progressStore = deps.progressStore;
     this.providerHostManager = deps.providerHostManager;
@@ -392,6 +384,7 @@ export class ExecutionService implements RecoveryCapableService {
       progressStore: this.progressStore,
       sessionManager: this.sessionManager,
       launchCoordinator: this.launchCoordinator,
+      runtime: this.runtime,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
@@ -406,6 +399,7 @@ export class ExecutionService implements RecoveryCapableService {
       launchCoordinator: this.launchCoordinator,
       eventBus: this.eventBus,
       jobPools: this.jobPools,
+      time: this.runtime.time,
     });
   }
 
@@ -723,7 +717,7 @@ export class ExecutionService implements RecoveryCapableService {
     const appRuntime = isAppServerRuntime(current) ? current : null;
     const record: AppServerRuntimeRecord = {
       transport: 'app-server',
-      startTime: appRuntime?.startTime ?? new Date().toISOString(),
+      startTime: appRuntime?.startTime ?? nowIsoString(this.runtime.time),
       providerMeta: {
         provider: providerName,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
@@ -739,7 +733,7 @@ export class ExecutionService implements RecoveryCapableService {
     sessionId: string,
     ctx: CallerContext,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
-    const session = SessionManager.getById(sessionId);
+    const session = getSessionById(sessionId, this.runtime, this.eventBus);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
     }
@@ -856,7 +850,7 @@ export class ExecutionService implements RecoveryCapableService {
     const preflightError = await runProviderPreflight(provider);
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    const sourceClaimId = randomUUID();
+    const sourceClaimId = this.runtime.ids.uuid();
     const sourceClaimed = await this.sessionManager.claimForJobAtomic(
       sourceSession.sessionId,
       sourceClaimId,
@@ -867,7 +861,7 @@ export class ExecutionService implements RecoveryCapableService {
     }
 
     try {
-      const name = input.name ?? `fork-${Date.now()}`;
+      const name = input.name ?? `fork-${this.runtime.time.now()}`;
       const continuation = this.buildContinuationProfile(input, sourceSession, ctx);
       const newSession = this.sessionManager.allocate({
         provider: providerName,
@@ -959,6 +953,7 @@ export class ExecutionService implements RecoveryCapableService {
           projectRoot: ctx.projectRoot,
           coralPluginRoot: ctx.pluginRoot,
           discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+          storage: this.runtime.storage,
         });
       } catch (err) {
         const rejection = mapResolverError(err);
@@ -969,7 +964,7 @@ export class ExecutionService implements RecoveryCapableService {
     const effectiveCoralEnv = buildEffectiveCoralEnv(ctx.coralEnv, { effort: input.effort });
     const cwd = input.cwd ?? ctx.projectRoot;
     const requestName = resolvedAgent?.name ?? input.name;
-    const name = requestName ?? `session-${Date.now()}`;
+    const name = requestName ?? `session-${this.runtime.time.now()}`;
     const model = input.model ?? resolvedAgent?.model;
     const pool = input.pool ?? 'default';
     const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
@@ -1085,6 +1080,7 @@ export class ExecutionService implements RecoveryCapableService {
           projectRoot: ctx.projectRoot,
           coralPluginRoot: ctx.pluginRoot,
           discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+          storage: this.runtime.storage,
         });
       } catch (err) {
         const rejection = mapResolverError(err);
@@ -1138,7 +1134,7 @@ export class ExecutionService implements RecoveryCapableService {
     const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
     const session = this.sessionManager.allocate({
       provider: providerName,
-      name: `workflow-${Date.now()}`,
+      name: `workflow-${this.runtime.time.now()}`,
       model: 'workflow',
       cwd: ctx.projectRoot,
       projectRoot: ctx.projectRoot,
@@ -1274,11 +1270,7 @@ export class ExecutionService implements RecoveryCapableService {
     // Register abort with PID-kill delegate
     const pid = runtimeRecord.pid;
     this.abortRegistry.register(jobId, () => {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        /* already dead */
-      }
+      this.runtime.process.kill(pid, 'SIGTERM');
     });
 
     // Return cleanup handle for the PID poller
@@ -1409,17 +1401,17 @@ export class ExecutionService implements RecoveryCapableService {
    * Use waitStream() to monitor actual completion after a 'queued' return.
    */
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
-    const start = Date.now();
+    const start = this.runtime.time.now();
     while (true) {
       const seq = this.progressStore.getChangeSeq();
       const status = this.progressStore.readStatus(jobId);
       if (status && status.launch.state !== 'pending') return status.launch.state;
 
-      const remainingMs = timeoutMs - (Date.now() - start);
+      const remainingMs = timeoutMs - (this.runtime.time.now() - start);
       if (remainingMs <= 0) return 'pending';
       await Promise.race([
         this.progressStore.waitForChange(seq),
-        new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+        this.runtime.time.sleep(remainingMs),
       ]);
     }
   }

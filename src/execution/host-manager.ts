@@ -1,6 +1,7 @@
 import { raceTimeout } from '../shared/utils.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from './engine.js';
+import type { Runtime, RuntimeTimePort } from './runtime.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
@@ -26,7 +27,7 @@ type ProviderHostEntry = {
   waiters: ProviderServerWaiter[];
   closingError: Error | null;
   hostStats: HostStatsState | null;
-  idleTimer: NodeJS.Timeout | null;
+  idleTimer: ReturnType<RuntimeTimePort['setTimeout']> | null;
   disposeHostNotifications: (() => void) | null;
 };
 
@@ -62,15 +63,19 @@ function createAbortError(message: string): Error {
   return error;
 }
 
-function waitForTimeout<T>(timeoutMs: number, value: T): Promise<T> {
+function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<RuntimeTimePort, 'setTimeout'>): Promise<T> {
   return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(value), timeoutMs);
+    const timer = time.setTimeout(() => resolve(value), timeoutMs);
     timer.unref?.();
   });
 }
 
-function waitForCloseWithin(closed: Promise<Error | void>, timeoutMs: number): Promise<boolean> {
-  return raceTimeout(closed, timeoutMs);
+function waitForCloseWithin(
+  closed: Promise<Error | void>,
+  timeoutMs: number,
+  time: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+): Promise<boolean> {
+  return raceTimeout(closed, timeoutMs, time);
 }
 
 function parseIdleTimeoutMs(raw: string | undefined): number {
@@ -124,9 +129,15 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly idleTimeoutMs: number;
   private readonly spawnProviderServer: SpawnProviderServerFn;
+  private readonly runtime: Pick<Runtime, 'time' | 'env'>;
 
-  constructor(options: { idleTimeoutMs?: number; spawnProviderServer: SpawnProviderServerFn }) {
-    this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(process.env.CORAL_BROKER_IDLE_MS);
+  constructor(options: {
+    runtime: Pick<Runtime, 'time' | 'env'>;
+    idleTimeoutMs?: number;
+    spawnProviderServer: SpawnProviderServerFn;
+  }) {
+    this.runtime = options.runtime;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
     this.spawnProviderServer = options.spawnProviderServer;
   }
 
@@ -455,7 +466,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     }
 
     this.clearIdleTimer(entry);
-    entry.idleTimer = setTimeout(() => {
+    entry.idleTimer = this.runtime.time.setTimeout(() => {
       entry.idleTimer = null;
       if (!this.canCloseIdleHost(entry)) {
         return;
@@ -482,7 +493,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     if (!entry.idleTimer) {
       return;
     }
-    clearTimeout(entry.idleTimer);
+    this.runtime.time.clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
   }
 
@@ -508,23 +519,24 @@ export class DefaultProviderHostManager implements ProviderHostManager {
       const outcome = await Promise.race([
         handle.rpc.request(capability.method, {}).then(() => 'rpc' as const),
         handle.closePromise.then(() => 'closed' as const),
-        waitForTimeout(capability.timeoutMs, 'timeout' as const),
+        waitForTimeout(capability.timeoutMs, 'timeout' as const, this.runtime.time),
       ]);
       if (outcome === 'timeout') {
         return false;
       }
       if (outcome === 'rpc') {
-        return waitForCloseWithin(handle.closePromise, GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS);
+        return waitForCloseWithin(handle.closePromise, GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS, this.runtime.time);
       }
       return true;
     } catch {
-      return waitForCloseWithin(handle.closePromise, capability.timeoutMs);
+      return waitForCloseWithin(handle.closePromise, capability.timeoutMs, this.runtime.time);
     }
   }
 }
 
 export function createProviderHostManager(
   options: {
+    runtime: Pick<Runtime, 'time' | 'env'>;
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
   },

@@ -14,7 +14,8 @@ import type {
   WorkflowCheckpoint,
 } from '../../shared/types.js';
 import { TypedEventBus } from '../event-bus.js';
-import { JOBS_DIR, ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
+import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
+import { createRealRuntime } from '../runtime.js';
 
 const jobIdsToClean = new Set<string>();
 const projectRoot = '/tmp/project';
@@ -24,6 +25,12 @@ const mockState = vi.hoisted(() => ({
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-progress-store-test-tmp`,
 }));
 let eventBus: TypedEventBus;
+const runtime = createRealRuntime();
+const JOBS_DIR = runtime.storage.jobsDir();
+
+function createStore(bus: TypedEventBus = eventBus): ProgressStore {
+  return new ProgressStore(TEST_BACKEND_NAMESPACE, bus, runtime);
+}
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -63,7 +70,7 @@ afterEach(() => {
 
 describe('execution ProgressStore', () => {
   it('initJob creates directory and status.json with phase launching', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE, eventBus);
+    const store = createStore(eventBus);
     const jobId = `progress-init-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -81,7 +88,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendProgress returns incrementing eventId starting at 1', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE, eventBus);
+    const store = createStore(eventBus);
     const jobId = `progress-events-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -94,7 +101,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('emits event bus job lifecycle events', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE, eventBus);
+    const store = createStore(eventBus);
     const jobId = `progress-bus-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const created = vi.fn();
@@ -132,7 +139,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('replayFrom returns only events with eventId greater than fromEventId', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-replay-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -147,7 +154,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendTerminal updates status.json result', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-terminal-${randomUUID()}`;
     const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
     jobIdsToClean.add(jobId);
@@ -162,7 +169,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendTerminal throws when progress.jsonl append fails', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-terminal-throw-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -177,7 +184,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('writeStatus non-terminal writes sync (same as terminal)', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -202,7 +209,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('writeStatus terminal is atomic (sync renameSync before cache)', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-atomic-terminal-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -231,7 +238,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('replayFrom from eventId=0 on a job with only a terminal event returns that terminal', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-terminal-only-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -245,7 +252,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('appendTerminal is safe when status.json does not exist (no unhandled throw)', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-nostatus-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     mkdirSync(store.jobDir(jobId), { recursive: true });
@@ -257,7 +264,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('markTerminalStatus updates status only, cleans terminal state, and notifies waiters', async () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-terminal-fallback-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -284,7 +291,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('markTerminalStatus emits job:completed', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE, eventBus);
+    const store = createStore(eventBus);
     const jobId = `progress-terminal-event-${randomUUID()}`;
     const result = { content: 'done' } satisfies TerminalResult;
     const completed = vi.fn();
@@ -299,7 +306,7 @@ describe('execution ProgressStore', () => {
 
   // @flaky — formatElapsed timestamp depends on sub-second execution; retry under parallel suite
   it('consecutive replayFrom calls on the same cursor only return newly appended events', { retry: 2 }, () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-cursor-advance-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -318,7 +325,7 @@ describe('execution ProgressStore', () => {
   });
 
   it('scopedLookup distinguishes found, missing, and mismatch', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `progress-scope-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -364,7 +371,7 @@ describe('legacy backendNamespace bridge', () => {
   }
 
   it('readStatus returns the record when backendNamespace key is completely absent (legacy format)', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `legacy-absent-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -376,7 +383,7 @@ describe('legacy backendNamespace bridge', () => {
   });
 
   it('scopedLookup still finds a legacy job (no backendNamespace) by projectRoot', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `legacy-scoped-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -386,7 +393,7 @@ describe('legacy backendNamespace bridge', () => {
   });
 
   it('a job with backendNamespace set to empty string is distinguishable from absent', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `empty-ns-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -400,8 +407,8 @@ describe('legacy backendNamespace bridge', () => {
     }
   });
 
-  it('a job with a foreign backendNamespace must NOT be treated as a legacy job', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+  it('a job with a foreign backendNamespace is excluded from this store view', () => {
+    const store = createStore();
     const jobId = `foreign-ns-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -409,15 +416,11 @@ describe('legacy backendNamespace bridge', () => {
     seedLegacyStatus(store, jobId, { backendNamespace: foreignNamespace } as never);
 
     const status = store.readStatus(jobId) as Record<string, unknown> | null;
-    expect(status).not.toBeNull();
-
-    if (status && 'backendNamespace' in status) {
-      expect(status['backendNamespace']).toBe(foreignNamespace);
-    }
+    expect(status).toBeNull();
   });
 
   it('legacy job without backendNamespace is still listed by readStatus (not silently dropped)', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `legacy-list-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -428,7 +431,7 @@ describe('legacy backendNamespace bridge', () => {
   });
 
   it('initJob stores the provided backendNamespace in the persisted status record', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `init-with-ns-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -449,7 +452,7 @@ describe('legacy backendNamespace bridge', () => {
 
 describe('durable snapshot artifacts', () => {
   it('writes and reads launch.json', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-launch-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -477,7 +480,7 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('writes and reads runtime.json', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-runtime-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -495,7 +498,7 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('caches runtime.json reads until cleanup clears the cache', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-runtime-cache-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -525,7 +528,7 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('writes and reads exit.json', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-exit-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -542,7 +545,7 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('writes and reads workflow-state.json', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-workflow-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -569,7 +572,7 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('returns null for missing artifacts', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     expect(store.readLaunchRecord('nonexistent')).toBeNull();
     expect(store.readRuntimeRecord('nonexistent')).toBeNull();
     expect(store.readExitRecord('nonexistent')).toBeNull();
@@ -577,14 +580,14 @@ describe('durable snapshot artifacts', () => {
   });
 
   it('hasLaunchRecord/hasRuntimeRecord/hasExitRecord return false for missing', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     expect(store.hasLaunchRecord('nonexistent')).toBe(false);
     expect(store.hasRuntimeRecord('nonexistent')).toBe(false);
     expect(store.hasExitRecord('nonexistent')).toBe(false);
   });
 
   it('hasLaunchRecord/hasRuntimeRecord/hasExitRecord return true after write', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `test-has-records-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
@@ -622,7 +625,7 @@ describe('durable snapshot artifacts', () => {
 
 describe('rebindNamespace', () => {
   it('changes backendNamespace on an existing job', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `rebind-ns-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'old-ns' });
@@ -634,7 +637,7 @@ describe('rebindNamespace', () => {
   });
 
   it('optionally updates bundleHash along with namespace', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `rebind-hash-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({
@@ -654,14 +657,14 @@ describe('rebindNamespace', () => {
   });
 
   it('is a no-op for a nonexistent job', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     expect(() => store.rebindNamespace('nonexistent', 'ns')).not.toThrow();
   });
 });
 
 describe('liveJobCountByNamespace', () => {
   it('counts live jobs matching the given namespace', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobA = `live-ns-a-${randomUUID()}`;
     const jobB = `live-ns-b-${randomUUID()}`;
     const jobC = `live-ns-c-${randomUUID()}`;
@@ -679,7 +682,7 @@ describe('liveJobCountByNamespace', () => {
   });
 
   it('excludes terminated jobs from the count', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `live-ns-term-${randomUUID()}`;
     jobIdsToClean.add(jobId);
 
@@ -693,7 +696,7 @@ describe('liveJobCountByNamespace', () => {
 
 describe('hydrateEventCounter', () => {
   it('restores counter from progress.jsonl so next append is lastEventId + 1', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `hydrate-counter-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
@@ -704,7 +707,7 @@ describe('hydrateEventCounter', () => {
     store.appendProgress(jobId, 's1', 'third');
 
     // Create a fresh store to simulate restart (clears in-memory counters)
-    const store2 = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store2 = createStore();
     store2.hydrateEventCounter(jobId);
 
     // Next append should be eventId 4, not 1
@@ -713,12 +716,12 @@ describe('hydrateEventCounter', () => {
   });
 
   it('is a no-op when progress.jsonl is empty', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `hydrate-empty-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
 
-    const store2 = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store2 = createStore();
     store2.hydrateEventCounter(jobId);
 
     // First append should still be eventId 1
@@ -729,7 +732,7 @@ describe('hydrateEventCounter', () => {
 
 describe('hydrateJobStartedAt', () => {
   it('sets the started time from a timestamp string', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `hydrate-started-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
@@ -748,7 +751,7 @@ describe('hydrateJobStartedAt', () => {
   });
 
   it('ignores an invalid timestamp', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const jobId = `hydrate-invalid-${randomUUID()}`;
     jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
@@ -760,7 +763,7 @@ describe('hydrateJobStartedAt', () => {
 
 describe('nextEnqueueSequence', () => {
   it('returns monotonically increasing values', () => {
-    const store = new ProgressStore(TEST_BACKEND_NAMESPACE);
+    const store = createStore();
     const first = store.nextEnqueueSequence();
     const second = store.nextEnqueueSequence();
     const third = store.nextEnqueueSequence();
@@ -775,7 +778,7 @@ describe('namespace-bound discovery scan', () => {
     // Seed JOBS_DIR with four jobs in distinct ownership states via a
     // sibling store. The sibling is only a tool for constructing on-disk
     // state — its knownJobIds is irrelevant to the assertion.
-    const seeder = new ProgressStore('ns-alpha');
+    const seeder = new ProgressStore('ns-alpha', runtime);
     const ownedId = `owned-${randomUUID()}`;
     const foreignId = `foreign-${randomUUID()}`;
     const legacyId = `legacy-${randomUUID()}`;
@@ -810,7 +813,7 @@ describe('namespace-bound discovery scan', () => {
     writeFileSync(join(corruptDir, 'status.json'), '{not-json', 'utf-8');
 
     // Fresh store bound to ns-alpha rescans JOBS_DIR at construction.
-    const alpha = new ProgressStore('ns-alpha');
+    const alpha = new ProgressStore('ns-alpha', runtime);
     const alphaIds = new Set(alpha.listJobIds());
 
     expect(alphaIds.has(ownedId)).toBe(true);
@@ -820,7 +823,7 @@ describe('namespace-bound discovery scan', () => {
 
     // A second store bound to ns-beta sees the mirror image: its own job,
     // legacy (adoptable), and corrupt (undetermined), but not the alpha job.
-    const beta = new ProgressStore('ns-beta');
+    const beta = new ProgressStore('ns-beta', runtime);
     const betaIds = new Set(beta.listJobIds());
 
     expect(betaIds.has(foreignId)).toBe(true);

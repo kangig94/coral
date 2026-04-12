@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { AbortRegistry } from '../abort-controller-registry.js';
+import { createRealRuntime } from '../runtime.js';
+
+const runtime = createRealRuntime();
 
 describe('execution AbortRegistry', () => {
   it('register returns a UUID', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     const jobId = registry.register();
     expect(jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   });
 
   it('has returns true while registered, false after remove', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     const jobId = registry.register();
     expect(registry.has(jobId)).toBe(true);
     registry.remove(jobId);
@@ -17,7 +20,7 @@ describe('execution AbortRegistry', () => {
   });
 
   it('abort aborts the correct jobs and reports notFound correctly', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     const firstJobId = registry.register();
     const secondJobId = registry.register();
 
@@ -32,7 +35,7 @@ describe('execution AbortRegistry', () => {
   });
 
   it('register with onAbort fires callback when job is aborted', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     let called = false;
     const jobId = registry.register(undefined, () => {
       called = true;
@@ -44,7 +47,7 @@ describe('execution AbortRegistry', () => {
   });
 
   it('register with explicit jobId and onAbort uses the given ID', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     let called = false;
     const jobId = registry.register('adopted-42', () => {
       called = true;
@@ -57,7 +60,7 @@ describe('execution AbortRegistry', () => {
   });
 
   it('register without onAbort still works normally', () => {
-    const registry = new AbortRegistry();
+    const registry = new AbortRegistry(runtime.ids);
     const jobId = registry.register('plain-job');
 
     expect(jobId).toBe('plain-job');

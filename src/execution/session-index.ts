@@ -1,16 +1,20 @@
-import { readdirSync, type Dirent } from 'node:fs';
 import { basename, join } from 'node:path';
-import { sessionBase } from '../infra/paths.js';
 import { readSessionEntryLenient, type LenientSessionEntry } from '../shared/session-entry.js';
 import type { ProgressStore } from './progress-store.js';
-import { SessionManager } from './session-manager.js';
+import { listSessionShards } from './session-manager.js';
+import type { Runtime, RuntimeStoragePort } from './runtime.js';
 
 type SessionIndexRow = { shardHash: string; sessions: LenientSessionEntry[] };
 
 export class SessionIndex {
+  private readonly storage: RuntimeStoragePort;
   private readonly index = new Map<string, Map<string, LenientSessionEntry>>();
   private readonly shardDirs = new Map<string, string>();
   private readonly staleSessionIds = new Map<string, Set<string>>();
+
+  constructor(runtime: Pick<Runtime, 'storage'>) {
+    this.storage = runtime.storage;
+  }
 
   hydrate(shards: string[]): void {
     for (const shardDir of shards) {
@@ -26,7 +30,7 @@ export class SessionIndex {
 
   discoverShard(shardHash: string): void {
     if (this.shardDirs.has(shardHash)) return;
-    const shardDir = join(sessionBase(), shardHash);
+    const shardDir = join(this.storage.sessionBase(), shardHash);
     this.hydrateShard(shardDir);
   }
 
@@ -45,7 +49,7 @@ export class SessionIndex {
       return;
     }
 
-    const entry = readSessionEntryLenient(join(shardDir, `${sessionId}.json`));
+    const entry = readSessionEntryLenient(join(shardDir, `${sessionId}.json`), this.storage);
     if (entry !== null) {
       sessions.set(entry.sessionId, entry);
     }
@@ -84,7 +88,7 @@ export class SessionIndex {
     // Shard discovery is event-driven via session:updated — no unconditional readdirSync.
     // Bootstrap guard: if index is completely empty, do a one-time full scan.
     if (this.shardDirs.size === 0) {
-      this.hydrateUnknownShards(SessionManager.listShards());
+      this.hydrateUnknownShards(listSessionShards(this.storage));
     }
     for (const [shardHash, sessionIds] of this.staleSessionIds) {
       for (const sessionId of [...sessionIds]) {
@@ -110,17 +114,17 @@ export class SessionIndex {
 
   private readShardEntries(shardDir: string): Map<string, LenientSessionEntry> {
     const sessions = new Map<string, LenientSessionEntry>();
-    let files: Dirent[];
+    let files: ReturnType<RuntimeStoragePort['readdirSync']>;
 
     try {
-      files = readdirSync(shardDir, { withFileTypes: true });
+      files = this.storage.readdirSync(shardDir, { withFileTypes: true });
     } catch {
       return sessions;
     }
 
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith('.json')) continue;
-      const entry = readSessionEntryLenient(join(shardDir, file.name));
+      const entry = readSessionEntryLenient(join(shardDir, file.name), this.storage);
       if (entry !== null) {
         sessions.set(entry.sessionId, entry);
       }
@@ -133,7 +137,7 @@ export class SessionIndex {
     const known = this.shardDirs.get(shardHash);
     if (known) return known;
 
-    this.hydrateUnknownShards(SessionManager.listShards());
+    this.hydrateUnknownShards(listSessionShards(this.storage));
     return this.shardDirs.get(shardHash) ?? null;
   }
 

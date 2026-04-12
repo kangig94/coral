@@ -4,12 +4,12 @@ import { z } from 'zod';
 import { isNoEntryError } from '../shared/utils.js';
 import {
   discussSourcesPath,
-  JOBS_DIR,
   discussBaseDirForSource,
   discussDiscoveryPathForSource,
   discussEventLogPath,
   discussStatePath,
   discussSummaryIndexPathForSource,
+  jobsDir,
   resolveProjectSource,
 } from '../infra/paths.js';
 import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
@@ -753,7 +753,7 @@ export interface DiscussSummaryIndexData {
  * Reads and parses a persisted job status record.
  */
 export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
-  const record = readJsonFile(join(JOBS_DIR, jobId, 'status.json'));
+  const record = readJsonFile(join(jobsDir(), jobId, 'status.json'));
   if (record === null) return null;
   return parseWithSchema(persistedStatusRecordSchema, record) as PersistedStatusRecord | null;
 }
@@ -762,7 +762,7 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
  * Reads and parses all persisted progress records for a job.
  */
 export function readProgressLog(jobId: string): PersistedProgressRecord[] {
-  const log = readTextFile(join(JOBS_DIR, jobId, 'progress.jsonl'));
+  const log = readTextFile(join(jobsDir(), jobId, 'progress.jsonl'));
   if (log === null) return [];
   return parseJsonLines(
     log,

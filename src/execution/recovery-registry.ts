@@ -1,5 +1,6 @@
 import { isDurableCliRuntime, type PersistedLaunchRecord, type PersistedRuntimeRecord } from '../shared/types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
+import type { RuntimeProcessPort } from './runtime.js';
 
 export interface RecoveryEntry {
   launchRecord: PersistedLaunchRecord;
@@ -15,6 +16,7 @@ export interface RecoveryEntry {
 export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
   private readonly abortHandlers = new Map<string, () => void>();
+  constructor(private readonly runtimeProcess?: Pick<RuntimeProcessPort, 'kill'>) {}
 
   register(
     jobId: string,
@@ -35,11 +37,7 @@ export class RecoveryRegistry {
 
     const pid = runtimeRecord.pid;
     this.abortHandlers.set(jobId, () => {
-      try {
-        process.kill(pid, 'SIGTERM');
-      } catch {
-        /* pid already exited */
-      }
+      this.runtimeProcess?.kill(pid, 'SIGTERM');
     });
   }
 

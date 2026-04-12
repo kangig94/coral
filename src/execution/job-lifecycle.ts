@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { ProviderCliRunner } from '../providers/runner-port.js';
 import type {
   Provider,
@@ -7,7 +6,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../providers/types.js';
-import { errorMessage } from '../shared/utils.js';
+import { errorMessage, nowIsoString } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import {
   isTerminalPhase,
@@ -27,7 +26,8 @@ import {
 import { AbortRegistry } from './abort-controller-registry.js';
 import { CliBusyError, LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
 import { TypedEventBus } from './event-bus.js';
-import { ProgressStore, createReplayCursor, jobResultPath } from './progress-store.js';
+import { ProgressStore, createReplayCursor } from './progress-store.js';
+import type { Runtime, RuntimeTimePort } from './runtime.js';
 import { SessionManager } from './session-manager.js';
 import {
   QUEUED_ABORT_MESSAGE,
@@ -77,6 +77,7 @@ export interface LaunchOrchestratorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
+  runtime: Pick<Runtime, 'time' | 'ids'>;
   backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
@@ -113,7 +114,7 @@ export class LaunchOrchestrator {
     pool: LaunchPool = 'default',
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
     const { jobPools, launchCoordinator } = this.deps;
-    const jobId = randomUUID();
+    const jobId = this.deps.runtime.ids.uuid();
     jobPools.set(jobId, pool);
 
     const admission = launchCoordinator.requestLaunch(jobId, providerName, pool);
@@ -183,7 +184,7 @@ export class LaunchOrchestrator {
         coralEnv: request.coralEnv,
       },
       parentWorkflowJobId: opts.parentWorkflowJobId,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIsoString(this.deps.runtime.time),
     });
 
     const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
@@ -485,6 +486,7 @@ export interface WaitCoordinatorDeps {
   launchCoordinator: LaunchCoordinator;
   eventBus: TypedEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
+  time: RuntimeTimePort;
 }
 
 export class WaitCoordinator {
@@ -504,16 +506,16 @@ export class WaitCoordinator {
       return;
     }
 
-    const startedAt = Date.now();
+    const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
-      let timer: NodeJS.Timeout | undefined;
+      let timer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
       let settled = false;
 
       const cleanup = (): void => {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
         this.deps.eventBus.off('session:updated', onSessionUpdated);
-        if (timer) clearTimeout(timer);
+        if (timer) this.deps.time.clearTimeout(timer);
       };
 
       const finish = (callback: () => void): void => {
@@ -564,13 +566,13 @@ export class WaitCoordinator {
         return;
       }
 
-      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
       if (remainingMs <= 0) {
         finish(() => reject(timeoutError));
         return;
       }
 
-      timer = setTimeout(() => {
+      timer = this.deps.time.setTimeout(() => {
         finish(() => reject(timeoutError));
       }, remainingMs);
     });
@@ -579,7 +581,7 @@ export class WaitCoordinator {
   async *waitForJobs(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
     const { progressStore, launchCoordinator, jobPools } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor } = req;
-    const startMs = Date.now();
+    const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
 
     const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
@@ -588,7 +590,7 @@ export class WaitCoordinator {
     const pending = new Set(jobIds);
 
     while (pending.size > 0) {
-      if (Date.now() - startMs >= timeoutMs) {
+      if (this.deps.time.now() - startMs >= timeoutMs) {
         yield { type: 'timeout', runningJobIds: [...pending] };
         return;
       }
@@ -637,7 +639,7 @@ export class WaitCoordinator {
             completedJobId: jobId,
             sessionId: status.sessionId,
             remainingJobIds,
-            resultPath: jobResultPath(jobId),
+            resultPath: progressStore.resultPath(jobId),
             result: event.result ?? { content: '' },
           };
           pending.delete(jobId);
@@ -652,7 +654,7 @@ export class WaitCoordinator {
             completedJobId: jobId,
             sessionId: currentStatus.sessionId,
             remainingJobIds,
-            resultPath: jobResultPath(jobId),
+            resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '' },
           };
           pending.delete(jobId);
@@ -663,14 +665,14 @@ export class WaitCoordinator {
         return;
       }
 
-      const remainingMs = timeoutMs - (Date.now() - startMs);
+      const remainingMs = timeoutMs - (this.deps.time.now() - startMs);
       if (remainingMs <= 0) {
         continue;
       }
 
       await Promise.race([
         progressStore.waitForChange(seq),
-        new Promise<void>((resolve) => setTimeout(resolve, remainingMs)),
+        this.deps.time.sleep(remainingMs),
       ]);
     }
   }

@@ -1,30 +1,15 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { closeSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
-import { buildChildEnv } from '../shared/child-env.js';
-import { readAppendedLines } from '../shared/file-tail.js';
 import { buildJsonRpcError } from '../shared/utils.js';
-import {
-  isDurableCliRuntime,
-  type DurableCliRuntimeRecord,
-  type PersistedExitRecord,
-  type PersistedRuntimeRecord,
-} from '../shared/types.js';
+import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
+import type { ChildProcessLike, Runtime, RuntimeStorage } from './runtime.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
 const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
-export const MAX_WORKERS = Math.min(Math.max(parsePositiveInt(process.env.CORAL_MAX_WORKERS, 10), 1), 10);
 export type LaunchPool = 'default' | 'discuss' | 'curate';
-export const DISCUSS_MAX_WORKERS = Math.min(
-  Math.max(parsePositiveInt(process.env.CORAL_DISCUSS_MAX_WORKERS, 5), 1),
-  10,
-);
 export const CURATE_MAX_WORKERS = 1;
 const MAX_QUEUE_SIZE = 20;
 
@@ -64,7 +49,7 @@ export type ProviderServerRpc = {
 
 export type ProviderServerHandle = {
   pid: number;
-  child: ChildProcess;
+  child: ChildProcessLike;
   generation: number;
   rpc: ProviderServerRpc;
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
@@ -75,7 +60,7 @@ export type ProviderServerHandle = {
 
 type ProviderServerEntry = {
   provider: string;
-  child: ChildProcess;
+  child: ChildProcessLike;
   pid: number;
   generation: number;
   pending: Map<number, ProviderServerPendingRequest>;
@@ -131,8 +116,10 @@ export class LaunchCoordinator {
   private nextProviderServerGeneration = 1;
   private readonly pools: Map<LaunchPool, PoolState> = new Map<LaunchPool, PoolState>();
   private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
+  private readonly runtime: Runtime;
 
-  constructor() {
+  constructor(options: { runtime: Runtime }) {
+    this.runtime = options.runtime;
     this.pools.set('default', { active: new Map<string, string>(), queued: [] });
     this.pools.set('discuss', { active: new Map<string, string>(), queued: [] });
     this.pools.set('curate', { active: new Map<string, string>(), queued: [] });
@@ -219,22 +206,24 @@ export class LaunchCoordinator {
     return new Promise((resolve, reject) => {
       let settled = false;
       let abortedBySignal = false;
-
-      const child = spawn(options.command, options.args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const child = this.runtime.process.spawn({
+        command: options.command,
+        args: options.args,
         // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
         cwd: options.cwd || undefined,
-        shell: process.platform === 'win32',
-        env: buildChildEnv(options.extraEnv),
+        shell: this.runtime.env.platform() === 'win32',
+        envAdditions: options.extraEnv,
+        mode: 'piped',
       });
+      const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
       const cleanupKey = Symbol();
-      this.cleanupHandles.set(cleanupKey, () => gracefulKill(child));
+      this.cleanupHandles.set(cleanupKey, () => gracefulKill(child, this.runtime));
 
-      let lastOutputAt = Date.now();
-      let lastTickAt = Date.now();
-      const idleChecker = setInterval(() => {
+      let lastOutputAt = this.runtime.time.now();
+      let lastTickAt = this.runtime.time.now();
+      const idleChecker = this.runtime.time.setInterval(() => {
         if (settled) return;
-        const now = Date.now();
+        const now = this.runtime.time.now();
         const tickGap = now - lastTickAt;
         lastTickAt = now;
 
@@ -247,8 +236,8 @@ export class LaunchCoordinator {
 
         if (now - lastOutputAt >= IDLE_TIMEOUT) {
           settled = true;
-          clearInterval(idleChecker);
-          gracefulKill(child);
+          this.runtime.time.clearInterval(idleChecker);
+          gracefulKill(child, this.runtime);
           this.cleanupHandles.delete(cleanupKey);
           if (internalPermitJobId) {
             this.releaseLaunch(internalPermitJobId, pool);
@@ -258,16 +247,16 @@ export class LaunchCoordinator {
         }
       }, IDLE_CHECK_INTERVAL);
 
-      function resetIdle() {
-        lastOutputAt = Date.now();
-      }
+      const resetIdle = (): void => {
+        lastOutputAt = this.runtime.time.now();
+      };
 
       let abortHandler: (() => void) | null = null;
 
       const finish = (): boolean => {
         if (settled) return false;
         settled = true;
-        clearInterval(idleChecker);
+        this.runtime.time.clearInterval(idleChecker);
         this.cleanupHandles.delete(cleanupKey);
         if (internalPermitJobId) {
           this.releaseLaunch(internalPermitJobId, pool);
@@ -284,8 +273,8 @@ export class LaunchCoordinator {
         abortHandler = () => {
           if (settled) return;
           abortedBySignal = true;
-          clearInterval(idleChecker);
-          gracefulKill(child);
+          this.runtime.time.clearInterval(idleChecker);
+          gracefulKill(child, this.runtime);
         };
         if (options.signal.aborted) abortHandler();
         else options.signal.addEventListener('abort', abortHandler, { once: true });
@@ -295,7 +284,7 @@ export class LaunchCoordinator {
       let stderr = '';
       let lineBuffer = '';
 
-      child.stdout.on('data', (data: Buffer) => {
+      childStdout.on('data', (data: string | Buffer) => {
         const chunk = data.toString();
         resetIdle();
         stdout = appendBuffer(stdout, chunk);
@@ -310,7 +299,7 @@ export class LaunchCoordinator {
         }
       });
 
-      child.stderr.on('data', (data: Buffer) => {
+      childStderr.on('data', (data: string | Buffer) => {
         resetIdle();
         stderr = appendBuffer(stderr, data.toString());
       });
@@ -324,15 +313,15 @@ export class LaunchCoordinator {
       });
 
       if (options.prompt) {
-        child.stdin.on('error', (err) => {
+        stdin.on('error', (err) => {
           if (finish()) {
             child.kill('SIGTERM');
             reject(new Error(`Stdin write error: ${err.message}`));
           }
         });
-        child.stdin.write(options.prompt);
+        stdin.write(options.prompt);
       }
-      child.stdin.end();
+      stdin.end();
     });
   }
 
@@ -381,7 +370,7 @@ export class LaunchCoordinator {
   }
 
   private hasLaunchCapacity(pool: LaunchPool): boolean {
-    return this.getActiveMap(pool).size < getActiveLimit(pool);
+    return this.getActiveMap(pool).size < getActiveLimit(pool, this.runtime.env);
   }
 
   private reserveInternalPermitOrThrow(
@@ -399,7 +388,7 @@ export class LaunchCoordinator {
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);
     const globalActive = activeLaunches.size;
-    const globalLimit = getActiveLimit(pool);
+    const globalLimit = getActiveLimit(pool, this.runtime.env);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
       throw new CliBusyError({
         error: 'busy',
@@ -409,7 +398,7 @@ export class LaunchCoordinator {
       });
     }
 
-    const internalPermitJobId = `${prefix}-${randomUUID()}`;
+    const internalPermitJobId = `${prefix}-${this.runtime.ids.uuid()}`;
     activeLaunches.set(internalPermitJobId, options.provider);
     return internalPermitJobId;
   }
@@ -457,13 +446,16 @@ export class LaunchCoordinator {
   }
 
   private async spawnProviderServerAsync(options: SpawnProviderServerOptions): Promise<ProviderServerHandle> {
-    const child = spawn(options.command, options.args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const child = this.runtime.process.spawn({
+      command: options.command,
+      args: options.args,
       // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- empty string is not a valid cwd
       cwd: options.cwd || undefined,
-      shell: process.platform === 'win32',
-      env: buildChildEnv(options.extraEnv),
+      shell: this.runtime.env.platform() === 'win32',
+      envAdditions: options.extraEnv,
+      mode: 'piped',
     });
+    const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
 
     const pid = child.pid;
     if (pid === undefined) {
@@ -473,8 +465,8 @@ export class LaunchCoordinator {
     const generation = this.nextProviderServerGeneration;
     this.nextProviderServerGeneration += 1;
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
+    childStdout.setEncoding('utf8');
+    childStderr.setEncoding('utf8');
 
     let resolveClose!: (outcome: Error | void) => void;
     const closePromise = new Promise<Error | void>((resolve) => {
@@ -489,7 +481,7 @@ export class LaunchCoordinator {
       pending: new Map(),
       nextRequestId: 1,
       notificationHandlers: new Set(),
-      readline: createInterface({ input: child.stdout }),
+      readline: createInterface({ input: childStdout as unknown as NodeJS.ReadableStream }),
       stderr: '',
       closed: false,
       closeRequested: false,
@@ -507,21 +499,21 @@ export class LaunchCoordinator {
     };
 
     entry.readline.on('line', (line: string) => {
-      handleProviderServerLine(entry, line);
+      handleProviderServerLine(entry, line, this.runtime);
     });
 
-    child.stderr.on('data', (chunk: string | Buffer) => {
+    childStderr.on('data', (chunk: string | Buffer) => {
       entry.stderr = appendBuffer(entry.stderr, chunk.toString());
     });
 
-    child.stdin.on('error', (error: Error) => {
+    stdin.on('error', (error: Error) => {
       if (entry.closed) return;
       const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
         stderr: entry.stderr,
       });
       backendLog.error(stdinError.message, error);
       detachProviderServer(entry, stdinError);
-      gracefulKill(child);
+      gracefulKill(child, this.runtime);
     });
 
     child.on('error', (error: Error) => {
@@ -577,7 +569,7 @@ export class LaunchCoordinator {
             error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`);
           backendLog.error(notifyError.message, error);
           detachProviderServer(entry, notifyError);
-          gracefulKill(entry.child);
+          gracefulKill(entry.child, this.runtime);
         }
       },
     };
@@ -603,7 +595,7 @@ export class LaunchCoordinator {
         entry.closeRequested = true;
       },
       close: async () => {
-        beginProviderServerShutdown(entry, 'closed');
+        shutdownProviderServer(entry, 'closed', this.runtime);
         await entry.closePromise;
       },
     };
@@ -619,7 +611,7 @@ export class LaunchCoordinator {
     }
 
     let abortHandler: (() => void) | null = null;
-    let killTimer: NodeJS.Timeout | null = null;
+    let killTimer: ReturnType<Runtime['time']['setTimeout']> | null = null;
     let cleanupKey: symbol | null = null;
 
     try {
@@ -627,7 +619,7 @@ export class LaunchCoordinator {
         return { stdout: '', stderr: '', code: null, aborted: true };
       }
 
-      const durable = await spawnDurableWrapper({
+      const durable = await this.runtime.process.durable.launch({
         provider: options.provider,
         command: options.command,
         args: options.args,
@@ -635,33 +627,45 @@ export class LaunchCoordinator {
         cwd: options.cwd,
         jobDir: options.jobDir,
         pool,
-        env: options.extraEnv,
+        envAdditions: options.extraEnv,
       });
       cleanupKey = Symbol();
       this.cleanupHandles.set(cleanupKey, () => {
-        safeKillPid(durable.pid, 'SIGTERM');
-        const escalation = setTimeout(() => safeKillPid(durable.pid, 'SIGKILL'), SIGTERM_GRACE_MS);
+        this.runtime.process.kill(durable.pid, 'SIGTERM');
+        const escalation = this.runtime.time.setTimeout(() => this.runtime.process.kill(durable.pid, 'SIGKILL'), SIGTERM_GRACE_MS);
         escalation.unref?.();
       });
 
       let abortedBySignal = false;
       let runtimeRecord = durable.runtimeRecord;
       let tailOffset = runtimeRecord.tailWatermark ?? 0;
-      let pidExitedAt: number | null = null;
-      let lastOutputAt = Date.now();
-      let lastTickAt = Date.now();
+      const durableState: { exitRecord: PersistedExitRecord | null; exitError: unknown } = {
+        exitRecord: null,
+        exitError: null,
+      };
+      let lastOutputAt = this.runtime.time.now();
+      let lastTickAt = this.runtime.time.now();
+
+      void this.runtime.process.durable
+        .waitForExit(durable)
+        .then((record) => {
+          durableState.exitRecord = record;
+        })
+        .catch((error: unknown) => {
+          durableState.exitError = error;
+        });
 
       const drainStdout = (): void => {
-        const { lines, newOffset } = readAppendedLines(durable.stdoutPath, tailOffset);
+        const { lines, newOffset } = readAppendedLines(this.runtime.storage, durable.stdoutPath, tailOffset);
         if (newOffset === tailOffset) {
           return;
         }
 
         tailOffset = newOffset;
-        lastOutputAt = Date.now();
+        lastOutputAt = this.runtime.time.now();
         runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
         try {
-          writeRuntimeRecord(options.jobDir, runtimeRecord);
+          writeRuntimeRecord(this.runtime.storage, options.jobDir, runtimeRecord);
         } catch {
           /* best effort */
         }
@@ -675,9 +679,9 @@ export class LaunchCoordinator {
         abortHandler = () => {
           if (abortedBySignal) return;
           abortedBySignal = true;
-          safeKillPid(durable.pid, 'SIGTERM');
-          killTimer = setTimeout(() => {
-            safeKillPid(durable.pid, 'SIGKILL');
+          this.runtime.process.kill(durable.pid, 'SIGTERM');
+          killTimer = this.runtime.time.setTimeout(() => {
+            this.runtime.process.kill(durable.pid, 'SIGKILL');
           }, SIGTERM_GRACE_MS);
           killTimer.unref?.();
         };
@@ -689,57 +693,44 @@ export class LaunchCoordinator {
       while (true) {
         drainStdout();
 
-        const exitRecord = readExitRecord(options.jobDir);
-        if (exitRecord) {
+        const completedExit = durableState.exitRecord;
+        if (completedExit !== null) {
           drainStdout();
           return {
-            stdout: readOutputFile(durable.stdoutPath),
-            stderr: readOutputFile(durable.stderrPath),
-            code: exitRecord.exitCode,
+            stdout: readOutputFile(this.runtime.storage, durable.stdoutPath),
+            stderr: readOutputFile(this.runtime.storage, durable.stderrPath),
+            code: completedExit.exitCode,
             aborted: abortedBySignal,
           };
         }
 
-        if (!isPidAlive(durable.pid)) {
-          drainStdout();
-          const lateExitRecord = readExitRecord(options.jobDir);
-          if (lateExitRecord) {
-            return {
-              stdout: readOutputFile(durable.stdoutPath),
-              stderr: readOutputFile(durable.stderrPath),
-              code: lateExitRecord.exitCode,
-              aborted: abortedBySignal,
-            };
-          }
-          pidExitedAt ??= Date.now();
-          if (Date.now() - pidExitedAt >= DURABLE_EXIT_GRACE_MS) {
-            throw new Error(`Durable process ${durable.pid} exited before exit.json was written`);
-          }
-        } else {
-          pidExitedAt = null;
+        if (durableState.exitError) {
+          throw durableState.exitError instanceof Error
+            ? durableState.exitError
+            : new Error(String(durableState.exitError));
         }
 
         // Idle timeout — mirrors spawnCli's 10-minute inactivity kill
-        const now = Date.now();
+        const now = this.runtime.time.now();
         const tickGap = now - lastTickAt;
         lastTickAt = now;
         if (tickGap > IDLE_CHECK_INTERVAL * 3) {
           // System likely woke from sleep — reset baseline
           lastOutputAt = now;
         } else if (now - lastOutputAt >= IDLE_TIMEOUT) {
-          safeKillPid(durable.pid, 'SIGTERM');
+          this.runtime.process.kill(durable.pid, 'SIGTERM');
           throw new Error(
             `Durable process ${durable.pid} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`,
           );
         }
 
-        await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_RUNTIME_POLL_INTERVAL_MS));
+        await this.runtime.time.sleep(DURABLE_RUNTIME_POLL_INTERVAL_MS);
       }
     } finally {
       if (cleanupKey !== null) {
         this.cleanupHandles.delete(cleanupKey);
       }
-      if (killTimer) clearTimeout(killTimer);
+      if (killTimer) this.runtime.time.clearTimeout(killTimer);
       if (abortHandler && options.signal) {
         options.signal.removeEventListener('abort', abortHandler);
       }
@@ -757,14 +748,22 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
   return parsed;
 }
 
-function getActiveLimit(pool: LaunchPool): number {
+export function getMaxWorkers(env: Pick<Runtime['env'], 'get'>): number {
+  return Math.min(Math.max(parsePositiveInt(env.get('CORAL_MAX_WORKERS'), 10), 1), 10);
+}
+
+export function getDiscussMaxWorkers(env: Pick<Runtime['env'], 'get'>): number {
+  return Math.min(Math.max(parsePositiveInt(env.get('CORAL_DISCUSS_MAX_WORKERS'), 5), 1), 10);
+}
+
+function getActiveLimit(pool: LaunchPool, env: Pick<Runtime['env'], 'get'>): number {
   if (pool === 'discuss') {
-    return DISCUSS_MAX_WORKERS;
+    return getDiscussMaxWorkers(env);
   }
   if (pool === 'curate') {
     return CURATE_MAX_WORKERS;
   }
-  return MAX_WORKERS;
+  return getMaxWorkers(env);
 }
 
 function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): void {
@@ -775,7 +774,7 @@ function drainQueuedLaunchPool(queue: QueuedLaunchEntry[], message: string): voi
   }
 }
 
-function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
+function safeKill(child: ChildProcessLike, signal: NodeJS.Signals): void {
   try {
     child.kill(signal);
   } catch {
@@ -783,12 +782,31 @@ function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-function gracefulKill(child: ChildProcess): void {
+function gracefulKill(child: ChildProcessLike, runtime: Runtime): void {
   safeKill(child, 'SIGTERM');
-  const killTimer = setTimeout(() => {
+  const killTimer = runtime.time.setTimeout(() => {
     safeKill(child, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
-  child.on('close', () => clearTimeout(killTimer));
+  child.on('close', () => runtime.time.clearTimeout(killTimer));
+}
+
+function requirePipedHandles(
+  child: ChildProcessLike,
+  command: string,
+): {
+  stdin: NonNullable<ChildProcessLike['stdin']>;
+  stdout: NonNullable<ChildProcessLike['stdout']>;
+  stderr: NonNullable<ChildProcessLike['stderr']>;
+} {
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    throw new Error(`Failed to spawn ${command}: piped stdio handles are unavailable`);
+  }
+
+  return {
+    stdin: child.stdin,
+    stdout: child.stdout,
+    stderr: child.stderr,
+  };
 }
 
 function appendBuffer(current: string, chunk: string): string {
@@ -849,7 +867,7 @@ function sendProviderServerMessage(entry: ProviderServerEntry, message: unknown)
   stdin.write(encodeProviderServerMessage(message));
 }
 
-function handleProviderServerLine(entry: ProviderServerEntry, line: string): void {
+function handleProviderServerLine(entry: ProviderServerEntry, line: string, runtime: Runtime): void {
   if (!line.trim() || entry.closed) return;
 
   let message: {
@@ -868,7 +886,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string): voi
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
-    gracefulKill(entry.child);
+    gracefulKill(entry.child, runtime);
     return;
   }
 
@@ -883,7 +901,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string): voi
         error instanceof Error ? error : createProviderServerError(entry.provider, 'failed to answer server request');
       backendLog.error(protocolError.message, error);
       detachProviderServer(entry, protocolError);
-      gracefulKill(entry.child);
+      gracefulKill(entry.child, runtime);
     }
     return;
   }
@@ -915,7 +933,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string): voi
     });
     backendLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
-    gracefulKill(entry.child);
+    gracefulKill(entry.child, runtime);
     return;
   }
 
@@ -932,7 +950,11 @@ function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string)
   if (entry.closed) return;
   entry.closeRequested = true;
   detachProviderServer(entry, createProviderServerError(entry.provider, detail, { stderr: entry.stderr }));
-  gracefulKill(entry.child);
+}
+
+function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {
+  beginProviderServerShutdown(entry, detail);
+  gracefulKill(entry.child, runtime);
 }
 
 export type SpawnCliOptions = {
@@ -965,233 +987,73 @@ export type SpawnProviderServerOptions = {
   };
 };
 
-// ── Durable wrapper spawn ─────────────────────────────────────────────────────
-
-export type DurableSpawnOptions = {
-  provider: string;
-  command: string;
-  args: string[];
-  prompt?: string;
-  cwd?: string;
-  jobDir: string;
-  pool?: LaunchPool;
-  env?: Record<string, string>;
-};
-
-export type DurableSpawnResult = {
-  pid: number;
-  stdoutPath: string;
-  stderrPath: string;
-  runtimeRecord: DurableCliRuntimeRecord;
-};
-
-const DURABLE_POLL_INTERVAL_MS = 100;
-const DURABLE_POLL_TIMEOUT_MS = 5_000;
-
-/**
- * Inline Node.js script executed as a detached wrapper child.
- * Opens file-backed stdout/stderr, writes runtime.json after spawn,
- * and writes exit.json after CLI exit and output flush.
- *
- * Arguments: jobDir, command, argsJson, cwd, prompt
- * Env is read from jobDir/env.json (avoids passing large env in argv → E2BIG).
- */
-const WRAPPER_SCRIPT = `
-const { spawn } = require('child_process');
-const { openSync, closeSync, readFileSync, writeFileSync, renameSync } = require('fs');
-const { join } = require('path');
-
-const jobDir = process.argv[1];
-const command = process.argv[2];
-const args = JSON.parse(process.argv[3]);
-const env = JSON.parse(readFileSync(join(jobDir, 'env.json'), 'utf8'));
-const cwd = process.argv[4] || undefined;
-const prompt = process.argv[5] || '';
-
-const stdoutPath = join(jobDir, 'stdout');
-const stderrPath = join(jobDir, 'stderr');
-
-const stdoutFd = openSync(stdoutPath, 'w');
-const stderrFd = openSync(stderrPath, 'w');
-
-const child = spawn(command, args, {
-  stdio: ['pipe', stdoutFd, stderrFd],
-  cwd,
-  env,
-  shell: process.platform === 'win32',
-});
-
-// Write runtime.json atomically after spawn succeeds
-const runtimeRecord = {
-  pid: child.pid,
-  stdoutPath,
-  stderrPath,
-  startTime: new Date().toISOString(),
-};
-const tmpPath = join(jobDir, 'runtime.json.tmp');
-const finalPath = join(jobDir, 'runtime.json');
-writeFileSync(tmpPath, JSON.stringify(runtimeRecord, null, 2));
-renameSync(tmpPath, finalPath);
-
-// Write prompt to stdin, then close
-if (prompt) child.stdin.write(prompt);
-child.stdin.end();
-
-// Write exit.json atomically after CLI exit and output flush
-child.on('close', (code, signal) => {
-  try { closeSync(stdoutFd); } catch {}
-  try { closeSync(stderrFd); } catch {}
-
-  const exitRecord = {
-    exitCode: code,
-    signal: signal || null,
-    endTime: new Date().toISOString(),
-  };
-  const exitTmp = join(jobDir, 'exit.json.tmp');
-  const exitFinal = join(jobDir, 'exit.json');
-  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
-  renameSync(exitTmp, exitFinal);
-
-  process.exit(0);
-});
-
-child.on('error', (err) => {
-  try { closeSync(stdoutFd); } catch {}
-  try { closeSync(stderrFd); } catch {}
-
-  const exitRecord = {
-    exitCode: null,
-    signal: null,
-    endTime: new Date().toISOString(),
-  };
-  const exitTmp = join(jobDir, 'exit.json.tmp');
-  const exitFinal = join(jobDir, 'exit.json');
-  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
-  renameSync(exitTmp, exitFinal);
-
-  process.exit(1);
-});
-`.trim();
-
-/**
- * Spawn a durable wrapper child that survives backend exit.
- *
- * The wrapper opens file-backed stdout/stderr, spawns the actual CLI,
- * writes runtime.json, and writes exit.json after CLI exit.
- * The parent polls for runtime.json to confirm spawn success.
- */
-export async function spawnDurableWrapper(options: DurableSpawnOptions): Promise<DurableSpawnResult> {
-  const { command, args, prompt, cwd, jobDir, env: extraEnv } = options;
-
-  const mergedEnv = buildChildEnv(extraEnv);
-
-  // Write env to file — avoids passing large env as argv (E2BIG).
-  // The wrapper reads env.json from jobDir on startup.
-  const envTmp = join(jobDir, 'env.json.tmp');
-  const envFinal = join(jobDir, 'env.json');
-  writeFileSync(envTmp, JSON.stringify(mergedEnv));
-  renameSync(envTmp, envFinal);
-
-  const wrapper = spawn(
-    process.execPath,
-    ['-e', WRAPPER_SCRIPT, jobDir, command, JSON.stringify(args), cwd ?? '', prompt ?? ''],
-    {
-      detached: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
-    },
-  );
-
-  // Fire-and-forget — wrapper survives backend exit.
-  // Not added to active launch tracking; the wrapper manages its own lifecycle.
-  wrapper.unref();
-
-  // Poll for runtime.json existence with ~100ms intervals, 5s timeout.
-  const runtimePath = join(jobDir, 'runtime.json');
-  const deadline = Date.now() + DURABLE_POLL_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    try {
-      statSync(runtimePath);
-      // runtime.json exists — read and return the record
-      const data = readFileSync(runtimePath, 'utf-8');
-      const record = JSON.parse(data) as PersistedRuntimeRecord;
-      // TODO(AC2-AC10): branch on runtime transport instead of assuming durable-cli wrapper output here.
-      if (!isDurableCliRuntime(record)) {
-        throw new Error(`Durable wrapper wrote unsupported runtime transport: ${record.transport}`);
-      }
-      return {
-        pid: record.pid,
-        stdoutPath: record.stdoutPath,
-        stderrPath: record.stderrPath,
-        runtimeRecord: record,
-      };
-    } catch {
-      // Not yet written — wait and retry
-    }
-
-    await new Promise<void>((resolve) => setTimeout(resolve, DURABLE_POLL_INTERVAL_MS));
-  }
-
-  throw new Error(
-    `Durable wrapper failed to write runtime.json within ${DURABLE_POLL_TIMEOUT_MS}ms (jobDir: ${jobDir})`,
-  );
-}
-
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
-const DURABLE_EXIT_GRACE_MS = 5_000;
 const RUNTIME_FILE = 'runtime.json';
-const EXIT_FILE = 'exit.json';
 
-function safeKillPid(pid: number, signal: NodeJS.Signals): void {
+function readOutputFile(storage: RuntimeStorage, path: string): string {
   try {
-    process.kill(pid, signal);
-  } catch {
-    /* already dead */
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readOutputFile(path: string): string {
-  try {
-    const stats = statSync(path);
+    const stats = storage.statSync(path);
     const bytesToRead = Math.min(stats.size, MAX_BUFFER + 1);
-    const fd = openSync(path, 'r');
+    const fd = storage.openSync(path, 'r');
     try {
       const buffer = Buffer.alloc(bytesToRead);
-      const bytesRead = readSync(fd, buffer, 0, bytesToRead, 0);
+      const bytesRead = storage.readSync(fd, buffer, 0, bytesToRead, 0);
       const output = buffer.subarray(0, bytesRead).toString('utf-8');
       if (stats.size > MAX_BUFFER) {
         return output.slice(0, MAX_BUFFER) + '\n[output truncated at 10MB]';
       }
       return output;
     } finally {
-      closeSync(fd);
+      storage.closeSync(fd);
     }
   } catch {
     return '';
   }
 }
 
-function readExitRecord(jobDir: string): PersistedExitRecord | null {
+function readAppendedLines(storage: RuntimeStorage, path: string, fromOffset: number): { lines: string[]; newOffset: number } {
   try {
-    const raw = readFileSync(join(jobDir, EXIT_FILE), 'utf-8');
-    return JSON.parse(raw) as PersistedExitRecord;
+    const stats = storage.statSync(path);
+    if (stats.size <= fromOffset) {
+      return { lines: [], newOffset: fromOffset };
+    }
+
+    const byteLength = stats.size - fromOffset;
+    const fd = storage.openSync(path, 'r');
+    try {
+      const buffer = Buffer.alloc(byteLength);
+      const bytesRead = storage.readSync(fd, buffer, 0, byteLength, fromOffset);
+      if (bytesRead <= 0) {
+        return { lines: [], newOffset: fromOffset };
+      }
+
+      const chunk = buffer.subarray(0, bytesRead);
+      const lastNewlineIndex = chunk.lastIndexOf(0x0a);
+      if (lastNewlineIndex === -1) {
+        return { lines: [], newOffset: fromOffset };
+      }
+
+      const completeChunk = chunk.subarray(0, lastNewlineIndex + 1).toString('utf-8');
+      const lines = completeChunk
+        .split('\n')
+        .map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line))
+        .filter((line) => line.trim().length > 0);
+
+      return {
+        lines,
+        newOffset: fromOffset + lastNewlineIndex + 1,
+      };
+    } finally {
+      storage.closeSync(fd);
+    }
   } catch {
-    return null;
+    return { lines: [], newOffset: fromOffset };
   }
 }
 
-function writeRuntimeRecord(jobDir: string, record: PersistedRuntimeRecord): void {
-  const runtimePath = join(jobDir, RUNTIME_FILE);
+function writeRuntimeRecord(storage: RuntimeStorage, jobDir: string, record: PersistedRuntimeRecord): void {
+  const runtimePath = `${jobDir}/${RUNTIME_FILE}`;
   const tmpPath = `${runtimePath}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(record, null, 2));
-  renameSync(tmpPath, runtimePath);
+  storage.writeFileSync(tmpPath, JSON.stringify(record, null, 2));
+  storage.renameSync(tmpPath, runtimePath);
 }

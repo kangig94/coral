@@ -18,7 +18,10 @@ vi.mock('node:os', async () => {
 
 import { ProgressStore } from '../progress-store.js';
 import { SessionIndex } from '../session-index.js';
-import { SessionManager } from '../session-manager.js';
+import { SessionManager, listSessionShards } from '../session-manager.js';
+import { createRealRuntime } from '../runtime.js';
+
+const runtime = createRealRuntime();
 
 describe('execution SessionIndex', () => {
   beforeEach(() => {
@@ -41,7 +44,7 @@ describe('execution SessionIndex', () => {
 
   it('hydrates shards leniently and skips corrupt entries', () => {
     const projectRoot = createProjectRoot('hydrate-project');
-    const session = new SessionManager(projectRoot).allocate({
+    const session = new SessionManager(projectRoot, runtime).allocate({
       provider: 'codex',
       name: 'alpha',
       model: 'gpt-5',
@@ -49,11 +52,11 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-hydrate',
     });
-    const [shardDir] = SessionManager.listShards();
+    const [shardDir] = listSessionShards(runtime.storage);
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
-    const index = new SessionIndex();
-    index.hydrate(SessionManager.listShards());
+    const index = new SessionIndex(runtime);
+    index.hydrate(listSessionShards(runtime.storage));
 
     expect(index.listAll()).toEqual([
       {
@@ -74,7 +77,7 @@ describe('execution SessionIndex', () => {
 
   it('lazily rereads invalidated sessions on listing', () => {
     const projectRoot = createProjectRoot('invalidate-project');
-    const manager = new SessionManager(projectRoot);
+    const manager = new SessionManager(projectRoot, runtime);
     const session = manager.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -83,10 +86,10 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-invalidate',
     });
-    const [shardDir] = SessionManager.listShards();
+    const [shardDir] = listSessionShards(runtime.storage);
 
-    const index = new SessionIndex();
-    index.hydrate(SessionManager.listShards());
+    const index = new SessionIndex(runtime);
+    index.hydrate(listSessionShards(runtime.storage));
 
     manager.claimForJobSync(session.sessionId, 'job-1');
     index.invalidate(basename(shardDir), session.sessionId);
@@ -107,7 +110,7 @@ describe('execution SessionIndex', () => {
 
   it('deletes rows when reread finds a corrupt file', () => {
     const projectRoot = createProjectRoot('delete-project');
-    const session = new SessionManager(projectRoot).allocate({
+    const session = new SessionManager(projectRoot, runtime).allocate({
       provider: 'codex',
       name: 'alpha',
       model: 'gpt-5',
@@ -115,10 +118,10 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-delete',
     });
-    const [shardDir] = SessionManager.listShards();
+    const [shardDir] = listSessionShards(runtime.storage);
 
-    const index = new SessionIndex();
-    index.hydrate(SessionManager.listShards());
+    const index = new SessionIndex(runtime);
+    index.hydrate(listSessionShards(runtime.storage));
 
     writeFileSync(join(shardDir, `${session.sessionId}.json`), '{not-json', 'utf-8');
     index.reread(basename(shardDir), session.sessionId);
@@ -128,7 +131,7 @@ describe('execution SessionIndex', () => {
 
   it('filters namespace-visible sessions by stored backendNamespace', () => {
     const projectRoot = createProjectRoot('namespace-project');
-    const manager = new SessionManager(projectRoot);
+    const manager = new SessionManager(projectRoot, runtime);
     const visible = manager.allocate({
       provider: 'codex',
       name: 'visible',
@@ -166,7 +169,7 @@ describe('execution SessionIndex', () => {
     manager.claimForJobSync(foreign.sessionId, 'job-foreign');
     manager.claimForJobSync(legacy.sessionId, 'job-legacy');
 
-    const [shardDir] = SessionManager.listShards();
+    const [shardDir] = listSessionShards(runtime.storage);
     writeFileSync(
       join(shardDir, `${legacy.sessionId}.json`),
       JSON.stringify(
@@ -182,7 +185,7 @@ describe('execution SessionIndex', () => {
       'utf-8',
     );
 
-    const progressStore = new ProgressStore('ns-visible');
+    const progressStore = new ProgressStore('ns-visible', runtime);
     progressStore.initJob({
       jobId: 'job-visible',
       sessionId: visible.sessionId,
@@ -205,8 +208,8 @@ describe('execution SessionIndex', () => {
       backendNamespace: 'ns-visible',
     });
 
-    const index = new SessionIndex();
-    index.hydrate(SessionManager.listShards());
+    const index = new SessionIndex(runtime);
+    index.hydrate(listSessionShards(runtime.storage));
 
     expect(
       index
@@ -228,7 +231,7 @@ describe('execution SessionIndex', () => {
 
   it('hydrates shards created after startup on demand', () => {
     const projectRootA = createProjectRoot('shard-a');
-    const sessionA = new SessionManager(projectRootA).allocate({
+    const sessionA = new SessionManager(projectRootA, runtime).allocate({
       provider: 'codex',
       name: 'alpha',
       model: 'gpt-5',
@@ -237,11 +240,11 @@ describe('execution SessionIndex', () => {
       backendNamespace: 'ns-a',
     });
 
-    const index = new SessionIndex();
-    index.hydrate(SessionManager.listShards());
+    const index = new SessionIndex(runtime);
+    index.hydrate(listSessionShards(runtime.storage));
 
     const projectRootB = createProjectRoot('shard-b');
-    const sessionB = new SessionManager(projectRootB).allocate({
+    const sessionB = new SessionManager(projectRootB, runtime).allocate({
       provider: 'codex',
       name: 'beta',
       model: 'gpt-5',
@@ -252,7 +255,7 @@ describe('execution SessionIndex', () => {
 
     // Simulate event-driven shard discovery (refreshIndex no longer scans unconditionally)
     // Find the new shard by diffing listShards against known shards
-    for (const shardDir of SessionManager.listShards()) {
+    for (const shardDir of listSessionShards(runtime.storage)) {
       const shardHash = basename(shardDir);
       if (!index.hasShard(shardHash)) {
         index.discoverShard(shardHash);

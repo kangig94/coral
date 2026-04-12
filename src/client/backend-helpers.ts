@@ -1,7 +1,8 @@
 import { withAbortTimeout } from './backend-lifecycle.js';
 import { isBackendHealth } from './backend-health.js';
 import { readBackendInfo } from '../infra/backend-info.js';
-import { isProcessAlive, isRecord, TransientHttpError } from '../shared/utils.js';
+import { isRecord, TransientHttpError } from '../shared/utils.js';
+import { isProcessAlive } from '../shared/node-process.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,

@@ -4,7 +4,9 @@ import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
+export function jobsDir(): string {
+  return join(tmpdir(), 'coral-jobs');
+}
 
 function coralHome(): string {
   return join(homedir(), '.claude', 'coral');

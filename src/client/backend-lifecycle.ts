@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../infra/paths.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-info.js';
-import { isNoEntryError, isProcessAlive, isRecord, readBuildFlavor, readBundleHash, tryExclusiveWrite } from '../shared/utils.js';
+import { isNoEntryError, isRecord, readBuildFlavor, readBundleHash, tryExclusiveWrite } from '../shared/utils.js';
+import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 
 const STARTUP_POLL_MS = 200;

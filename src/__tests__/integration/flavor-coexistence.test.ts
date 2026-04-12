@@ -4,10 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '../../client/backend-health.js';
 import { ensureBackend } from '../../client/backend-lifecycle.js';
-import { JOBS_DIR } from '../../execution/progress-store.js';
 import { readBackendInfo, type BackendInfo } from '../../infra/backend-info.js';
-import { pluginRootNamespace } from '../../infra/paths.js';
-import { isProcessAlive } from '../../shared/utils.js';
+import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
+import { isProcessAlive } from '../../shared/node-process.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
 const sourceBackendBundle = join(process.cwd(), 'bridge', 'coral-backend.cjs');
@@ -33,7 +32,7 @@ afterEach(async () => {
   previousHome = undefined;
 
   for (const jobId of createdJobIds.splice(0)) {
-    rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
+    rmSync(join(jobsDir(), jobId), { recursive: true, force: true });
   }
 
   for (const root of tempRoots.splice(0)) {
@@ -74,7 +73,7 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
 function seedCompletedJob(jobId: string, namespace: string, projectRoot: string, bundleHash: string): void {
   createdJobIds.push(jobId);
   mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(join(JOBS_DIR, jobId), { recursive: true });
+  mkdirSync(join(jobsDir(), jobId), { recursive: true });
 
   const status: PersistedStatusRecord = {
     jobId,
@@ -93,7 +92,7 @@ function seedCompletedJob(jobId: string, namespace: string, projectRoot: string,
     },
   };
 
-  writeFileSync(join(JOBS_DIR, jobId, 'status.json'), JSON.stringify(status, null, 2), 'utf-8');
+  writeFileSync(join(jobsDir(), jobId, 'status.json'), JSON.stringify(status, null, 2), 'utf-8');
 }
 
 async function requireBackendInfo(pluginRoot: string): Promise<BackendInfo> {

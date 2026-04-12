@@ -29,14 +29,15 @@ import {
 } from '../agent-resolution.js';
 import {
   LaunchCoordinator,
-  MAX_WORKERS,
+  getMaxWorkers,
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../engine.js';
 import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
-import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
+import { ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
+import { createRealRuntime } from '../runtime.js';
 import { SessionManager } from '../session-manager.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../service.js';
@@ -81,6 +82,12 @@ let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
 let spawnProviderServer: SpawnProviderServerFn;
+let runtime: ReturnType<typeof createRealRuntime>;
+let JOBS_DIR = '';
+
+function jobResultPath(jobId: string): string {
+  return join(JOBS_DIR, jobId, 'result.md');
+}
 
 function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
   return launchCoordinator.cancelQueued(jobId, pool);
@@ -115,14 +122,17 @@ function createService(
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
+    backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
   return new ExecutionService(ctx, {
-    progressStore: options.progressStore ?? new ProgressStore('test-ns'),
+    runtime,
+    progressStore: options.progressStore ?? new ProgressStore('test-ns', eventBus, runtime),
     bundleHash: options.bundleHash,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ spawnProviderServer }),
+    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
+    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
     providerRegistry: {
@@ -368,7 +378,7 @@ async function occupyProviderSlots(
   providerName: string,
 ): Promise<string[]> {
   const decisions = await Promise.all(
-    Array.from({ length: MAX_WORKERS }, (_value, index) =>
+    Array.from({ length: getMaxWorkers(runtime.env) }, (_value, index) =>
       service.start(providerName, { prompt: `occupy-${index}` }, ctx),
     ),
   );
@@ -455,7 +465,9 @@ describe('ExecutionService', () => {
     ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
-    launchCoordinator = new LaunchCoordinator();
+    runtime = createRealRuntime();
+    JOBS_DIR = runtime.storage.jobsDir();
+    launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
@@ -1091,7 +1103,7 @@ describe('ExecutionService', () => {
       expect.anything(),
     );
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
 
     expect(request).toMatchObject({
       action: 'exec',
@@ -1164,7 +1176,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -1174,7 +1186,7 @@ describe('ExecutionService', () => {
         backendNamespace: pluginRootNamespace(ctx.pluginRoot),
       });
       mgr.setConversationRef(entry.sessionId, 'thread-1');
-      const service = createService(ctx);
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
 
@@ -1207,7 +1219,7 @@ describe('ExecutionService', () => {
     it('resumeBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
       const service = createService(ctx);
 
@@ -1222,7 +1234,7 @@ describe('ExecutionService', () => {
 
     it('resumeBySessionId rejects sessions outside the current scope', async () => {
       const otherCtx = createScopedContext('other-project');
-      const foreignMgr = new SessionManager(otherCtx.projectRoot);
+      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
       const foreignEntry = foreignMgr.allocate({
         provider: 'codex',
         name: 'foreign',
@@ -1251,7 +1263,7 @@ describe('ExecutionService', () => {
         content: 'Persisted instruction',
         channel: 'system' as const,
       };
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate({
         provider: 'codex',
         name: 'alpha',
@@ -1298,7 +1310,7 @@ describe('ExecutionService', () => {
     it('resume rejects when the session already has an active job', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.claimForJobSync(entry.sessionId, 'job-1');
       const service = createService(ctx);
@@ -1330,7 +1342,7 @@ describe('ExecutionService', () => {
       });
       mockState.getNewProvider.mockReturnValue(racingProvider.provider);
 
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
 
@@ -1359,7 +1371,7 @@ describe('ExecutionService', () => {
         }),
       });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setConversationRef(entry.sessionId, 'thread-stale');
       const service = createService(ctx);
@@ -1391,7 +1403,7 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const service = createService(ctx);
 
@@ -1414,7 +1426,7 @@ describe('ExecutionService', () => {
         content: 'Persisted instruction',
         channel: 'system' as const,
       };
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate({
         provider: 'codex',
         name: 'architect',
@@ -1433,7 +1445,7 @@ describe('ExecutionService', () => {
         },
       });
       mgr.setConversationRef(source.sessionId, 'thread-1');
-      const service = createService(ctx);
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
 
       const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
 
@@ -1491,7 +1503,7 @@ describe('ExecutionService', () => {
     it('forkBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
       const service = createService(ctx);
 
@@ -1506,7 +1518,7 @@ describe('ExecutionService', () => {
 
     it('forkBySessionId rejects sessions outside the current scope', async () => {
       const otherCtx = createScopedContext('fork-foreign-project');
-      const foreignMgr = new SessionManager(otherCtx.projectRoot);
+      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
       const foreignEntry = foreignMgr.allocate({
         provider: 'codex',
         name: 'foreign',
@@ -1975,7 +1987,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
     const { progressStore } = getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
@@ -2053,8 +2065,8 @@ describe('ExecutionService', () => {
 
     await waitForTerminalEvent(service, decision.job);
 
-    const workflowSession = new SessionManager(ctx.projectRoot).get('codex', decision.session);
-    const workDirSession = new SessionManager(workDir).get('codex', decision.session);
+    const workflowSession = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const workDirSession = new SessionManager(workDir, runtime).get('codex', decision.session);
 
     expect(seenCwds).toEqual([workDir, workDir]);
     expect(workflowSession?.cwd).toBe(ctx.projectRoot);
@@ -2135,7 +2147,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
     const { progressStore } = getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
@@ -2198,7 +2210,7 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
-    const session = new SessionManager(ctx.projectRoot).get('codex', decision.session);
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
     const { progressStore } = getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
@@ -2404,7 +2416,7 @@ describe('ExecutionService', () => {
           order.push('terminal');
           expect(existsSync(jobResultPath(targetJobId))).toBe(true);
           expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
-          expect(new SessionManager(ctx.projectRoot).get('codex', targetSessionId)?.state).toBe('pending');
+          expect(new SessionManager(ctx.projectRoot, runtime).get('codex', targetSessionId)?.state).toBe('pending');
           return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase);
         },
       );
@@ -2470,7 +2482,7 @@ describe('ExecutionService', () => {
       order.push('terminal');
       expect(existsSync(jobResultPath(targetJobId))).toBe(true);
       expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
-      expect(new SessionManager(ctx.projectRoot).get('codex', session.sessionId)?.state).toBe('pending');
+      expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
       return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase);
     });
     vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
@@ -2650,7 +2662,7 @@ describe('ExecutionService', () => {
         const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
 
         const jobId = `recover-exec-${randomUUID()}`;
-        const mgr = new SessionManager(ctx.projectRoot);
+        const mgr = new SessionManager(ctx.projectRoot, runtime);
         const session = mgr.allocate('codex', 'recover', 'gpt-5', ctx.projectRoot);
         trackJob(jobId);
 
@@ -2775,6 +2787,40 @@ describe('ExecutionService', () => {
 
         const status = progressStore.readStatus(jobId);
         expect(status?.backendNamespace).not.toBe('old-backend-ns');
+        cleanup();
+      });
+
+      it('routes abort through runtime.process.kill', () => {
+        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {});
+        const service = createService(ctx);
+        const { progressStore, abortRegistry } = getInternals(service);
+
+        const jobId = `adopt-abort-${randomUUID()}`;
+        const sessionId = `session-adopt-abort-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        const runtimeRecord = makeRuntimeRecord({ pid: 54321 });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(abortRegistry.abort([jobId])).toEqual({
+          aborted: [jobId],
+          notFound: [],
+        });
+        expect(killSpy).toHaveBeenCalledWith(54321, 'SIGTERM');
+
         cleanup();
       });
     });
@@ -3136,7 +3182,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setNonResumable(entry.sessionId);
 
@@ -3170,7 +3216,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('rejects with unknown_provider without setting activeJobId on the session', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
 
       const service = createService(ctx);
@@ -3193,7 +3239,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
       const service = createService(ctx);
@@ -3244,7 +3290,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('rejects with unknown_provider without allocating a new session', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
 
@@ -3266,7 +3312,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
       const jobDirsBefore = listJobDirs();
@@ -3297,7 +3343,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
 
-      const mgr = new SessionManager(ctx.projectRoot);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
       const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
       const sessionsBefore = mgr.list('codex').length;
       const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;

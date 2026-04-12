@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { AGENT_IDENT_RE } from '../shared/utils.js';
+import type { RuntimeStoragePort } from './runtime.js';
 
 export type AgentRef = { readonly namespace: string | null; readonly name: string };
 
@@ -15,6 +15,7 @@ export type AgentResolutionContext = {
   readonly projectRoot: string;
   readonly coralPluginRoot: string;
   readonly discoverPluginRoot: (namespace: string) => string | null;
+  readonly storage: Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'>;
 };
 
 type NamespaceSource = {
@@ -137,12 +138,12 @@ function tryResolveExplicit(
 
   const agentPath = safeJoin(source.agentsDir, `${ref.name}.md`);
   const searchedPaths = [agentPath];
-  if (existsSync(agentPath)) {
+  if (ctx.storage.existsSync(agentPath)) {
     return {
       result: {
         ref: { namespace: ref.namespace, name: ref.name },
         source: 'agent',
-        content: readFileSync(agentPath, 'utf-8'),
+        content: ctx.storage.readFileSync(agentPath, 'utf-8'),
         path: agentPath,
       },
       searchedPaths,
@@ -152,12 +153,12 @@ function tryResolveExplicit(
   if (source.skillsDir !== undefined) {
     const skillPath = safeJoin(source.skillsDir, ref.name, 'SKILL.md');
     searchedPaths.push(skillPath);
-    if (existsSync(skillPath)) {
+    if (ctx.storage.existsSync(skillPath)) {
       return {
         result: {
           ref: { namespace: ref.namespace, name: ref.name },
           source: 'skill',
-          content: readFileSync(skillPath, 'utf-8'),
+          content: ctx.storage.readFileSync(skillPath, 'utf-8'),
           path: skillPath,
         },
         searchedPaths,

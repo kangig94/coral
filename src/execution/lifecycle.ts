@@ -9,7 +9,6 @@
  */
 
 import type { Server, ServerResponse } from 'node:http';
-import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -22,15 +21,13 @@ import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
-import { SessionManager } from './session-manager.js';
+import { listSessionShards, SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import { clearAllDiscuss, hasRunningSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
 import * as discussLoop from './discuss/loop.js';
 import * as discussOperations from './discuss/operations.js';
-import type { removeLockIfOwner } from './backend-lock.js';
 import { type ProviderRegistry } from '../providers/registry.js';
-import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { type RecoveryCapableService } from './service.js';
 import {
   isAppServerRuntime,
@@ -52,6 +49,7 @@ import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState 
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
 import { planRecovery, type JobStoreSnapshot, type RecoveryAction, type RecoveryInvariants } from './recovery-core.js';
+import type { Runtime } from './runtime.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,18 +111,22 @@ export function closeServer(server: Server): Promise<void> {
   });
 }
 
-export function waitForInflightDrain(idleTimer: IdleTimer, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+export function waitForInflightDrain(
+  idleTimer: IdleTimer,
+  timeoutMs: number,
+  time: Pick<Runtime['time'], 'clearInterval' | 'now' | 'setInterval'>,
+): Promise<void> {
+  const deadline = time.now() + timeoutMs;
 
   return new Promise((resolve) => {
     const check = () => {
-      if (idleTimer.inflightRequests === 0 || Date.now() >= deadline) {
-        clearInterval(interval);
+      if (idleTimer.inflightRequests === 0 || time.now() >= deadline) {
+        time.clearInterval(interval);
         resolve();
       }
     };
 
-    const interval = setInterval(check, SHUTDOWN_POLL_MS);
+    const interval = time.setInterval(check, SHUTDOWN_POLL_MS);
     interval.unref?.();
     check();
   });
@@ -160,13 +162,17 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): P
   return results;
 }
 
-export function readSessionRefs(shardDir: string): Array<{ sessionId: string; provider: string }> {
+export function readSessionRefs(
+  shardDir: string,
+  storage: Pick<Runtime['storage'], 'readdirSync' | 'readFileSync'>,
+): Array<{ sessionId: string; provider: string }> {
   try {
-    return readdirSync(shardDir, { withFileTypes: true })
+    return storage
+      .readdirSync(shardDir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
       .flatMap((entry) => {
         try {
-          const raw = readFileSync(join(shardDir, entry.name), 'utf-8');
+          const raw = storage.readFileSync(join(shardDir, entry.name), 'utf-8');
           const parsed: unknown = JSON.parse(raw);
           if (!isRecord(parsed)) return [];
           if (typeof parsed.sessionId !== 'string' || typeof parsed.provider !== 'string') return [];
@@ -209,6 +215,7 @@ export function cleanupStaleJobs(
   progressStore: ProgressStore,
   currentBundleHash: string,
   log: (message: string) => void,
+  storage: Pick<Runtime['storage'], 'rmSync'>,
 ): void {
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
@@ -217,7 +224,7 @@ export function cleanupStaleJobs(
     if (!status.bundleHash || status.bundleHash === currentBundleHash) continue;
 
     try {
-      rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+      storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
       progressStore.purgeFromCache(jobId);
       log(`Cleaned up stale job: ${jobId}\n`);
     } catch {
@@ -263,11 +270,10 @@ export async function createKbSubsystem({
 }
 
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
-export function resolveClientHost(bindHost: string): string {
-  const override = process.env.CORAL_BACKEND_ADVERTISE_HOST;
+export function resolveClientHost(bindHost: string, advertiseHost?: string): string {
   let host = bindHost;
-  if (override !== undefined) {
-    host = override;
+  if (advertiseHost !== undefined) {
+    host = advertiseHost;
   } else if (bindHost === '0.0.0.0') {
     host = '127.0.0.1';
   } else if (bindHost === '::') {
@@ -276,7 +282,11 @@ export function resolveClientHost(bindHost: string): string {
   return host.includes(':') ? `[${host}]` : host;
 }
 
-export async function listen(server: Server, bindHost: string): Promise<{ port: number; host: string }> {
+export async function listen(
+  server: Server,
+  bindHost: string,
+  advertiseHost?: string,
+): Promise<{ port: number; host: string }> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, bindHost, () => {
@@ -286,9 +296,46 @@ export async function listen(server: Server, bindHost: string): Promise<{ port: 
         reject(new Error('Backend server failed to bind to a TCP port'));
         return;
       }
-      resolve({ port: address.port, host: resolveClientHost(bindHost) });
+      resolve({ port: address.port, host: resolveClientHost(bindHost, advertiseHost) });
     });
   });
+}
+
+export type RegisterBuiltInProvidersFn = (providerRegistry: ProviderRegistry) => void;
+
+export type RecoverPersistedDiscussDeps = {
+  readonly knownDiscussSources: () => Set<string>;
+  readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
+  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  readonly createCallerContext: (projectRoot: string) => CallerContext;
+  readonly assertStartupStillActive: () => void;
+};
+
+export type RecoverPersistedDiscussFn = (
+  deps: RecoverPersistedDiscussDeps,
+) => Promise<discussOperations.RecoveredDiscussResume[]>;
+
+export async function recoverPersistedDiscuss(
+  deps: RecoverPersistedDiscussDeps,
+): Promise<discussOperations.RecoveredDiscussResume[]> {
+  const recoveredDiscussResumes: discussOperations.RecoveredDiscussResume[] = [];
+
+  for (const source of deps.knownDiscussSources()) {
+    try {
+      recoveredDiscussResumes.push(
+        ...(await discussOperations.recoverPersistedSessionsFromStore(
+          deps.getDiscussStoreForSource(source),
+          (snapshot) => deps.getDiscussContext(deps.createCallerContext(snapshot.projectRoot)),
+          (snapshot) => deps.createCallerContext(snapshot.projectRoot),
+        )),
+      );
+    } catch (err) {
+      backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(err)}`);
+    }
+    deps.assertStartupStillActive();
+  }
+
+  return recoveredDiscussResumes;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +345,8 @@ export async function listen(server: Server, bindHost: string): Promise<{ port: 
 export type LifecycleDeps = {
   // Identity / config
   readonly identity: BackendIdentity;
+  readonly runtime: Runtime;
+  readonly backendPid: number;
 
   // Shared mutable runtime state
   readonly runtimeState: MutableBackendRuntimeState;
@@ -334,7 +383,7 @@ export type LifecycleDeps = {
   ) => Promise<void>;
   readonly writeBackendInfoFn: typeof writeBackendInfo;
   readonly removeBackendInfoIfOwnerFn: typeof removeBackendInfoIfOwner;
-  readonly removeLockIfOwnerFn: typeof removeLockIfOwner;
+  readonly removeLockIfOwnerFn: (pluginRoot: string, instanceId: string) => void;
 
   // Recovery hooks (injectable for tests)
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
@@ -344,10 +393,12 @@ export type LifecycleDeps = {
 
   // KB subsystem factory
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
+  readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
+  readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
 
   // Transport hooks
   readonly closeServerFn: (server: Server) => Promise<void>;
-  readonly listenFn: (server: Server, bindHost: string) => Promise<{ port: number; host: string }>;
+  readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
 
   // Lifecycle callbacks
   readonly onStopped?: () => void;
@@ -369,6 +420,8 @@ export type LifecycleController = {
 export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const {
     identity,
+    runtime,
+    backendPid,
     runtimeState,
     idleTimer,
     progressStore,
@@ -393,6 +446,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
+    registerBuiltInProvidersFn,
+    recoverPersistedDiscussFn,
     closeServerFn,
     listenFn,
     onStopped,
@@ -405,9 +460,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   let started = false;
   let sessionIndexSubscribed = false;
   let recoveryRegistry: RecoveryRegistry | null = null;
-  let ownershipCheckerInterval: ReturnType<typeof setInterval> | null = null;
+  let ownershipCheckerInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
   const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
-  const recoveryPollIntervals = new Set<NodeJS.Timeout>();
+  const recoveryPollIntervals = new Set<ReturnType<Runtime['time']['setInterval']>>();
 
   // -- Session index subscription -------------------------------------------
 
@@ -417,6 +472,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     }
     sessionIndex.invalidate(payload.shardHash, payload.sessionId);
   };
+
+  function createCallerContext(projectRoot: string): CallerContext {
+    return { projectRoot, pluginRoot, coralEnv: {} };
+  }
 
   function subscribeSessionIndex(): void {
     if (sessionIndexSubscribed) return;
@@ -492,10 +551,10 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     const sessionKey = (shardDir: string, provider: string, sessionId: string): string =>
       `${shardDir}\u0000${provider}\u0000${sessionId}`;
 
-    for (const shardDir of SessionManager.listShards()) {
+    for (const shardDir of listSessionShards(runtime.storage)) {
       try {
-        const sessionManager = SessionManager.openShard(shardDir, eventBus);
-        for (const sessionRef of readSessionRefs(shardDir)) {
+        const sessionManager = SessionManager.openShard(shardDir, runtime, eventBus);
+        for (const sessionRef of readSessionRefs(shardDir, runtime.storage)) {
           try {
             sessionRefs.push({ shardDir, ...sessionRef });
             sessionsByRef.set(
@@ -545,12 +604,12 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   ): void {
     switch (action.type) {
       case 'deleteIncompleteDir':
-        rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
+        runtime.storage.rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
         log(`Deleted incomplete admission: ${action.jobId}\n`);
         return;
       case 'markError': {
         markJobAsError(progressStore, action.status, action.notice, log);
-        new SessionManager(action.status.projectRoot, eventBus).releaseJob(action.status.sessionId, action.status.jobId);
+        new SessionManager(action.status.projectRoot, runtime, eventBus).releaseJob(action.status.sessionId, action.status.jobId);
         if (action.notice === OLD_FORMAT_NOTICE) {
           log(`Marked incompatible old-format job: ${action.jobId}\n`);
         } else if (action.notice === GHOST_LAUNCH_NOTICE) {
@@ -584,7 +643,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         });
         return;
       case 'releaseSessionClaim': {
-        SessionManager.openShard(action.shardDir, eventBus).releaseJob(action.sessionId, action.jobId);
+        SessionManager.openShard(action.shardDir, runtime, eventBus).releaseJob(action.sessionId, action.jobId);
         const status = progressStore.readStatus(action.jobId);
         if (status && isTerminalPhase(status.phase)) {
           log(`Released terminal session claim: ${action.sessionId}\n`);
@@ -699,19 +758,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         };
 
         // Install PID poller to detect termination
-        const pollInterval: NodeJS.Timeout = setInterval(() => {
+        const pollInterval = runtime.time.setInterval(() => {
           drainRecoveredProgress();
 
-          let alive = false;
-          try {
-            process.kill(runtimeRecord.pid, 0);
-            alive = true;
-          } catch {
-            /* pid already exited */
-          }
+          const alive = runtime.process.isAlive(runtimeRecord.pid);
 
           if (!alive) {
-            clearInterval(pollInterval);
+            runtime.time.clearInterval(pollInterval);
             recoveryPollIntervals.delete(pollInterval);
             adoptedRunningPids.delete(jobId);
 
@@ -862,12 +915,12 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       idleTimer.stopWatching();
 
       const serverClosed = closeServerFn(server);
-      await waitForInflightDrain(idleTimer, drainTimeout);
+      await waitForInflightDrain(idleTimer, drainTimeout, runtime.time);
       server.closeAllConnections?.();
       for (const stream of streamResponses) {
         stream.end();
       }
-      await Promise.race([serverClosed, new Promise<void>((resolve) => setTimeout(resolve, drainTimeout))]);
+      await Promise.race([serverClosed, runtime.time.sleep(drainTimeout)]);
 
       if (mode === 'hard') {
         markJobsAsErrorFn(namespace, 'Backend shutting down');
@@ -879,15 +932,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // handoff mode: detached durable wrappers continue for replacement recovery,
       // while app-server jobs are terminalized locally before provider-server drain.
 
-      for (const interval of recoveryPollIntervals) clearInterval(interval);
+      for (const interval of recoveryPollIntervals) runtime.time.clearInterval(interval);
       recoveryPollIntervals.clear();
       if (ownershipCheckerInterval) {
-        clearInterval(ownershipCheckerInterval);
+        runtime.time.clearInterval(ownershipCheckerInterval);
         ownershipCheckerInterval = null;
       }
       await Promise.race([
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        runtime.time.sleep(5_000),
       ]);
       await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch((e: unknown) => { backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(e)}`); });
       await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
@@ -942,7 +995,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     try {
       await acquireLockFn(pluginRoot, instanceId, version, bundleHash, flavor);
       assertStartupStillActive();
-      registerBuiltInProviders(providerRegistry);
+      registerBuiltInProvidersFn(providerRegistry);
       try {
         const kbSub = await createKbSubsystemFn({
           pluginRoot,
@@ -956,17 +1009,16 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       }
       assertStartupStillActive();
       subscribeSessionIndex();
-      sessionIndex.hydrate(SessionManager.listShards());
+      sessionIndex.hydrate(listSessionShards(runtime.storage));
 
       // Listen first so we're reachable during recovery
-      const bindHost = process.env.CORAL_BACKEND_BIND ?? '127.0.0.1';
-      const { port, host } = await listenFn(server, bindHost);
+      const { port, host } = await listenFn(server);
       assertStartupStillActive();
       runtimeState.setStartedAt(now());
 
       // Scan recoverable jobs and install recovery registry + launch fence
       runtimeState.setLaunchFenceActive(true);
-      recoveryRegistry = new RecoveryRegistry();
+      recoveryRegistry = new RecoveryRegistry(runtime.process);
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
       const runningRecoverable: Array<{
         jobId: string;
@@ -1019,32 +1071,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Cleanup stale terminal jobs (old terminal data from previous bundle hashes)
       cleanupStaleJobsFn(bundleHash);
 
-      const recoveredDiscussResumes: discussOperations.RecoveredDiscussResume[] = [];
-
-      // Discuss session recovery — best-effort, never kills startup
-      for (const source of knownDiscussSources()) {
-        try {
-          recoveredDiscussResumes.push(
-            ...(await discussOperations.recoverPersistedSessionsFromStore(
-              getDiscussStoreForSource(source),
-              (snapshot) =>
-                getDiscussContext({
-                  projectRoot: snapshot.projectRoot,
-                  pluginRoot,
-                  coralEnv: {},
-                }),
-              (snapshot) => ({
-                projectRoot: snapshot.projectRoot,
-                pluginRoot,
-                coralEnv: {},
-              }),
-            )),
-          );
-        } catch (err) {
-          backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(err)}`);
-        }
-        assertStartupStillActive();
-      }
+      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createCallerContext,
+        assertStartupStillActive,
+      });
 
       if (queuedRecoverable.length > 0 || runningRecoverable.length > 0) {
         try {
@@ -1074,7 +1107,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       assertStartupStillActive();
       const startedAt = runtimeState.getStartedAt();
       writeBackendInfoFn(pluginRoot, {
-        pid: process.pid,
+        pid: backendPid,
         port,
         host,
         token: identity.token,
@@ -1108,14 +1141,14 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Self-terminate if another backend replaces this one (backend-info.json
       // will point to the replacement's instanceId). Covers the case where
       // ensureBackend's shutdown request is lost during rapid rebuild cycles.
-      ownershipCheckerInterval = setInterval(() => {
+      ownershipCheckerInterval = runtime.time.setInterval(() => {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
-          const current = readBackendInfo(pluginRoot);
+          const current = readBackendInfo(pluginRoot, runtime.storage);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it
-            clearInterval(ownershipCheckerInterval!);
+            runtime.time.clearInterval(ownershipCheckerInterval!);
             ownershipCheckerInterval = null;
             idleTimer.requestDrain('replaced');
           }
@@ -1123,7 +1156,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           // read failure — skip this check
         }
       }, 30_000);
-      ownershipCheckerInterval.unref();
+      ownershipCheckerInterval.unref?.();
 
       for (const recovered of recoveredDiscussResumes) {
         try {

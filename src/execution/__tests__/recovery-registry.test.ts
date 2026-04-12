@@ -97,11 +97,13 @@ describe('RecoveryRegistry', () => {
   });
 
   it('abort succeeds for registered jobs with runtimeRecord', () => {
-    const reg = new RecoveryRegistry();
+    const kill = vi.fn();
+    const reg = new RecoveryRegistry({ kill });
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }), makeRuntimeRecord());
     const result = reg.abort(['j1']);
     expect(result.aborted).toEqual(['j1']);
     expect(result.notFound).toEqual([]);
+    expect(kill).toHaveBeenCalledWith(12345, 'SIGTERM');
   });
 
   it('abort succeeds for queued jobs (no runtimeRecord, no kill handler)', () => {

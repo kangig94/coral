@@ -53,8 +53,15 @@ function resolveEnvBudget(): number {
   return Math.floor(argMax * 0.80);
 }
 
-/** Env budget: 80% of system ARG_MAX. Computed once at module load. */
-export const ENV_BUDGET_BYTES = resolveEnvBudget();
+let cachedEnvBudgetBytes: number | undefined;
+
+/** Env budget: 80% of system ARG_MAX. Computed lazily on first access and then cached. */
+export function envBudgetBytes(): number {
+  if (cachedEnvBudgetBytes === undefined) {
+    cachedEnvBudgetBytes = resolveEnvBudget();
+  }
+  return cachedEnvBudgetBytes;
+}
 
 /**
  * Vars listed in CORAL_ENV_PASSTHROUGH (comma-separated) are never shed.
@@ -107,8 +114,9 @@ export function buildChildEnv(extraEnv?: Record<string, string>): Record<string,
 }
 
 function shedIfOverBudget(base: Record<string, string>): Record<string, string> {
+  const budgetBytes = envBudgetBytes();
   const originalSize = measureEnv(base);
-  if (originalSize <= ENV_BUDGET_BYTES) return base;
+  if (originalSize <= budgetBytes) return base;
 
   const passthrough = parsePassthrough();
   const originalCount = Object.keys(base).length;
@@ -122,7 +130,7 @@ function shedIfOverBudget(base: Record<string, string>): Record<string, string> 
   const shedNames: string[] = [];
 
   for (const [key, value] of entries) {
-    if (currentSize <= ENV_BUDGET_BYTES || passthrough.has(key)) {
+    if (currentSize <= budgetBytes || passthrough.has(key)) {
       kept[key] = value;
     } else {
       currentSize -= key.length + 1 + value.length + 1;
@@ -135,7 +143,7 @@ function shedIfOverBudget(base: Record<string, string>): Record<string, string> 
   backendLog.warn(
     `child-env: shed ${shed}/${originalCount} vars ` +
       `(${(originalSize / 1024).toFixed(0)}KB → ${(currentSize / 1024).toFixed(0)}KB, ` +
-      `budget=${(ENV_BUDGET_BYTES / 1024).toFixed(0)}KB) [${shedList}]` +
+      `budget=${(budgetBytes / 1024).toFixed(0)}KB) [${shedList}]` +
       (shed > 0 ? ' — set CORAL_ENV_PASSTHROUGH=VAR1,VAR2 to protect specific vars' : ''),
   );
   return kept;

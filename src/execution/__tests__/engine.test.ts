@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as EngineMod from '../engine.js';
+import { createRealRuntime } from '../runtime.js';
 
 type EngineModule = typeof EngineMod;
 
@@ -17,6 +18,10 @@ function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', val
 async function loadEngine(): Promise<EngineModule> {
   vi.resetModules();
   return import('../engine.js');
+}
+
+function createCoordinator(engine: EngineModule): InstanceType<EngineModule['LaunchCoordinator']> {
+  return new engine.LaunchCoordinator({ runtime: createRealRuntime() });
 }
 
 function createProviderServerScript(): string {
@@ -62,7 +67,7 @@ describe('engine admission queue', () => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
-    coordinator = new engine.LaunchCoordinator();
+    coordinator = createCoordinator(engine);
   });
 
   afterEach(() => {
@@ -73,7 +78,7 @@ describe('engine admission queue', () => {
   });
 
   it('returns an immediate permit when capacity is available', () => {
-    expect(engine.MAX_WORKERS).toBe(1);
+    expect(engine.getMaxWorkers(createRealRuntime().env)).toBe(1);
     expect(coordinator.requestLaunch('job-1', 'codex')).toEqual({ type: 'immediate' });
     expect(coordinator.queueDepth()).toBe(0);
     expect(coordinator.queuePosition('job-1')).toBeNull();
@@ -94,8 +99,9 @@ describe('engine admission queue', () => {
   });
 
   it('tracks default and discuss pool admission independently', async () => {
-    expect(engine.MAX_WORKERS).toBe(1);
-    expect(engine.DISCUSS_MAX_WORKERS).toBe(1);
+    const env = createRealRuntime().env;
+    expect(engine.getMaxWorkers(env)).toBe(1);
+    expect(engine.getDiscussMaxWorkers(env)).toBe(1);
     expect(coordinator.requestLaunch('default-1', 'codex')).toEqual({ type: 'immediate' });
     expect(coordinator.requestLaunch('discuss-1', 'codex', 'discuss')).toEqual({ type: 'immediate' });
 
@@ -300,7 +306,7 @@ describe('recovery helpers', () => {
     process.env.CORAL_MAX_WORKERS = '2';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '2';
     engine = await loadEngine();
-    coordinator = new engine.LaunchCoordinator();
+    coordinator = createCoordinator(engine);
   });
 
   afterEach(() => {
@@ -419,7 +425,7 @@ describe('spawnDurableJob', () => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
-    coordinator = new engine.LaunchCoordinator();
+    coordinator = createCoordinator(engine);
     tmpRoot = mkdtempSync(join(tmpdir(), 'coral-engine-durable-'));
   });
 
@@ -508,7 +514,7 @@ describe('provider servers', () => {
     process.env.CORAL_MAX_WORKERS = '1';
     process.env.CORAL_DISCUSS_MAX_WORKERS = '1';
     engine = await loadEngine();
-    coordinator = new engine.LaunchCoordinator();
+    coordinator = createCoordinator(engine);
   });
 
   afterEach(() => {

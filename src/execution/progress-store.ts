@@ -1,18 +1,4 @@
-import * as fs from 'node:fs';
-import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  rmSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
 import { join } from 'node:path';
-import { JOBS_DIR } from '../infra/paths.js';
 import {
   isLivePhase,
   readBackendNamespace,
@@ -30,8 +16,7 @@ import {
 import { isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
-
-export { JOBS_DIR } from '../infra/paths.js';
+import type { Runtime, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
@@ -40,8 +25,6 @@ const RUNTIME_FILE = 'runtime.json';
 const EXIT_FILE = 'exit.json';
 const WORKFLOW_STATE_FILE = 'workflow-state.json';
 const READ_CHUNK = 8 * 1024;
-
-let enqueueSequence = 0;
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
 
@@ -56,50 +39,69 @@ export type InitJobOptions = {
   initialPhase?: JobPhase;
 };
 
-export function jobResultPath(jobId: string): string {
-  return join(JOBS_DIR, jobId, 'result.md');
-}
-
 export function createReplayCursor(): ReplayCursor {
   return { lastOffset: 0, remainder: '' };
 }
 
 export { formatElapsed } from '../shared/format-progress.js';
 
+function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'time'> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'storage' in value &&
+    'time' in value &&
+    value.storage !== null &&
+    value.time !== null
+  );
+}
+
 export class ProgressStore {
   private readonly namespace: string;
+  private readonly storage: RuntimeStoragePort;
+  private readonly time: RuntimeTimePort;
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private readonly runtimeCache = new Map<string, PersistedRuntimeRecord | null>();
   private readonly knownJobIds = new Set<string>();
   private readonly eventBus: TypedEventBus;
+  private enqueueSequence = 0;
   private liveCount = 0;
   private changeSeq = 0;
+  private hydrated = false;
   private waiters: Array<() => void> = [];
 
   /**
-   * One store per backend namespace. The constructor scans JOBS_DIR and
+   * One store per backend namespace. The constructor scans the runtime jobs
+   * directory and
    * adopts only jobs that either (a) match this namespace, or (b) are legacy
    * records with no namespace field (adoptable on first access). Foreign
    * namespaces are excluded at discovery time, so every consumer of this
    * store operates on a namespace-bounded view by construction — no
    * downstream filter is required to avoid cross-namespace contamination.
    */
-  constructor(namespace: string, eventBus: TypedEventBus = new TypedEventBus()) {
+  constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'time'>, eventBus?: TypedEventBus);
+  constructor(namespace: string, eventBus: TypedEventBus, runtime: Pick<Runtime, 'storage' | 'time'>);
+  constructor(
+    namespace: string,
+    arg2: TypedEventBus | Pick<Runtime, 'storage' | 'time'>,
+    arg3?: TypedEventBus | Pick<Runtime, 'storage' | 'time'>,
+  ) {
     this.namespace = namespace;
-    this.eventBus = eventBus;
-    try {
-      for (const entry of readdirSync(JOBS_DIR, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (!this.ownsJobOnDisk(entry.name)) continue;
-        this.knownJobIds.add(entry.name);
-      }
-    } catch (error: unknown) {
-      if (!isNoEntryError(error)) {
-        throw error;
-      }
+    if (isRuntimeLike(arg2)) {
+      this.storage = arg2.storage;
+      this.time = arg2.time;
+      this.eventBus = arg3 instanceof TypedEventBus ? arg3 : new TypedEventBus();
+      return;
     }
+
+    if (!isRuntimeLike(arg3)) {
+      throw new Error('ProgressStore requires runtime-backed storage/time');
+    }
+    this.eventBus = arg2;
+    this.storage = arg3.storage;
+    this.time = arg3.time;
   }
 
   /** Returns the backend namespace this store is bound to. */
@@ -122,8 +124,8 @@ export class ProgressStore {
    */
   private ownsJobOnDisk(jobId: string): boolean {
     try {
-      const data = readFileSync(join(JOBS_DIR, jobId, STATUS_FILE), 'utf-8');
-      const record = JSON.parse(data) as PersistedStatusRecord;
+      const record = this.readStatusFromDisk(jobId);
+      if (!record) return true;
       const ns = readBackendNamespace(record);
       return ns === null || ns === this.namespace;
     } catch {
@@ -162,7 +164,11 @@ export class ProgressStore {
   }
 
   jobDir(jobId: string): string {
-    return join(JOBS_DIR, jobId);
+    return join(this.storage.jobsDir(), jobId);
+  }
+
+  resultPath(jobId: string): string {
+    return join(this.jobDir(jobId), 'result.md');
   }
 
   private statusPath(jobId: string): string {
@@ -181,6 +187,7 @@ export class ProgressStore {
   }
 
   liveJobCount(bundleHash?: string): number {
+    this.ensureHydrated();
     if (bundleHash === undefined) {
       return this.liveCount;
     }
@@ -194,6 +201,7 @@ export class ProgressStore {
   }
 
   listJobIds(): string[] {
+    this.ensureHydrated();
     return [...this.knownJobIds];
   }
 
@@ -213,10 +221,7 @@ export class ProgressStore {
   /** Atomic write to a job file. Tolerates missing job dir (deleted by cleanup). */
   private writeJobFile(filePath: string, content: string): boolean {
     try {
-      const tmpPath = filePath + '.tmp';
-      writeFileSync(tmpPath, content, 'utf-8');
-      renameSync(tmpPath, filePath);
-      return true;
+      return this.storage.writeAtomicSync(filePath, content, { encoding: 'utf-8' });
     } catch (error: unknown) {
       if (isNoEntryError(error)) return false;
       throw error;
@@ -240,7 +245,7 @@ export class ProgressStore {
       initialPhase = 'launching',
     } = opts;
     const dir = this.jobDir(jobId);
-    mkdirSync(dir, { recursive: true });
+    this.storage.mkdirSync(dir, { recursive: true });
     const record: PersistedStatusRecord = {
       jobId,
       sessionId,
@@ -248,7 +253,7 @@ export class ProgressStore {
       projectRoot,
       backendNamespace,
       phase: initialPhase,
-      launch: { state: 'pending', updatedAt: nowIsoString() },
+      launch: { state: 'pending', updatedAt: nowIsoString(this.time) },
     };
     if (bundleHash !== undefined) {
       record.bundleHash = bundleHash;
@@ -261,12 +266,12 @@ export class ProgressStore {
     this.applyStatusRecord(jobId, record);
     this.writeJobFile(this.progressPath(jobId), '');
     this.eventBus.emit('job:created', { jobId, sessionId, provider, projectRoot });
-    this.jobStartedAt.set(jobId, Date.now());
+    this.jobStartedAt.set(jobId, this.time.now());
   }
 
   rollbackJob(jobId: string): void {
     this.purgeFromCache(jobId);
-    rmSync(this.jobDir(jobId), { recursive: true, force: true });
+    this.storage.rmSync(this.jobDir(jobId), { recursive: true, force: true });
   }
 
   /** Remove a job from all in-memory caches without touching disk. */
@@ -295,8 +300,13 @@ export class ProgressStore {
     if (cached) return { ...cached };
 
     try {
-      const data = readFileSync(this.statusPath(jobId), 'utf-8');
-      const record = JSON.parse(data) as PersistedStatusRecord;
+      const record = this.readStatusFromDisk(jobId);
+      if (!record) return null;
+      const namespace = readBackendNamespace(record);
+      if (namespace !== null && namespace !== this.namespace) {
+        return null;
+      }
+      this.knownJobIds.add(jobId);
       this.statusCache.set(jobId, { ...record });
       if (isLivePhase(record.phase)) this.liveCount++;
       return { ...record };
@@ -316,7 +326,7 @@ export class ProgressStore {
   updateLaunchState(jobId: string, state: LaunchState, message?: string): void {
     const record = this.readStatus(jobId);
     if (!record) return;
-    record.launch = { state, message, updatedAt: nowIsoString() };
+    record.launch = { state, message, updatedAt: nowIsoString(this.time) };
     this.writeStatus(jobId, record);
   }
 
@@ -332,18 +342,18 @@ export class ProgressStore {
   appendProgress(jobId: string, sessionId: string, message: string): number {
     const eventId = this.nextEventId(jobId);
     const startedAt = this.jobStartedAt.get(jobId);
-    const elapsed = startedAt !== undefined ? Date.now() - startedAt : 0;
+    const elapsed = startedAt !== undefined ? this.time.now() - startedAt : 0;
     const stamped = `[${formatElapsed(elapsed)}] ${message}`;
     const entry: PersistedProgressRecord = {
       jobId,
       sessionId,
       eventId,
       type: 'progress',
-      ts: nowIsoString(),
+      ts: nowIsoString(this.time),
       message: stamped,
     };
     try {
-      fs.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+      this.storage.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
     } catch {
       /* progress write must not break execution */
     }
@@ -360,11 +370,11 @@ export class ProgressStore {
       sessionId,
       eventId,
       type: 'terminal',
-      ts: nowIsoString(),
+      ts: nowIsoString(this.time),
       result,
     };
     try {
-      fs.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
+      this.storage.appendFileSync(this.progressPath(jobId), JSON.stringify(entry) + '\n');
     } catch (error: unknown) {
       if (!isNoEntryError(error)) {
         throw error;
@@ -403,19 +413,15 @@ export class ProgressStore {
 
   /** Write result.md as a debugging/recovery artifact. */
   writeResultMd(jobId: string, text: string): void {
-    this.writeJobFile(jobResultPath(jobId), text);
+    this.writeJobFile(this.resultPath(jobId), text);
   }
 
   writeWorkflowResultMdOrThrow(jobId: string, text: string): void {
     const dir = this.jobDir(jobId);
-    const finalPath = jobResultPath(jobId);
-    const tmpPath = `${finalPath}.tmp`;
-    mkdirSync(dir, { recursive: true });
-    try {
-      writeFileSync(tmpPath, text, 'utf-8');
-      renameSync(tmpPath, finalPath);
-    } finally {
-      rmSync(tmpPath, { force: true });
+    const finalPath = this.resultPath(jobId);
+    this.storage.mkdirSync(dir, { recursive: true });
+    if (!this.storage.writeAtomicSync(finalPath, text, { encoding: 'utf-8' })) {
+      throw new Error(`Failed to write workflow result for ${jobId}`);
     }
   }
 
@@ -423,24 +429,24 @@ export class ProgressStore {
 
   /** Returns the next enqueue sequence number for FIFO recovery ordering. */
   nextEnqueueSequence(): number {
-    return ++enqueueSequence;
+    return ++this.enqueueSequence;
   }
 
   /** Seed the enqueue counter from recovered jobs to prevent ordering collision. */
   seedEnqueueSequence(maxRecovered: number): void {
-    if (maxRecovered > enqueueSequence) enqueueSequence = maxRecovered;
+    if (maxRecovered > this.enqueueSequence) this.enqueueSequence = maxRecovered;
   }
 
   /** Write launch.json before queue admission. */
   writeLaunchRecord(jobId: string, record: PersistedLaunchRecord): void {
-    mkdirSync(this.jobDir(jobId), { recursive: true });
+    this.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
     this.writeJobFile(join(this.jobDir(jobId), LAUNCH_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read launch.json. Returns null if not found or corrupt. */
   readLaunchRecord(jobId: string): PersistedLaunchRecord | null {
     try {
-      const data = readFileSync(join(this.jobDir(jobId), LAUNCH_FILE), 'utf-8');
+      const data = this.storage.readFileSync(join(this.jobDir(jobId), LAUNCH_FILE), 'utf-8');
       return JSON.parse(data) as PersistedLaunchRecord;
     } catch {
       return null;
@@ -463,7 +469,7 @@ export class ProgressStore {
     }
 
     try {
-      const data = readFileSync(join(this.jobDir(jobId), RUNTIME_FILE), 'utf-8');
+      const data = this.storage.readFileSync(join(this.jobDir(jobId), RUNTIME_FILE), 'utf-8');
       const record = JSON.parse(data) as PersistedRuntimeRecord;
       this.runtimeCache.set(jobId, record);
       return record;
@@ -481,7 +487,7 @@ export class ProgressStore {
   /** Read exit.json. Returns null if not found or corrupt. */
   readExitRecord(jobId: string): PersistedExitRecord | null {
     try {
-      const data = readFileSync(join(this.jobDir(jobId), EXIT_FILE), 'utf-8');
+      const data = this.storage.readFileSync(join(this.jobDir(jobId), EXIT_FILE), 'utf-8');
       return JSON.parse(data) as PersistedExitRecord;
     } catch {
       return null;
@@ -498,7 +504,7 @@ export class ProgressStore {
   readTerminalPayload(jobId: string): TerminalResult | null {
     let data: string;
     try {
-      data = readFileSync(this.progressPath(jobId), 'utf-8');
+      data = this.storage.readFileSync(this.progressPath(jobId), 'utf-8');
     } catch {
       return null;
     }
@@ -529,7 +535,7 @@ export class ProgressStore {
   /** Read workflow-state.json checkpoint. Returns null if not found or corrupt. */
   readWorkflowCheckpoint(jobId: string): WorkflowCheckpoint | null {
     try {
-      const data = readFileSync(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), 'utf-8');
+      const data = this.storage.readFileSync(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), 'utf-8');
       return JSON.parse(data) as WorkflowCheckpoint;
     } catch {
       return null;
@@ -549,6 +555,7 @@ export class ProgressStore {
 
   /** Count live jobs belonging to a specific namespace (not filtered by bundleHash). */
   liveJobCountByNamespace(namespace: string): number {
+    this.ensureHydrated();
     let count = 0;
     for (const record of this.statusCache.values()) {
       if (isLivePhase(record.phase) && record.backendNamespace === namespace) {
@@ -584,7 +591,7 @@ export class ProgressStore {
 
   private hasJobFile(jobId: string, fileName: string): boolean {
     try {
-      statSync(join(this.jobDir(jobId), fileName));
+      this.storage.statSync(join(this.jobDir(jobId), fileName));
       return true;
     } catch {
       return false;
@@ -631,7 +638,7 @@ export class ProgressStore {
   private readNewLines(filePath: string, cursor: ReplayCursor): string[] {
     let fd: number;
     try {
-      fd = openSync(filePath, 'r');
+      fd = this.storage.openSync(filePath, 'r');
     } catch (error: unknown) {
       if (isNoEntryError(error)) return [];
       throw error;
@@ -641,7 +648,7 @@ export class ProgressStore {
       const buf = Buffer.alloc(READ_CHUNK);
       let nextOffset = cursor.lastOffset;
       while (true) {
-        const bytesRead = readSync(fd, buf, 0, READ_CHUNK, nextOffset);
+        const bytesRead = this.storage.readSync(fd, buf, 0, READ_CHUNK, nextOffset);
         if (bytesRead <= 0) break;
         nextOffset += bytesRead;
         chunks.push(buf.toString('utf-8', 0, bytesRead));
@@ -654,7 +661,37 @@ export class ProgressStore {
       cursor.remainder = lines.pop() ?? '';
       return lines.filter((line) => line.length > 0);
     } finally {
-      closeSync(fd);
+      this.storage.closeSync(fd);
+    }
+  }
+
+  private ensureHydrated(): void {
+    if (this.hydrated) return;
+    try {
+      for (const entry of this.storage.readdirSync(this.storage.jobsDir(), { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!this.ownsJobOnDisk(entry.name)) continue;
+        this.knownJobIds.add(entry.name);
+        const record = this.readStatusFromDisk(entry.name);
+        if (record && !this.statusCache.has(entry.name)) {
+          this.statusCache.set(entry.name, { ...record });
+          if (isLivePhase(record.phase)) this.liveCount++;
+        }
+      }
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        throw error;
+      }
+    }
+    this.hydrated = true;
+  }
+
+  private readStatusFromDisk(jobId: string): PersistedStatusRecord | null {
+    try {
+      const data = this.storage.readFileSync(this.statusPath(jobId), 'utf-8');
+      return JSON.parse(data) as PersistedStatusRecord;
+    } catch {
+      return null;
     }
   }
 }

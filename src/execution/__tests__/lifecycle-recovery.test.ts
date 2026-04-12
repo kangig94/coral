@@ -16,6 +16,9 @@ import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../discuss/operations.js'
 import type * as DiscussContextRegistryModule from '../discuss/context-registry.js'
+import { createRealRuntime } from '../runtime.js'
+
+const runtime = createRealRuntime()
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -45,6 +48,10 @@ type LoadedModules = {
   providerRegistryModule: typeof ProviderRegistryModule
   discussOperationsModule: typeof DiscussOperationsModule
   discussContextRegistryModule: typeof DiscussContextRegistryModule
+}
+
+function createLaunchCoordinator(modules: LoadedModules): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
+  return new modules.engineModule.LaunchCoordinator({ runtime })
 }
 
 function createDeferred<T = void>() {
@@ -322,7 +329,7 @@ function createLifecycleHarness(
     invalidate: vi.fn(),
   }
   const providerRegistry = options.providerRegistry ?? new modules.providerRegistryModule.ProviderRegistry()
-  const launchCoordinator = options.launchCoordinator ?? new modules.engineModule.LaunchCoordinator()
+  const launchCoordinator = options.launchCoordinator ?? createLaunchCoordinator(modules)
   const servicesByProjectRoot = options.servicesByProjectRoot ?? new Map<string, unknown>()
   const getExecutionService =
     options.getExecutionService ??
@@ -348,6 +355,8 @@ function createLifecycleHarness(
       now: () => 1,
       log: () => {},
     },
+    runtime: createRealRuntime(),
+    backendPid: 1234,
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
     progressStore: options.progressStore,
@@ -379,6 +388,8 @@ function createLifecycleHarness(
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
     createKbSubsystemFn: async () => createMockKbSubsystem(),
+    registerBuiltInProvidersFn: () => {},
+    recoverPersistedDiscussFn: async () => [],
     closeServerFn: async () => {},
     listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
   })
@@ -410,8 +421,10 @@ function createActualRecoveryService(
       coralEnv: {},
     },
     {
+      runtime,
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
+      backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
       providerHostManager: createFakeProviderHostManager() as never,
       launchCoordinator: options.launchCoordinator,
       eventBus: options.eventBus,
@@ -477,7 +490,7 @@ describe('lifecycle recovery characterization', () => {
 
     for (const mode of ['missing', 'corrupt'] as const) {
       const eventBus = new modules.eventBusModule.TypedEventBus()
-      let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+      let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
       const projectRoot = createProjectRoot(`project-incomplete-${mode}`)
       const jobId = `incomplete-${mode}`
 
@@ -504,7 +517,7 @@ describe('lifecycle recovery characterization', () => {
         writeFileSync(statusPath, '{not-json', 'utf-8')
       }
 
-      progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+      progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
       const fakeService = createFakeExecutionAndRecoveryService()
       const { controller } = createLifecycleHarness(modules, {
         pluginRoot,
@@ -530,8 +543,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-incompatible')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'incompatible-job'
     const fakeService = createFakeExecutionAndRecoveryService()
@@ -563,7 +576,7 @@ describe('lifecycle recovery characterization', () => {
           notice: modules.lifecycleModule.OLD_FORMAT_NOTICE,
         },
       })
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
+      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
       )
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled()
@@ -579,8 +592,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-ghost')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'ghost-job'
     const fakeService = createFakeExecutionAndRecoveryService()
@@ -619,7 +632,7 @@ describe('lifecycle recovery characterization', () => {
           notice: modules.lifecycleModule.GHOST_LAUNCH_NOTICE,
         },
       })
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
+      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
       )
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled()
@@ -635,8 +648,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-queued')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
     const service = createActualRecoveryService(modules, {
       progressStore,
@@ -708,8 +721,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-running')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
     const service = createActualRecoveryService(modules, {
       progressStore,
@@ -778,8 +791,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-stale-dead-completed')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
     const service = createActualRecoveryService(modules, {
       progressStore,
@@ -789,7 +802,7 @@ describe('lifecycle recovery characterization', () => {
       pluginRoot,
       projectRoot,
     })
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const completeSpy = vi.spyOn(service, 'completeRecoveredJob')
 
@@ -842,7 +855,7 @@ describe('lifecycle recovery characterization', () => {
         phase: 'completed',
         result: { content: '', exitCode: 0 },
       })
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
+      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
       )
     } finally {
@@ -856,8 +869,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-stale-dead-error')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
     const service = createActualRecoveryService(modules, {
       progressStore,
@@ -867,7 +880,7 @@ describe('lifecycle recovery characterization', () => {
       pluginRoot,
       projectRoot,
     })
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const completeSpy = vi.spyOn(service, 'completeRecoveredJob')
 
@@ -920,7 +933,7 @@ describe('lifecycle recovery characterization', () => {
         phase: 'error',
         result: { content: '', exitCode: 7 },
       })
-      expect(new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
+      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
       )
     } finally {
@@ -936,10 +949,10 @@ describe('lifecycle recovery characterization', () => {
     for (const mode of ['missing', 'corrupt'] as const) {
       const projectRoot = createProjectRoot(`project-missing-exit-${mode}`)
       const eventBus = new modules.eventBusModule.TypedEventBus()
-      let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-      const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+      let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+      const launchCoordinator = createLaunchCoordinator(modules)
       const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
-      const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+      const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
       const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
       const jobId = `missing-exit-${mode}`
 
@@ -967,7 +980,7 @@ describe('lifecycle recovery characterization', () => {
       }
       sessionManager.claimForJobSync(session.sessionId, jobId)
 
-      progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+      progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
       const service = createActualRecoveryService(modules, {
         progressStore,
         eventBus,
@@ -1012,10 +1025,10 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-terminal-bug')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'terminal-bug-job'
 
@@ -1063,7 +1076,7 @@ describe('lifecycle recovery characterization', () => {
     }
     appendProgressRecord(progressStore.jobDir(jobId), persistedTerminal)
 
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1101,7 +1114,7 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-app-server')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const fakeService = createFakeExecutionAndRecoveryService()
 
     progressStore.initJob({
@@ -1156,8 +1169,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-terminal-claim')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const fakeService = createFakeExecutionAndRecoveryService()
 
@@ -1182,7 +1195,7 @@ describe('lifecycle recovery characterization', () => {
     try {
       await controller.start()
 
-      const recoveredSession = new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)
+      const recoveredSession = new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)
       expect(recoveredSession?.activeJobId).toBeUndefined()
       expect(recoveredSession?.lastJobId).toBe('terminal-job')
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled()
@@ -1198,8 +1211,8 @@ describe('lifecycle recovery characterization', () => {
     const projectRoot = createProjectRoot('project-orphan-claim')
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const fakeService = createFakeExecutionAndRecoveryService()
 
@@ -1215,7 +1228,7 @@ describe('lifecycle recovery characterization', () => {
     try {
       await controller.start()
 
-      const recoveredSession = new modules.sessionManagerModule.SessionManager(projectRoot).get('fakeprovider', session.sessionId)
+      const recoveredSession = new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)
       expect(recoveredSession?.activeJobId).toBeUndefined()
       expect(recoveredSession?.lastJobId).toBe('missing-job-dir')
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled()
@@ -1231,7 +1244,7 @@ describe('lifecycle recovery characterization', () => {
     const projectRoot = createProjectRoot('project-foreign')
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const fakeService = createFakeExecutionAndRecoveryService()
     const jobId = 'foreign-job'
 
@@ -1277,8 +1290,8 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-missing-namespace')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
     const jobId = 'missing-namespace-job'
 
@@ -1311,7 +1324,7 @@ describe('lifecycle recovery characterization', () => {
       phase: 'running',
       launch: { state: 'pending', updatedAt: '2026-04-12T00:00:00.000Z' },
     })
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1358,7 +1371,7 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-corrupt-launch')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const fakeService = createFakeExecutionAndRecoveryService()
     const jobId = 'corrupt-launch-job'
 
@@ -1378,7 +1391,7 @@ describe('lifecycle recovery characterization', () => {
       backendNamespace: namespace,
     })
     writeFileSync(join(progressStore.jobDir(jobId), 'launch.json'), '{not-json', 'utf-8')
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
 
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
@@ -1405,7 +1418,7 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-corrupt-runtime')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const fakeService = createFakeExecutionAndRecoveryService()
     const jobId = 'corrupt-runtime-job'
 
@@ -1429,7 +1442,7 @@ describe('lifecycle recovery characterization', () => {
       pid: 999_994,
     })
     writeFileSync(join(progressStore.jobDir(jobId), 'runtime.json'), '{broken', 'utf-8')
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
 
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
@@ -1471,6 +1484,7 @@ describe('lifecycle recovery characterization', () => {
     }
     const progressStore = new modules.progressStoreModule.ProgressStore(
       modules.pathsModule.pluginRootNamespace(pluginRoot),
+      runtime,
     )
     const server = createServer((req, res) => {
       void modules.httpHandlerModule.createHttpHandler({
@@ -1485,6 +1499,7 @@ describe('lifecycle recovery characterization', () => {
           now: () => Date.now(),
           log: () => {},
         },
+        runtime,
         runtimeState: runtimeState as never,
         idleTimer: createFakeIdleTimer() as never,
         progressStore,
@@ -1497,6 +1512,8 @@ describe('lifecycle recovery characterization', () => {
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
+        coralEnvSnapshot: {},
+        resolveProjectSource: modules.pathsModule.resolveProjectSource,
         isDrainRequested: () => false,
         requestDrain: () => {},
         getExecutionService: () => fakeService as never,
@@ -1569,7 +1586,7 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-recovery-window')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
 
     progressStore.initJob({
       jobId: 'queued-visible',
@@ -1762,10 +1779,10 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-terminal-aborted')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'terminal-aborted-job'
 
@@ -1811,7 +1828,7 @@ describe('lifecycle recovery characterization', () => {
       result: persistedPayload,
     })
 
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1852,10 +1869,10 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-terminal-completed')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'terminal-completed-job'
 
@@ -1901,7 +1918,7 @@ describe('lifecycle recovery characterization', () => {
       result: persistedPayload,
     })
 
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1942,10 +1959,10 @@ describe('lifecycle recovery characterization', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
     const projectRoot = createProjectRoot('project-terminal-error')
     const eventBus = new modules.eventBusModule.TypedEventBus()
-    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
-    const launchCoordinator = new modules.engineModule.LaunchCoordinator()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
+    const launchCoordinator = createLaunchCoordinator(modules)
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry()
-    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
     const jobId = 'terminal-error-job'
 
@@ -1991,7 +2008,7 @@ describe('lifecycle recovery characterization', () => {
       result: persistedPayload,
     })
 
-    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus)
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, eventBus, runtime)
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,

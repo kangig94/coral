@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   buildCallerContextFromQuery,
   discussDeleteQuerySchema,
@@ -11,30 +11,6 @@ import {
   parseBooleanQuery,
   queryParamsToObject,
 } from '../query-coerce.js';
-
-const originalCoralOwner = process.env.CORAL_OWNER;
-const originalCoralEffort = process.env.CORAL_EFFORT;
-const originalNonCoral = process.env.NOT_CORAL;
-
-afterEach(() => {
-  if (originalCoralOwner === undefined) {
-    delete process.env.CORAL_OWNER;
-  } else {
-    process.env.CORAL_OWNER = originalCoralOwner;
-  }
-
-  if (originalCoralEffort === undefined) {
-    delete process.env.CORAL_EFFORT;
-  } else {
-    process.env.CORAL_EFFORT = originalCoralEffort;
-  }
-
-  if (originalNonCoral === undefined) {
-    delete process.env.NOT_CORAL;
-  } else {
-    process.env.NOT_CORAL = originalNonCoral;
-  }
-});
 
 describe('query-coerce transport helpers', () => {
   it('parses boolean query values safely', () => {
@@ -166,12 +142,11 @@ describe('query-coerce transport helpers', () => {
     }
   });
 
-  it('rebuilds CallerContext from query params using process CORAL env only', () => {
-    process.env.CORAL_OWNER = 'transport-owner';
-    process.env.CORAL_EFFORT = 'high';
-    process.env.NOT_CORAL = 'ignore-me';
-
-    const context = buildCallerContextFromQuery('/repo/project', '/plugin/root');
+  it('rebuilds CallerContext from query params using the injected CORAL env snapshot only', () => {
+    const context = buildCallerContextFromQuery('/repo/project', '/plugin/root', {
+      CORAL_OWNER: 'transport-owner',
+      CORAL_EFFORT: 'high',
+    });
 
     expect(context.projectRoot).toBe('/repo/project');
     expect(context.pluginRoot).toBe('/plugin/root');
