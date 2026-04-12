@@ -453,7 +453,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
       continue;
     }
 
-    writeSseEvent(res, 'timeout', event);
+    writeSseEvent(res, 'running', event);
   }
 
   if (!closed && !res.writableEnded) {

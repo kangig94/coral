@@ -68,9 +68,9 @@ function makeQueuedEvent(): Extract<WaitStreamEvent, { type: 'queued' }> {
   };
 }
 
-function makeTimeoutEvent(): Extract<WaitStreamEvent, { type: 'timeout' }> {
+function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'running' }> {
   return {
-    type: 'timeout',
+    type: 'running',
     runningJobIds: ['job-1'],
   };
 }
@@ -198,7 +198,7 @@ describe('cli follow', () => {
     );
   });
 
-  it('emits launch, timeout, and terminal NDJSON records with cursor resume', async () => {
+  it('emits launch, running, and terminal NDJSON records with cursor resume', async () => {
     const { launchAndFollow } = await loadFollowModule();
 
     mockState.ensureBackend
@@ -220,9 +220,9 @@ describe('cli follow', () => {
         }
         yield makeQueuedEvent();
         if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-timeout';
+          cursorRef.lastEventId = 'cursor-running';
         }
-        yield makeTimeoutEvent();
+        yield makeRunningEvent();
       })
       .mockImplementationOnce(async function* (
         _jobIds: string[],
@@ -233,7 +233,7 @@ describe('cli follow', () => {
         _projectRoot: string | undefined,
         cursorRef: { lastEventId?: string } | undefined,
       ) {
-        expect(lastEventId).toBe('cursor-timeout');
+        expect(lastEventId).toBe('cursor-running');
         if (cursorRef) {
           cursorRef.lastEventId = 'cursor-progress';
         }
@@ -293,7 +293,7 @@ describe('cli follow', () => {
         runningJobIds: ['job-9'],
       },
       {
-        type: 'timeout',
+        type: 'running',
         runningJobIds: ['job-1'],
       },
       {
@@ -328,7 +328,7 @@ describe('cli follow', () => {
     ]);
     expect(records[4].result).not.toHaveProperty('content');
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
-    expect(mockState.streamWait.mock.calls[1]?.[3]).toBe('cursor-timeout');
+    expect(mockState.streamWait.mock.calls[1]?.[3]).toBe('cursor-running');
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {

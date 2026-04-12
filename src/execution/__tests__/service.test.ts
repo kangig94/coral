@@ -3461,8 +3461,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       }
 
       expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('timeout');
-      if (events[0].type !== 'timeout') throw new Error('expected timeout');
+      expect(events[0].type).toBe('running');
+      if (events[0].type !== 'running') throw new Error('expected running');
       expect(events[0].runningJobIds).toContain(jobIdA);
       expect(events[0].runningJobIds).toContain(jobIdB);
       expect(events[0].runningJobIds).toHaveLength(2);

@@ -42,11 +42,11 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
         return parsed as WaitStreamEvent;
       }
       throw new Error('Invalid terminal wait stream event');
-    case 'timeout':
+    case 'running':
       if (isStringArray(parsed.runningJobIds)) {
         return parsed as WaitStreamEvent;
       }
-      throw new Error('Invalid timeout wait stream event');
+      throw new Error('Invalid running wait stream event');
     case 'queued':
       if (
         typeof parsed.jobId === 'string' &&

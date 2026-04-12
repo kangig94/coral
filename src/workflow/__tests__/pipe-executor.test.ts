@@ -39,9 +39,9 @@ function terminal(jobId: string, sessionId: string, result: TerminalResult): Wai
   };
 }
 
-function timeout(runningJobIds: string[]): WaitStreamEvent {
+function stillRunning(runningJobIds: string[]): WaitStreamEvent {
   return {
-    type: 'timeout',
+    type: 'running',
     runningJobIds,
   };
 }
@@ -247,7 +247,7 @@ describe('workflow pipe executor', () => {
       waitStream: vi.fn((req: WaitRequest) => {
         if (firstCycle) {
           firstCycle = false;
-          return emit([timeout([...req.jobIds])]);
+          return emit([stillRunning([...req.jobIds])]);
         }
         return emit([
           terminal('job-codex-resumed', 'session-codex', { content: 'CODEX DONE' }),
@@ -323,7 +323,7 @@ describe('workflow pipe executor', () => {
       waitForJobTerminal: vi.fn(async () => {
         throw new Error('Timed out waiting for job job-1 to reach a terminal state and release its session');
       }),
-      waitStream: vi.fn((req: WaitRequest) => emit([timeout([...req.jobIds])])),
+      waitStream: vi.fn((req: WaitRequest) => emit([stillRunning([...req.jobIds])])),
     });
 
     try {
@@ -398,7 +398,7 @@ describe('workflow pipe executor', () => {
         waitCalls += 1;
         if (waitCalls === 1) {
           controller.abort();
-          return emit([timeout(['job-1'])]);
+          return emit([stillRunning(['job-1'])]);
         }
         return emit([terminal('job-1', 'session-1', { content: '', aborted: true })]);
       }),
@@ -485,7 +485,7 @@ describe('workflow pipe executor', () => {
       waitStream: vi.fn((_req: WaitRequest) => {
         if (firstCycle) {
           firstCycle = false;
-          return emit([timeout(['job-1'])]);
+          return emit([stillRunning(['job-1'])]);
         }
         return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
       }),
@@ -602,7 +602,7 @@ describe('workflow pipe executor', () => {
         secondStepWait += 1;
         if (secondStepWait === 1) {
           controller.abort();
-          return emit([timeout(['job-2'])]);
+          return emit([stillRunning(['job-2'])]);
         }
         return emit([terminal('job-2', 'session-2', { content: '', aborted: true })]);
       }),

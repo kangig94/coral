@@ -114,7 +114,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
-      type: 'timeout',
+      type: 'running',
       runningJobIds: [],
     })),
     ...overrides,

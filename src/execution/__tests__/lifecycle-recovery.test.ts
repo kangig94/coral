@@ -243,9 +243,9 @@ function createFakeExecutionAndRecoveryService(
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-      yield { type: 'timeout', runningJobIds: [] }
+      yield { type: 'running', runningJobIds: [] }
     }),
-    waitStreamOnce: vi.fn(async () => ({ type: 'timeout', runningJobIds: [] })),
+    waitStreamOnce: vi.fn(async () => ({ type: 'running', runningJobIds: [] })),
     adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
@@ -1637,7 +1637,7 @@ describe('lifecycle recovery characterization', () => {
       if (existing) return existing
       const created = createFakeExecutionAndRecoveryService({
         waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-          yield { type: 'timeout', runningJobIds: ['queued-visible', 'running-visible'] }
+          yield { type: 'running', runningJobIds: ['queued-visible', 'running-visible'] }
         }),
       })
       servicesByProjectRoot.set(root, created)
@@ -1753,7 +1753,7 @@ describe('lifecycle recovery characterization', () => {
 
       expect(postStartWaitResponse.status).toBe(200)
       expect(postStartWaitResponse.headers.get('content-type')).toContain('text/event-stream')
-      expect(await postStartWaitResponse.text()).toContain('event: timeout')
+      expect(await postStartWaitResponse.text()).toContain('event: running')
       expect(service.waitStream).toHaveBeenCalledWith({
         jobIds: ['queued-visible', 'running-visible'],
         timeoutSeconds: 1,
