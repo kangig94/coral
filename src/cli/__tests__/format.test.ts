@@ -34,7 +34,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitTimeout,
+  formatWaitRunning,
   renderWaitLine,
 } from '../format.js';
 
@@ -186,10 +186,10 @@ const waitTerminalEvent = {
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
-const waitTimeoutEvent = {
-  type: 'timeout',
+const waitRunningEvent = {
+  type: 'running',
   runningJobIds: ['job-1', 'job-2'],
-} satisfies Extract<WaitStreamEvent, { type: 'timeout' }>;
+} satisfies Extract<WaitStreamEvent, { type: 'running' }>;
 
 describe('cli format', () => {
   describe('formatLaunch', () => {
@@ -603,15 +603,15 @@ describe('cli format', () => {
       );
     });
 
-    it('formats timeout output with running jobs', () => {
-      expect(formatWaitTimeout(waitTimeoutEvent, 'cursor-4')).toBe(
-        'Wait timed out; running jobs: job-1, job-2 (cursor: cursor-4)',
+    it('formats running output with active jobs', () => {
+      expect(formatWaitRunning(waitRunningEvent, 'cursor-4')).toBe(
+        'Still running; jobs: job-1, job-2 (cursor: cursor-4)',
       );
     });
 
-    it('formats timeout output without running jobs', () => {
-      expect(formatWaitTimeout({ type: 'timeout', runningJobIds: [] }, null)).toBe(
-        'Wait timed out; running jobs: none',
+    it('formats running output without active jobs', () => {
+      expect(formatWaitRunning({ type: 'running', runningJobIds: [] }, null)).toBe(
+        'Still running; jobs: none',
       );
     });
 

@@ -350,4 +350,4 @@ export type WaitStreamEvent =
       resultPath: string;
       result: TerminalResult;
     }
-  | { type: 'timeout'; runningJobIds: string[] };
+  | { type: 'running'; runningJobIds: string[] };

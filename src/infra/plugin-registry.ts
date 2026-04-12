@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { RuntimeEnvPort, RuntimeStoragePort } from '../execution/runtime.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 const installedPluginEntrySchema = z
@@ -25,17 +26,37 @@ export type PluginRegistry = {
   discoverPluginRoot(namespace: string): string | null;
 };
 
-export function createPluginRegistry(): PluginRegistry {
+export type PluginRegistryDeps = {
+  storage?: Pick<RuntimeStoragePort, 'existsSync' | 'readFileSync'>;
+  env?: Pick<RuntimeEnvPort, 'get'>;
+  registryPath?: string;
+  homeDir?: string;
+};
+
+function resolveRegistryPath(deps?: PluginRegistryDeps): string {
+  const envGet = deps?.env?.get.bind(deps.env);
+  const override = deps?.registryPath ?? envGet?.('CORAL_PLUGIN_REGISTRY') ?? process.env.CORAL_PLUGIN_REGISTRY;
+  if (override) {
+    return override;
+  }
+
+  const resolvedHome =
+    deps?.homeDir ?? envGet?.('HOME') ?? envGet?.('USERPROFILE') ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+  return join(resolvedHome, '.claude', 'plugins', 'installed_plugins.json');
+}
+
+export function createPluginRegistry(deps?: PluginRegistryDeps): PluginRegistry {
   const cache = new Map<string, string | null>();
   let installedPlugins: InstalledPluginsFile | null | undefined;
+  const storage = deps?.storage;
 
   function loadInstalledPlugins(): InstalledPluginsFile | null {
     if (installedPlugins !== undefined) return installedPlugins;
 
-    const registryPath = process.env.CORAL_PLUGIN_REGISTRY ?? join(homedir(), '.claude', 'plugins', 'installed_plugins.json');
+    const registryPath = resolveRegistryPath(deps);
 
     try {
-      const raw = fs.readFileSync(registryPath, 'utf-8');
+      const raw = storage?.readFileSync(registryPath, 'utf-8') ?? fs.readFileSync(registryPath, 'utf-8');
       const parsed: unknown = JSON.parse(raw);
       const result = installedPluginsFileSchema.safeParse(parsed);
       installedPlugins = result.success ? result.data : null;
@@ -64,7 +85,7 @@ export function createPluginRegistry(): PluginRegistry {
       if (name !== namespace) continue;
 
       for (const entry of registry.plugins[key]) {
-        if (!fs.existsSync(entry.installPath)) continue;
+        if (!(storage?.existsSync(entry.installPath) ?? fs.existsSync(entry.installPath))) continue;
         cache.set(namespace, entry.installPath);
         return entry.installPath;
       }

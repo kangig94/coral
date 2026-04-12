@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
 
 function stripSessionIdOnly(text) {
   return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
@@ -11,6 +11,9 @@ function stripSessionIdOnly(text) {
 function stripOwnerOnly(text) {
   return text.replace(/<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g, '');
 }
+
+exitIfChildProcess();
+exitIfWrongFlavor();
 
 try {
   await readStdin();

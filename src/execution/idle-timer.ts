@@ -1,34 +1,41 @@
 import { parsePositiveInt } from './engine.js';
+import type { RuntimeTimePort } from './runtime.js';
 
-export const IDLE_TIMEOUT_MS = parsePositiveInt(process.env.CORAL_BACKEND_IDLE_MS, 21_600_000);
+export const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
 
 const IDLE_CHECK_INTERVAL_MS = 60_000;
 
+export function resolveIdleTimeoutMs(raw: string | undefined): number {
+  return parsePositiveInt(raw, DEFAULT_IDLE_TIMEOUT_MS);
+}
+
 export class IdleTimer {
+  private readonly time: RuntimeTimePort;
+  private readonly idleTimeoutMs: number;
   private inflight = 0;
-
-  private lastActiveAt = Date.now();
-
-  private interval: NodeJS.Timeout | null = null;
-
+  private lastActiveAt: number;
+  private interval: ReturnType<RuntimeTimePort['setInterval']> | null = null;
   private idleTriggered = false;
-
   private drainReason: string | null = null;
-
   private checkIdle: (() => boolean) | null = null;
-
   private onIdle: ((reason: string) => void) | null = null;
+
+  constructor(options: { time: RuntimeTimePort; timeoutMs?: number }) {
+    this.time = options.time;
+    this.idleTimeoutMs = options.timeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.lastActiveAt = this.time.now();
+  }
 
   beginRequest(): void {
     this.inflight += 1;
-    this.lastActiveAt = Date.now();
+    this.lastActiveAt = this.time.now();
     this.idleTriggered = false;
   }
 
   endRequest(): void {
     if (this.inflight > 0) this.inflight -= 1;
     if (this.inflight !== 0) return;
-    this.lastActiveAt = Date.now();
+    this.lastActiveAt = this.time.now();
     this.tryDrain();
   }
 
@@ -52,10 +59,10 @@ export class IdleTimer {
     this.checkIdle = checkIdle;
     this.onIdle = onIdle;
 
-    this.interval = setInterval(() => {
+    this.interval = this.time.setInterval(() => {
       if (this.idleTriggered) return;
       if (this.inflight !== 0) return;
-      if (this.drainReason === null && Date.now() - this.lastActiveAt <= IDLE_TIMEOUT_MS) return;
+      if (this.drainReason === null && this.time.now() - this.lastActiveAt <= this.idleTimeoutMs) return;
       if (!this.checkIdle?.()) return;
 
       this.idleTriggered = true;
@@ -66,7 +73,7 @@ export class IdleTimer {
 
   stopWatching(): void {
     if (this.interval === null) return;
-    clearInterval(this.interval);
+    this.time.clearInterval(this.interval);
     this.interval = null;
     this.checkIdle = null;
     this.onIdle = null;

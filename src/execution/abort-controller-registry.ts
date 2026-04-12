@@ -1,10 +1,12 @@
-import { randomUUID } from 'node:crypto';
 import type { AbortResult } from '../shared/execution-contracts.js';
+import type { RuntimeIdsPort } from './runtime.js';
 
 export class AbortRegistry {
+  constructor(private readonly ids: RuntimeIdsPort) {}
+
   private readonly controllers = new Map<string, AbortController>();
 
-  register(jobId: string = randomUUID(), onAbort?: () => void): string {
+  register(jobId: string = this.ids.uuid(), onAbort?: () => void): string {
     const controller = new AbortController();
     if (onAbort) {
       controller.signal.addEventListener('abort', onAbort);

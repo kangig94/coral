@@ -18,6 +18,7 @@ import {
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
 } from '../protocol.js';
+import { createDeferred } from '../../../shared/test-deferred.js';
 
 const BOOTSTRAP: SessionEnsureParams = {
   cwd: '/workspace',
@@ -290,14 +291,6 @@ function parseLines(output: string): Array<Record<string, unknown>> {
     .split('\n')
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-function createDeferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
 }
 
 async function flush(): Promise<void> {

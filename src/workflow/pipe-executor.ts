@@ -631,7 +631,7 @@ function handleWaitEvent(
       return 'handled';
     }
 
-    case 'timeout':
+    case 'running':
       return 'check-stale';
   }
 }

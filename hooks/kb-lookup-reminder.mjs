@@ -9,8 +9,9 @@
 
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { exitIfChildProcess, readStdin, resolveKbRoot } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveKbRoot } from './lib/hook-utils.mjs';
 exitIfChildProcess();
+exitIfWrongFlavor();
 
 const MASKING_RE = /\|\s*tee\b|\|\|\s*(true|:)\b/;
 const FAILURE_RE = /Failed to build|BUILD FAILED|Traceback \(most recent call last\)|npm ERR!|^error\[E\d+\]/m;

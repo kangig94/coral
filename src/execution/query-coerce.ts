@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { collectCoralEnv } from '../shared/utils.js';
 import type { CallerContext } from '../shared/request-context.js';
 
 export function parseBooleanQuery(value: unknown): boolean | undefined {
@@ -68,6 +67,10 @@ export function queryParamsToObject(params: URLSearchParams): Record<string, str
   return Object.fromEntries(params);
 }
 
-export function buildCallerContextFromQuery(projectRoot: string, pluginRoot: string): CallerContext {
-  return { projectRoot, pluginRoot, coralEnv: collectCoralEnv() };
+export function buildCallerContextFromQuery(
+  projectRoot: string,
+  pluginRoot: string,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): CallerContext {
+  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot } };
 }

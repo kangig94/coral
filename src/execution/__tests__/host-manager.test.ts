@@ -1,17 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderServerHandle } from '../engine.js';
 import { DefaultProviderHostManager, hostKeyFromSpec } from '../host-manager.js';
+import { createRealRuntime } from '../runtime.js';
 import type { ProviderServerSpec } from '../../providers/types.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
-function createDeferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
+const runtime = createRealRuntime();
 
 function createFakeProviderServerHandle(options?: {
   generation?: number;
@@ -142,7 +136,7 @@ describe('ProviderHostManager', () => {
       secondHandle.handle,
       thirdHandle.handle,
     );
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const sharedSpec: ProviderServerSpec = {
       provider: 'claude',
@@ -187,7 +181,7 @@ describe('ProviderHostManager', () => {
   it('borrows a live exclusive host only when the generation matches', async () => {
     const server = createFakeProviderServerHandle({ generation: 41 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',
@@ -217,7 +211,7 @@ describe('ProviderHostManager', () => {
       request: async () => ({ ok: true }),
     });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -256,7 +250,7 @@ describe('ProviderHostManager', () => {
       },
     });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -288,7 +282,7 @@ describe('ProviderHostManager', () => {
   it('passes initializeRequest from spec to spawnProviderServer options', async () => {
     const server = createFakeProviderServerHandle({ generation: 50 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',
@@ -317,7 +311,7 @@ describe('ProviderHostManager', () => {
   it('falls back to signal shutdown when no graceful shutdown capability is declared', async () => {
     const server = createFakeProviderServerHandle({ generation: 9 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',
@@ -349,7 +343,7 @@ describe('ProviderHostManager', () => {
       },
     });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ idleTimeoutMs: 25, spawnProviderServer });
+    const manager = new DefaultProviderHostManager({ runtime, idleTimeoutMs: 25, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'claude',
@@ -407,7 +401,8 @@ describe('ProviderHostManager', () => {
 
     const server = createFakeProviderServerHandle({ generation: 13 });
     const spawnProviderServer = createSpawnProviderServerMock(server.handle);
-    const manager = new DefaultProviderHostManager({ spawnProviderServer });
+    const runtime = createRealRuntime();
+    const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec: ProviderServerSpec = {
       provider: 'codex',

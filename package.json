@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Claude Code plugin - structured agents with Codex CLI bridge",
   "type": "module",
   "exports": {
@@ -15,8 +15,9 @@
     "bridge/manifest.json"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-server.mjs",
-    "build:server": "node scripts/build-server.mjs",
+    "build": "tsc && node scripts/build-server.mjs --flavor prod",
+    "build:dev": "tsc && node scripts/build-server.mjs --flavor dev",
+    "build:server": "node scripts/build-server.mjs --flavor prod",
     "dev": "tsc --watch",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",

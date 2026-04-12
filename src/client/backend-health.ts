@@ -7,6 +7,7 @@ export interface BackendHealth {
   status: 'ok';
   version: string;
   bundleHash: string;
+  flavor: 'prod' | 'dev';
   instanceId: string;
   namespace: string;
   uptimeMs: number;
@@ -22,6 +23,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     value.status === 'ok' &&
     typeof value.version === 'string' &&
     typeof value.bundleHash === 'string' &&
+    (value.flavor === 'prod' || value.flavor === 'dev') &&
     typeof value.instanceId === 'string' &&
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&

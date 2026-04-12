@@ -1,6 +1,6 @@
 # Hooks
 
-Hooks provide automatic context injection, backend warm-start, compaction recovery, KB reminders, CLI path resolution, and prompt-mode Ralph looping.
+Hooks provide automatic context injection, backend warm-start, compaction recovery, KB reminders, CLI path resolution, prompt-mode Ralph looping, and flavor-aware self-gating.
 
 ## Overview
 
@@ -21,6 +21,12 @@ Hook registration lives in `hooks/hooks.json`. Coral uses these Claude Code hook
 
 All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to stdout, and fail open.
 
+## Hook Self-Gating
+
+All 12 shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFlavor()` second. `exitIfChildProcess()` suppresses Coral child-process reentry. `exitIfWrongFlavor()` compares `CORAL_FLAVOR` (unset => `prod`) with the hook bundle's own `bridge/manifest.json` flavor, exits `0` on mismatch, and exits `1` with stderr for unrecognized values. This is what allows marketplace prod hooks and locally registered dev hooks to coexist without cross-firing.
+
+The HUD auto-update hook adds one more gate: it refreshes the HUD only when `buildFlavor() === 'prod'`, so dev registrations never overwrite the prod HUD.
+
 ## SessionStart
 
 `hooks/session-start.mjs` reads `INJECT.md`, resolves project placeholders, strips owner/session-only blocks as needed, and returns the text through `hookSpecificOutput.additionalContext`.
@@ -30,12 +36,13 @@ It also:
 - adds `Bash(node *coral-cli*)` permission to `.claude/settings.local.json`
 - optionally creates `.claude/coral -> ~/.coral/projects/{slug}/` when `CORAL_AUTO_SYMLINK=1`
 - updates `.gitignore` for generated local files when Coral creates them
+- refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
 
 Provider-launched Codex and Claude sessions also receive `INJECT.md`, but that happens through `src/providers/inject.ts` and the provider adapters, not through a separate bridge prepend layer.
 
 ## Backend Warm-start
 
-`hooks/backend-warm-start.mjs` starts `bridge/coral-backend.cjs` early when there is no healthy backend. It is best-effort only: failures are ignored and the CLI can still start the backend lazily later.
+`hooks/backend-warm-start.mjs` starts `bridge/coral-backend.cjs` early when there is no healthy backend. It reads the expected flavor from `bridge/manifest.json`, skips only when the live backend already matches that flavor, and asks a wrong-flavor backend to shut down so replacement can proceed. It is still best-effort only: failures are ignored and the CLI can start the backend lazily later.
 
 ## Compact Recovery
 
@@ -88,7 +95,11 @@ These hooks coexist because Claude Code can honor multiple `decision: "block"` r
 Hook scripts follow the same shape:
 
 ```javascript
+import { exitIfChildProcess, exitIfWrongFlavor } from './lib/hook-utils.mjs';
 import { readFileSync } from 'node:fs';
+
+exitIfChildProcess();
+exitIfWrongFlavor();
 
 try {
   const input = JSON.parse(readFileSync('/dev/stdin', 'utf8'));

@@ -5,13 +5,14 @@ vi.mock('../backend-log.js', () => ({
   backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
 
-import { buildChildEnv, ENV_BUDGET_BYTES, measureEnv } from '../child-env.js';
+import { buildChildEnv, envBudgetBytes, measureEnv } from '../child-env.js';
 import { backendLog } from '../backend-log.js';
 
 /** Fill env with vars of given size until total exceeds budget. Track size incrementally. */
 function fillUntilOverBudget(env: Record<string, string>, prefix: string, valueSize: number): void {
+  const budgetBytes = envBudgetBytes();
   let size = measureEnv(env);
-  for (let i = 0; size <= ENV_BUDGET_BYTES; i++) {
+  for (let i = 0; size <= budgetBytes; i++) {
     const k = `${prefix}_${i}`;
     const v = 'x'.repeat(valueSize);
     env[k] = v;
@@ -32,8 +33,9 @@ describe('buildChildEnv', () => {
   });
 
   it('should derive budget from system ARG_MAX', () => {
-    expect(ENV_BUDGET_BYTES).toBeGreaterThan(0);
-    expect(ENV_BUDGET_BYTES).toBeLessThanOrEqual(16 * 1024 * 1024);
+    const budgetBytes = envBudgetBytes();
+    expect(budgetBytes).toBeGreaterThan(0);
+    expect(budgetBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
   });
 
   it('should strip CORAL_* vars from base env and set CORAL_CHILD', () => {
@@ -116,7 +118,7 @@ describe('buildChildEnv', () => {
     const result = buildChildEnv();
 
     // CORAL_CHILD adds a few bytes — allow small overhead
-    expect(measureEnv(result)).toBeLessThanOrEqual(ENV_BUDGET_BYTES + 64);
+    expect(measureEnv(result)).toBeLessThanOrEqual(envBudgetBytes() + 64);
   });
 
   it('should never shed extraEnv entries', () => {

@@ -6,11 +6,9 @@
  * defined in backend-contracts.ts.
  */
 
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
-import { collectCoralEnv, isRecord, nowIsoString } from '../shared/utils.js';
-import { resolveProjectSource } from '../infra/paths.js';
+import { isRecord, nowIsoString } from '../shared/utils.js';
 import {
   jobAbortSchema,
   jobWaitSchema,
@@ -144,8 +142,11 @@ type ParsedDirectBody = {
   args: Record<string, unknown>;
 };
 
-function buildControllerEnv(body: Record<string, unknown>): Record<string, string> {
-  const env = collectCoralEnv();
+function buildControllerEnv(
+  body: Record<string, unknown>,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const env = { ...coralEnvSnapshot };
   if (typeof body.owner === 'string') {
     env.CORAL_OWNER = body.owner;
   }
@@ -158,18 +159,26 @@ function buildControllerEnv(body: Record<string, unknown>): Record<string, strin
   return env;
 }
 
-function buildCallerContext(body: Record<string, unknown>, pluginRoot: string): CallerContext | null {
+function buildCallerContext(
+  body: Record<string, unknown>,
+  pluginRoot: string,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): CallerContext | null {
   if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
     return null;
   }
   return {
     projectRoot: body.projectRoot,
     pluginRoot,
-    coralEnv: buildControllerEnv(body),
+    coralEnv: buildControllerEnv(body, coralEnvSnapshot),
   };
 }
 
-function parseDirectBody(body: unknown, resolvedPluginRoot: string): ParsedDirectBody | null {
+function parseDirectBody(
+  body: unknown,
+  resolvedPluginRoot: string,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): ParsedDirectBody | null {
   if (!isRecord(body)) return null;
   if ('owner' in body && body.owner !== undefined && typeof body.owner !== 'string') return null;
   if ('effort' in body && body.effort !== undefined && typeof body.effort !== 'string') return null;
@@ -177,7 +186,7 @@ function parseDirectBody(body: unknown, resolvedPluginRoot: string): ParsedDirec
     return null;
   }
 
-  const ctx = buildCallerContext(body, resolvedPluginRoot);
+  const ctx = buildCallerContext(body, resolvedPluginRoot, coralEnvSnapshot);
   if (!ctx) return null;
 
   const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } = body;
@@ -291,11 +300,14 @@ function sendInvalidJson(res: ServerResponse): void {
   sendJson(res, 400, INVALID_JSON_RESPONSE);
 }
 
-function buildReadOnlyCallerContext(pluginRoot: string): CallerContext {
+function buildReadOnlyCallerContext(
+  pluginRoot: string,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): CallerContext {
   return {
     projectRoot: '',
     pluginRoot,
-    coralEnv: collectCoralEnv(),
+    coralEnv: { ...coralEnvSnapshot },
   };
 }
 
@@ -396,7 +408,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     ...parsed,
     cursor: inputCursor,
   };
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Project root is required' });
     return;
@@ -441,7 +453,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
       continue;
     }
 
-    writeSseEvent(res, 'timeout', event);
+    writeSseEvent(res, 'running', event);
   }
 
   if (!closed && !res.writableEnded) {
@@ -450,7 +462,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
 }
 
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerDeps): Promise<void> {
-  const streamId = randomUUID();
+  const streamId = deps.runtime.ids.uuid();
   const filterJobId = parseEventStreamFilter(req.url ?? '');
 
   res.statusCode = 200;
@@ -460,7 +472,7 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   res.flushHeaders?.();
 
   deps.streamResponses.add(res);
-  writeSseEvent(res, 'ready', { streamId, startedAt: nowIsoString() });
+  writeSseEvent(res, 'ready', { streamId, startedAt: nowIsoString(deps.runtime.time) });
 
   let closed = false;
   const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
@@ -531,7 +543,7 @@ async function handleSessionCreate(req: IncomingMessage, res: ServerResponse, de
     return;
   }
 
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     const response = domainResultToHttp(invalidRequestResult());
     sendJson(res, response.statusCode, response.body);
@@ -578,7 +590,7 @@ async function handleSessionMessage(
     return;
   }
 
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     const response = domainResultToHttp(invalidRequestResult());
     sendJson(res, response.statusCode, response.body);
@@ -624,7 +636,7 @@ async function handleSessionFork(
     return;
   }
 
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     const response = domainResultToHttp(invalidRequestResult());
     sendJson(res, response.statusCode, response.body);
@@ -665,7 +677,7 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
     return;
   }
 
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot);
+  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     const response = domainResultToHttp(invalidRequestResult());
     sendJson(res, response.statusCode, response.body);
@@ -756,7 +768,7 @@ async function handleDiscussSessionCreate(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -794,9 +806,9 @@ async function handleDiscussSessionDetail(
     return;
   }
 
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   const view: DiscussView = parsed.data.view ?? 'control';
-  const detail = deps.loadDiscussDetail(resolveProjectSource(context.projectRoot), sessionId, view);
+  const detail = deps.loadDiscussDetail(deps.resolveProjectSource(context.projectRoot), sessionId, view);
   if (!detail) {
     sendJson(res, 404, { error: 'session_not_found' });
     return;
@@ -822,7 +834,7 @@ async function handleDiscussEvents(
     return;
   }
 
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   const result = handleDiscussWatch(
     {
       session: sessionId,
@@ -844,7 +856,7 @@ async function handleDiscussBidRoute(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -884,7 +896,7 @@ async function handleDiscussSpeechRoute(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -929,7 +941,7 @@ async function handleDiscussSessionDelete(
     return;
   }
 
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot);
+  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   sendToolResult(
     res,
     await handleDiscussAbort({ session: sessionId }, context, {
@@ -986,7 +998,7 @@ async function handleKbNoteReadRoute(
     return;
   }
 
-  sendToolResult(res, handleKbNoteRead(slug, buildReadOnlyCallerContext(deps.identity.pluginRoot)), 200);
+  sendToolResult(res, handleKbNoteRead(slug, buildReadOnlyCallerContext(deps.identity.pluginRoot, deps.coralEnvSnapshot)), 200);
 }
 
 async function handleKbSourceReadRoute(
@@ -1067,7 +1079,10 @@ async function handleKbMemoReadRoute(
 
   sendToolResult(
     res,
-    handleKbMemoRead(slug, buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot)),
+    handleKbMemoRead(
+      slug,
+      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
+    ),
     200,
   );
 }
@@ -1092,7 +1107,7 @@ async function handleKbMemoListRoute(
     res,
     handleKbMemoList(
       parsed.data.owner === undefined ? {} : { owner: parsed.data.owner },
-      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot),
+      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
     ),
     200,
   );
@@ -1156,7 +1171,7 @@ async function handleKbNoteCreate(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -1182,7 +1197,7 @@ async function handleKbSourceCreate(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -1208,7 +1223,7 @@ async function handleKbMemoCreate(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -1238,7 +1253,7 @@ async function handleKbIndex(
 ): Promise<void> {
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -1271,7 +1286,7 @@ async function handleKbNoteUpdateRoute(
 
   let request: ParsedDirectBody | null;
   try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot);
+    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
   } catch {
     sendInvalidJson(res);
     return;
@@ -1354,7 +1369,7 @@ async function handleKbMemoDeleteRoute(
         ...(parsed.data.owner === undefined ? {} : { owner: parsed.data.owner }),
         ...(parsed.data.all === undefined ? {} : { all: parsed.data.all }),
       },
-      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot),
+      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
     ),
     200,
   );
@@ -1693,7 +1708,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     }
 
     if (req.method === 'GET' && req.url === '/health') {
-      const env = collectCoralEnv();
+      const env = { ...deps.coralEnvSnapshot };
       const lifecycleState = runtimeState.getLifecycle();
       let status: string = lifecycleState;
       if (idleTimer.isDraining) {
@@ -1707,11 +1722,12 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
         status,
         version: identity.version,
         bundleHash: identity.bundleHash,
+        flavor: identity.flavor,
         namespace: identity.namespace,
         instanceId: identity.instanceId,
         uptimeMs: identity.now() - runtimeState.getStartedAt(),
         active: deps.activeLaunchCount(),
-        activeJobs: progressStore.liveJobCount(identity.bundleHash),
+        activeJobs: progressStore.liveJobCountByNamespace(identity.namespace),
         liveDiscuss: deps.liveDiscussCount(),
         queueDepth: deps.queueDepth(),
         inflightRequests: idleTimer.inflightRequests,

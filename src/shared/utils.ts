@@ -1,14 +1,19 @@
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import type { RuntimeProcessPort, RuntimeStoragePort, RuntimeTimePort } from '../execution/runtime.js';
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 /** Delete a file, ignoring ENOENT (already deleted). */
-export function unlinkIfExists(filePath: string): void {
+export function unlinkIfExists(filePath: string, storage?: Pick<RuntimeStoragePort, 'unlinkSync'>): void {
   try {
-    unlinkSync(filePath);
+    if (storage) {
+      storage.unlinkSync(filePath);
+    } else {
+      unlinkSync(filePath);
+    }
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -77,16 +82,8 @@ export function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return false;
-    if (code === 'EPERM') return true;
-    throw error;
-  }
+export function isProcessAlive(pid: number, runtimeProcess: Pick<RuntimeProcessPort, 'isAlive'>): boolean {
+  return runtimeProcess.isAlive(pid);
 }
 
 export function formatError(error: unknown): string {
@@ -124,33 +121,59 @@ export function readBundleHash(pluginRoot: string): string {
   return 'unknown';
 }
 
-export const nowIsoString = (): string => new Date().toISOString();
+export function readBuildFlavor(pluginRoot: string): 'prod' | 'dev' {
+  try {
+    const raw = readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed) && parsed.flavor === 'dev') return 'dev';
+  } catch {
+    /* fall through */
+  }
+  return 'prod';
+}
+
+export function nowIsoString(timeOrEpoch?: Pick<RuntimeTimePort, 'now'> | number): string {
+  const epochMs =
+    typeof timeOrEpoch === 'number' ? timeOrEpoch : timeOrEpoch !== undefined ? timeOrEpoch.now() : Date.now();
+  return new Date(epochMs).toISOString();
+}
 
 /** Race a promise against a timeout. Returns true if the promise settles first, false on timeout. */
-export function raceTimeout(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  return Promise.race([
-    promise.then(() => true),
-    new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutMs);
-      timer.unref?.();
-    }),
-  ]);
+export function raceTimeout(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+  time?: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+): Promise<boolean> {
+  const timers = time ?? {
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    clearTimeout: (handle: ReturnType<typeof setTimeout> | null) => {
+      if (handle) clearTimeout(handle);
+    },
+  };
+
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    const timer = timers.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+
+    promise.then(
+      () => {
+        if (settled) return;
+        settled = true;
+        timers.clearTimeout(timer);
+        resolve(true);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        timers.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
-/**
- * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
- * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
- */
-export function tryExclusiveWrite(filePath: string, payload: string): boolean {
-  mkdirSync(dirname(filePath), { recursive: true });
-  try {
-    writeFileSync(filePath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  }
-  if (process.platform !== 'win32') {
-    chmodSync(filePath, 0o600);
-  }
-  return true;
-}

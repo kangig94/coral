@@ -128,11 +128,13 @@ describe('server discuss API', () => {
     service = createExecutionServiceStub(),
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createBackendServer({
-      instanceId: 'server-discuss-api-test',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'test-hash',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'server-discuss-api-test',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'test-hash',
+        log: () => {},
+      },
       discussRegistry: registry,
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { RuntimeStoragePort } from '../execution/runtime.js';
 import { isNoEntryError, isRecord } from './utils.js';
 import type { SessionEntry } from './types.js';
 
@@ -24,9 +25,12 @@ export interface LenientSessionEntry {
   provenanceState: ProvenanceState;
 }
 
-function readSessionJson(sessionPath: string): unknown | null {
+function readSessionJson(
+  sessionPath: string,
+  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+): unknown | null {
   try {
-    return JSON.parse(readFileSync(sessionPath, 'utf-8')) as unknown;
+    return JSON.parse((storage?.readFileSync(sessionPath, 'utf-8') ?? readFileSync(sessionPath, 'utf-8')) as string) as unknown;
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;
     throw error;
@@ -65,14 +69,20 @@ export function isValidSessionEntry(value: unknown): value is SessionEntry {
   );
 }
 
-export function readSessionEntry(sessionPath: string): SessionEntry | null {
-  const entry = readSessionJson(sessionPath);
+export function readSessionEntry(
+  sessionPath: string,
+  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+): SessionEntry | null {
+  const entry = readSessionJson(sessionPath, storage);
   if (entry === null) return null;
   return isValidSessionEntry(entry) ? entry : null;
 }
 
-export function readSessionEntryLenient(sessionPath: string): LenientSessionEntry | null {
-  const entry = readSessionJson(sessionPath);
+export function readSessionEntryLenient(
+  sessionPath: string,
+  storage?: Pick<RuntimeStoragePort, 'readFileSync'>,
+): LenientSessionEntry | null {
+  const entry = readSessionJson(sessionPath, storage);
   if (!isRecord(entry) || typeof entry.sessionId !== 'string') return null;
 
   const projectRoot =

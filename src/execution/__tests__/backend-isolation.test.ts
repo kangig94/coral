@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createDiscussContextRegistry } from '../discuss/context-registry.js';
+import { createRealRuntime } from '../runtime.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { TerminalResult } from '../../shared/types.js';
 
@@ -14,8 +15,8 @@ const terminalResult: TerminalResult = { content: '', durationMs: 100, exitCode:
 
 describe('backend isolation', () => {
   it('two coordinators track children independently', () => {
-    const coordA = new LaunchCoordinator();
-    const coordB = new LaunchCoordinator();
+    const coordA = new LaunchCoordinator({ runtime: createRealRuntime() });
+    const coordB = new LaunchCoordinator({ runtime: createRealRuntime() });
 
     const admitA = coordA.requestLaunch('job-a1', 'codex');
     const admitB = coordB.requestLaunch('job-b1', 'codex');
@@ -104,11 +105,11 @@ describe('backend isolation', () => {
   });
 
   it('shutdown of backend A does not interfere with backend B event delivery', () => {
-    const coordA = new LaunchCoordinator();
+    const coordA = new LaunchCoordinator({ runtime: createRealRuntime() });
     const busA = new TypedEventBus();
     const regA = createDiscussContextRegistry();
 
-    const coordB = new LaunchCoordinator();
+    const coordB = new LaunchCoordinator({ runtime: createRealRuntime() });
     const busB = new TypedEventBus();
     const regB = createDiscussContextRegistry();
 

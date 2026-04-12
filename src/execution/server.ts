@@ -2,23 +2,30 @@ declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
-import { randomBytes, randomUUID } from 'node:crypto';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { formatError, readBundleHash } from '../shared/utils.js';
+import { formatError, readBuildFlavor, readBundleHash } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { pluginRootNamespace, resolveProjectSource } from '../infra/paths.js';
+import { setBuildFlavor } from '../infra/paths.js';
 import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
 import { LaunchCoordinator } from './engine.js';
-import { writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
-import { acquireLock, BackendAlreadyRunningError, removeLockIfOwner } from './backend-lock.js';
+import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
+import {
+  acquireLock,
+  BackendAlreadyRunningError,
+  removeLockIfOwner,
+  type BackendOwnershipState,
+  type LockRecord,
+  type VerifyBackendOwnershipFn,
+} from './backend-lock.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 
 import { TypedEventBus } from './event-bus.js';
-import { IdleTimer } from './idle-timer.js';
+import { IdleTimer, resolveIdleTimeoutMs } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { SessionIndex } from './session-index.js';
+import { createRealRuntime, type Runtime } from './runtime.js';
 import { type DiscussContext } from './discuss/context.js';
 import {
   createDiscussContextRegistry,
@@ -47,11 +54,12 @@ import type {
 } from './backend-contracts.js';
 import { createProviderHostManager, type ProviderHostManager } from './host-manager.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
   closeServer as defaultCloseServer,
   createKbSubsystem as defaultCreateKbSubsystem,
   listen as defaultListen,
-  recoverOrphanedJobs,
+  recoverPersistedDiscuss as defaultRecoverPersistedDiscuss,
   cleanupStaleJobs,
   markJobsAsError,
   createLifecycle,
@@ -59,33 +67,61 @@ import {
   type CreateKbSubsystemFn,
   type LifecycleDeps,
   type LifecycleController,
+  type RecoverPersistedDiscussFn,
+  type RegisterBuiltInProvidersFn,
 } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
 
-type BackendServerOptions = {
-  progressStore?: ProgressStore;
-  pluginRoot?: string;
+export type BackendBootSnapshot = {
   version?: string;
   bundleHash?: string;
+  flavor?: 'prod' | 'dev';
   instanceId?: string;
   token?: string;
   now?: () => number;
   log?: (message: string) => void;
+  bindHost?: string;
+  advertiseHost?: string;
+  pid?: number;
+};
+
+export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerResponse) => void) => Server;
+type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
+
+const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
+
+export type BackendServerOptions = {
+  runtime?: Runtime;
+  bootSnapshot?: BackendBootSnapshot;
+  progressStore?: ProgressStore;
+  pluginRoot?: string;
+  backendNamespace?: string;
+  resolveProjectSourceFn?: (projectRoot: string) => string;
+  createServerFn?: CreateServerFn;
+  listenFn?: LifecycleDeps['listenFn'];
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (
     ctx: CallerContext,
     deps: ExecutionServiceDeps,
   ) => ExecutionServiceLike;
-  acquireLockFn?: (pluginRoot: string, instanceId: string, version: string, bundleHash: string) => Promise<void>;
+  verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
+  acquireLockFn?: (
+    pluginRoot: string,
+    instanceId: string,
+    version: string,
+    bundleHash: string,
+    flavor: 'prod' | 'dev',
+  ) => Promise<void>;
   writeBackendInfoFn?: typeof writeBackendInfo;
   removeBackendInfoIfOwnerFn?: typeof removeBackendInfoIfOwner;
-  removeLockIfOwnerFn?: typeof removeLockIfOwner;
+  removeLockIfOwnerFn?: RemoveLockIfOwnerFn;
   closeServerFn?: (server: Server) => Promise<void>;
-  recoverOrphanedJobsFn?: (namespace: string) => void;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   terminateAllFn?: () => void;
   createKbSubsystemFn?: CreateKbSubsystemFn;
+  registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
+  recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
@@ -103,7 +139,69 @@ export type BackendServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => IdleTimer;
 };
-const defaultPluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
+function resolveDefaultPluginRoot(): string {
+  return typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..', '..');
+}
+
+async function verifyBackendOwnershipWithHealthcheck(
+  pluginRoot: string,
+  record: LockRecord,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+): Promise<BackendOwnershipState> {
+  const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
+  const info = readBackendInfo(pluginRoot, runtime);
+  if (!info) {
+    return 'stale';
+  }
+  if (
+    info.instanceId !== record.instanceId ||
+    info.pid !== record.pid ||
+    info.bundleHash !== record.bundleHash ||
+    info.flavor !== record.flavor ||
+    info.namespace !== expectedNamespace
+  ) {
+    return 'stale';
+  }
+  if (!runtime.process.isAlive(record.pid)) {
+    return 'stale';
+  }
+
+  const controller = new AbortController();
+  const timeout = runtime.time.setTimeout(() => controller.abort(), LOCK_HEALTHCHECK_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+      method: 'GET',
+      headers: { 'X-Coral-Backend-Token': info.token },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return 'contended';
+    }
+
+    const body: unknown = await response.json();
+    if (!body || typeof body !== 'object') {
+      return 'contended';
+    }
+
+    const payload = body as Record<string, unknown>;
+    return payload.status === 'ok' &&
+      payload.bundleHash === record.bundleHash &&
+      payload.flavor === record.flavor &&
+      payload.instanceId === record.instanceId &&
+      payload.namespace === expectedNamespace
+      ? 'healthy'
+      : 'contended';
+  } catch {
+    return 'contended';
+  } finally {
+    runtime.time.clearTimeout(timeout);
+  }
+}
+
+function createDefaultBackendOwnershipVerifier(runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>): VerifyBackendOwnershipFn {
+  return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime);
+}
 
 export function listInstantiatedExecutionServices(
   services: ReadonlyMap<string, ExecutionServiceLike>,
@@ -112,49 +210,77 @@ export function listInstantiatedExecutionServices(
 }
 
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
-  const resolvedPluginRoot = options.pluginRoot ?? defaultPluginRoot;
-  const namespace = pluginRootNamespace(resolvedPluginRoot);
-  const version = options.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
-  const bundleHash = options.bundleHash ?? readBundleHash(resolvedPluginRoot);
-  const instanceId = options.instanceId ?? randomUUID();
-  const token = options.token ?? randomBytes(32).toString('hex');
-  const idleTimer = options.createIdleTimer?.() ?? new IdleTimer();
-  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator();
+  const runtime = options.runtime ?? createRealRuntime();
+  const bootSnapshot = options.bootSnapshot ?? {};
+  const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
+  const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
+  const resolveProjectSourceFn = options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
+  const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
+  const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
+  const flavor = bootSnapshot.flavor ?? readBuildFlavor(resolvedPluginRoot);
+  setBuildFlavor(flavor);
+  const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
+  const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
+  const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
+  const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
+  const backendPid = bootSnapshot.pid ?? runtime.env.pid();
+  const idleTimer =
+    options.createIdleTimer?.() ??
+    new IdleTimer({
+      time: runtime.time,
+      timeoutMs: resolveIdleTimeoutMs(runtime.env.get('CORAL_BACKEND_IDLE_MS')),
+    });
+  const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const eventBus = options.eventBus ?? options.progressStore?.getEventBus() ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-  const pluginRegistry = createPluginRegistry();
+  const pluginRegistry = createPluginRegistry({
+    storage: runtime.storage,
+    env: runtime.env,
+    homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
+  });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore = options.progressStore ?? new ProgressStore(eventBus);
+  const progressStore = options.progressStore ?? new ProgressStore(namespace, eventBus, runtime);
+  const coralEnvSnapshot = runtime.env.coralSnapshot();
   const providerHostManager =
     options.providerHostManager ??
     createProviderHostManager({
+      runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
-  const sessionIndex = new SessionIndex();
-  const now = options.now ?? (() => Date.now());
+  const sessionIndex = new SessionIndex(runtime);
+  const now = bootSnapshot.now ?? (() => runtime.time.now());
   backendLog.init({ version, bundleHash });
   const log =
-    options.log ??
+    bootSnapshot.log ??
     ((message: string) => {
       backendLog.raw(message);
     });
   const createExecutionService =
     options.createExecutionService ??
     ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
-  const acquireLockFn = options.acquireLockFn ?? acquireLock;
-  const writeBackendInfoFn = options.writeBackendInfoFn ?? writeBackendInfo;
-  const removeBackendInfoIfOwnerFn = options.removeBackendInfoIfOwnerFn ?? removeBackendInfoIfOwner;
-  const removeLockIfOwnerFn = options.removeLockIfOwnerFn ?? removeLockIfOwner;
+  const verifyBackendOwnershipFn = options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime);
+  const acquireLockFn =
+    options.acquireLockFn ?? ((pluginRoot, instanceId, version, currentBundleHash, currentFlavor) =>
+      acquireLock(pluginRoot, instanceId, version, currentBundleHash, currentFlavor, {
+        env: runtime.env,
+        storage: runtime.storage,
+        paths: runtime.paths,
+        time: runtime.time,
+        verifyOwnership: verifyBackendOwnershipFn,
+      }));
+  const writeBackendInfoFn =
+    options.writeBackendInfoFn ?? ((pluginRoot, info) => writeBackendInfo(pluginRoot, info, runtime));
+  const removeBackendInfoIfOwnerFn =
+    options.removeBackendInfoIfOwnerFn ??
+    ((pluginRoot, instanceId) => removeBackendInfoIfOwner(pluginRoot, instanceId, runtime));
+  const removeLockIfOwnerFn =
+    options.removeLockIfOwnerFn ??
+    ((pluginRoot, instanceId) => removeLockIfOwner(pluginRoot, instanceId, runtime.storage, runtime.paths));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
-  const recoverOrphanedJobsFn =
-    options.recoverOrphanedJobsFn ??
-    ((currentNamespace: string) => {
-      recoverOrphanedJobs(progressStore, currentNamespace, log, eventBus);
-    });
   const cleanupStaleJobsFn =
     options.cleanupStaleJobsFn ??
     ((currentBundleHash: string) => {
-      cleanupStaleJobs(progressStore, currentBundleHash, log);
+      cleanupStaleJobs(progressStore, currentBundleHash, log, runtime.storage);
     });
   const markJobsAsErrorFn =
     options.markJobsAsErrorFn ??
@@ -163,6 +289,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     });
   const terminateAllFn = options.terminateAllFn ?? (() => launchCoordinator.terminateAll());
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
+  const createServerFn = options.createServerFn ?? createServer;
+  const listenFn = options.listenFn ?? ((server: Server) => defaultListen(server, bindHost, advertiseHost));
+  const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? registerBuiltInProviders;
+  const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? defaultRecoverPersistedDiscuss;
 
   // Late-bound lifecycle controller — assigned after httpHandlerDeps (which
   // references abortJobs/scopeCheckJobs) but before any request-time call.
@@ -207,8 +337,10 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     const existing = services.get(key);
     if (existing) return existing;
     const created = createExecutionService(ctx, {
+      runtime,
       progressStore,
       bundleHash,
+      backendNamespace: namespace,
       providerHostManager,
       launchCoordinator,
       eventBus,
@@ -247,7 +379,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   }
 
   function getDiscussStore(projectRoot: string): DiscussSessionStore {
-    return getDiscussStoreForSource(resolveProjectSource(projectRoot));
+    return getDiscussStoreForSource(resolveProjectSourceFn(projectRoot));
   }
 
   function getDiscussContext(ctx: CallerContext): DiscussContext {
@@ -263,7 +395,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const discussReadHelpersDeps: DiscussReadHelpersDeps = {
     discussRegistry,
     getDiscussStoreForSource,
-    resolveProjectSource,
+    resolveProjectSource: resolveProjectSourceFn,
   };
 
   // -- Abort / scope helpers ------------------------------------------------
@@ -347,11 +479,13 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       namespace,
       version,
       bundleHash,
+      flavor,
       instanceId,
       token,
       now,
       log,
     },
+    runtime,
     runtimeState,
     idleTimer,
     progressStore,
@@ -359,6 +493,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     activeLaunchCount: () => launchCoordinator.active,
     queueDepth: () => launchCoordinator.queueDepth(),
     streamResponses,
+    coralEnvSnapshot,
+    resolveProjectSource: resolveProjectSourceFn,
     isDrainRequested: () => drainRequested,
     requestDrain: (reason: string) => {
       drainRequested = true;
@@ -392,7 +528,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
 
-  const server = createServer((req, res) => {
+  const server = createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {
       log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
@@ -406,6 +542,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   // -- Lifecycle wiring -----------------------------------------------------
   const lifecycleDeps: LifecycleDeps = {
     identity: httpHandlerDeps.identity,
+    runtime,
+    backendPid,
     runtimeState,
     idleTimer,
     progressStore,
@@ -427,14 +565,15 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     removeLockIfOwnerFn,
-    recoverOrphanedJobsFn,
     cleanupStaleJobsFn,
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
     createKbSubsystemFn,
+    registerBuiltInProvidersFn,
+    recoverPersistedDiscussFn,
     closeServerFn,
-    listenFn: defaultListen,
+    listenFn,
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

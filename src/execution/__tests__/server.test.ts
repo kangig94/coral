@@ -14,15 +14,16 @@ import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
 import type { ProviderServerHandle } from '../engine.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
-import { JOBS_DIR, ProgressStore, jobResultPath } from '../progress-store.js';
+import { ProgressStore } from '../progress-store.js';
 import { SessionIndex } from '../session-index.js';
-import { SessionManager } from '../session-manager.js';
+import { SessionManager, listSessionShards } from '../session-manager.js';
 import {
   discussEventLogPath,
   discussSourcesPath,
@@ -38,6 +39,7 @@ import { domainError, domainSuccess, type ToolDomainResult } from '../tool-respo
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
+import { createRealRuntime } from '../runtime.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
@@ -49,6 +51,12 @@ const mockState = vi.hoisted(() => ({
 }));
 
 const createdJobIds = new Set<string>();
+let runtime: ReturnType<typeof createRealRuntime>;
+let JOBS_DIR = '';
+
+function jobResultPath(jobId: string): string {
+  return join(JOBS_DIR, jobId, 'result.md');
+}
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -63,14 +71,6 @@ type ServerModule = typeof ServerMod;
 type BackendInfoModule = typeof BackendInfoMod;
 type BackendLockModule = typeof BackendLockMod;
 type LifecycleModule = typeof LifecycleMod;
-
-function createDeferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 type FakeExecutionService = {
   start: ReturnType<typeof vi.fn>;
@@ -107,7 +107,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
-      type: 'timeout',
+      type: 'running',
       runningJobIds: [],
     })),
     ...overrides,
@@ -200,6 +200,10 @@ function createProviderServerScript(): string {
     '  process.exit(0);',
     '});',
   ].join('');
+}
+
+function createLaunchCoordinator(): LaunchCoordinator {
+  return new LaunchCoordinator({ runtime });
 }
 
 async function _closeHttpServer(server: HttpServer): Promise<void> {
@@ -297,15 +301,17 @@ async function loadExecutionModules(): Promise<{
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
+  infraPaths: typeof import('../../infra/paths.js');
 }> {
   vi.resetModules();
-  const [serverModule, backendInfo, backendLock, lifecycleModule] = await Promise.all([
+  const [serverModule, backendInfo, backendLock, lifecycleModule, infraPaths] = await Promise.all([
     import('../server.js'),
     import('../../infra/backend-info.js'),
     import('../backend-lock.js'),
     import('../lifecycle.js'),
+    import('../../infra/paths.js'),
   ]);
-  return { serverModule, backendInfo, backendLock, lifecycleModule };
+  return { serverModule, backendInfo, backendLock, lifecycleModule, infraPaths };
 }
 
 function stubLaunchRecord(
@@ -368,6 +374,8 @@ describe('execution backend server', () => {
   const createdDiscussStores: DiscussSessionStore[] = [];
 
   beforeEach(() => {
+    runtime = createRealRuntime();
+    JOBS_DIR = runtime.paths.jobsDir();
     mkdirSync(mockState.tmpRoot, { recursive: true });
     rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
@@ -453,15 +461,19 @@ describe('execution backend server', () => {
 
   async function startBackendServer(overrides: Parameters<ServerModule['createBackendServer']>[0] = {}) {
     const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
+    const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
     controller = serverModule.createBackendServer({
-      instanceId: 'execution-backend-instance-1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+        ...bootOverrides,
+      },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
-      ...overrides,
+      ...restOverrides,
     });
     const started = await controller.start();
     return {
@@ -486,6 +498,50 @@ describe('execution backend server', () => {
     return store;
   }
 
+  it('defaults legacy backend info flavor to prod and preserves flavored writes', async () => {
+    const { backendInfo } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('backend-info-flavor');
+    const namespace = pluginRootNamespace(pluginRoot);
+
+    backendInfo.writeBackendInfo(pluginRoot, {
+      pid: process.pid,
+      port: 4100,
+      host: '127.0.0.1',
+      token: 'test-token',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'dev',
+      instanceId: 'backend-info-dev',
+      namespace,
+      startedAt: 1,
+    });
+    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
+      host: '127.0.0.1',
+      flavor: 'dev',
+      namespace,
+    });
+
+    writeFileSync(
+      backendInfo.backendInfoPath(pluginRoot),
+      JSON.stringify({
+        pid: process.pid,
+        port: 4101,
+        token: 'legacy-token',
+        version: '9.9.9',
+        bundleHash: 'legacyhash1234',
+        instanceId: 'backend-info-legacy',
+        namespace,
+        startedAt: 2,
+      }),
+      'utf-8',
+    );
+    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
+      host: '127.0.0.1',
+      flavor: 'prod',
+      namespace,
+    });
+  });
+
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
@@ -495,10 +551,12 @@ describe('execution backend server', () => {
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
+    expect(backend.started.flavor).toBe('prod');
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
       bundleHash: 'testhash1234',
+      flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
       active: 0,
       activeJobs: 0,
@@ -530,7 +588,7 @@ describe('execution backend server', () => {
   });
 
   it('includes active launches in active count', async () => {
-    const launchCoordinator = new LaunchCoordinator();
+    const launchCoordinator = createLaunchCoordinator();
     const backend = await startBackendServer({ launchCoordinator });
 
     // Simulate two active launches via restoreActiveLaunch
@@ -557,7 +615,7 @@ describe('execution backend server', () => {
       import('../../providers/claude/request-mapping.js'),
       import('../../providers/codex/request-mapping.js'),
     ]);
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     const projectRootA = createProjectRoot('provider-host-project-a');
     const projectRootB = createProjectRoot('provider-host-project-b');
     const jobIdA = 'provider-host-job-a';
@@ -603,15 +661,17 @@ describe('execution backend server', () => {
       .mockResolvedValueOnce(sharedClaudeHandle.handle)
       .mockResolvedValueOnce(codexHandleA.handle)
       .mockResolvedValueOnce(codexHandleB.handle);
-    const providerHostManager = createProviderHostManager({
+    const providerHostManager = createProviderHostManager({ runtime,
       spawnProviderServer,
     });
     controller = serverModule.createBackendServer({
-      instanceId: 'execution-backend-instance-1',
-      token: 'test-token',
-      version: '9.9.9',
-      bundleHash: 'testhash1234',
-      log: () => {},
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
       createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
       progressStore,
@@ -683,14 +743,14 @@ describe('execution backend server', () => {
     codexLeaseB.release();
   });
 
-  it('reports only matching bundleHash live jobs from /health when mixed hashes are seeded', async () => {
-    const progressStore = new ProgressStore();
+  it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
+    const progressStore = new ProgressStore('test-ns', runtime);
     const backend = await startBackendServer({
       progressStore,
     });
 
     createdJobIds.add('job-local-health');
-    createdJobIds.add('job-stale-health');
+    createdJobIds.add('job-foreign-health');
     progressStore.initJob({
       jobId: 'job-local-health',
       sessionId: 'session-local-health',
@@ -709,22 +769,22 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
     progressStore.initJob({
-      jobId: 'job-stale-health',
-      sessionId: 'session-stale-health',
+      jobId: 'job-foreign-health',
+      sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
-      bundleHash: 'oldhash9999',
+      backendNamespace: foreignBackendNamespace,
+      bundleHash: 'testhash1234',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
-      jobId: 'job-stale-health',
-      sessionId: 'session-stale-health',
+      jobId: 'job-foreign-health',
+      sessionId: 'session-foreign-health',
       provider: 'codex',
       projectRoot: '/tmp/project',
-      backendNamespace: testBackendNamespace,
+      backendNamespace: foreignBackendNamespace,
     });
-    stubRuntimeRecord(progressStore, { jobId: 'job-stale-health' });
+    stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -764,6 +824,40 @@ describe('execution backend server', () => {
     expect(initOrder).toBeDefined();
     expect(watchOrder).toBeDefined();
     expect(initOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(watchOrder ?? Number.POSITIVE_INFINITY);
+  });
+
+  it('sets the settled build flavor before KB initialization starts', async () => {
+    const { serverModule, infraPaths } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('kb-init-build-flavor');
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'testhash1234', flavor: 'dev' }),
+      'utf-8',
+    );
+
+    const createKbSubsystemFn = vi.fn(async () => {
+      expect(infraPaths.currentBuildFlavor()).toBe('dev');
+      return createMockKbSubsystem();
+    });
+
+    controller = serverModule.createBackendServer({
+      pluginRoot,
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
+      createKbSubsystemFn,
+      cleanupStaleJobsFn: () => {},
+    });
+
+    const started = await controller.start();
+
+    expect(started.flavor).toBe('dev');
+    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
   });
 
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
@@ -814,7 +908,7 @@ describe('execution backend server', () => {
   it('does not recover discuss project roots discovered only from the session index', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('session-index-only-project');
-    new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -841,7 +935,7 @@ describe('execution backend server', () => {
       throw new Error('Expected idle watcher callback');
     }
 
-    const launchCoordinator = new LaunchCoordinator();
+    const launchCoordinator = createLaunchCoordinator();
     const handle = await launchCoordinator.spawnProviderServer({
       provider: 'codex',
       command: process.execPath,
@@ -998,6 +1092,15 @@ describe('execution backend server', () => {
   });
 
   describe('resource-oriented HTTP routes', () => {
+    function currentCoralEnvSnapshot(): Record<string, string> {
+      return Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => {
+          const [key, value] = entry;
+          return key.startsWith('CORAL_') && typeof value === 'string';
+        }),
+      );
+    }
+
     function createHttpHandlerDeps(
       options: {
         kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
@@ -1026,18 +1129,22 @@ describe('execution backend server', () => {
           namespace: testBackendNamespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
           now: () => Date.now(),
           log: () => {},
         },
+        runtime: { ids: runtime.ids, time: runtime.time },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
-        progressStore: new ProgressStore(),
-        sessionIndex: new SessionIndex(),
+        progressStore: new ProgressStore('test-ns', runtime),
+        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
+        coralEnvSnapshot: currentCoralEnvSnapshot(),
+        resolveProjectSource: resolveProjectSource,
         isDrainRequested: () => false,
         requestDrain: () => {},
         getExecutionService: () => executionService as never,
@@ -2576,7 +2683,7 @@ describe('execution backend server', () => {
 
   it('streams SSE wait events and closes after terminal completion for found/missing mixes', async () => {
     const fakeService = createFakeExecutionService();
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     createdJobIds.add('job-1');
     progressStore.initJob({
       jobId: 'job-1',
@@ -2683,7 +2790,7 @@ describe('execution backend server', () => {
   });
 
   it('lists jobs and returns replayed job detail', async () => {
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     const backend = await startBackendServer({
       progressStore,
     });
@@ -2786,7 +2893,7 @@ describe('execution backend server', () => {
   describe('/api/jobs phase filter', () => {
     it('filters collection responses by phase and preserves job detail lookups', async () => {
       const fakeService = createFakeExecutionService();
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const backend = await startBackendServer({
         createExecutionService: () => fakeService as never,
         progressStore,
@@ -2909,7 +3016,7 @@ describe('execution backend server', () => {
   it('lists only authoritative in-namespace sessions from /sessions and skips corrupt entries', async () => {
     const projectRoot = createProjectRoot('session-project');
     const foreignProjectRoot = createProjectRoot('foreign-session-project');
-    const visible = new SessionManager(projectRoot).allocate({
+    const visible = new SessionManager(projectRoot, runtime).allocate({
       provider: 'codex',
       name: 'alpha',
       model: 'gpt-5',
@@ -2917,7 +3024,7 @@ describe('execution backend server', () => {
       projectRoot,
       backendNamespace: testBackendNamespace,
     });
-    new SessionManager(foreignProjectRoot).allocate({
+    new SessionManager(foreignProjectRoot, runtime).allocate({
       provider: 'codex',
       name: 'foreign',
       model: 'gpt-5',
@@ -2925,8 +3032,8 @@ describe('execution backend server', () => {
       projectRoot: foreignProjectRoot,
       backendNamespace: foreignBackendNamespace,
     });
-    new SessionManager(projectRoot).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
-    const [shardDir] = SessionManager.listShards();
+    new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
+    const [shardDir] = listSessionShards(runtime);
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
     const backend = await startBackendServer();
@@ -2952,7 +3059,7 @@ describe('execution backend server', () => {
   it('maps provider-less continuation errors on the new session routes', async () => {
     const projectRoot = createProjectRoot('continuation-project');
     const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
-    const foreign = new SessionManager(foreignProjectRoot).allocate({
+    const foreign = new SessionManager(foreignProjectRoot, runtime).allocate({
       provider: 'codex',
       name: 'foreign',
       model: 'gpt-5',
@@ -2960,7 +3067,7 @@ describe('execution backend server', () => {
       projectRoot: foreignProjectRoot,
       backendNamespace: testBackendNamespace,
     });
-    const legacy = new SessionManager(projectRoot).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
+    const legacy = new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
 
     const backend = await startBackendServer();
     const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
@@ -3045,7 +3152,7 @@ describe('execution backend server', () => {
 
   it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
     const fakeService = createFakeExecutionService();
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     createdJobIds.add('job-foreign');
     progressStore.initJob({
       jobId: 'job-foreign',
@@ -3113,31 +3220,31 @@ describe('execution backend server', () => {
   it('clears orphaned session claims across shards when the job dir is missing', async () => {
     const projectA = createProjectRoot('project-a');
     const projectB = createProjectRoot('project-b');
-    const sessionA = new SessionManager(projectA).allocate('codex', 'alpha', 'gpt-5', projectA);
-    const sessionB = new SessionManager(projectB).allocate('codex', 'beta', 'gpt-5', projectB);
+    const sessionA = new SessionManager(projectA, runtime).allocate('codex', 'alpha', 'gpt-5', projectA);
+    const sessionB = new SessionManager(projectB, runtime).allocate('codex', 'beta', 'gpt-5', projectB);
 
-    new SessionManager(projectA).claimForJobSync(sessionA.sessionId, 'missing-job-a');
-    new SessionManager(projectB).claimForJobSync(sessionB.sessionId, 'missing-job-b');
+    new SessionManager(projectA, runtime).claimForJobSync(sessionA.sessionId, 'missing-job-a');
+    new SessionManager(projectB, runtime).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
     await startBackendServer();
 
-    expect(new SessionManager(projectA).get('codex', sessionA.sessionId)).toMatchObject({
+    expect(new SessionManager(projectA, runtime).get('codex', sessionA.sessionId)).toMatchObject({
       sessionId: sessionA.sessionId,
       lastJobId: 'missing-job-a',
     });
-    expect(new SessionManager(projectA).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
+    expect(new SessionManager(projectA, runtime).get('codex', sessionA.sessionId)?.activeJobId).toBeUndefined();
 
-    expect(new SessionManager(projectB).get('codex', sessionB.sessionId)).toMatchObject({
+    expect(new SessionManager(projectB, runtime).get('codex', sessionB.sessionId)).toMatchObject({
       sessionId: sessionB.sessionId,
       lastJobId: 'missing-job-b',
     });
-    expect(new SessionManager(projectB).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
+    expect(new SessionManager(projectB, runtime).get('codex', sessionB.sessionId)?.activeJobId).toBeUndefined();
   });
 
   it('releases terminal session claims even when the referenced job dir exists', async () => {
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     const projectRoot = createProjectRoot('project-existing-job');
-    const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
     const jobId = 'completed-job';
 
     createdJobIds.add(jobId);
@@ -3149,21 +3256,21 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
     progressStore.updatePhase(jobId, 'completed');
-    new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+    new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer({ progressStore });
 
     // Terminal jobs should have their session claims released during startup recovery
-    const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+    const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
     expect(recoveredSession?.activeJobId).toBeUndefined();
     expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
   it('recovers orphaned workflow jobs with an empty artifact, workflow marker, and released session claim', async () => {
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = new SessionManager(projectRoot).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
+    const session = new SessionManager(projectRoot, runtime).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
 
     createdJobIds.add(jobId);
     progressStore.initJob({
@@ -3175,7 +3282,7 @@ describe('execution backend server', () => {
       jobKind: 'workflow',
     });
     progressStore.updatePhase(jobId, 'running');
-    new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+    new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
@@ -3192,7 +3299,7 @@ describe('execution backend server', () => {
     });
     const body = await response.text();
     const status = progressStore.readStatus(jobId);
-    const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+    const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
 
     expect(response.status).toBe(200);
     expect(body).toContain('event: terminal');
@@ -3235,7 +3342,7 @@ describe('execution backend server', () => {
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
-    const progressStore = new ProgressStore();
+    const progressStore = new ProgressStore('test-ns', runtime);
     const pluginRoot = createProjectRoot('plugin-root-foreign-drain');
     const localNamespace = pluginRootNamespace(pluginRoot);
     const foreignJobId = 'job-foreign-drain';
@@ -3370,7 +3477,7 @@ describe('execution backend server', () => {
       const { lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('handoff-app-server-finalization');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'handoff-app-server-job';
       createdJobIds.add(jobId);
 
@@ -3417,11 +3524,14 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',
           now: () => 1,
           log: () => {},
         },
+        runtime: createRealRuntime(),
+        backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
@@ -3435,7 +3545,7 @@ describe('execution backend server', () => {
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
-        launchCoordinator: new LaunchCoordinator(),
+        launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
@@ -3452,12 +3562,13 @@ describe('execution backend server', () => {
         writeBackendInfoFn: vi.fn(),
         removeBackendInfoIfOwnerFn: () => {},
         removeLockIfOwnerFn: () => {},
-        recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
       });
@@ -3582,11 +3693,13 @@ describe('execution backend server', () => {
       const startupRegistry = createDiscussContextRegistry();
 
       controller = serverModule.createBackendServer({
-        instanceId: 'execution-backend-instance-1',
-        token: 'test-token',
-        version: '9.9.9',
-        bundleHash: 'testhash1234',
-        log: () => {},
+        bootSnapshot: {
+          instanceId: 'execution-backend-instance-1',
+          token: 'test-token',
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          log: () => {},
+        },
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
@@ -3643,7 +3756,7 @@ describe('execution backend server', () => {
       const { backendInfo, lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('lifecycle-publish-order');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'queued-adoption-before-publish';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -3690,11 +3803,14 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-1',
           token: 'test-token',
           now: () => 1,
           log: () => {},
         },
+        runtime: createRealRuntime(),
+        backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
@@ -3703,7 +3819,7 @@ describe('execution backend server', () => {
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
-        launchCoordinator: new LaunchCoordinator(),
+        launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
@@ -3720,12 +3836,13 @@ describe('execution backend server', () => {
         writeBackendInfoFn,
         removeBackendInfoIfOwnerFn: () => {},
         removeLockIfOwnerFn: () => {},
-        recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
       });
@@ -3752,7 +3869,7 @@ describe('execution backend server', () => {
       const { lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('startup-app-server-recovery');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'startup-app-server-job';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -3806,11 +3923,14 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-app-server',
           token: 'test-token',
           now: () => 1,
           log: () => {},
         },
+        runtime: createRealRuntime(),
+        backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
@@ -3819,7 +3939,7 @@ describe('execution backend server', () => {
         discussStores: new Map(),
         discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
-        launchCoordinator: new LaunchCoordinator(),
+        launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
@@ -3836,12 +3956,13 @@ describe('execution backend server', () => {
         writeBackendInfoFn: vi.fn(),
         removeBackendInfoIfOwnerFn: () => {},
         removeLockIfOwnerFn: () => {},
-        recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4103, host: '127.0.0.1' }),
       });
@@ -3872,7 +3993,7 @@ describe('execution backend server', () => {
       const resumeLoopSpy = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
       const pluginRoot = createProjectRoot('startup-interrupted-during-adoption');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'running-adoption-job';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -3948,11 +4069,14 @@ describe('execution backend server', () => {
           namespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'lifecycle-instance-2',
           token: 'test-token',
           now: () => 1,
           log: () => {},
         },
+        runtime: createRealRuntime(),
+        backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
@@ -3961,7 +4085,7 @@ describe('execution backend server', () => {
         discussStores: new Map([[source, store]]),
         discussRegistry,
         eventBus: new TypedEventBus(),
-        launchCoordinator: new LaunchCoordinator(),
+        launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
         server: createServer(),
         getExecutionService: () => fakeService as never,
@@ -3980,12 +4104,13 @@ describe('execution backend server', () => {
         writeBackendInfoFn,
         removeBackendInfoIfOwnerFn: () => {},
         removeLockIfOwnerFn: () => {},
-        recoverOrphanedJobsFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
         terminateAllFn: () => {},
         providerHostManager: providerHostManager as never,
         createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4101, host: '127.0.0.1' }),
       });
@@ -4006,6 +4131,15 @@ describe('execution backend server', () => {
   });
 
   describe('launch fence', () => {
+    function currentCoralEnvSnapshot(): Record<string, string> {
+      return Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => {
+          const [key, value] = entry;
+          return key.startsWith('CORAL_') && typeof value === 'string';
+        }),
+      );
+    }
+
     async function startFencedToolServer() {
       const { createHttpHandler } = await import('../http-handler.js');
       const { runtimeState } = createRuntimeStateMock();
@@ -4023,18 +4157,22 @@ describe('execution backend server', () => {
           namespace: testBackendNamespace,
           version: '9.9.9',
           bundleHash: 'testhash1234',
+          flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
           now: () => Date.now(),
           log: () => {},
         },
+        runtime: { ids: runtime.ids, time: runtime.time },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
-        progressStore: new ProgressStore(),
-        sessionIndex: new SessionIndex(),
+        progressStore: new ProgressStore('test-ns', runtime),
+        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
+        coralEnvSnapshot: currentCoralEnvSnapshot(),
+        resolveProjectSource: resolveProjectSource,
         isDrainRequested: () => false,
         requestDrain: () => {},
         getExecutionService: () => createFakeExecutionService() as never,
@@ -4114,10 +4252,10 @@ describe('execution backend server', () => {
 
   describe('recovery scan', () => {
     it('classifies old-format jobs as incompatible', async () => {
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'old-format-job';
       const projectRoot = createProjectRoot('old-format-project');
-      const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
       // Create a job with live phase (running) but NO launch.json — old format
@@ -4130,7 +4268,7 @@ describe('execution backend server', () => {
         initialPhase: 'running',
       });
       // Do NOT write launch.json — this is the old-format marker
-      new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+      new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
       const _backend = await startBackendServer({ progressStore });
 
@@ -4145,15 +4283,15 @@ describe('execution backend server', () => {
       });
 
       // Session claim should be released
-      const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+      const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
     });
 
     it('marks ghost launch jobs as error when runtime.json was never written', async () => {
-      const progressStore = new ProgressStore();
+      const progressStore = new ProgressStore('test-ns', runtime);
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');
-      const session = new SessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -4171,7 +4309,7 @@ describe('execution backend server', () => {
         projectRoot,
         backendNamespace: testBackendNamespace,
       });
-      new SessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+      new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
       const backend = await startBackendServer({ progressStore });
 
@@ -4185,7 +4323,7 @@ describe('execution backend server', () => {
         },
       });
 
-      const recoveredSession = new SessionManager(projectRoot).get('codex', session.sessionId);
+      const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
       await backend.controller.shutdown('test');
       await backend.controller.waitForShutdown();

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
-import { readBundleHash } from '../../shared/utils.js';
+import { readBuildFlavor, readBundleHash } from '../../shared/utils.js';
 
 const tempRoots: string[] = [];
 
@@ -39,6 +39,30 @@ describe('client namespace isolation', () => {
 
     expect(readBundleHash(rootA)).toBe('bundle-a');
     expect(readBundleHash(rootB)).toBe('bundle-b');
+  });
+
+  it('reads build flavor from manifest and fails open to prod', () => {
+    const devRoot = createPluginRoot('coral-flavor-dev');
+    const prodRoot = createPluginRoot('coral-flavor-prod');
+    const missingRoot = createPluginRoot('coral-flavor-missing');
+    const corruptRoot = createPluginRoot('coral-flavor-corrupt');
+
+    writeFileSync(
+      join(devRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'bundle-dev', flavor: 'dev' }),
+      'utf-8',
+    );
+    writeFileSync(
+      join(prodRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'bundle-prod', flavor: 'prod' }),
+      'utf-8',
+    );
+    writeFileSync(join(corruptRoot, 'bridge', 'manifest.json'), '{not-json', 'utf-8');
+
+    expect(readBuildFlavor(devRoot)).toBe('dev');
+    expect(readBuildFlavor(prodRoot)).toBe('prod');
+    expect(readBuildFlavor(missingRoot)).toBe('prod');
+    expect(readBuildFlavor(corruptRoot)).toBe('prod');
   });
 
   it('matches the namespace hashing algorithm', () => {

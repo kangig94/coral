@@ -893,8 +893,8 @@ describe('client http-client', () => {
           'event: progress',
           'data: {"type":"progress","jobId":"job-1","sessionId":"session-1","eventId":1,"message":"working"}',
           '',
-          'event: timeout',
-          'data: {"type":"timeout","runningJobIds":["job-1"]}',
+          'event: running',
+          'data: {"type":"running","runningJobIds":["job-1"]}',
           '',
         ].join('\n'),
       ),
@@ -917,7 +917,7 @@ describe('client http-client', () => {
       message: 'working',
     });
     expect(second.value).toEqual({
-      type: 'timeout',
+      type: 'running',
       runningJobIds: ['job-1'],
     });
     expect(done.done).toBe(true);

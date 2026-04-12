@@ -36,7 +36,7 @@ export type DiscussAbortResult = {
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
-type WaitTimeoutEvent = Extract<WaitStreamEvent, { type: 'timeout' }>;
+type WaitRunningEvent = Extract<WaitStreamEvent, { type: 'running' }>;
 type KbReadDisplayResult = KbReadResult & { age?: string };
 
 export type SessionListResult = {
@@ -489,10 +489,10 @@ export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | nu
   ]);
 }
 
-export function formatWaitTimeout(event: WaitTimeoutEvent, cursor: string | null): string {
-  const running = event.runningJobIds.length > 0 ? event.runningJobIds.join(', ') : 'none';
+export function formatWaitRunning(event: WaitRunningEvent, cursor: string | null): string {
+  const jobs = event.runningJobIds.length > 0 ? event.runningJobIds.join(', ') : 'none';
 
-  return appendCursor(`Wait timed out; running jobs: ${running}`, cursor);
+  return appendCursor(`Still running; jobs: ${jobs}`, cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {

@@ -1,6 +1,6 @@
 # Configuration
 
-Environment variables, plugin metadata, hooks, and runtime state for the current Coral runtime.
+Environment variables, plugin metadata, hooks, and flavor-aware runtime state for the current Coral runtime.
 
 ## Environment Variables
 
@@ -18,7 +18,8 @@ Environment variables, plugin metadata, hooks, and runtime state for the current
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Auto-prune window for completed discuss sessions |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
-| `CORAL_KB_PATH` | `~/.coral/kb` | KB storage override |
+| `CORAL_FLAVOR` | `prod` when unset | Session-level hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity |
+| `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
 | `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
@@ -29,11 +30,14 @@ Environment variables, plugin metadata, hooks, and runtime state for the current
 ### Shell Usage
 
 ```bash
+export CORAL_FLAVOR=dev
 export CORAL_CODEX_MODEL=gpt-5.4
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CORAL_KB_PATH=/path/to/my-kb
 ```
+
+Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`.
 
 ### `.claude/settings.json`
 
@@ -77,6 +81,19 @@ Claude Code plugin manifest. Relevant fields:
 
 The manifest is limited to plugin metadata and the skill path. Transport registration is not part of the manifest.
 
+### `bridge/manifest.json`
+
+Build manifest written by `scripts/build-server.mjs`:
+
+```json
+{
+  "bundleHash": "<backend-bundle-hash>",
+  "flavor": "prod"
+}
+```
+
+`bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev.
+
 ### `hooks/hooks.json`
 
 Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, and Stop. See [Hooks](./hooks.md) for behavior details.
@@ -87,8 +104,8 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/coral/backend.json` | Backend connection info (host, port, token, namespace, bundle hash) |
-| `~/.claude/coral/backend.lock` | Singleton backend lock |
+| `~/.claude/coral/backend.json` | Backend connection info (host, port, token, namespace, bundle hash, flavor) |
+| `~/.claude/coral/backend.lock` | Install-scoped singleton lock record; flavor participates in reuse/replacement decisions |
 
 ### Session state
 
@@ -106,6 +123,12 @@ Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact,
 - `event-log.jsonl`: authoritative event stream
 - `state.json`: derived snapshot
 - `discovery.json` / `summary-index.json`: source-scoped indexes
+
+### KB state
+
+- Markdown root defaults: `~/.coral/kb/` for prod, `~/.coral/kb-dev/` for dev
+- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data/kb-dev/` for dev
+- `CORAL_KB_PATH` still overrides the markdown root only
 
 ### Job state
 
@@ -144,15 +167,16 @@ hooks/hooks.json                               -> hook registration
 bridge/coral-backend.cjs                       -> backend daemon bundle
 bridge/coral-cli.cjs                           -> CLI bundle
 bridge/coral-claude-appserver.cjs              -> Claude appserver helper bundle
-bridge/manifest.json                           -> backend bundle hash
+bridge/manifest.json                           -> backend bundle hash + build flavor
 
-~/.claude/coral/backend.json                   -> live backend connection info
-~/.claude/coral/backend.lock                   -> backend singleton lock
+~/.claude/coral/backend.json                   -> live backend connection info including flavor
+~/.claude/coral/backend.lock                   -> backend singleton lock including flavor checks
 ~/.claude/coral/sessions/<project-hash>/*.json -> persisted provider sessions
 <os-tmpdir>/coral-jobs/<jobId>/                -> job state and result artifacts
 ~/.coral/projects/<source-slug>/discuss/       -> discuss storage
 ~/.coral/.env                                  -> embedding config
-~/.coral/data/kb/                              -> KB storage
+~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
+~/.coral/data/kb/ or ~/.coral/data/kb-dev/     -> KB runtime storage by flavor
 ```
 
-The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles.
+The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

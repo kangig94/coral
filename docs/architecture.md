@@ -2,6 +2,8 @@
 
 Coral is a local CLI + HTTP system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. `coral-cli` ensures the backend daemon is running, sends JSON requests over localhost HTTP, and streams job updates over SSE. No bridge or stdio proxy remains in the runtime path.
 
+Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
+
 ## Runtime Layout
 
 ```text
@@ -164,6 +166,6 @@ src/shared/utils.ts and src/shared/types.ts
 | `<os-tmpdir>/coral-jobs/<jobId>/` | Job status, progress log, result artifact |
 | `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
 | `~/.coral/.env` | User-local embedding configuration |
-| `~/.coral/data/kb/` | KB text/vector state and imported sources |
+| `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB text/vector state and imported sources |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.

@@ -46,7 +46,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitTimeout,
+  formatWaitRunning,
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
@@ -494,13 +494,13 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
             case 'terminal':
               formatted = formatWaitTerminal(event, cursor, embed);
               break;
-            case 'timeout':
-              formatted = formatWaitTimeout(event, cursor);
+            case 'running':
+              formatted = formatWaitRunning(event, cursor);
               break;
           }
 
           process.stdout.write(renderWaitLine(formatted, ctx));
-          if ((event.type === 'terminal' || event.type === 'timeout') && ctx.isTTY) {
+          if ((event.type === 'terminal' || event.type === 'running') && ctx.isTTY) {
             process.stdout.write('\n');
           }
         }

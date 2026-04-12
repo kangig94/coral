@@ -24,27 +24,12 @@ import { readCurateState, writeCurateState, type CurateState } from '../curate/s
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../types.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 
 type NoteCurateClaimedEntry = Extract<CurateClaimedEntry, { kind: 'note' }>;
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-};
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-  return { promise, resolve, reject };
-}
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {

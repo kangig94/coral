@@ -1,22 +1,28 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
+import type { RuntimeStoragePort } from '../execution/runtime.js';
 
 export type FileTailChunk = {
   lines: string[];
   newOffset: number;
 };
 
-export function readAppendedLines(path: string, fromOffset: number): FileTailChunk {
+export function readAppendedLines(
+  path: string,
+  fromOffset: number,
+  storage?: Pick<RuntimeStoragePort, 'statSync' | 'openSync' | 'readSync' | 'closeSync'>,
+): FileTailChunk {
+  const reader = storage ?? { statSync, openSync, readSync, closeSync };
   try {
-    const stats = statSync(path);
+    const stats = reader.statSync(path);
     if (stats.size <= fromOffset) {
       return { lines: [], newOffset: fromOffset };
     }
 
     const byteLength = stats.size - fromOffset;
-    const fd = openSync(path, 'r');
+    const fd = reader.openSync(path, 'r');
     try {
       const buffer = Buffer.alloc(byteLength);
-      const bytesRead = readSync(fd, buffer, 0, byteLength, fromOffset);
+      const bytesRead = reader.readSync(fd, buffer, 0, byteLength, fromOffset);
       if (bytesRead <= 0) {
         return { lines: [], newOffset: fromOffset };
       }
@@ -38,7 +44,7 @@ export function readAppendedLines(path: string, fromOffset: number): FileTailChu
         newOffset: fromOffset + lastNewlineIndex + 1,
       };
     } finally {
-      closeSync(fd);
+      reader.closeSync(fd);
     }
   } catch {
     return { lines: [], newOffset: fromOffset };

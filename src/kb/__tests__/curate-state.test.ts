@@ -11,6 +11,7 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
+  CURATE_STATE_FILE,
   CURATE_STATE_MIGRATION_VERSION,
   curateStatePath,
   extractMalformedEntryRepair,
@@ -805,6 +806,43 @@ describe('curate state', () => {
         initialized: true,
         migrationVersion: CURATE_STATE_MIGRATION_VERSION,
         lastRunDay: '2026-03-25',
+      }),
+    );
+  });
+
+  it('ignores legacy markdown-root curate-state files when runtime state is isolated elsewhere', async () => {
+    const markdownRoot = join(tempDir, 'markdown-root');
+    const runtimeDir = join(tempDir, 'runtime-root');
+    const splitRuntime = createKbRuntime({
+      markdownRoot,
+      runtimeDir,
+    });
+    const splitScheduler = createCurateScheduler({
+      kb: splitRuntime,
+      spawnCli: noopSpawnCli,
+    });
+    const splitInternals = splitScheduler._testInternals!;
+
+    mkdirSync(markdownRoot, { recursive: true });
+    writeFileSync(
+      join(markdownRoot, CURATE_STATE_FILE),
+      JSON.stringify(
+        createCurateState({
+          processedThrough: cursor('stale-shared-state', 99),
+          lastRunDay: '2026-03-25',
+          initialized: true,
+        }),
+      ),
+      'utf-8',
+    );
+
+    await splitInternals.migrateCurateStateIfNeeded();
+
+    expect(existsSync(join(markdownRoot, CURATE_STATE_FILE))).toBe(true);
+    expect(readCurateState(splitRuntime)).toEqual(
+      createCurateState({
+        initialized: true,
+        migrationVersion: CURATE_STATE_MIGRATION_VERSION,
       }),
     );
   });

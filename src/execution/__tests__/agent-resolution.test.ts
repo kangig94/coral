@@ -13,6 +13,9 @@ import {
   resolveAgent,
   stripAgentMetadata,
 } from '../agent-resolution.js';
+import { createRealRuntime } from '../runtime.js';
+
+const runtime = createRealRuntime();
 
 const AGENT_IDENT_CASES: ReadonlyArray<
   readonly [input: string, accepted: boolean, canonicalForm: string | null]
@@ -62,6 +65,7 @@ function createContext(options: {
     projectRoot: options.projectRoot ?? makeTmpDir('agent-resolution-project-'),
     coralPluginRoot: options.coralPluginRoot ?? makeTmpDir('agent-resolution-coral-'),
     discoverPluginRoot,
+    storage: runtime.storage,
   };
 }
 

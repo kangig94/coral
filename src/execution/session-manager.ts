@@ -1,7 +1,5 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-import { pluginRootNamespace, sessionBase } from '../infra/paths.js';
+import { createHash } from 'node:crypto';
 import { backendLog } from '../shared/backend-log.js';
 import { acquireDirectoryLock } from '../shared/fs-lock.js';
 import { isValidSessionEntry } from '../shared/session-entry.js';
@@ -13,6 +11,7 @@ import type {
 } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/utils.js';
 import { TypedEventBus } from './event-bus.js';
+import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
 
 export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
@@ -33,15 +32,11 @@ export type SessionAllocateOptions = {
   controllerProfile?: SessionControllerProfile;
 };
 
-type CachedSessionLookup = {
-  shardDir: string;
-  shardStamp: number;
-  entry: SessionEntry;
-};
+type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
-function toSessionNamespace(dir: string): string {
+function toSessionNamespace(dir: string, paths: Pick<RuntimePathsPort, 'pluginRootNamespace'>): string {
   try {
-    return pluginRootNamespace(dir);
+    return paths.pluginRootNamespace(dir);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
@@ -56,9 +51,30 @@ function isValidEntry(value: unknown): value is SessionEntry {
   return true;
 }
 
+function normalizeEntry(entry: SessionEntry): SessionEntry {
+  return {
+    ...entry,
+    activeJobId: entry.activeJobId,
+  };
+}
+
+export function listSessionShards(runtime: Pick<Runtime, 'storage' | 'paths'>): string[] {
+  const sessionsRoot = runtime.paths.sessionBase();
+  try {
+    return runtime.storage
+      .readdirSync(sessionsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(sessionsRoot, entry.name));
+  } catch {
+    return [];
+  }
+}
+
 export class SessionManager {
-  private static readonly shardStamps = new Map<string, number>();
-  private static readonly sessionLookupCache = new Map<string, CachedSessionLookup>();
+  private readonly storage: RuntimeStoragePort;
+  private readonly paths: RuntimePathsPort;
+  private readonly time: RuntimeTimePort;
+  private readonly ids: RuntimeIdsPort;
   private readonly sessionDir: string;
   private readonly eventBus: TypedEventBus;
   private readonly cache = new Map<string, SessionEntry>();
@@ -66,55 +82,24 @@ export class SessionManager {
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string, eventBus: TypedEventBus = new TypedEventBus(), isRawShardPath = false) {
-    this.sessionDir = isRawShardPath ? workingDirectory : join(sessionBase(), toSessionNamespace(workingDirectory));
-    this.eventBus = eventBus;
+  constructor(workingDirectory: string, runtime: SessionRuntime, eventBus?: TypedEventBus, isRawShardPath = false) {
+    this.storage = runtime.storage;
+    this.paths = runtime.paths;
+    this.time = runtime.time;
+    this.ids = runtime.ids;
+    this.sessionDir = isRawShardPath
+      ? workingDirectory
+      : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths));
+    this.eventBus = eventBus ?? new TypedEventBus();
     if (!isRawShardPath) {
-      mkdirSync(this.sessionDir, { recursive: true });
+      this.storage.mkdirSync(this.sessionDir, { recursive: true });
     }
-    this.shardStamp = SessionManager.ensureShardStamp(this.sessionDir);
+    this.shardStamp = this.readShardStamp();
   }
 
   /** Open an existing shard directory without creating it (recovery path). */
-  static openShard(shardDir: string, eventBus: TypedEventBus = new TypedEventBus()): SessionManager {
-    return new SessionManager(shardDir, eventBus, true);
-  }
-
-  static listShards(): string[] {
-    const sessionsRoot = sessionBase();
-    try {
-      return readdirSync(sessionsRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => join(sessionsRoot, entry.name));
-    } catch {
-      return [];
-    }
-  }
-
-  static getById(sessionId: string): SessionEntry | null {
-    const cached = SessionManager.sessionLookupCache.get(sessionId);
-    if (cached) {
-      const currentStamp = SessionManager.ensureShardStamp(cached.shardDir);
-      if (currentStamp === cached.shardStamp) {
-        return { ...cached.entry };
-      }
-
-      const refreshed = SessionManager.openShard(cached.shardDir).readEntry(sessionId, { forceFresh: true });
-      if (refreshed !== null) {
-        return refreshed;
-      }
-
-      SessionManager.clearLookupCache(sessionId, cached.shardDir);
-    }
-
-    for (const shardDir of SessionManager.listShards()) {
-      const entry = SessionManager.openShard(shardDir).readEntry(sessionId, { forceFresh: true });
-      if (entry !== null) {
-        return entry;
-      }
-    }
-
-    return null;
+  static openShard(shardDir: string, runtime: SessionRuntime, eventBus?: TypedEventBus): SessionManager {
+    return new SessionManager(shardDir, runtime, eventBus, true);
   }
 
   private sessionPath(sessionId: string): string {
@@ -125,40 +110,16 @@ export class SessionManager {
     return join(this.sessionDir, `${sessionId}.lock`);
   }
 
-  private static ensureShardStamp(sessionDir: string): number {
-    const current = SessionManager.shardStamps.get(sessionDir);
-    if (current !== undefined) return current;
-    SessionManager.shardStamps.set(sessionDir, 0);
-    return 0;
-  }
-
-  private static bumpShardStamp(sessionDir: string): number {
-    const next = SessionManager.ensureShardStamp(sessionDir) + 1;
-    SessionManager.shardStamps.set(sessionDir, next);
-    return next;
-  }
-
-  private static cacheLookupEntry(shardDir: string, entry: SessionEntry): void {
-    SessionManager.sessionLookupCache.set(entry.sessionId, {
-      shardDir,
-      shardStamp: SessionManager.ensureShardStamp(shardDir),
-      entry: { ...entry },
-    });
-  }
-
-  private static clearLookupCache(sessionId: string, shardDir?: string): void {
-    const cached = SessionManager.sessionLookupCache.get(sessionId);
-    if (!cached) return;
-    if (shardDir !== undefined && cached.shardDir !== shardDir) return;
-    SessionManager.sessionLookupCache.delete(sessionId);
-  }
-
   private async acquireSessionLock(sessionId: string, timeoutMs = 5000): Promise<() => void> {
-    return acquireDirectoryLock(this.lockPath(sessionId), timeoutMs);
+    return acquireDirectoryLock(
+      this.lockPath(sessionId),
+      { storage: this.storage, time: this.time },
+      timeoutMs,
+    );
   }
 
   private syncCacheWithShardStamp(): void {
-    const currentStamp = SessionManager.ensureShardStamp(this.sessionDir);
+    const currentStamp = this.readShardStamp();
     if (this.shardStamp === currentStamp) return;
     this.cache.clear();
     this.knownSessionIds.clear();
@@ -167,9 +128,8 @@ export class SessionManager {
   }
 
   private populateCache(sessionId: string, entry: SessionEntry): void {
-    this.cache.set(sessionId, { ...entry });
+    this.cache.set(sessionId, normalizeEntry(entry));
     this.knownSessionIds.add(sessionId);
-    SessionManager.cacheLookupEntry(this.sessionDir, entry);
   }
 
   private readEntry(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
@@ -177,23 +137,22 @@ export class SessionManager {
 
     if (!options?.forceFresh) {
       const cached = this.cache.get(sessionId);
-      if (cached) return { ...cached };
+      if (cached) return normalizeEntry(cached);
     }
 
     try {
-      const data = readFileSync(this.sessionPath(sessionId), 'utf-8');
+      const data = this.storage.readFileSync(this.sessionPath(sessionId), 'utf-8');
       const parsed: unknown = JSON.parse(data);
       if (isValidEntry(parsed)) {
-        this.populateCache(sessionId, parsed);
-        return { ...parsed };
+        const normalized = normalizeEntry(parsed);
+        this.populateCache(sessionId, normalized);
+        return normalized;
       }
       this.cache.delete(sessionId);
-      SessionManager.clearLookupCache(sessionId, this.sessionDir);
       backendLog.warn(`Session file ${sessionId}.json has unexpected shape, skipping`);
       return null;
     } catch (error: unknown) {
       this.cache.delete(sessionId);
-      SessionManager.clearLookupCache(sessionId, this.sessionDir);
       if (isNoEntryError(error)) {
         this.knownSessionIds.delete(sessionId);
         return null;
@@ -206,19 +165,17 @@ export class SessionManager {
     }
   }
 
+  readById(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
+    return this.readEntry(sessionId, options);
+  }
+
   private writeEntry(entry: SessionEntry): void {
     this.syncCacheWithShardStamp();
     const filePath = this.sessionPath(entry.sessionId);
-    const tmpPath = filePath + '.tmp';
     entry.version = (entry.version ?? 0) + 1;
-    try {
-      writeFileSync(tmpPath, JSON.stringify(entry, null, 2), 'utf-8');
-      renameSync(tmpPath, filePath);
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) return;
-      throw error;
-    }
-    this.shardStamp = SessionManager.bumpShardStamp(this.sessionDir);
+    const didWrite = this.storage.writeAtomicSync(filePath, JSON.stringify(entry, null, 2), { encoding: 'utf-8' });
+    if (!didWrite) return;
+    this.shardStamp = this.readShardStamp();
     this.populateCache(entry.sessionId, entry);
     const shardHash = basename(this.sessionDir);
     this.eventBus.emit('session:updated', {
@@ -243,7 +200,7 @@ export class SessionManager {
     if (typeof optionsOrProvider === 'string') {
       options = {
         provider: optionsOrProvider,
-        name: name ?? `session-${Date.now()}`,
+        name: name ?? `session-${this.time.now()}`,
         model,
         cwd: cwd ?? '',
         ...(projectRoot !== undefined ? { projectRoot } : {}),
@@ -251,9 +208,9 @@ export class SessionManager {
     } else {
       options = optionsOrProvider;
     }
-    const now = nowIsoString();
+    const now = nowIsoString(this.time);
     const entry: SessionEntry = {
-      sessionId: randomUUID(),
+      sessionId: this.ids.uuid(),
       provider: options.provider,
       name: options.name,
       state: 'pending',
@@ -280,7 +237,7 @@ export class SessionManager {
     if (!entry) return;
     entry.conversationRef = conversationRef;
     entry.state = 'ready';
-    entry.lastUsedAt = nowIsoString();
+    entry.lastUsedAt = nowIsoString(this.time);
     this.writeEntry(entry);
   }
 
@@ -295,7 +252,7 @@ export class SessionManager {
       entry.conversationRef = update.conversationRef;
       entry.state = 'ready';
     }
-    entry.lastUsedAt = nowIsoString();
+    entry.lastUsedAt = nowIsoString(this.time);
     this.writeEntry(entry);
   }
 
@@ -304,7 +261,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry) return;
     entry.state = 'non_resumable';
-    entry.lastUsedAt = nowIsoString();
+    entry.lastUsedAt = nowIsoString(this.time);
     this.writeEntry(entry);
   }
 
@@ -315,7 +272,7 @@ export class SessionManager {
       if (!entry || entry.activeJobId) return false;
       if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
       entry.activeJobId = jobId;
-      entry.lastUsedAt = nowIsoString();
+      entry.lastUsedAt = nowIsoString(this.time);
       this.writeEntry(entry);
       return true;
     } finally {
@@ -341,7 +298,7 @@ export class SessionManager {
 
       entry.activeJobId = undefined;
       entry.lastJobId = expectedActiveJobId;
-      entry.lastUsedAt = nowIsoString();
+      entry.lastUsedAt = nowIsoString(this.time);
       if (mutation.providerContinuity) {
         entry.providerContinuity = mutation.providerContinuity;
       }
@@ -381,7 +338,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
     entry.activeJobId = jobId;
-    entry.lastUsedAt = nowIsoString();
+    entry.lastUsedAt = nowIsoString(this.time);
     this.writeEntry(entry);
     return true;
   }
@@ -392,13 +349,13 @@ export class SessionManager {
     if (!entry || entry.activeJobId !== jobId) return;
     entry.activeJobId = undefined;
     entry.lastJobId = jobId;
-    entry.lastUsedAt = nowIsoString();
+    entry.lastUsedAt = nowIsoString(this.time);
     this.writeEntry(entry);
   }
 
   /** Provider-scoped lookup. Returns null if sessionId not found or provider mismatch. */
   get(provider: string, sessionId: string): SessionEntry | null {
-    const entry = this.readEntry(sessionId);
+    const entry = this.readEntry(sessionId, { forceFresh: true });
     if (!entry || entry.provider !== provider) return null;
     return entry;
   }
@@ -413,7 +370,10 @@ export class SessionManager {
     }
 
     try {
-      const sessionIds = readdirSync(this.sessionDir)
+      const sessionIds = this.storage
+        .readdirSync(this.sessionDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
         .filter((file) => file.endsWith('.json'))
         .map((file) => file.slice(0, -5));
       this.knownSessionIds.clear();
@@ -429,4 +389,26 @@ export class SessionManager {
       return [];
     }
   }
+
+  private readShardStamp(): number {
+    try {
+      return this.storage.statSync(this.sessionDir).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+}
+
+export function getSessionById(
+  sessionId: string,
+  runtime: SessionRuntime,
+  eventBus?: TypedEventBus,
+): SessionEntry | null {
+  for (const shardDir of listSessionShards(runtime)) {
+    const entry = SessionManager.openShard(shardDir, runtime, eventBus).readById(sessionId, { forceFresh: true });
+    if (entry !== null) {
+      return entry;
+    }
+  }
+  return null;
 }

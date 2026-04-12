@@ -10,7 +10,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitTimeout,
+  formatWaitRunning,
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
@@ -72,9 +72,9 @@ function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { typ
         },
       };
     }
-    case 'timeout':
+    case 'running':
       return {
-        type: 'timeout',
+        type: 'running',
         runningJobIds: event.runningJobIds,
       };
   }
@@ -111,13 +111,13 @@ function emitWaitEvent(
     case 'terminal':
       line = formatWaitTerminal(event, cursor, false);
       break;
-    case 'timeout':
-      line = formatWaitTimeout(event, cursor);
+    case 'running':
+      line = formatWaitRunning(event, cursor);
       break;
   }
 
   process.stdout.write(renderWaitLine(line, renderContext));
-  if ((event.type === 'terminal' || event.type === 'timeout') && renderContext.isTTY) {
+  if ((event.type === 'terminal' || event.type === 'running') && renderContext.isTTY) {
     process.stdout.write('\n');
   }
 }
@@ -235,7 +235,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           const cursor = cursorRef.lastEventId ?? null;
           emitWaitEvent(event, cursor, options.outputFormat, renderContext);
 
-          if (event.type === 'timeout') {
+          if (event.type === 'running') {
             reconnect = true;
             break;
           }
