@@ -1,4 +1,4 @@
-import { isNoEntryError, tryExclusiveWrite } from '../shared/utils.js';
+import { isNoEntryError } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { Runtime, RuntimeStoragePort } from './runtime.js';
 
@@ -94,7 +94,7 @@ function writeLockFile(
   record: LockRecord,
   storage: Pick<BackendLockStorage, 'backendLockPath' | 'tryExclusiveWriteSync'>,
 ): boolean {
-  return tryExclusiveWrite(storage.backendLockPath(pluginRoot), JSON.stringify(record), storage);
+  return storage.tryExclusiveWriteSync(storage.backendLockPath(pluginRoot), JSON.stringify(record), { encoding: 'utf-8', mode: 0o600 });
 }
 
 function removeLockIfSnapshotMatches(

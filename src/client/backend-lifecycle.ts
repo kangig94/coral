@@ -1,14 +1,15 @@
 declare const __PLUGIN_ROOT__: string;
 declare const __VERSION__: string;
 
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../infra/paths.js';
 import { isBackendHealth, type BackendHealth } from './backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-info.js';
-import { isNoEntryError, isRecord, readBuildFlavor, readBundleHash, tryExclusiveWrite } from '../shared/utils.js';
+import { dirname } from 'node:path';
+import { isNoEntryError, isRecord, readBuildFlavor, readBundleHash } from '../shared/utils.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 
@@ -117,7 +118,17 @@ function tryAcquireReplacementLock(
     flavor,
     startedAt: Date.now(),
   });
-  if (!tryExclusiveWrite(backendLockPath(root), payload)) return null;
+  const lockPath = backendLockPath(root);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  try {
+    writeFileSync(lockPath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return null;
+    throw error;
+  }
+  if (process.platform !== 'win32') {
+    try { chmodSync(lockPath, 0o600); } catch { /* best-effort */ }
+  }
   return payload;
 }
 

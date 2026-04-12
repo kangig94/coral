@@ -4,7 +4,19 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
 import { ensureBackend } from '../backend-lifecycle.js';
-import { tryExclusiveWrite } from '../../shared/utils.js';
+import { dirname } from 'node:path';
+
+/** Client-side exclusive write (mirrors backend-lifecycle.ts logic) */
+function tryExclusiveWrite(filePath: string, payload: string): boolean {
+  mkdirSync(dirname(filePath), { recursive: true });
+  try {
+    writeFileSync(filePath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+  return true;
+}
 import { isProcessAlive } from '../../shared/node-process.js';
 
 const tempRoots: string[] = [];

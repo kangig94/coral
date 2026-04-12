@@ -177,27 +177,3 @@ export function raceTimeout(
   });
 }
 
-/**
- * Attempt an exclusive-create write: creates parent directory, writes with O_EXCL,
- * and sets mode 0o600 on non-Windows. Returns true on success, false if file already exists.
- */
-export function tryExclusiveWrite(
-  filePath: string,
-  payload: string,
-  storage?: Pick<RuntimeStoragePort, 'tryExclusiveWriteSync'>,
-): boolean {
-  if (storage) {
-    return storage.tryExclusiveWriteSync(filePath, payload, { encoding: 'utf-8', mode: 0o600 });
-  }
-  mkdirSync(dirname(filePath), { recursive: true });
-  try {
-    writeFileSync(filePath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  }
-  if (process.platform !== 'win32') {
-    chmodSync(filePath, 0o600);
-  }
-  return true;
-}
