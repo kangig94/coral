@@ -11,7 +11,7 @@ import type {
 } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/utils.js';
 import { TypedEventBus } from './event-bus.js';
-import type { Runtime, RuntimeIdsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
+import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
 
 export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
@@ -32,11 +32,11 @@ export type SessionAllocateOptions = {
   controllerProfile?: SessionControllerProfile;
 };
 
-type SessionRuntime = Pick<Runtime, 'storage' | 'time' | 'ids'>;
+type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
-function toSessionNamespace(dir: string, storage: Pick<RuntimeStoragePort, 'pluginRootNamespace'>): string {
+function toSessionNamespace(dir: string, paths: Pick<RuntimePathsPort, 'pluginRootNamespace'>): string {
   try {
-    return storage.pluginRootNamespace(dir);
+    return paths.pluginRootNamespace(dir);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
@@ -58,10 +58,10 @@ function normalizeEntry(entry: SessionEntry): SessionEntry {
   };
 }
 
-export function listSessionShards(storage: Pick<RuntimeStoragePort, 'sessionBase' | 'readdirSync'>): string[] {
-  const sessionsRoot = storage.sessionBase();
+export function listSessionShards(runtime: Pick<Runtime, 'storage' | 'paths'>): string[] {
+  const sessionsRoot = runtime.paths.sessionBase();
   try {
-    return storage
+    return runtime.storage
       .readdirSync(sessionsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => join(sessionsRoot, entry.name));
@@ -72,6 +72,7 @@ export function listSessionShards(storage: Pick<RuntimeStoragePort, 'sessionBase
 
 export class SessionManager {
   private readonly storage: RuntimeStoragePort;
+  private readonly paths: RuntimePathsPort;
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
   private readonly sessionDir: string;
@@ -83,11 +84,12 @@ export class SessionManager {
 
   constructor(workingDirectory: string, runtime: SessionRuntime, eventBus?: TypedEventBus, isRawShardPath = false) {
     this.storage = runtime.storage;
+    this.paths = runtime.paths;
     this.time = runtime.time;
     this.ids = runtime.ids;
     this.sessionDir = isRawShardPath
       ? workingDirectory
-      : join(this.storage.sessionBase(), toSessionNamespace(workingDirectory, this.storage));
+      : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths));
     this.eventBus = eventBus ?? new TypedEventBus();
     if (!isRawShardPath) {
       this.storage.mkdirSync(this.sessionDir, { recursive: true });
@@ -402,7 +404,7 @@ export function getSessionById(
   runtime: SessionRuntime,
   eventBus?: TypedEventBus,
 ): SessionEntry | null {
-  for (const shardDir of listSessionShards(runtime.storage)) {
+  for (const shardDir of listSessionShards(runtime)) {
     const entry = SessionManager.openShard(shardDir, runtime, eventBus).readById(sessionId, { forceFresh: true });
     if (entry !== null) {
       return entry;

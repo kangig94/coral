@@ -102,6 +102,7 @@ describe('backend-lock', () => {
     await acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
       env: { pid: () => 222 } as never,
       storage: storage as never,
+      paths: storage as never,
       time: time as never,
       verifyOwnership,
     });
@@ -128,6 +129,7 @@ describe('backend-lock', () => {
       acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
         env: { pid: () => 222 } as never,
         storage: storage as never,
+        paths: storage as never,
         time: time as never,
         verifyOwnership: vi.fn<VerifyBackendOwnershipFn>().mockResolvedValue('healthy'),
       }),
@@ -141,7 +143,7 @@ describe('backend-lock', () => {
     const pluginRoot = '/plugin-root';
     storage.writeLock(pluginRoot, makeLockRecord({ instanceId: 'owner-a' }));
 
-    removeLockIfOwner(pluginRoot, 'owner-a', storage as never);
+    removeLockIfOwner(pluginRoot, 'owner-a', storage as never, storage as never);
     expect(storage.readLock(pluginRoot)).toBeNull();
   });
 });

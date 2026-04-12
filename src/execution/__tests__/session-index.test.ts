@@ -52,11 +52,11 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-hydrate',
     });
-    const [shardDir] = listSessionShards(runtime.storage);
+    const [shardDir] = listSessionShards(runtime);
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
     const index = new SessionIndex(runtime);
-    index.hydrate(listSessionShards(runtime.storage));
+    index.hydrate(listSessionShards(runtime));
 
     expect(index.listAll()).toEqual([
       {
@@ -86,10 +86,10 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-invalidate',
     });
-    const [shardDir] = listSessionShards(runtime.storage);
+    const [shardDir] = listSessionShards(runtime);
 
     const index = new SessionIndex(runtime);
-    index.hydrate(listSessionShards(runtime.storage));
+    index.hydrate(listSessionShards(runtime));
 
     manager.claimForJobSync(session.sessionId, 'job-1');
     index.invalidate(basename(shardDir), session.sessionId);
@@ -118,10 +118,10 @@ describe('execution SessionIndex', () => {
       projectRoot,
       backendNamespace: 'ns-delete',
     });
-    const [shardDir] = listSessionShards(runtime.storage);
+    const [shardDir] = listSessionShards(runtime);
 
     const index = new SessionIndex(runtime);
-    index.hydrate(listSessionShards(runtime.storage));
+    index.hydrate(listSessionShards(runtime));
 
     writeFileSync(join(shardDir, `${session.sessionId}.json`), '{not-json', 'utf-8');
     index.reread(basename(shardDir), session.sessionId);
@@ -169,7 +169,7 @@ describe('execution SessionIndex', () => {
     manager.claimForJobSync(foreign.sessionId, 'job-foreign');
     manager.claimForJobSync(legacy.sessionId, 'job-legacy');
 
-    const [shardDir] = listSessionShards(runtime.storage);
+    const [shardDir] = listSessionShards(runtime);
     writeFileSync(
       join(shardDir, `${legacy.sessionId}.json`),
       JSON.stringify(
@@ -209,7 +209,7 @@ describe('execution SessionIndex', () => {
     });
 
     const index = new SessionIndex(runtime);
-    index.hydrate(listSessionShards(runtime.storage));
+    index.hydrate(listSessionShards(runtime));
 
     expect(
       index
@@ -241,7 +241,7 @@ describe('execution SessionIndex', () => {
     });
 
     const index = new SessionIndex(runtime);
-    index.hydrate(listSessionShards(runtime.storage));
+    index.hydrate(listSessionShards(runtime));
 
     const projectRootB = createProjectRoot('shard-b');
     const sessionB = new SessionManager(projectRootB, runtime).allocate({
@@ -255,7 +255,7 @@ describe('execution SessionIndex', () => {
 
     // Simulate event-driven shard discovery (refreshIndex no longer scans unconditionally)
     // Find the new shard by diffing listShards against known shards
-    for (const shardDir of listSessionShards(runtime.storage)) {
+    for (const shardDir of listSessionShards(runtime)) {
       const shardHash = basename(shardDir);
       if (!index.hasShard(shardHash)) {
         index.discoverShard(shardHash);

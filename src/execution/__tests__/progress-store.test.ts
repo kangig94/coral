@@ -26,7 +26,7 @@ const mockState = vi.hoisted(() => ({
 }));
 let eventBus: TypedEventBus;
 const runtime = createRealRuntime();
-const JOBS_DIR = runtime.storage.jobsDir();
+const JOBS_DIR = runtime.paths.jobsDir();
 
 function createStore(bus: TypedEventBus = eventBus): ProgressStore {
   return new ProgressStore(TEST_BACKEND_NAMESPACE, bus, runtime);

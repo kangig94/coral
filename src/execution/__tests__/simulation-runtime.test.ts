@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SessionManager } from '../session-manager.js';
 import {
+  InMemoryPaths,
   InMemoryStorage,
   SealedEnv,
   SequentialIds,
@@ -67,6 +68,7 @@ describe('simulation runtime', () => {
   it('provides in-memory storage with atomic writes, exclusive writes, snapshot/restore, and deterministic paths', () => {
     const time = new VirtualTime(1_000);
     const storage = new InMemoryStorage(time);
+    const paths = new InMemoryPaths();
     const workDir = '/tmp/sim/work';
     const filePath = join(workDir, 'alpha.txt');
     const exclusivePath = join(workDir, 'lock.json');
@@ -85,17 +87,17 @@ describe('simulation runtime', () => {
     storage.renameSync(atomicPath, join(workDir, 'renamed.json'));
 
     const entries = storage.readdirSync(workDir, { withFileTypes: true }).map((entry) => entry.name);
-    const namespace = storage.pluginRootNamespace('/tmp/sim/plugin');
-    const projectSource = storage.projectSource('/tmp/sim/project');
+    const namespace = paths.pluginRootNamespace('/tmp/sim/plugin');
+    const projectSource = paths.projectSource('/tmp/sim/project');
     expect(entries).toEqual(['alpha.txt', 'lock.json', 'renamed.json']);
     expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta'));
-    expect(storage.jobsDir()).toBe('/tmp/sim/jobs');
-    expect(storage.sessionBase()).toBe('/tmp/sim/sessions');
-    expect(storage.backendInfoPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.json`);
-    expect(storage.backendLockPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.lock`);
+    expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
+    expect(paths.sessionBase()).toBe('/tmp/sim/sessions');
+    expect(paths.backendInfoPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.json`);
+    expect(paths.backendLockPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.lock`);
     expect(namespace).toMatch(/^[0-9a-f]{12}$/);
     expect(projectSource).toMatch(/^local\/project-[0-9a-f]{8}$/);
-    expect(storage.projectSource('/tmp/sim/project')).toBe(projectSource);
+    expect(paths.projectSource('/tmp/sim/project')).toBe(projectSource);
 
     storage.restore(snapshot);
 
@@ -197,8 +199,8 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
-    expect(worldA.storage.existsSync(worldA.storage.backendLockPath(worldA.pluginRoot))).toBe(false);
-    expect(worldA.storage.existsSync(worldA.storage.backendInfoPath(worldA.pluginRoot))).toBe(true);
+    expect(worldA.storage.existsSync(worldA.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
 
     worldA.progressStore.initJob({
       jobId: 'job-a',
@@ -224,7 +226,7 @@ describe('simulation runtime', () => {
 
     await worldA.backend.shutdown('done');
     await worldA.backend.waitForShutdown();
-    expect(worldA.storage.existsSync(worldA.storage.backendInfoPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 });

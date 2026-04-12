@@ -551,7 +551,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     const sessionKey = (shardDir: string, provider: string, sessionId: string): string =>
       `${shardDir}\u0000${provider}\u0000${sessionId}`;
 
-    for (const shardDir of listSessionShards(runtime.storage)) {
+    for (const shardDir of listSessionShards(runtime)) {
       try {
         const sessionManager = SessionManager.openShard(shardDir, runtime, eventBus);
         for (const sessionRef of readSessionRefs(shardDir, runtime.storage)) {
@@ -1006,7 +1006,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       }
       assertStartupStillActive();
       subscribeSessionIndex();
-      sessionIndex.hydrate(listSessionShards(runtime.storage));
+      sessionIndex.hydrate(listSessionShards(runtime));
 
       // Listen first so we're reachable during recovery
       const { port, host } = await listenFn(server);
@@ -1141,7 +1141,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       ownershipCheckerInterval = runtime.time.setInterval(() => {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
-          const current = readBackendInfo(pluginRoot, runtime.storage);
+          const current = readBackendInfo(pluginRoot, runtime);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it

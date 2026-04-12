@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from 'node:path';
 import { formatError, readBuildFlavor, readBundleHash } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { pluginRootNamespace, resolveProjectSource, setBuildFlavor } from '../infra/paths.js';
+import { setBuildFlavor } from '../infra/paths.js';
 import type { ExecutionService, ExecutionServiceDeps, RecoveryCapableService } from './service.js';
 import { LaunchCoordinator } from './engine.js';
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
@@ -152,10 +152,10 @@ function resolveDefaultPluginRoot(): string {
 async function verifyBackendOwnershipWithHealthcheck(
   pluginRoot: string,
   record: LockRecord,
-  runtime: Pick<Runtime, 'process' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
 ): Promise<BackendOwnershipState> {
-  const expectedNamespace = runtime.storage.pluginRootNamespace(pluginRoot);
-  const info = readBackendInfo(pluginRoot, runtime.storage);
+  const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
+  const info = readBackendInfo(pluginRoot, runtime);
   if (!info) {
     return 'stale';
   }
@@ -205,7 +205,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   }
 }
 
-function createDefaultBackendOwnershipVerifier(runtime: Pick<Runtime, 'process' | 'storage' | 'time'>): VerifyBackendOwnershipFn {
+function createDefaultBackendOwnershipVerifier(runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>): VerifyBackendOwnershipFn {
   return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime);
 }
 
@@ -219,8 +219,8 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
   const runtime = options.runtime ?? createRealRuntime();
   const bootSnapshot = options.bootSnapshot ?? {};
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
-  const namespace = options.backendNamespace ?? pluginRootNamespace(resolvedPluginRoot);
-  const resolveProjectSourceFn = options.resolveProjectSourceFn ?? resolveProjectSource;
+  const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
+  const resolveProjectSourceFn = options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = options.version ?? bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = options.bundleHash ?? bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(resolvedPluginRoot);
@@ -271,16 +271,18 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
       acquireLock(pluginRoot, instanceId, version, currentBundleHash, currentFlavor, {
         env: runtime.env,
         storage: runtime.storage,
+        paths: runtime.paths,
         time: runtime.time,
         verifyOwnership: verifyBackendOwnershipFn,
       }));
   const writeBackendInfoFn =
-    options.writeBackendInfoFn ?? ((pluginRoot, info) => writeBackendInfo(pluginRoot, info, runtime.storage));
+    options.writeBackendInfoFn ?? ((pluginRoot, info) => writeBackendInfo(pluginRoot, info, runtime));
   const removeBackendInfoIfOwnerFn =
     options.removeBackendInfoIfOwnerFn ??
-    ((pluginRoot, instanceId) => removeBackendInfoIfOwner(pluginRoot, instanceId, runtime.storage));
+    ((pluginRoot, instanceId) => removeBackendInfoIfOwner(pluginRoot, instanceId, runtime));
   const removeLockIfOwnerFn =
-    options.removeLockIfOwnerFn ?? ((pluginRoot, instanceId) => removeLockIfOwner(pluginRoot, instanceId, runtime.storage));
+    options.removeLockIfOwnerFn ??
+    ((pluginRoot, instanceId) => removeLockIfOwner(pluginRoot, instanceId, runtime.storage, runtime.paths));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const cleanupStaleJobsFn =
     options.cleanupStaleJobsFn ??

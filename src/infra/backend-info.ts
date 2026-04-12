@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { backendInfoPath } from './paths.js';
-import type { RuntimeStoragePort } from '../execution/runtime.js';
+import type { RuntimePathsPort, RuntimeStoragePort } from '../execution/runtime.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 export { backendInfoPath } from './paths.js';
@@ -44,20 +44,22 @@ function isBackendInfo(value: unknown): value is BackendInfo {
   );
 }
 
-type BackendInfoStorage = Pick<
-  RuntimeStoragePort,
-  'backendInfoPath' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
->;
+type BackendInfoStorage = Pick<RuntimeStoragePort, 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'>;
+type BackendInfoPaths = Pick<RuntimePathsPort, 'backendInfoPath'>;
+type BackendInfoRuntime = {
+  storage: BackendInfoStorage;
+  paths: BackendInfoPaths;
+};
 
-function resolveInfoPath(pluginRoot: string, storage?: BackendInfoStorage): string {
-  return storage?.backendInfoPath(pluginRoot) ?? backendInfoPath(pluginRoot);
+function resolveInfoPath(pluginRoot: string, runtime?: BackendInfoRuntime): string {
+  return runtime?.paths.backendInfoPath(pluginRoot) ?? backendInfoPath(pluginRoot);
 }
 
-export function writeBackendInfo(pluginRoot: string, info: BackendInfo, storage?: BackendInfoStorage): void {
-  const infoPath = resolveInfoPath(pluginRoot, storage);
+export function writeBackendInfo(pluginRoot: string, info: BackendInfo, runtime?: BackendInfoRuntime): void {
+  const infoPath = resolveInfoPath(pluginRoot, runtime);
   const payload = JSON.stringify(info);
-  if (storage) {
-    storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 });
+  if (runtime) {
+    runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 });
     return;
   }
 
@@ -81,9 +83,10 @@ export function writeBackendInfo(pluginRoot: string, info: BackendInfo, storage?
   }
 }
 
-export function readBackendInfo(pluginRoot: string, storage?: BackendInfoStorage): BackendInfo | null {
+export function readBackendInfo(pluginRoot: string, runtime?: BackendInfoRuntime): BackendInfo | null {
   try {
-    const raw = storage?.readFileSync(resolveInfoPath(pluginRoot, storage), 'utf-8') ?? readFileSync(backendInfoPath(pluginRoot), 'utf-8');
+    const raw =
+      runtime?.storage.readFileSync(resolveInfoPath(pluginRoot, runtime), 'utf-8') ?? readFileSync(backendInfoPath(pluginRoot), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
@@ -99,14 +102,14 @@ export function readBackendInfo(pluginRoot: string, storage?: BackendInfoStorage
   }
 }
 
-export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string, storage?: BackendInfoStorage): void {
-  const info = readBackendInfo(pluginRoot, storage);
+export function removeBackendInfoIfOwner(pluginRoot: string, instanceId: string, runtime?: BackendInfoRuntime): void {
+  const info = readBackendInfo(pluginRoot, runtime);
   if (!info || info.instanceId !== instanceId) return;
 
   try {
-    const infoPath = resolveInfoPath(pluginRoot, storage);
-    if (storage) {
-      storage.unlinkSync(infoPath);
+    const infoPath = resolveInfoPath(pluginRoot, runtime);
+    if (runtime) {
+      runtime.storage.unlinkSync(infoPath);
     } else {
       unlinkSync(infoPath);
     }

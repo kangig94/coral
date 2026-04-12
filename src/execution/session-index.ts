@@ -2,18 +2,20 @@ import { basename, join } from 'node:path';
 import { readSessionEntryLenient, type LenientSessionEntry } from '../shared/session-entry.js';
 import type { ProgressStore } from './progress-store.js';
 import { listSessionShards } from './session-manager.js';
-import type { Runtime, RuntimeStoragePort } from './runtime.js';
+import type { Runtime, RuntimePathsPort, RuntimeStoragePort } from './runtime.js';
 
 type SessionIndexRow = { shardHash: string; sessions: LenientSessionEntry[] };
 
 export class SessionIndex {
   private readonly storage: RuntimeStoragePort;
+  private readonly paths: RuntimePathsPort;
   private readonly index = new Map<string, Map<string, LenientSessionEntry>>();
   private readonly shardDirs = new Map<string, string>();
   private readonly staleSessionIds = new Map<string, Set<string>>();
 
-  constructor(runtime: Pick<Runtime, 'storage'>) {
+  constructor(runtime: Pick<Runtime, 'storage' | 'paths'>) {
     this.storage = runtime.storage;
+    this.paths = runtime.paths;
   }
 
   hydrate(shards: string[]): void {
@@ -30,7 +32,7 @@ export class SessionIndex {
 
   discoverShard(shardHash: string): void {
     if (this.shardDirs.has(shardHash)) return;
-    const shardDir = join(this.storage.sessionBase(), shardHash);
+    const shardDir = join(this.paths.sessionBase(), shardHash);
     this.hydrateShard(shardDir);
   }
 
@@ -88,7 +90,7 @@ export class SessionIndex {
     // Shard discovery is event-driven via session:updated — no unconditional readdirSync.
     // Bootstrap guard: if index is completely empty, do a one-time full scan.
     if (this.shardDirs.size === 0) {
-      this.hydrateUnknownShards(listSessionShards(this.storage));
+      this.hydrateUnknownShards(listSessionShards({ storage: this.storage, paths: this.paths }));
     }
     for (const [shardHash, sessionIds] of this.staleSessionIds) {
       for (const sessionId of [...sessionIds]) {
@@ -137,7 +139,7 @@ export class SessionIndex {
     const known = this.shardDirs.get(shardHash);
     if (known) return known;
 
-    this.hydrateUnknownShards(listSessionShards(this.storage));
+    this.hydrateUnknownShards(listSessionShards({ storage: this.storage, paths: this.paths }));
     return this.shardDirs.get(shardHash) ?? null;
   }
 

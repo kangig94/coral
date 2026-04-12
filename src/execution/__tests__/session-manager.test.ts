@@ -377,7 +377,7 @@ describe('execution SessionManager', () => {
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
     const shardDir = resolveSessionDir(tmpHome);
 
-    expect(listSessionShards(runtime.storage)).toContain(shardDir);
+    expect(listSessionShards(runtime)).toContain(shardDir);
 
     const shardMgr = SessionManager.openShard(shardDir, runtime);
     expect(shardMgr.get('codex', entry.sessionId)).toMatchObject({

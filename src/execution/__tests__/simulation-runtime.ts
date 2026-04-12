@@ -31,6 +31,7 @@ import type {
   RuntimeDirentLike,
   RuntimeEnv,
   RuntimeIds,
+  RuntimePaths,
   RuntimeProcess,
   RuntimeSpawnOptions,
   RuntimeStorage,
@@ -170,8 +171,17 @@ export type InMemoryStorageSnapshot = {
   nextFd: number;
   openFiles: Array<[number, OpenFile]>;
   lastStamp: number;
+};
+
+export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
   projectSourceCache: Array<[string, string]>;
+};
+
+type InMemoryRoots = {
+  jobsDir?: string;
+  sessionBase?: string;
+  installationsDir?: string;
 };
 
 type RegisteredProcess = {
@@ -403,24 +413,18 @@ export class InMemoryStorage implements RuntimeStorage {
   private readonly files = new Map<string, FileNode>();
   private readonly directories = new Map<string, DirectoryNode>();
   private readonly openFiles = new Map<number, OpenFile>();
-  private readonly namespaceCache = new Map<string, string>();
-  private readonly projectSourceCache = new Map<string, string>();
   private nextFd = 100;
   private lastStamp: number;
 
   constructor(
     private readonly time: Pick<RuntimeTime, 'now'>,
-    private readonly roots: {
-      jobsDir?: string;
-      sessionBase?: string;
-      installationsDir?: string;
-    } = {},
+    private readonly roots: InMemoryRoots = {},
   ) {
     this.lastStamp = this.time.now();
     this.directories.set('/', { kind: 'dir', mtimeMs: this.nextStamp() });
-    this.mkdirSync(this.jobsDir(), { recursive: true });
-    this.mkdirSync(this.sessionBase(), { recursive: true });
-    this.mkdirSync(this.installationsDir(), { recursive: true });
+    this.mkdirSync(this.jobsDirRoot(), { recursive: true });
+    this.mkdirSync(this.sessionBaseRoot(), { recursive: true });
+    this.mkdirSync(this.installationsDirRoot(), { recursive: true });
   }
 
   snapshot(): InMemoryStorageSnapshot {
@@ -430,8 +434,6 @@ export class InMemoryStorage implements RuntimeStorage {
       nextFd: this.nextFd,
       openFiles: [...this.openFiles.entries()].map(([fd, open]) => [fd, { ...open }]),
       lastStamp: this.lastStamp,
-      namespaceCache: [...this.namespaceCache.entries()],
-      projectSourceCache: [...this.projectSourceCache.entries()],
     };
   }
 
@@ -439,8 +441,6 @@ export class InMemoryStorage implements RuntimeStorage {
     this.files.clear();
     this.directories.clear();
     this.openFiles.clear();
-    this.namespaceCache.clear();
-    this.projectSourceCache.clear();
 
     for (const [path, node] of snapshot.files) {
       this.files.set(path, cloneFileNode(node));
@@ -450,12 +450,6 @@ export class InMemoryStorage implements RuntimeStorage {
     }
     for (const [fd, open] of snapshot.openFiles) {
       this.openFiles.set(fd, { ...open });
-    }
-    for (const [key, value] of snapshot.namespaceCache) {
-      this.namespaceCache.set(key, value);
-    }
-    for (const [key, value] of snapshot.projectSourceCache) {
-      this.projectSourceCache.set(key, value);
     }
     this.nextFd = snapshot.nextFd;
     this.lastStamp = snapshot.lastStamp;
@@ -827,6 +821,74 @@ export class InMemoryStorage implements RuntimeStorage {
     throw createErrnoError('ENOENT', normalized);
   }
 
+  private jobsDirRoot(): string {
+    return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
+  }
+
+  private sessionBaseRoot(): string {
+    return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
+  }
+
+  private installationsDirRoot(): string {
+    return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
+  }
+
+  private nextStamp(): number {
+    const candidate = this.time.now();
+    this.lastStamp = Math.max(candidate, this.lastStamp + 1);
+    return this.lastStamp;
+  }
+
+  private requireDirectory(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    if (this.directories.has(normalized)) {
+      return;
+    }
+    if (this.files.has(normalized)) {
+      throw createErrnoError('ENOTDIR', normalized);
+    }
+    throw createErrnoError('ENOENT', normalized);
+  }
+
+  private touchAncestors(path: string): void {
+    let cursor = normalizePathForStorage(path);
+    while (true) {
+      const directory = this.directories.get(cursor);
+      if (directory) {
+        directory.mtimeMs = this.nextStamp();
+      }
+      if (cursor === '/') {
+        return;
+      }
+      cursor = parentPath(cursor);
+    }
+  }
+}
+
+export class InMemoryPaths implements RuntimePaths {
+  private readonly namespaceCache = new Map<string, string>();
+  private readonly projectSourceCache = new Map<string, string>();
+
+  constructor(private readonly roots: InMemoryRoots = {}) {}
+
+  snapshot(): InMemoryPathsSnapshot {
+    return {
+      namespaceCache: [...this.namespaceCache.entries()],
+      projectSourceCache: [...this.projectSourceCache.entries()],
+    };
+  }
+
+  restore(snapshot: InMemoryPathsSnapshot): void {
+    this.namespaceCache.clear();
+    this.projectSourceCache.clear();
+    for (const [key, value] of snapshot.namespaceCache) {
+      this.namespaceCache.set(key, value);
+    }
+    for (const [key, value] of snapshot.projectSourceCache) {
+      this.projectSourceCache.set(key, value);
+    }
+  }
+
   jobsDir(): string {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
@@ -867,37 +929,6 @@ export class InMemoryStorage implements RuntimeStorage {
 
   private installationsDir(): string {
     return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
-  }
-
-  private nextStamp(): number {
-    const candidate = this.time.now();
-    this.lastStamp = Math.max(candidate, this.lastStamp + 1);
-    return this.lastStamp;
-  }
-
-  private requireDirectory(path: string): void {
-    const normalized = normalizePathForStorage(path);
-    if (this.directories.has(normalized)) {
-      return;
-    }
-    if (this.files.has(normalized)) {
-      throw createErrnoError('ENOTDIR', normalized);
-    }
-    throw createErrnoError('ENOENT', normalized);
-  }
-
-  private touchAncestors(path: string): void {
-    let cursor = normalizePathForStorage(path);
-    while (true) {
-      const directory = this.directories.get(cursor);
-      if (directory) {
-        directory.mtimeMs = this.nextStamp();
-      }
-      if (cursor === '/') {
-        return;
-      }
-      cursor = parentPath(cursor);
-    }
   }
 }
 
@@ -1325,15 +1356,18 @@ export type SimulationRuntimeOptions = {
 export class SimulationRuntime implements Runtime {
   readonly time: VirtualTime;
   readonly storage: InMemoryStorage;
+  readonly paths: InMemoryPaths;
   readonly ids: SequentialIds;
   readonly env: SealedEnv;
   readonly spawner: MockProcessSpawner;
   readonly process: RuntimeProcess;
 
   constructor(options: SimulationRuntimeOptions = {}) {
+    const roots: InMemoryRoots = {};
     this.time = new VirtualTime(options.epochMs ?? DEFAULT_EPOCH_MS);
     this.env = new SealedEnv(options.env);
-    this.storage = new InMemoryStorage(this.time);
+    this.paths = new InMemoryPaths(roots);
+    this.storage = new InMemoryStorage(this.time, roots);
     this.ids = new SequentialIds();
     this.spawner = new MockProcessSpawner(this.time, this.storage);
     this.process = {
@@ -1458,6 +1492,7 @@ export type SimulationBackend = {
   runtime: SimulationRuntime;
   time: VirtualTime;
   storage: InMemoryStorage;
+  paths: InMemoryPaths;
   spawner: MockProcessSpawner;
   ids: SequentialIds;
   env: SealedEnv;
@@ -1489,7 +1524,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
   const pluginRoot = scenario.pluginRoot ?? DEFAULT_PLUGIN_ROOT;
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
-  const namespace = runtime.storage.pluginRootNamespace(pluginRoot);
+  const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
   const progressStore = new ProgressStore(namespace, eventBus, runtime);
   const launchCoordinator = new LaunchCoordinator({ runtime });
@@ -1565,7 +1600,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     eventBus,
     providerRegistry,
     providerHostManager,
-    resolveProjectSourceFn: (root) => runtime.storage.projectSource(root),
+    resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
     version: DEFAULT_VERSION,
     bundleHash: DEFAULT_BUNDLE_HASH,
     bootSnapshot: {
@@ -1592,12 +1627,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     writeBackendInfoFn: (bootPluginRoot, info) => {
       hooks.writeBackendInfoCalls.push({ pluginRoot: bootPluginRoot, info });
-      runtime.storage.mkdirSync(dirname(runtime.storage.backendInfoPath(bootPluginRoot)), { recursive: true });
-      writeBackendInfo(bootPluginRoot, info, runtime.storage);
+      runtime.storage.mkdirSync(dirname(runtime.paths.backendInfoPath(bootPluginRoot)), { recursive: true });
+      writeBackendInfo(bootPluginRoot, info, runtime);
     },
     removeBackendInfoIfOwnerFn: (bootPluginRoot, instanceId) => {
       hooks.removeBackendInfoCalls.push({ pluginRoot: bootPluginRoot, instanceId });
-      removeBackendInfoIfOwner(bootPluginRoot, instanceId, runtime.storage);
+      removeBackendInfoIfOwner(bootPluginRoot, instanceId, runtime);
     },
     removeLockIfOwnerFn: (bootPluginRoot, instanceId) => {
       hooks.removeLockCalls.push({ pluginRoot: bootPluginRoot, instanceId });
@@ -1618,6 +1653,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     runtime,
     time: runtime.time,
     storage: runtime.storage,
+    paths: runtime.paths,
     spawner: runtime.spawner,
     ids: runtime.ids,
     env: runtime.env,

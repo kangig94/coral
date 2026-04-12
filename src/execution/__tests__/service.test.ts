@@ -466,7 +466,7 @@ describe('ExecutionService', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.storage.jobsDir();
+    JOBS_DIR = runtime.paths.jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();

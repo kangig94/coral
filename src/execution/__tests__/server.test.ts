@@ -382,7 +382,7 @@ describe('execution backend server', () => {
 
   beforeEach(() => {
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.storage.jobsDir();
+    JOBS_DIR = runtime.paths.jobsDir();
     mkdirSync(mockState.tmpRoot, { recursive: true });
     rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
@@ -3032,7 +3032,7 @@ describe('execution backend server', () => {
       backendNamespace: foreignBackendNamespace,
     });
     new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
-    const [shardDir] = listSessionShards(runtime.storage);
+    const [shardDir] = listSessionShards(runtime);
     writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
 
     const backend = await startBackendServer();

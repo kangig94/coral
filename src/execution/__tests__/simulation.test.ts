@@ -156,7 +156,7 @@ describe('deterministic simulation lifecycle replay', () => {
     const detailProjectRoot = '/tmp/sim/request-source';
     completedWorld.storage.mkdirSync(detailProjectRoot, { recursive: true });
     expect(
-      completedWorld.storage
+      completedWorld.paths
         .snapshot()
         .projectSourceCache.some(([path]) => path === detailProjectRoot),
     ).toBe(false);
@@ -169,7 +169,7 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(detailResponse.statusCode).toBe(404);
     expect(detailResponse.body).toBe(JSON.stringify({ error: 'session_not_found' }));
     expect(
-      completedWorld.storage
+      completedWorld.paths
         .snapshot()
         .projectSourceCache.some(([path]) => path === detailProjectRoot),
     ).toBe(true);
@@ -251,7 +251,7 @@ describe('deterministic simulation lifecycle replay', () => {
     await completedWorld.backend.waitForShutdown();
     expect(completedWorld.backend.getLifecycle()).toBe('stopped');
     expect(
-      completedWorld.storage.existsSync(completedWorld.storage.backendInfoPath(completedWorld.pluginRoot)),
+      completedWorld.storage.existsSync(completedWorld.paths.backendInfoPath(completedWorld.pluginRoot)),
     ).toBe(false);
 
     expect(realProcessKillSpy).not.toHaveBeenCalled();

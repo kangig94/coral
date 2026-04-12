@@ -130,6 +130,9 @@ export interface RuntimeStorage {
   tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   writeAtomicSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   chmodSync(path: string, mode: number): void;
+}
+
+export interface RuntimePaths {
   jobsDir(): string;
   sessionBase(): string;
   backendInfoPath(pluginRoot: string): string;
@@ -224,10 +227,12 @@ export interface Runtime {
   process: RuntimeProcess;
   ids: RuntimeIds;
   env: RuntimeEnv;
+  paths: RuntimePaths;
 }
 
 export type RuntimeTimePort = Runtime['time'];
 export type RuntimeStoragePort = Runtime['storage'];
+export type RuntimePathsPort = Runtime['paths'];
 export type RuntimeProcessPort = Runtime['process'];
 export type RuntimeIdsPort = Runtime['ids'];
 export type RuntimeEnvPort = Runtime['env'];
@@ -285,6 +290,9 @@ export function createRealRuntime(): Runtime {
     tryExclusiveWriteSync: (path, data, options) => tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     chmodSync: (path, mode) => chmodSync(path, mode),
+  };
+
+  const paths: RuntimePaths = {
     jobsDir,
     sessionBase,
     backendInfoPath,
@@ -398,6 +406,7 @@ export function createRealRuntime(): Runtime {
     process: runtimeProcess,
     ids,
     env,
+    paths,
   };
 }
 

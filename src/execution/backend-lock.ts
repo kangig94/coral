@@ -1,6 +1,6 @@
 import { isNoEntryError } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import type { Runtime, RuntimeStoragePort } from './runtime.js';
+import type { Runtime, RuntimePathsPort, RuntimeStoragePort } from './runtime.js';
 
 export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
@@ -29,14 +29,12 @@ export type VerifyBackendOwnershipFn = (options: {
   record: LockRecord;
 }) => Promise<BackendOwnershipState>;
 
-type BackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'time'> & {
+type BackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'paths' | 'time'> & {
   verifyOwnership: VerifyBackendOwnershipFn;
 };
 
-type BackendLockStorage = Pick<
-  RuntimeStoragePort,
-  'backendLockPath' | 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'
->;
+type BackendLockStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
+type BackendLockPaths = Pick<RuntimePathsPort, 'backendLockPath'>;
 
 export class BackendAlreadyRunningError extends Error {
   constructor() {
@@ -72,9 +70,13 @@ function parseLockRecord(raw: string): LockRecord | null {
   }
 }
 
-function readLockSnapshot(pluginRoot: string, storage: Pick<BackendLockStorage, 'backendLockPath' | 'readFileSync'>): LockSnapshot | null {
+function readLockSnapshot(
+  pluginRoot: string,
+  storage: Pick<BackendLockStorage, 'readFileSync'>,
+  paths: Pick<BackendLockPaths, 'backendLockPath'>,
+): LockSnapshot | null {
   try {
-    const raw = storage.readFileSync(storage.backendLockPath(pluginRoot), 'utf-8');
+    const raw = storage.readFileSync(paths.backendLockPath(pluginRoot), 'utf-8');
     return { raw, record: parseLockRecord(raw) };
   } catch (error: unknown) {
     if (isNoEntryError(error)) return null;
@@ -92,17 +94,22 @@ function snapshotKey(snapshot: LockSnapshot): string {
 function writeLockFile(
   pluginRoot: string,
   record: LockRecord,
-  storage: Pick<BackendLockStorage, 'backendLockPath' | 'tryExclusiveWriteSync'>,
+  storage: Pick<BackendLockStorage, 'tryExclusiveWriteSync'>,
+  paths: Pick<BackendLockPaths, 'backendLockPath'>,
 ): boolean {
-  return storage.tryExclusiveWriteSync(storage.backendLockPath(pluginRoot), JSON.stringify(record), { encoding: 'utf-8', mode: 0o600 });
+  return storage.tryExclusiveWriteSync(paths.backendLockPath(pluginRoot), JSON.stringify(record), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
 }
 
 function removeLockIfSnapshotMatches(
   pluginRoot: string,
   snapshot: LockSnapshot,
-  storage: Pick<BackendLockStorage, 'backendLockPath' | 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  storage: Pick<BackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  paths: Pick<BackendLockPaths, 'backendLockPath'>,
 ): boolean {
-  const lockPath = storage.backendLockPath(pluginRoot);
+  const lockPath = paths.backendLockPath(pluginRoot);
   const stagePath = `${lockPath}.removing`;
 
   // Atomically move the lock aside, verify ownership, then delete.
@@ -167,9 +174,9 @@ export async function acquireLock(
       throw new Error('Coral backend lock acquisition timed out');
     }
 
-    if (writeLockFile(pluginRoot, record, runtime.storage)) return;
+    if (writeLockFile(pluginRoot, record, runtime.storage, runtime.paths)) return;
 
-    const snapshot = readLockSnapshot(pluginRoot, runtime.storage);
+    const snapshot = readLockSnapshot(pluginRoot, runtime.storage, runtime.paths);
     if (!snapshot) {
       observedKey = null;
       observedAt = runtime.time.now();
@@ -197,7 +204,7 @@ export async function acquireLock(
       continue;
     }
 
-    if (removeLockIfSnapshotMatches(pluginRoot, snapshot, runtime.storage)) {
+    if (removeLockIfSnapshotMatches(pluginRoot, snapshot, runtime.storage, runtime.paths)) {
       observedKey = null;
       observedAt = runtime.time.now();
       continue;
@@ -210,9 +217,10 @@ export async function acquireLock(
 export function removeLockIfOwner(
   pluginRoot: string,
   instanceId: string,
-  storage: Pick<BackendLockStorage, 'backendLockPath' | 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  storage: Pick<BackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  paths: Pick<BackendLockPaths, 'backendLockPath'>,
 ): void {
-  const lockPath = storage.backendLockPath(pluginRoot);
+  const lockPath = paths.backendLockPath(pluginRoot);
   const stagePath = `${lockPath}.removing`;
 
   // Atomically stage the lock, verify ownership, then delete.

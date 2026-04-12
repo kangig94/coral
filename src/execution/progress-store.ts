@@ -16,7 +16,7 @@ import {
 import { isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
-import type { Runtime, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
+import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';
@@ -45,13 +45,15 @@ export function createReplayCursor(): ReplayCursor {
 
 export { formatElapsed } from '../shared/format-progress.js';
 
-function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'time'> {
+function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'paths' | 'time'> {
   return (
     value !== null &&
     typeof value === 'object' &&
     'storage' in value &&
+    'paths' in value &&
     'time' in value &&
     value.storage !== null &&
+    value.paths !== null &&
     value.time !== null
   );
 }
@@ -59,6 +61,7 @@ function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'time
 export class ProgressStore {
   private readonly namespace: string;
   private readonly storage: RuntimeStoragePort;
+  private readonly paths: RuntimePathsPort;
   private readonly time: RuntimeTimePort;
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
@@ -82,16 +85,17 @@ export class ProgressStore {
    * downstream filter is required to avoid cross-namespace contamination.
    */
   // Overloads: (ns, runtime, eventBus?) is canonical; (ns, eventBus, runtime) is supported for migration compatibility.
-  constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'time'>, eventBus?: TypedEventBus);
-  constructor(namespace: string, eventBus: TypedEventBus, runtime: Pick<Runtime, 'storage' | 'time'>);
+  constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>, eventBus?: TypedEventBus);
+  constructor(namespace: string, eventBus: TypedEventBus, runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>);
   constructor(
     namespace: string,
-    arg2: TypedEventBus | Pick<Runtime, 'storage' | 'time'>,
-    arg3?: TypedEventBus | Pick<Runtime, 'storage' | 'time'>,
+    arg2: TypedEventBus | Pick<Runtime, 'storage' | 'paths' | 'time'>,
+    arg3?: TypedEventBus | Pick<Runtime, 'storage' | 'paths' | 'time'>,
   ) {
     this.namespace = namespace;
     if (isRuntimeLike(arg2)) {
       this.storage = arg2.storage;
+      this.paths = arg2.paths;
       this.time = arg2.time;
       this.eventBus = arg3 instanceof TypedEventBus ? arg3 : new TypedEventBus();
       return;
@@ -102,6 +106,7 @@ export class ProgressStore {
     }
     this.eventBus = arg2;
     this.storage = arg3.storage;
+    this.paths = arg3.paths;
     this.time = arg3.time;
   }
 
@@ -169,7 +174,7 @@ export class ProgressStore {
   }
 
   jobDir(jobId: string): string {
-    return join(this.storage.jobsDir(), jobId);
+    return join(this.paths.jobsDir(), jobId);
   }
 
   resultPath(jobId: string): string {
@@ -673,7 +678,7 @@ export class ProgressStore {
   private ensureHydrated(): void {
     if (this.hydrated) return;
     try {
-      for (const entry of this.storage.readdirSync(this.storage.jobsDir(), { withFileTypes: true })) {
+      for (const entry of this.storage.readdirSync(this.paths.jobsDir(), { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
         const record = this.readOwnedStatus(entry.name);
         if (record === undefined) continue;
