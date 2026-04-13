@@ -65,6 +65,10 @@ export function currentBuildFlavor(): 'prod' | 'dev' {
   return _buildFlavor;
 }
 
+/**
+ * Returns the KB markdown root. The directory may not exist — callers are
+ * responsible for creation.
+ */
 export function kbRoot(): string {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { DurableCliRuntimeRecord, PersistedExitRecord } from '../../../shared/types.js';
 import { nowIsoString } from '../../../shared/utils.js';
@@ -346,6 +346,18 @@ export class MockProcessSpawner {
     const stderrPath = script.runtimeRecord?.stderrPath ?? join(options.jobDir, 'stderr');
     const runtimePath = join(options.jobDir, 'runtime.json');
     const exitPath = join(options.jobDir, 'exit.json');
+
+    // Ensure scripted output paths stay within the job directory.
+    // InMemoryStorage is entirely in-memory so this is a correctness concern,
+    // not a security concern — a malicious scenario YAML could still only
+    // overwrite other in-memory artifacts.
+    const normalizedJobDir = normalize(options.jobDir) + '/';
+    if (!normalize(stdoutPath).startsWith(normalizedJobDir)) {
+      throw new Error(`stdoutPath "${stdoutPath}" escapes job directory "${options.jobDir}"`);
+    }
+    if (!normalize(stderrPath).startsWith(normalizedJobDir)) {
+      throw new Error(`stderrPath "${stderrPath}" escapes job directory "${options.jobDir}"`);
+    }
 
     this.storage.mkdirSync(options.jobDir, { recursive: true });
     this.storage.writeFileSync(stdoutPath, '');

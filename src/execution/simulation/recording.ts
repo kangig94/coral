@@ -295,7 +295,9 @@ export function saveRecording(recording: SpawnRecording, filePath: string): void
 
 export function loadRecording(filePath: string): SpawnRecording {
   const parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as unknown;
-  return validateRecording(parsed);
+  const recording = validateRecording(parsed);
+  recording.events.sort((a, b) => a.timestamp - b.timestamp);
+  return recording;
 }
 
 export function buildRecordingFilePath(recordingDir: string, command: string, timestamp = Date.now()): string {

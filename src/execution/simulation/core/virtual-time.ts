@@ -2,6 +2,12 @@ import type { RuntimeTimerHandle, RuntimeTime } from '../../runtime.js';
 
 export const DEFAULT_EPOCH_MS = 1_000_000;
 
+function assertFiniteNonNegative(ms: number, label: string): void {
+  if (!Number.isFinite(ms) || ms < 0) {
+    throw new RangeError(`${label} must be a finite non-negative number, got ${ms}`);
+  }
+}
+
 type TimerRecord = {
   handle: VirtualTimerHandle;
   deadline: number;
@@ -32,12 +38,14 @@ export class VirtualTime implements RuntimeTime {
   }
 
   sleep(ms: number): Promise<void> {
+    assertFiniteNonNegative(ms, 'sleep(ms)');
     return new Promise<void>((resolve) => {
       this.setTimeout(resolve, ms);
     });
   }
 
   setTimeout(fn: () => void, ms: number): RuntimeTimerHandle {
+    assertFiniteNonNegative(ms, 'setTimeout(ms)');
     return this.schedule(fn, ms, null);
   }
 
@@ -46,6 +54,7 @@ export class VirtualTime implements RuntimeTime {
   }
 
   setInterval(fn: () => void, ms: number): RuntimeTimerHandle {
+    assertFiniteNonNegative(ms, 'setInterval(ms)');
     const delay = Math.max(1, Math.floor(ms));
     return this.schedule(fn, delay, delay);
   }
@@ -55,6 +64,7 @@ export class VirtualTime implements RuntimeTime {
   }
 
   tick(ms: number): void {
+    assertFiniteNonNegative(ms, 'tick(ms)');
     const delta = Math.max(0, Math.floor(ms));
     const target = this.currentTime + delta;
 
