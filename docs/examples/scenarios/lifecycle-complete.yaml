@@ -1,0 +1,54 @@
+world:
+  listen:
+    port: 4301
+  env:
+    CORAL_BACKEND_IDLE_MS: '1'
+  durable:
+    - pid: 30101
+      runtimeDelayMs: 5
+      stdout:
+        - delayMs: 20
+          data: "durable-progress\n"
+      stderr:
+        - delayMs: 20
+          data: "durable-warning\n"
+      exit:
+        delayMs: 25
+        exitCode: 0
+  fakeProvider:
+    progress:
+      - delayMs: 5
+        message: provider-progress-1
+      - delayMs: 5
+        message: provider-progress-2
+    result:
+      content: final simulation result
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate complete lifecycle
+  - type: wait
+    until:
+      phase: running
+    stepMs: 5
+    maxSteps: 5
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 5
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    progress: provider-progress-2
+    result:
+      content: final simulation result
+      aborted: false
+    runtimeRecorded: true
+    noRealIO: true
+  - type: advance
+    ms: 60000

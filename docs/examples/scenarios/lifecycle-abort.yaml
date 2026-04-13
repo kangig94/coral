@@ -1,0 +1,39 @@
+world:
+  listen:
+    port: 4302
+  durable:
+    - pid: 30202
+      runtimeDelayMs: 5
+      stdout:
+        - delayMs: 20
+          data: "abort-progress\n"
+      exit: null
+      kills:
+        - signal: SIGTERM
+          delayMs: 25
+          exitSignal: SIGTERM
+  fakeProvider:
+    progress:
+      - delayMs: 5
+        message: provider-progress
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate abort lifecycle
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 5
+  - type: abort
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: aborted
+    result:
+      aborted: true
+    runtimeRecorded: true
+    noRealIO: true

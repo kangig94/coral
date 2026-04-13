@@ -1,225 +1,218 @@
-import { EventEmitter } from 'node:events';
 import { performance } from 'node:perf_hooks';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { isDurableCliRuntime } from '../../shared/types.js';
-import { createReplayCursor } from '../progress-store.js';
-import { SessionManager } from '../session-manager.js';
-import { createSimulationBackend, type SimulationBackend } from './simulation-runtime.js';
+import { runScenario, type StepResult } from '../simulation/runner.js';
+import type { SimulationDocument } from '../simulation/schema.js';
+import type { SimulationWorld } from '../simulation/world.js';
 
-class MockRequest extends EventEmitter {
-  readonly method: string;
-  readonly url: string;
-  readonly headers: Record<string, string>;
+type LaunchReceipt = {
+  decision: { status: 'running' | 'queued' };
+  jobId: string;
+  sessionId: string;
+};
 
-  constructor(method: string, url: string, token: string) {
-    super();
-    this.method = method;
-    this.url = url;
-    this.headers = {
-      'x-coral-backend-token': token,
-    };
-  }
+const COMPLETE_DETAIL_PROJECT_ROOT = '/tmp/sim/request-source';
 
-  resume(): void {}
-
-  destroy(): void {}
-}
-
-class MockResponse extends EventEmitter {
-  statusCode = 200;
-  headersSent = false;
-  writableEnded = false;
-  destroyed = false;
-  readonly headers = new Map<string, string | number | string[]>();
-  body = '';
-
-  setHeader(name: string, value: string | number | string[]): void {
-    this.headers.set(name, value);
-  }
-
-  writeHead(statusCode: number): void {
-    this.statusCode = statusCode;
-    this.headersSent = true;
-  }
-
-  write(chunk: string | Buffer): boolean {
-    this.headersSent = true;
-    this.body += Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : chunk;
-    return true;
-  }
-
-  end(chunk?: string | Buffer): this {
-    if (chunk !== undefined) {
-      this.write(chunk);
-    }
-    this.headersSent = true;
-    this.writableEnded = true;
-    this.emit('finish');
-    this.emit('close');
-    return this;
-  }
-}
-
-async function advanceUntil(
-  world: SimulationBackend,
-  predicate: () => boolean,
-  options: { stepMs: number; maxSteps: number; label: string },
-): Promise<void> {
-  for (let step = 0; step < options.maxSteps; step += 1) {
-    if (predicate()) {
-      return;
-    }
-    await world.advance(options.stepMs);
-  }
-
-  throw new Error(`Timed out waiting for ${options.label}`);
-}
-
-async function invokeHandler(
-  world: SimulationBackend,
-  request: {
-    method: string;
-    url: string;
-    token: string;
+const COMPLETE_SCENARIO: SimulationDocument = {
+  world: {
+    listen: { port: 4_301 },
+    env: { CORAL_BACKEND_IDLE_MS: '1' },
+    durable: [
+      {
+        pid: 30_101,
+        runtimeDelayMs: 5,
+        stdout: [{ delayMs: 20, data: 'durable-progress\n' }],
+        stderr: [{ delayMs: 20, data: 'durable-warning\n' }],
+        exit: { delayMs: 25, exitCode: 0 },
+      },
+    ],
+    fakeProvider: {
+      progress: [
+        { delayMs: 5, message: 'provider-progress-1' },
+        { delayMs: 5, message: 'provider-progress-2' },
+      ],
+      result: { content: 'final simulation result' },
+    },
   },
-): Promise<{ statusCode: number; body: string }> {
-  const handler = world.hooks.createServerCalls[0];
-  if (!handler) {
-    throw new Error('Expected simulation backend to capture the HTTP handler');
+  steps: [
+    { type: 'boot' },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate complete lifecycle' },
+    { type: 'wait', until: { phase: 'running' }, stepMs: 5, maxSteps: 5 },
+    { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
+    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
+    {
+      type: 'expect',
+      phase: 'completed',
+      progress: 'provider-progress-2',
+      result: { content: 'final simulation result', aborted: false },
+      runtimeRecorded: true,
+      noRealIO: true,
+    },
+  ],
+};
+
+const ABORT_SCENARIO: SimulationDocument = {
+  world: {
+    listen: { port: 4_302 },
+    durable: [
+      {
+        pid: 30_202,
+        runtimeDelayMs: 5,
+        stdout: [{ delayMs: 20, data: 'abort-progress\n' }],
+        exit: null,
+        kills: [{ signal: 'SIGTERM', delayMs: 25, exitSignal: 'SIGTERM' }],
+      },
+    ],
+    fakeProvider: {
+      progress: [{ delayMs: 5, message: 'provider-progress' }],
+    },
+  },
+  steps: [
+    { type: 'boot' },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate abort lifecycle' },
+    { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
+    { type: 'abort' },
+  ],
+};
+
+const RESET_SCENARIO: SimulationDocument = {
+  world: {
+    listen: { port: 4_303 },
+    durable: [
+      {
+        pid: 30_303,
+        runtimeDelayMs: 5,
+        exit: { delayMs: 5, exitCode: 0 },
+      },
+    ],
+    fakeProvider: {
+      result: { content: 'reset world result' },
+    },
+  },
+  steps: [
+    { type: 'boot' },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate clean reset world' },
+    { type: 'restart' },
+    {
+      type: 'expect',
+      jobCount: 0,
+      sessionCount: { provider: 'fake-provider', count: 0 },
+    },
+    { type: 'launch', provider: 'fake-provider', prompt: 'simulate clean reset world' },
+    { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
+    {
+      type: 'expect',
+      phase: 'completed',
+      result: { content: 'reset world result', aborted: false },
+      noRealIO: true,
+    },
+  ],
+};
+
+const worlds: SimulationWorld[] = [];
+
+function getLaunchReceipt(step: StepResult): LaunchReceipt {
+  if (!step.detail || typeof step.detail !== 'object') {
+    throw new Error('Expected launch step detail to be an object');
   }
 
-  const req = new MockRequest(request.method, request.url, request.token);
-  const res = new MockResponse();
-  await handler(req as never, res as never);
-  return { statusCode: res.statusCode, body: res.body };
+  const detail = step.detail as Partial<LaunchReceipt>;
+  if (
+    !detail.decision ||
+    (detail.decision.status !== 'running' && detail.decision.status !== 'queued') ||
+    typeof detail.jobId !== 'string' ||
+    typeof detail.sessionId !== 'string'
+  ) {
+    throw new Error('Expected launch step detail to contain a launch receipt');
+  }
+
+  return detail as LaunchReceipt;
 }
+
+function getDurableRuntime(world: SimulationWorld, jobId: string) {
+  const runtime = world.readArtifact(jobId, 'runtime', { freshness: 'cached' });
+  const candidate = runtime as Parameters<typeof isDurableCliRuntime>[0];
+  if (!isDurableCliRuntime(candidate)) {
+    throw new Error(`Expected a durable runtime record for ${jobId}`);
+  }
+  return candidate;
+}
+
+async function cleanupWorld(world: SimulationWorld): Promise<void> {
+  try {
+    const lifecycle = world.getBackendLifecycle();
+    if (lifecycle === 'running' || lifecycle === 'starting') {
+      await world.shutdown('test-cleanup');
+    }
+    if (lifecycle !== 'stopped') {
+      await world.waitForShutdown();
+    }
+  } catch {
+    // Best-effort cleanup only.
+  } finally {
+    world.dispose();
+  }
+}
+
+afterEach(async () => {
+  while (worlds.length > 0) {
+    const world = worlds.pop();
+    if (!world) {
+      continue;
+    }
+    await cleanupWorld(world);
+  }
+});
 
 describe('deterministic simulation lifecycle replay', () => {
-  const worlds: SimulationBackend[] = [];
-
-  afterEach(async () => {
-    while (worlds.length > 0) {
-      const world = worlds.pop();
-      if (!world) {
-        continue;
-      }
-      await world.backend.shutdown('test-cleanup');
-      await world.backend.waitForShutdown();
-    }
-    vi.restoreAllMocks();
-  });
-
-  it('replays a complete in-process lifecycle with idle shutdown', async () => {
+  it('replays a complete lifecycle with hooks, artifacts, ordering, idle cleanup, and zero real I/O', async () => {
     const wallStart = performance.now();
-    const realProcessKillSpy = vi.spyOn(process, 'kill');
-    const realFetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { result, world } = await runScenario(COMPLETE_SCENARIO);
+    worlds.push(world);
 
-    const completedWorld = createSimulationBackend({
-      listen: { port: 4_301 },
-      env: { CORAL_BACKEND_IDLE_MS: '1' },
-      durable: [
-        {
-          pid: 30_101,
-          runtimeDelayMs: 5,
-          stdout: [{ delayMs: 20, data: 'durable-progress\n' }],
-          stderr: [{ delayMs: 20, data: 'durable-warning\n' }],
-          exit: { delayMs: 25, exitCode: 0 },
+    expect(result.passed).toBe(true);
+    expect(result.steps[0]).toMatchObject({
+      ok: true,
+      detail: {
+        info: {
+          port: 4_301,
         },
-      ],
-      fakeProvider: {
-        progress: [
-          { delayMs: 5, message: 'provider-progress-1' },
-          { delayMs: 5, message: 'provider-progress-2' },
-        ],
-        result: { content: 'final simulation result' },
       },
     });
-    worlds.push(completedWorld);
 
-    const completedPhases: Array<{ previousPhase: string; phase: string }> = [];
-    const completedProgressMessages: string[] = [];
-    completedWorld.eventBus.on('job:phase_changed', (payload) => {
-      completedPhases.push({
-        previousPhase: payload.previousPhase,
-        phase: payload.phase,
-      });
+    const launch = getLaunchReceipt(result.steps[1] as StepResult);
+    expect(result.steps[5]).toMatchObject({
+      ok: true,
+      actual: {
+        jobId: launch.jobId,
+        phase: 'completed',
+        runtimeRecorded: true,
+        result: {
+          content: 'final simulation result',
+          aborted: false,
+        },
+      },
     });
-    completedWorld.eventBus.on('job:progress', (payload) => {
-      completedProgressMessages.push(payload.message);
-    });
 
-    const started = await completedWorld.backend.start();
-    expect(started.port).toBe(4_301);
-    expect(completedWorld.backend.server.listening).toBe(false);
-    expect(completedWorld.hooks.listenCalls).toEqual([{ host: '127.0.0.1', port: 4_301 }]);
+    expect(world.getHookLog().listenCalls).toEqual([{ host: '127.0.0.1', port: 4_301 }]);
+    expect(world.hasProjectSourceCache(COMPLETE_DETAIL_PROJECT_ROOT)).toBe(false);
 
-    const detailProjectRoot = '/tmp/sim/request-source';
-    completedWorld.storage.mkdirSync(detailProjectRoot, { recursive: true });
-    expect(
-      completedWorld.paths
-        .snapshot()
-        .projectSourceCache.some(([path]) => path === detailProjectRoot),
-    ).toBe(false);
-
-    const detailResponse = await invokeHandler(completedWorld, {
-      method: 'GET',
-      url: `/discuss/sessions/missing?projectRoot=${encodeURIComponent(detailProjectRoot)}`,
-      token: started.token,
-    });
-    expect(detailResponse.statusCode).toBe(404);
-    expect(detailResponse.body).toBe(JSON.stringify({ error: 'session_not_found' }));
-    expect(
-      completedWorld.paths
-        .snapshot()
-        .projectSourceCache.some(([path]) => path === detailProjectRoot),
-    ).toBe(true);
-
-    const completedDecision = await completedWorld.service.start(
-      'fake-provider',
-      { prompt: 'simulate complete lifecycle' },
-      completedWorld.createCallerContext(),
+    const detailResponse = await world.invokeHttp(
+      'GET',
+      `/discuss/sessions/missing?projectRoot=${encodeURIComponent(COMPLETE_DETAIL_PROJECT_ROOT)}`,
     );
-    expect(completedDecision.status).toBe('running');
-    if (completedDecision.status !== 'running') {
-      throw new Error('Expected completed job launch to start immediately');
-    }
+    expect(detailResponse).toMatchObject({
+      statusCode: 404,
+      body: JSON.stringify({ error: 'session_not_found' }),
+    });
+    expect(world.hasProjectSourceCache(COMPLETE_DETAIL_PROJECT_ROOT)).toBe(true);
 
-    expect(completedWorld.progressStore.readStatus(completedDecision.job)).toMatchObject({
-      jobId: completedDecision.job,
-      sessionId: completedDecision.session,
+    const runtime = getDurableRuntime(world, launch.jobId);
+    expect(runtime.pid).toBe(30_101);
+    expect(world.getJobStatus(launch.jobId)).toMatchObject({
+      jobId: launch.jobId,
+      sessionId: launch.sessionId,
       provider: 'fake-provider',
-      phase: 'launching',
-      launch: { state: 'pending' },
-    });
-
-    await advanceUntil(
-      completedWorld,
-      () => completedWorld.progressStore.readStatus(completedDecision.job)?.phase === 'running',
-      { stepMs: 5, maxSteps: 5, label: 'completed job to enter running phase' },
-    );
-    expect(completedWorld.progressStore.readStatus(completedDecision.job)?.phase).toBe('running');
-
-    await advanceUntil(
-      completedWorld,
-      () => completedWorld.progressStore.hasRuntimeRecord(completedDecision.job),
-      { stepMs: 5, maxSteps: 5, label: 'completed job runtime record' },
-    );
-
-    const completedRuntime = completedWorld.progressStore.readRuntimeRecord(completedDecision.job);
-    expect(isDurableCliRuntime(completedRuntime)).toBe(true);
-    if (!isDurableCliRuntime(completedRuntime)) {
-      throw new Error('Expected completed job to persist a durable runtime record');
-    }
-    expect(completedRuntime.pid).toBe(30_101);
-
-    await advanceUntil(
-      completedWorld,
-      () => completedWorld.progressStore.readStatus(completedDecision.job)?.phase === 'completed',
-      { stepMs: 500, maxSteps: 4, label: 'completed job terminal result' },
-    );
-
-    const completedStatus = completedWorld.progressStore.readStatus(completedDecision.job);
-    expect(completedStatus).toMatchObject({
       phase: 'completed',
       launch: { state: 'ready' },
       result: {
@@ -227,176 +220,133 @@ describe('deterministic simulation lifecycle replay', () => {
         aborted: false,
       },
     });
-    expect(completedWorld.progressStore.hasExitRecord(completedDecision.job)).toBe(true);
-    expect(
-      completedWorld.storage.readFileSync(completedWorld.progressStore.resultPath(completedDecision.job), 'utf-8'),
-    ).toBe('final simulation result');
-    expect(completedWorld.storage.readFileSync(completedRuntime.stdoutPath, 'utf-8')).toBe('durable-progress\n');
-    expect(completedWorld.storage.readFileSync(completedRuntime.stderrPath, 'utf-8')).toBe('durable-warning\n');
+    expect(world.readArtifact(launch.jobId, 'exit', { freshness: 'cached' })).toMatchObject({
+      exitCode: 0,
+      signal: null,
+    });
+    expect(world.readArtifact(launch.jobId, 'result', { freshness: 'cached' })).toBe('final simulation result');
+    expect(world.readArtifact(launch.jobId, 'stdout', { freshness: 'cached' })).toBe('durable-progress\n');
+    expect(world.readArtifact(launch.jobId, 'stderr', { freshness: 'cached' })).toBe('durable-warning\n');
 
-    const completedReplay = completedWorld.progressStore.replayFrom(completedDecision.job, 0, createReplayCursor());
-    expect(completedReplay.map((event) => event.type)).toEqual(['progress', 'progress', 'terminal']);
-    expect(completedReplay[0]?.message).toContain('provider-progress-1');
-    expect(completedReplay[1]?.message).toContain('provider-progress-2');
-    expect(completedProgressMessages).toHaveLength(2);
-    expect(completedProgressMessages[0]).toContain('provider-progress-1');
-    expect(completedProgressMessages[1]).toContain('provider-progress-2');
-    expect(completedPhases).toEqual([
+    const replay = world.replay(launch.jobId);
+    expect(replay.map((event) => event.type)).toEqual(['progress', 'progress', 'terminal']);
+    expect(replay[0]?.type === 'progress' ? replay[0].message : '').toContain('provider-progress-1');
+    expect(replay[1]?.type === 'progress' ? replay[1].message : '').toContain('provider-progress-2');
+    expect(world.getProgressEvents(launch.jobId)).toHaveLength(2);
+    expect(world.getProgressEvents(launch.jobId)[0]).toContain('provider-progress-1');
+    expect(world.getProgressEvents(launch.jobId)[1]).toContain('provider-progress-2');
+    expect(world.getPhaseTransitions(launch.jobId)).toEqual([
       { previousPhase: 'launching', phase: 'running' },
       { previousPhase: 'running', phase: 'completed' },
     ]);
 
-    expect(completedWorld.backend.getLifecycle()).toBe('running');
-    await completedWorld.advance(60_000);
-    await completedWorld.backend.waitForShutdown();
-    expect(completedWorld.backend.getLifecycle()).toBe('stopped');
-    expect(
-      completedWorld.storage.existsSync(completedWorld.paths.backendInfoPath(completedWorld.pluginRoot)),
-    ).toBe(false);
+    expect(world.getBackendLifecycle()).toBe('running');
+    expect(world.backendInfoExists()).toBe(true);
 
-    expect(realProcessKillSpy).not.toHaveBeenCalled();
-    expect(realFetchSpy).not.toHaveBeenCalled();
+    await world.advance(60_000);
+    await world.waitForShutdown();
+
+    expect(world.getBackendLifecycle()).toBe('stopped');
+    expect(world.backendInfoExists()).toBe(false);
+    expect(world.getNoRealIoReport()).toEqual({
+      realKillCalls: 0,
+      realFetchCalls: 0,
+      violations: [],
+    });
     expect(performance.now() - wallStart).toBeLessThan(1_000);
   });
 
-  it('replays a deterministic abort lifecycle', async () => {
-    const realProcessKillSpy = vi.spyOn(process, 'kill');
-    const realFetchSpy = vi.spyOn(globalThis, 'fetch');
+  it('replays an abort lifecycle with kill log and PID liveness checks', async () => {
+    const { result, world } = await runScenario(ABORT_SCENARIO);
+    worlds.push(world);
 
-    const abortedWorld = createSimulationBackend({
-      listen: { port: 4_302 },
-      durable: [
-        {
-          pid: 30_202,
-          runtimeDelayMs: 5,
-          stdout: [{ delayMs: 20, data: 'abort-progress\n' }],
-          exit: null,
-          kills: [{ signal: 'SIGTERM', delayMs: 25, exitSignal: 'SIGTERM' }],
-        },
-      ],
-      fakeProvider: {
-        progress: [{ delayMs: 5, message: 'provider-progress' }],
+    expect(result.passed).toBe(true);
+
+    const launch = getLaunchReceipt(result.steps[1] as StepResult);
+    const runtime = getDurableRuntime(world, launch.jobId);
+    expect(result.steps[2]).toMatchObject({
+      ok: true,
+      actual: {
+        phase: 'running',
+        runtimeRecorded: true,
       },
     });
-    worlds.push(abortedWorld);
-
-    await abortedWorld.backend.start();
-    const abortedDecision = await abortedWorld.service.start(
-      'fake-provider',
-      { prompt: 'simulate abort lifecycle' },
-      abortedWorld.createCallerContext(),
-    );
-    expect(abortedDecision.status).toBe('running');
-    if (abortedDecision.status !== 'running') {
-      throw new Error('Expected aborted job launch to start immediately');
-    }
-
-    await advanceUntil(
-      abortedWorld,
-      () => abortedWorld.progressStore.hasRuntimeRecord(abortedDecision.job),
-      { stepMs: 5, maxSteps: 5, label: 'aborted job runtime record' },
-    );
-
-    const abortedRuntime = abortedWorld.progressStore.readRuntimeRecord(abortedDecision.job);
-    expect(isDurableCliRuntime(abortedRuntime)).toBe(true);
-    if (!isDurableCliRuntime(abortedRuntime)) {
-      throw new Error('Expected aborted job to persist a durable runtime record');
-    }
-
-    expect(abortedWorld.runtime.process.isAlive(abortedRuntime.pid)).toBe(true);
-    expect(abortedWorld.service.abort([abortedDecision.job])).toEqual({
-      aborted: [abortedDecision.job],
-      notFound: [],
+    expect(result.steps[3]).toMatchObject({
+      ok: true,
+      actual: {
+        jobId: launch.jobId,
+      },
     });
-    expect(abortedWorld.spawner.killCalls).toContainEqual({ pid: abortedRuntime.pid, signal: 'SIGTERM' });
-    expect(abortedWorld.runtime.process.isAlive(abortedRuntime.pid)).toBe(true);
 
-    await abortedWorld.advance(25);
-    expect(abortedWorld.runtime.process.isAlive(abortedRuntime.pid)).toBe(false);
+    expect(world.isPidAlive(runtime.pid)).toBe(true);
+    expect(world.getKillLog()).toContainEqual({ pid: runtime.pid, signal: 'SIGTERM' });
 
-    await advanceUntil(
-      abortedWorld,
-      () => abortedWorld.progressStore.readStatus(abortedDecision.job)?.phase === 'aborted',
-      { stepMs: 500, maxSteps: 4, label: 'aborted job terminal result' },
-    );
+    await world.advance(25);
 
-    expect(abortedWorld.progressStore.readStatus(abortedDecision.job)).toMatchObject({
+    expect(world.isPidAlive(runtime.pid)).toBe(false);
+    const terminalWait = await world.waitUntil(launch.jobId, { terminal: true }, 500, { maxSteps: 4 });
+    expect(terminalWait.ok).toBe(true);
+    expect(world.getJobStatus(launch.jobId)).toMatchObject({
       phase: 'aborted',
       result: {
         aborted: true,
       },
     });
 
-    await abortedWorld.backend.shutdown('abort-verified');
-    await abortedWorld.backend.waitForShutdown();
-    expect(abortedWorld.backend.getLifecycle()).toBe('stopped');
+    await world.shutdown('abort-verified');
+    await world.waitForShutdown();
 
-    expect(realProcessKillSpy).not.toHaveBeenCalled();
-    expect(realFetchSpy).not.toHaveBeenCalled();
+    expect(world.getBackendLifecycle()).toBe('stopped');
+    expect(world.getNoRealIoReport()).toEqual({
+      realKillCalls: 0,
+      realFetchCalls: 0,
+      violations: [],
+    });
   });
 
-  it('produces identical deterministic IDs from a clean reset world', async () => {
-    const realProcessKillSpy = vi.spyOn(process, 'kill');
-    const realFetchSpy = vi.spyOn(globalThis, 'fetch');
+  it('recreates a fresh world on restart, proves empty reset state, and relaunches with identical IDs', async () => {
+    const { result, world } = await runScenario(RESET_SCENARIO);
+    worlds.push(world);
 
-    const firstWorld = createSimulationBackend({
-      listen: { port: 4_303 },
-      durable: [
-        {
-          pid: 30_303,
-          runtimeDelayMs: 5,
-          exit: { delayMs: 5, exitCode: 0 },
-        },
-      ],
-      fakeProvider: {
-        result: { content: 'first world result' },
+    expect(result.passed).toBe(true);
+    expect(result.steps[2]).toMatchObject({
+      ok: true,
+      detail: {
+        generation: 1,
       },
     });
-    worlds.push(firstWorld);
-
-    await firstWorld.backend.start();
-    const firstDecision = await firstWorld.service.start(
-      'fake-provider',
-      { prompt: 'simulate clean reset world' },
-      firstWorld.createCallerContext(),
-    );
-    expect(firstDecision.status).toBe('running');
-
-    const resetWorld = createSimulationBackend({
-      listen: { port: 4_304 },
-      durable: [
-        {
-          pid: 30_304,
-          runtimeDelayMs: 5,
-          exit: { delayMs: 5, exitCode: 0 },
-        },
-      ],
-      fakeProvider: {
-        result: { content: 'reset world result' },
+    expect(result.steps[3]).toMatchObject({
+      ok: true,
+      actual: {
+        jobCount: 0,
+        sessionCount: 0,
       },
     });
-    worlds.push(resetWorld);
 
-    const resetSessions = new SessionManager(resetWorld.projectRoot, resetWorld.runtime);
-    expect(resetWorld.progressStore.listJobIds()).toEqual([]);
-    expect(resetSessions.list('fake-provider')).toEqual([]);
+    const firstLaunch = getLaunchReceipt(result.steps[1] as StepResult);
+    const secondLaunch = getLaunchReceipt(result.steps[4] as StepResult);
 
-    await resetWorld.backend.start();
-    const resetDecision = await resetWorld.service.start(
-      'fake-provider',
-      { prompt: 'simulate clean reset world' },
-      resetWorld.createCallerContext(),
-    );
-    if (firstDecision.status !== 'running') {
-      throw new Error('Expected first world launch to succeed');
-    }
-    expect(resetDecision).toMatchObject({
-      status: 'running',
-      session: firstDecision.session,
-      job: firstDecision.job,
+    expect(secondLaunch).toMatchObject({
+      jobId: firstLaunch.jobId,
+      sessionId: firstLaunch.sessionId,
+      decision: { status: 'running' },
     });
 
-    expect(realProcessKillSpy).not.toHaveBeenCalled();
-    expect(realFetchSpy).not.toHaveBeenCalled();
+    expect(world.listJobIds()).toEqual([secondLaunch.jobId]);
+    expect(world.listSessions('fake-provider')).toHaveLength(1);
+    expect(world.getJobStatus(secondLaunch.jobId)).toMatchObject({
+      jobId: secondLaunch.jobId,
+      sessionId: secondLaunch.sessionId,
+      phase: 'completed',
+      result: {
+        content: 'reset world result',
+        aborted: false,
+      },
+    });
+    expect(world.getNoRealIoReport()).toEqual({
+      realKillCalls: 0,
+      realFetchCalls: 0,
+      violations: [],
+    });
   });
 });

@@ -1,0 +1,929 @@
+import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
+import { createReplayCursor } from '../progress-store.js';
+import { SessionManager } from '../session-manager.js';
+import type { BackendServerInfo, LifecycleState } from '../server-types.js';
+import {
+  createSimulationBackend,
+  type ChildOutputChunk,
+  type FakeProviderScenario,
+  type MockDurableScript,
+  type MockKillAction,
+  type MockSpawnScript,
+  type SimulationBackend,
+  type SimulationHookLog,
+  type SimulationScenario,
+} from './core/index.js';
+import type { CorruptTarget, LaunchStep, ScenarioError, WaitUntil, WorldConfig } from './schema.js';
+import {
+  isTerminalPhase,
+  type DurableCliRuntimeRecord,
+  type LaunchDecision,
+  type PersistedExitRecord,
+  type PersistedProgressRecord,
+  type PersistedRuntimeRecord,
+  type PersistedStatusRecord,
+  type SessionEntry,
+  type TerminalResult,
+} from '../../shared/types.js';
+
+const DEFAULT_EPOCH_MS = 1_000_000;
+const STATUS_FILE = 'status.json';
+const RUNTIME_FILE = 'runtime.json';
+const EXIT_FILE = 'exit.json';
+const RESULT_FILE = 'result.md';
+
+export type LaunchJobOptions = {
+  provider?: string;
+  agent?: string;
+  projectRoot?: string;
+  coralEnv?: Record<string, string>;
+};
+export type SimulationArtifactKind = 'status' | 'result' | 'runtime' | 'stdout' | 'stderr' | 'exit';
+export type ArtifactFreshness = 'cached' | 'fresh' | 'raw';
+
+export type WaitObservation = {
+  phase: string | null;
+  runtimeRecorded: boolean;
+  terminal: boolean;
+  progress: string[];
+  result: TerminalResult | null;
+};
+
+export type WaitDetail = {
+  ok: boolean;
+  jobId: string;
+  steps: number;
+  elapsedMs: number;
+  expected: WaitUntil;
+  actual: WaitObservation;
+};
+
+export type NoRealIoReport = {
+  realKillCalls: number;
+  realFetchCalls: number;
+  violations: string[];
+};
+
+export type SimulationHttpResponse = {
+  statusCode: number;
+  headers: Record<string, string | number | string[]>;
+  body: string;
+};
+
+type WorldGenerationState = {
+  backend: SimulationBackend;
+  startedInfo: BackendServerInfo | null;
+  phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
+  progressEvents: Map<string, string[]>;
+};
+
+type NoRealIoRegistration = {
+  report: NoRealIoReport;
+  release: () => void;
+};
+
+const activeNoRealIoReports = new Set<NoRealIoReport>();
+const originalFetch = globalThis.fetch;
+const originalProcessKill = process.kill;
+let noRealIoInstalled = false;
+
+function pushUniqueViolation(report: NoRealIoReport, message: string): void {
+  report.violations.push(message);
+}
+
+function describeFetchCall(input: unknown, init?: RequestInit): string {
+  let method = init?.method;
+  let target = 'unknown';
+
+  if (typeof input === 'string' || input instanceof URL) {
+    target = String(input);
+  } else if (typeof Request !== 'undefined' && input instanceof Request) {
+    target = input.url;
+    method ??= input.method;
+  }
+
+  return `fetch(${method ?? 'GET'} ${target})`;
+}
+
+function recordNoRealIoFetch(input: unknown, init?: RequestInit): void {
+  const message = describeFetchCall(input, init);
+  for (const report of activeNoRealIoReports) {
+    report.realFetchCalls += 1;
+    pushUniqueViolation(report, message);
+  }
+}
+
+function recordNoRealIoKill(pid: number, signal?: NodeJS.Signals | number): void {
+  const renderedSignal = signal ?? 'SIGTERM';
+  const message = `process.kill(${pid}, ${renderedSignal})`;
+  for (const report of activeNoRealIoReports) {
+    report.realKillCalls += 1;
+    pushUniqueViolation(report, message);
+  }
+}
+
+function installNoRealIoMonitor(): void {
+  if (noRealIoInstalled) {
+    return;
+  }
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    recordNoRealIoFetch(input, init);
+    throw new Error('Real fetch is disabled while SimulationWorld is active');
+  }) as typeof globalThis.fetch;
+
+  process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+    recordNoRealIoKill(pid, signal);
+    return true;
+  }) as typeof process.kill;
+
+  noRealIoInstalled = true;
+}
+
+function restoreNoRealIoMonitorIfIdle(): void {
+  if (!noRealIoInstalled || activeNoRealIoReports.size > 0) {
+    return;
+  }
+
+  globalThis.fetch = originalFetch;
+  process.kill = originalProcessKill;
+  noRealIoInstalled = false;
+}
+
+function acquireNoRealIoMonitor(): NoRealIoRegistration {
+  const report: NoRealIoReport = {
+    realKillCalls: 0,
+    realFetchCalls: 0,
+    violations: [],
+  };
+  activeNoRealIoReports.add(report);
+  installNoRealIoMonitor();
+
+  let released = false;
+  return {
+    report,
+    release: () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      activeNoRealIoReports.delete(report);
+      restoreNoRealIoMonitorIfIdle();
+    },
+  };
+}
+
+function toRuntimeError(value: ScenarioError | Error | string): Error {
+  if (value instanceof Error) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return new Error(value);
+  }
+
+  const error = new Error(value.message);
+  if (value.name) {
+    error.name = value.name;
+  }
+  if (value.code) {
+    (error as Error & { code?: string }).code = value.code;
+  }
+  return error;
+}
+
+function cloneOutputChunks(value: string | ChildOutputChunk[] | undefined): string | ChildOutputChunk[] | undefined {
+  if (value === undefined || typeof value === 'string') {
+    return value;
+  }
+  return value.map((chunk) => ({ ...chunk }));
+}
+
+function cloneKillActions(
+  kills:
+    | Array<{
+        signal?: string | 0;
+        delayMs?: number;
+        exitCode?: number | null;
+        exitSignal?: string | null;
+      }>
+    | undefined,
+): MockKillAction[] | undefined {
+  return kills?.map((entry) => ({
+    ...entry,
+    signal: entry.signal as MockKillAction['signal'],
+  }));
+}
+
+function normalizeSpawnScripts(scripts: WorldConfig['spawn']): MockSpawnScript[] | undefined {
+  return scripts?.map((script) => ({
+    pid: script.pid,
+    stdout: cloneOutputChunks(script.stdout),
+    stderr: cloneOutputChunks(script.stderr),
+    close:
+      script.close === undefined
+        ? undefined
+        : script.close === null
+          ? null
+          : { ...script.close },
+    error:
+      script.error === undefined
+        ? undefined
+        : script.error === null
+          ? null
+          : {
+              delayMs: script.error.delayMs,
+              error: toRuntimeError(script.error.error),
+            },
+    kills: cloneKillActions(script.kills),
+  }));
+}
+
+function normalizeDurableScripts(scripts: WorldConfig['durable']): MockDurableScript[] | undefined {
+  return scripts?.map((script) => ({
+    pid: script.pid,
+    runtimeDelayMs: script.runtimeDelayMs,
+    stdout: cloneOutputChunks(script.stdout),
+    stderr: cloneOutputChunks(script.stderr),
+    runtimeRecord: script.runtimeRecord ? { ...script.runtimeRecord } : undefined,
+    exit:
+      script.exit === undefined
+        ? undefined
+        : script.exit === null
+          ? null
+          : { ...script.exit },
+    kills: cloneKillActions(script.kills),
+    waitForExitError:
+      script.waitForExitError === undefined ? undefined : toRuntimeError(script.waitForExitError),
+  }));
+}
+
+function normalizeFakeProvider(config: WorldConfig['fakeProvider']): FakeProviderScenario | undefined {
+  if (!config) {
+    return undefined;
+  }
+
+  return {
+    name: config.name,
+    cli: config.cli
+      ? {
+          command: config.cli.command,
+          args: config.cli.args ? [...config.cli.args] : undefined,
+          extraEnv: config.cli.extraEnv ? { ...config.cli.extraEnv } : undefined,
+        }
+      : undefined,
+    progress: config.progress?.map((entry) => ({ ...entry })),
+    result: config.result
+      ? {
+          ...config.result,
+          errors: config.result.errors ? [...config.result.errors] : undefined,
+          warnings: config.result.warnings ? [...config.result.warnings] : undefined,
+          usage: config.result.usage ? { ...config.result.usage } : undefined,
+        }
+      : undefined,
+    preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),
+  };
+}
+
+function normalizeWorldConfig(config: WorldConfig): SimulationScenario {
+  return {
+    epochMs: config.epochMs,
+    env: config.env ? { ...config.env } : undefined,
+    pluginRoot: config.pluginRoot,
+    projectRoot: config.projectRoot,
+    listen: config.listen ? { ...config.listen } : undefined,
+    spawn: normalizeSpawnScripts(config.spawn),
+    durable: normalizeDurableScripts(config.durable),
+    fakeProvider: normalizeFakeProvider(config.fakeProvider),
+  };
+}
+
+function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
+  return {
+    createServerCalls: [...hooks.createServerCalls],
+    listenCalls: hooks.listenCalls.map((entry) => ({ ...entry })),
+    acquireLockCalls: hooks.acquireLockCalls.map((entry) => ({ ...entry })),
+    writeBackendInfoCalls: hooks.writeBackendInfoCalls.map((entry) => ({
+      pluginRoot: entry.pluginRoot,
+      info: { ...entry.info },
+    })),
+    removeBackendInfoCalls: hooks.removeBackendInfoCalls.map((entry) => ({ ...entry })),
+    removeLockCalls: hooks.removeLockCalls.map((entry) => ({ ...entry })),
+    createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
+    recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
+  };
+}
+
+function cloneNoRealIoReport(report: NoRealIoReport): NoRealIoReport {
+  return {
+    realKillCalls: report.realKillCalls,
+    realFetchCalls: report.realFetchCalls,
+    violations: [...report.violations],
+  };
+}
+
+class ScenarioHttpRequest extends EventEmitter {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  private readonly bodyText: string | null;
+  private started = false;
+  destroyed = false;
+
+  constructor(method: string, url: string, token: string, body: unknown) {
+    super();
+    this.method = method;
+    this.url = url;
+    this.bodyText = body === undefined ? null : JSON.stringify(body);
+    this.headers = {
+      'x-coral-backend-token': token,
+      ...(this.bodyText !== null ? { 'content-type': 'application/json' } : {}),
+    };
+  }
+
+  start(): void {
+    if (this.started) {
+      return;
+    }
+    this.started = true;
+    queueMicrotask(() => {
+      if (this.destroyed) {
+        return;
+      }
+      if (this.bodyText !== null) {
+        this.emit('data', Buffer.from(this.bodyText, 'utf-8'));
+      }
+      this.emit('end');
+    });
+  }
+
+  resume(): void {}
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
+
+class ScenarioHttpResponse extends EventEmitter {
+  statusCode = 200;
+  headersSent = false;
+  writableEnded = false;
+  destroyed = false;
+  readonly headers = new Map<string, string | number | string[]>();
+  body = '';
+
+  setHeader(name: string, value: string | number | string[]): void {
+    this.headers.set(name, value);
+  }
+
+  writeHead(statusCode: number): void {
+    this.statusCode = statusCode;
+    this.headersSent = true;
+  }
+
+  write(chunk: string | Buffer): boolean {
+    this.headersSent = true;
+    this.body += Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : chunk;
+    return true;
+  }
+
+  end(chunk?: string | Buffer): this {
+    if (chunk !== undefined) {
+      this.write(chunk);
+    }
+    this.headersSent = true;
+    this.writableEnded = true;
+    this.emit('finish');
+    this.emit('close');
+    return this;
+  }
+}
+
+function parseJsonArtifact<T>(raw: string | null): T | null {
+  if (raw === null) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function hasRuntimePid(record: unknown): record is { pid: number } {
+  return (
+    record !== null &&
+    typeof record === 'object' &&
+    'pid' in record &&
+    typeof (record as { pid?: unknown }).pid === 'number'
+  );
+}
+
+function hasRuntimeStreamPath(
+  record: PersistedRuntimeRecord | DurableCliRuntimeRecord | null,
+  key: 'stdoutPath' | 'stderrPath',
+): record is (PersistedRuntimeRecord | DurableCliRuntimeRecord) & Record<typeof key, string> {
+  if (record === null || !(key in record)) {
+    return false;
+  }
+  return typeof (record as unknown as Record<string, unknown>)[key] === 'string';
+}
+
+export class SimulationWorld {
+  private readonly initialConfig: WorldConfig;
+  private readonly epochMs: number;
+  private readonly noRealIoRegistration: NoRealIoRegistration;
+  private current: WorldGenerationState;
+  private elapsedOffsetMs = 0;
+  private disposed = false;
+
+  constructor(config: WorldConfig) {
+    this.initialConfig = {
+      ...config,
+      env: config.env ? { ...config.env } : undefined,
+      listen: config.listen ? { ...config.listen } : undefined,
+      spawn: config.spawn?.map((entry) => ({ ...entry })),
+      durable: config.durable?.map((entry) => ({ ...entry })),
+      fakeProvider: config.fakeProvider
+        ? {
+            ...config.fakeProvider,
+            cli: config.fakeProvider.cli ? { ...config.fakeProvider.cli } : undefined,
+            progress: config.fakeProvider.progress?.map((entry) => ({ ...entry })),
+            result: config.fakeProvider.result
+              ? {
+                  ...config.fakeProvider.result,
+                  errors: config.fakeProvider.result.errors ? [...config.fakeProvider.result.errors] : undefined,
+                  warnings: config.fakeProvider.result.warnings ? [...config.fakeProvider.result.warnings] : undefined,
+                  usage: config.fakeProvider.result.usage ? { ...config.fakeProvider.result.usage } : undefined,
+                }
+              : undefined,
+          }
+        : undefined,
+    };
+    this.epochMs = this.initialConfig.epochMs ?? DEFAULT_EPOCH_MS;
+    this.noRealIoRegistration = acquireNoRealIoMonitor();
+    this.current = this.createGenerationState();
+  }
+
+  async boot(): Promise<BackendServerInfo> {
+    this.assertUsable();
+    const info = await this.current.backend.backend.start();
+    this.current.startedInfo = info;
+    return info;
+  }
+
+  async restart(): Promise<BackendServerInfo> {
+    this.assertUsable();
+    this.elapsedOffsetMs = this.getVirtualElapsedMs();
+    await this.current.backend.backend.shutdown('restart');
+    await this.current.backend.backend.waitForShutdown();
+    this.current = this.createGenerationState();
+    return this.boot();
+  }
+
+  async shutdown(reason = 'simulation-shutdown'): Promise<void> {
+    this.assertUsable();
+    await this.current.backend.backend.shutdown(reason);
+  }
+
+  async waitForShutdown(): Promise<void> {
+    this.assertUsable();
+    await this.current.backend.backend.waitForShutdown();
+  }
+
+  async launchJob(prompt: string, opts?: LaunchJobOptions): Promise<LaunchDecision>;
+  async launchJob(step: LaunchStep): Promise<LaunchDecision>;
+  async launchJob(promptOrStep: string | LaunchStep, opts: LaunchJobOptions = {}): Promise<LaunchDecision> {
+    this.assertUsable();
+    const step =
+      typeof promptOrStep === 'string'
+        ? ({
+            type: 'launch',
+            prompt: promptOrStep,
+            provider: opts.provider ?? 'fake-provider',
+            agent: opts.agent,
+            projectRoot: opts.projectRoot,
+            coralEnv: opts.coralEnv,
+          } satisfies LaunchStep)
+        : promptOrStep;
+
+    const projectRoot = step.projectRoot ?? this.current.backend.projectRoot;
+    const service = this.current.backend.createService(projectRoot);
+    const ctx = this.current.backend.createCallerContext(projectRoot, step.coralEnv);
+    return service.start(
+      step.provider ?? 'fake-provider',
+      {
+        prompt: step.prompt,
+        ...(step.agent !== undefined ? { agent: step.agent } : {}),
+      },
+      ctx,
+    );
+  }
+
+  async advance(ms: number): Promise<void> {
+    this.assertUsable();
+    await this.current.backend.advance(ms);
+  }
+
+  async waitUntil(
+    jobId: string,
+    until: WaitUntil,
+    stepMs: number,
+    limits: { maxSteps?: number; timeoutMs?: number },
+  ): Promise<WaitDetail> {
+    this.assertUsable();
+    const startedAt = this.getVirtualElapsedMs();
+    let steps = 0;
+    let actual = this.observeJob(jobId);
+
+    if (this.matchesWaitCondition(until, actual)) {
+      return {
+        ok: true,
+        jobId,
+        steps,
+        elapsedMs: this.getVirtualElapsedMs() - startedAt,
+        expected: { ...until },
+        actual,
+      };
+    }
+
+    while (true) {
+      const elapsedMs = this.getVirtualElapsedMs() - startedAt;
+      const reachedStepBudget = limits.maxSteps !== undefined && steps >= limits.maxSteps;
+      const reachedTimeBudget = limits.timeoutMs !== undefined && elapsedMs >= limits.timeoutMs;
+      if (reachedStepBudget || reachedTimeBudget) {
+        return {
+          ok: false,
+          jobId,
+          steps,
+          elapsedMs,
+          expected: { ...until },
+          actual,
+        };
+      }
+
+      const advanceBy =
+        limits.timeoutMs === undefined
+          ? stepMs
+          : Math.min(stepMs, Math.max(0, limits.timeoutMs - elapsedMs));
+      if (advanceBy <= 0) {
+        return {
+          ok: false,
+          jobId,
+          steps,
+          elapsedMs,
+          expected: { ...until },
+          actual,
+        };
+      }
+
+      await this.advance(advanceBy);
+      steps += 1;
+      actual = this.observeJob(jobId);
+      if (this.matchesWaitCondition(until, actual)) {
+        return {
+          ok: true,
+          jobId,
+          steps,
+          elapsedMs: this.getVirtualElapsedMs() - startedAt,
+          expected: { ...until },
+          actual,
+        };
+      }
+    }
+  }
+
+  getJobStatus(jobId: string): PersistedStatusRecord | null {
+    this.assertUsable();
+    return this.current.backend.progressStore.readStatus(jobId);
+  }
+
+  getProgress(jobId: string): string[] {
+    return this.replay(jobId)
+      .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
+      .map((event) => event.message);
+  }
+
+  async abort(jobId: string): Promise<void> {
+    this.assertUsable();
+    const status = this.current.backend.progressStore.readStatus(jobId);
+    if (!status) {
+      throw new Error(`Cannot abort unknown job ${jobId}`);
+    }
+
+    const service = this.current.backend.createService(status.projectRoot);
+    const result = service.abort([jobId]);
+    if (result.notFound.includes(jobId)) {
+      throw new Error(`Abort registry did not contain ${jobId}`);
+    }
+  }
+
+  async kill(target: { pid?: number; jobId?: string }): Promise<void> {
+    this.assertUsable();
+    const pid = target.pid ?? (target.jobId ? extractRuntimePid(this.readArtifact(target.jobId, 'runtime', { freshness: 'cached' })) : null);
+    if (pid === null || pid === undefined) {
+      if (target.jobId) {
+        throw new Error(`Cannot resolve a runtime pid for job ${target.jobId}`);
+      }
+      throw new Error('Cannot kill without a pid or jobId');
+    }
+    if (!this.current.backend.runtime.process.isAlive(pid)) {
+      throw new Error(`Cannot kill inactive pid ${pid}`);
+    }
+    this.current.backend.runtime.process.kill(pid, 'SIGTERM');
+  }
+
+  corrupt(jobId: string, target: CorruptTarget): void {
+    this.assertUsable();
+    const jobDir = this.current.backend.progressStore.jobDir(jobId);
+    const filePath = this.resolveArtifactPath(jobId, target);
+    this.current.backend.storage.mkdirSync(jobDir, { recursive: true });
+    this.current.backend.storage.writeFileSync(filePath, '{invalid-json');
+  }
+
+  enqueueHang(delayMs?: number): void {
+    this.assertUsable();
+    this.current.backend.spawner.enqueueDurable({
+      runtimeDelayMs: delayMs,
+      exit: null,
+    });
+  }
+
+  enqueueCrash(exitCode?: number, signal?: string, delayMs?: number): void {
+    this.assertUsable();
+    this.current.backend.spawner.enqueueDurable({
+      exit: {
+        delayMs,
+        exitCode: exitCode ?? (signal === undefined ? 1 : null),
+        signal: signal ?? null,
+      },
+    });
+  }
+
+  async invokeHttp(method: string, path: string, body?: unknown): Promise<SimulationHttpResponse> {
+    this.assertUsable();
+    const handler = this.current.backend.hooks.createServerCalls[0];
+    const startedInfo = this.current.startedInfo;
+    if (!handler || !startedInfo) {
+      throw new Error('Simulation world must be booted before invoking HTTP');
+    }
+
+    const req = new ScenarioHttpRequest(method, path, startedInfo.token, body);
+    const res = new ScenarioHttpResponse();
+    const completion = Promise.resolve(handler(req as never, res as never));
+    req.start();
+    await completion;
+
+    return {
+      statusCode: res.statusCode,
+      headers: Object.fromEntries(res.headers),
+      body: res.body,
+    };
+  }
+
+  replay(jobId: string, afterEventId = 0): PersistedProgressRecord[] {
+    this.assertUsable();
+    return this.current.backend.progressStore.replayFrom(jobId, afterEventId, createReplayCursor());
+  }
+
+  readArtifact(
+    jobId: string,
+    kind: SimulationArtifactKind,
+    options: { freshness?: ArtifactFreshness } = {},
+  ): string | PersistedStatusRecord | PersistedRuntimeRecord | PersistedExitRecord | null {
+    this.assertUsable();
+    const freshness = options.freshness ?? 'cached';
+
+    if (freshness === 'cached') {
+      switch (kind) {
+        case 'status':
+          return this.current.backend.progressStore.readStatus(jobId);
+        case 'runtime':
+          return this.current.backend.progressStore.readRuntimeRecord(jobId);
+        case 'exit':
+          return this.current.backend.progressStore.readExitRecord(jobId);
+        case 'result':
+          return this.readTextArtifact(this.resolveArtifactPath(jobId, kind));
+        case 'stdout':
+        case 'stderr':
+          return this.readTextArtifact(this.resolveStreamArtifactPath(jobId, kind, 'cached'));
+      }
+    }
+
+    if (freshness === 'raw') {
+      return this.readTextArtifact(
+        kind === 'stdout' || kind === 'stderr'
+          ? this.resolveStreamArtifactPath(jobId, kind, 'fresh')
+          : this.resolveArtifactPath(jobId, kind),
+      );
+    }
+
+    const raw = this.readTextArtifact(
+      kind === 'stdout' || kind === 'stderr'
+        ? this.resolveStreamArtifactPath(jobId, kind, 'fresh')
+        : this.resolveArtifactPath(jobId, kind),
+    );
+
+    if (kind === 'result' || kind === 'stdout' || kind === 'stderr') {
+      return raw;
+    }
+
+    if (kind === 'status') {
+      return parseJsonArtifact<PersistedStatusRecord>(raw);
+    }
+    if (kind === 'runtime') {
+      return parseJsonArtifact<PersistedRuntimeRecord>(raw);
+    }
+    return parseJsonArtifact<PersistedExitRecord>(raw);
+  }
+
+  listJobIds(): string[] {
+    this.assertUsable();
+    return this.current.backend.progressStore.listJobIds();
+  }
+
+  listSessions(provider: string, projectRoot?: string): SessionEntry[] {
+    this.assertUsable();
+    const targetRoot = projectRoot ?? this.current.backend.projectRoot;
+    return new SessionManager(targetRoot, this.current.backend.runtime, this.current.backend.eventBus).list(provider);
+  }
+
+  getHookLog(): SimulationHookLog {
+    this.assertUsable();
+    return cloneHookLog(this.current.backend.hooks);
+  }
+
+  getNoRealIoReport(): NoRealIoReport {
+    return cloneNoRealIoReport(this.noRealIoRegistration.report);
+  }
+
+  getLifecycleState(): LifecycleState {
+    this.assertUsable();
+    return this.current.backend.backend.getLifecycle();
+  }
+
+  getBackendLifecycle(): LifecycleState {
+    return this.getLifecycleState();
+  }
+
+  getPhaseTransitions(jobId: string): Array<{ previousPhase: string; phase: string }> {
+    this.assertUsable();
+    return [...(this.current.phaseTransitions.get(jobId) ?? [])];
+  }
+
+  getProgressEvents(jobId: string): string[] {
+    this.assertUsable();
+    return [...(this.current.progressEvents.get(jobId) ?? [])];
+  }
+
+  getVirtualElapsedMs(): number {
+    return this.elapsedOffsetMs + (this.current.backend.time.now() - this.epochMs);
+  }
+
+  backendInfoExists(): boolean {
+    this.assertUsable();
+    return this.current.backend.storage.existsSync(
+      this.current.backend.paths.backendInfoPath(this.current.backend.pluginRoot),
+    );
+  }
+
+  hasProjectSourceCache(projectRoot: string): boolean {
+    this.assertUsable();
+    return this.current.backend.paths
+      .snapshot()
+      .projectSourceCache.some(([cachedProjectRoot]) => cachedProjectRoot === projectRoot);
+  }
+
+  getKillLog(): Array<{ pid: number; signal: NodeJS.Signals | 0 }> {
+    this.assertUsable();
+    return this.current.backend.spawner.killCalls.map((entry) => ({ ...entry }));
+  }
+
+  isPidAlive(pid: number): boolean {
+    this.assertUsable();
+    return this.current.backend.runtime.process.isAlive(pid);
+  }
+
+  dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
+    this.noRealIoRegistration.release();
+  }
+
+  private assertUsable(): void {
+    if (this.disposed) {
+      throw new Error('SimulationWorld has been disposed');
+    }
+  }
+
+  private createGenerationState(): WorldGenerationState {
+    const backend = createSimulationBackend(normalizeWorldConfig(this.initialConfig));
+    const phaseTransitions = new Map<string, Array<{ previousPhase: string; phase: string }>>();
+    const progressEvents = new Map<string, string[]>();
+
+    backend.eventBus.on('job:phase_changed', ({ jobId, previousPhase, phase }) => {
+      const entries = phaseTransitions.get(jobId) ?? [];
+      entries.push({ previousPhase, phase });
+      phaseTransitions.set(jobId, entries);
+    });
+
+    backend.eventBus.on('job:progress', ({ jobId, message }) => {
+      const entries = progressEvents.get(jobId) ?? [];
+      entries.push(message);
+      progressEvents.set(jobId, entries);
+    });
+
+    return {
+      backend,
+      startedInfo: null,
+      phaseTransitions,
+      progressEvents,
+    };
+  }
+
+  private observeJob(jobId: string): WaitObservation {
+    const status = this.current.backend.progressStore.readStatus(jobId);
+    const replay = this.replay(jobId);
+    const replayTerminalSeen = replay.some((event) => event.type === 'terminal');
+
+    return {
+      phase: status?.phase ?? null,
+      runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
+      terminal:
+        replayTerminalSeen ||
+        Boolean(status?.result) ||
+        (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
+      progress: replay
+        .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
+        .map((event) => event.message),
+      result: status?.result ?? null,
+    };
+  }
+
+  private matchesWaitCondition(until: WaitUntil, actual: WaitObservation): boolean {
+    if (until.phase !== undefined && actual.phase !== until.phase) {
+      return false;
+    }
+    if (until.runtimeRecorded !== undefined && actual.runtimeRecorded !== until.runtimeRecorded) {
+      return false;
+    }
+    if (until.terminal !== undefined && actual.terminal !== until.terminal) {
+      return false;
+    }
+    if (
+      until.progressContains !== undefined &&
+      !actual.progress.some((entry) => entry.includes(until.progressContains as string))
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  private resolveArtifactPath(jobId: string, kind: Exclude<SimulationArtifactKind, 'stdout' | 'stderr'>): string {
+    const jobDir = this.current.backend.progressStore.jobDir(jobId);
+    switch (kind) {
+      case 'status':
+        return join(jobDir, STATUS_FILE);
+      case 'runtime':
+        return join(jobDir, RUNTIME_FILE);
+      case 'exit':
+        return join(jobDir, EXIT_FILE);
+      case 'result':
+        return join(jobDir, RESULT_FILE);
+    }
+  }
+
+  private resolveStreamArtifactPath(
+    jobId: string,
+    kind: 'stdout' | 'stderr',
+    freshness: 'cached' | 'fresh',
+  ): string {
+    const runtimeRecord =
+      freshness === 'cached'
+        ? this.current.backend.progressStore.readRuntimeRecord(jobId)
+        : parseJsonArtifact<DurableCliRuntimeRecord>(this.readTextArtifact(this.resolveArtifactPath(jobId, 'runtime')));
+
+    if (kind === 'stdout' && hasRuntimeStreamPath(runtimeRecord, 'stdoutPath')) {
+      return runtimeRecord.stdoutPath;
+    }
+    if (kind === 'stderr' && hasRuntimeStreamPath(runtimeRecord, 'stderrPath')) {
+      return runtimeRecord.stderrPath;
+    }
+
+    return join(this.current.backend.progressStore.jobDir(jobId), kind);
+  }
+
+  private readTextArtifact(path: string): string | null {
+    try {
+      return this.current.backend.storage.readFileSync(path, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function extractRuntimePid(record: unknown): number | null {
+  return hasRuntimePid(record) ? record.pid : null;
+}

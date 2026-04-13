@@ -1,0 +1,35 @@
+world:
+  listen:
+    port: 4303
+  durable:
+    - pid: 30303
+      runtimeDelayMs: 5
+      exit:
+        delayMs: 5
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: reset world result
+steps:
+  - type: boot
+  - type: launch
+    prompt: simulate clean reset world
+  - type: restart
+  - type: expect
+    jobCount: 0
+    sessionCount:
+      provider: fake-provider
+      count: 0
+  - type: launch
+    prompt: simulate clean reset world
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    result:
+      content: reset world result
+      aborted: false
+    noRealIO: true
