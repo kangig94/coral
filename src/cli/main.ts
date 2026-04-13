@@ -56,6 +56,7 @@ import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/ops/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
+import { registerSimulateCommand } from './simulate.js';
 
 function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
@@ -410,6 +411,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
   );
 
   registerProviderCommands(program, providerRegistry);
+  registerSimulateCommand(program, { emitError, getOutputFormat });
 
   const listCommand = program.command('list');
   listCommand

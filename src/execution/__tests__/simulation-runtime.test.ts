@@ -9,7 +9,7 @@ import {
   SimulationRuntime,
   VirtualTime,
   createSimulationBackend,
-} from './simulation-runtime.js';
+} from '../simulation/core/index.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {

@@ -33,6 +33,7 @@ try {
   } else {
     run('npx vitest run');
   }
+  run('npx vitest run --config vitest.simulation.config.ts');
 } catch {
   process.exit(1);
 }

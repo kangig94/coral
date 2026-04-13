@@ -24,7 +24,8 @@
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
     "test": "node scripts/test.mjs",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:simulation": "vitest run --config vitest.simulation.config.ts"
   },
   "dependencies": {
     "@orama/orama": "^3.1.18",

@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const CLI_BUNDLE = join(process.cwd(), 'bridge', 'coral-cli.cjs');
@@ -36,6 +36,7 @@ describe('cli main — help and structure', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('codex');
     expect(stdout).toContain('claude');
+    expect(stdout).toContain('simulate');
     expect(stdout).toContain('list');
     expect(stdout).toContain('wait');
     expect(stdout).toContain('abort');
@@ -69,6 +70,13 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('--timeout');
     expect(stdout).toContain('--cursor');
     expect(stdout).toContain('--embed');
+  });
+
+  it('shows simulate subcommand help', () => {
+    const { stdout, status } = runCli(['simulate', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('Usage: coral-cli simulate [options] <file>');
+    expect(stdout).toContain('Scenario YAML file');
   });
 
   it('shows discuss subcommand help', () => {
@@ -119,6 +127,34 @@ describe('cli main — wait --jobs validation', () => {
     const { stderr, status } = runCli(['wait', '--jobs', '']);
     expect(status).toBe(1);
     expect(stderr).toContain('job');
+  });
+});
+
+describe('cli main — simulate', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-simulate-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('runs a bundled simulation scenario and emits json output', () => {
+    const scenarioFile = join(tmpDir, 'scenario.yaml');
+    const contents = ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n');
+
+    writeFileSync(scenarioFile, contents, 'utf8');
+
+    const { stdout, stderr, status } = runCli(['simulate', scenarioFile, '--output-format', 'json']);
+
+    expect(status).toBe(0);
+    expect(stderr).toBe('');
+    expect(JSON.parse(stdout)).toMatchObject({
+      passed: true,
+      steps: [{ stepIndex: 0, type: 'expect', ok: true }],
+    });
   });
 });
 

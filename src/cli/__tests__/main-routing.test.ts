@@ -172,7 +172,31 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     expect(program.name()).toBe('coral-cli');
+    expect(program.commands.find((command) => command.name() === 'simulate')).toBeDefined();
     expect(program.commands.find((command) => command.name() === 'list')).toBeDefined();
+  });
+
+  it('routes simulate to the scenario runner command surface', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const scenarioFile = join(tmpdir(), `coral-simulate-${Date.now()}.yaml`);
+
+    writeFileSync(
+      scenarioFile,
+      ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n'),
+      'utf8',
+    );
+
+    try {
+      await program.parseAsync(['node', 'coral-cli', 'simulate', scenarioFile]);
+
+      expect(stdout).toContain('PASS 0 expect');
+      expect(stdout).toContain('Scenario passed');
+      expect(stderr).toBe('');
+      expect(process.exitCode).toBe(0);
+    } finally {
+      unlinkSync(scenarioFile);
+    }
   });
 
   it('uses flattened provider commands with unified flags and workflow start-prompt help', async () => {
