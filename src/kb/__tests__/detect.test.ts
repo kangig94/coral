@@ -69,6 +69,16 @@ describe('kb detection and paths', () => {
     expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev'));
   });
 
+  it('treats build flavor as single-assignment', async () => {
+    const { infraPaths } = await loadKbModules();
+
+    infraPaths.setBuildFlavor('dev');
+
+    expect(() => infraPaths.setBuildFlavor('dev')).not.toThrow();
+    expect(() => infraPaths.setBuildFlavor('prod')).toThrow('Build flavor already set to dev');
+    expect(infraPaths.currentBuildFlavor()).toBe('dev');
+  });
+
   it('falls back to text-only startup when the vector store is unavailable', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();

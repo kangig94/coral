@@ -9,6 +9,7 @@
  */
 
 import type { Server, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -59,6 +60,7 @@ export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
+const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
 export const OLD_FORMAT_NOTICE =
   'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
 export const GHOST_LAUNCH_NOTICE =
@@ -137,6 +139,133 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
     ...status,
     backendNamespace: namespace,
   } as PersistedStatusRecord;
+}
+
+/**
+ * Adopt orphaned jobs from other namespaces whose daemon has died.
+ *
+ * When a plugin updates (e.g. 0.5.0→0.5.1), the plugin root path changes,
+ * causing a namespace hash change. Jobs from the old namespace are invisible
+ * to the new ProgressStore. This function runs BEFORE hydration to rebind
+ * orphaned live jobs to the current namespace on disk.
+ *
+ * Safety: only adopts if the foreign namespace's daemon is confirmed dead
+ * (backend.json missing or PID not alive). Jobs from live daemons (e.g.
+ * a dev-flavor daemon during a prod upgrade) are never touched.
+ */
+export function adoptOrphanedCrossNamespaceJobs(
+  currentNamespace: string,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process'>,
+  log: (message: string) => void,
+): number {
+  let adopted = 0;
+  const jobsDir = runtime.paths.jobsDir();
+
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = runtime.storage.readdirSync(jobsDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    // Read status.json
+    let record: PersistedStatusRecord | null;
+    try {
+      const data = runtime.storage.readFileSync(join(jobsDir, entry.name, 'status.json'), 'utf-8');
+      record = JSON.parse(data) as PersistedStatusRecord;
+    } catch {
+      continue;
+    }
+
+    const foreignNs = readBackendNamespace(record);
+    if (foreignNs === null || foreignNs === currentNamespace) continue;
+    if (!isLivePhase(record.phase)) continue;
+
+    if (isForeignDaemonAlive(foreignNs, runtime)) continue; // daemon alive → don't steal
+
+    // Rebind to current namespace on disk
+    const rebound: PersistedStatusRecord = { ...record, backendNamespace: currentNamespace };
+    try {
+      const statusPath = join(jobsDir, entry.name, 'status.json');
+      const tmpPath = statusPath + '.tmp';
+      runtime.storage.writeFileSync(tmpPath, JSON.stringify(rebound, null, 2), { encoding: 'utf-8' });
+      runtime.storage.renameSync(tmpPath, statusPath);
+      adopted++;
+      log(`Adopted orphaned job ${entry.name} from namespace ${foreignNs}\n`);
+    } catch (error: unknown) {
+      log(`Failed to adopt orphaned job ${entry.name}: ${formatError(error)}\n`);
+    }
+  }
+
+  return adopted;
+}
+
+function isForeignDaemonAlive(
+  foreignNamespace: string,
+  runtime: Pick<Runtime, 'storage' | 'process'>,
+): boolean {
+  const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
+  const infoPath = join(installDir, 'backend.json');
+  const lockPath = join(installDir, 'backend.lock');
+
+  let backendRecord: { pid: number; instanceId: string } | null = null;
+  try {
+    const raw = runtime.storage.readFileSync(infoPath, 'utf-8');
+    const info: unknown = JSON.parse(raw);
+    if (
+      isRecord(info) &&
+      typeof info.pid === 'number' &&
+      Number.isFinite(info.pid) &&
+      typeof info.instanceId === 'string' &&
+      info.instanceId.length > 0
+    ) {
+      backendRecord = { pid: info.pid, instanceId: info.instanceId };
+    }
+  } catch {
+    backendRecord = null;
+  }
+
+  let lockMissing = false;
+  let lockFresh = false;
+  let lockRecord: { pid: number; instanceId: string } | null = null;
+  try {
+    const raw = runtime.storage.readFileSync(lockPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    const ageMs = Date.now() - runtime.storage.statSync(lockPath).mtimeMs;
+    lockFresh = ageMs <= FOREIGN_DAEMON_LOCK_STALE_MS;
+    if (
+      isRecord(parsed) &&
+      typeof parsed.pid === 'number' &&
+      Number.isFinite(parsed.pid) &&
+      typeof parsed.instanceId === 'string' &&
+      parsed.instanceId.length > 0
+    ) {
+      lockRecord = { pid: parsed.pid, instanceId: parsed.instanceId };
+    }
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      lockMissing = true;
+    } else {
+      return true;
+    }
+  }
+
+  if (backendRecord === null) {
+    return !lockMissing && lockFresh;
+  }
+
+  if (lockMissing || !lockFresh || lockRecord === null) {
+    return false;
+  }
+
+  if (backendRecord.instanceId !== lockRecord.instanceId || backendRecord.pid !== lockRecord.pid) {
+    return false;
+  }
+
+  return runtime.process.isAlive(backendRecord.pid);
 }
 
 export function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
@@ -1022,6 +1151,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         launchRecord: PersistedLaunchRecord;
         runtimeRecord: PersistedRuntimeRecord;
       }> = [];
+      // Adopt orphaned jobs from previous daemon versions (e.g. 0.5.0→0.5.1 upgrade)
+      // before ProgressStore hydration so they appear in the recovery snapshot.
+      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, runtime, log);
+      if (adoptedCount > 0) {
+        log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
+      }
+
       const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
       const invariants: RecoveryInvariants = {
         peerDaemonAlive: false,

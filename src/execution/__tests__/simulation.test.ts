@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { isDurableCliRuntime } from '../../shared/types.js';
 import { runScenario, type StepResult } from '../simulation/runner.js';
 import type { SimulationDocument } from '../simulation/schema.js';
-import type { SimulationWorld } from '../simulation/world.js';
+import { SimulationWorld } from '../simulation/world.js';
 
 type LaunchReceipt = {
   decision: { status: 'running' | 'queued' };
@@ -138,33 +138,32 @@ function getDurableRuntime(world: SimulationWorld, jobId: string) {
   return candidate;
 }
 
-async function cleanupWorld(world: SimulationWorld): Promise<void> {
-  try {
-    const lifecycle = world.getBackendLifecycle();
-    if (lifecycle === 'running' || lifecycle === 'starting') {
-      await world.shutdown('test-cleanup');
-    }
-    if (lifecycle !== 'stopped') {
-      await world.waitForShutdown();
-    }
-  } catch {
-    // Best-effort cleanup only.
-  } finally {
-    world.dispose();
-  }
-}
-
 afterEach(async () => {
   while (worlds.length > 0) {
     const world = worlds.pop();
     if (!world) {
       continue;
     }
-    await cleanupWorld(world);
+    await world.teardown();
   }
 });
 
 describe('deterministic simulation lifecycle replay', () => {
+  it('requires a booted world before launching, waiting, aborting, or killing jobs', async () => {
+    const world = new SimulationWorld({});
+
+    try {
+      await expect(world.launchJob('launch before boot')).rejects.toThrow('Simulation world must be booted before launch');
+      await expect(world.waitUntil('job-1', { terminal: true }, 5, { maxSteps: 1 })).rejects.toThrow(
+        'Simulation world must be booted before wait',
+      );
+      await expect(world.abort('job-1')).rejects.toThrow('Simulation world must be booted before abort');
+      await expect(world.kill({ pid: 123 })).rejects.toThrow('Simulation world must be booted before kill');
+    } finally {
+      world.dispose();
+    }
+  });
+
   it('replays a complete lifecycle with hooks, artifacts, ordering, idle cleanup, and zero real I/O', async () => {
     const wallStart = performance.now();
     const { result, world } = await runScenario(COMPLETE_SCENARIO);
@@ -232,9 +231,9 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(replay.map((event) => event.type)).toEqual(['progress', 'progress', 'terminal']);
     expect(replay[0]?.type === 'progress' ? replay[0].message : '').toContain('provider-progress-1');
     expect(replay[1]?.type === 'progress' ? replay[1].message : '').toContain('provider-progress-2');
-    expect(world.getProgressEvents(launch.jobId)).toHaveLength(2);
-    expect(world.getProgressEvents(launch.jobId)[0]).toContain('provider-progress-1');
-    expect(world.getProgressEvents(launch.jobId)[1]).toContain('provider-progress-2');
+    expect(world.getProgress(launch.jobId)).toHaveLength(2);
+    expect(world.getProgress(launch.jobId)[0]).toContain('provider-progress-1');
+    expect(world.getProgress(launch.jobId)[1]).toContain('provider-progress-2');
     expect(world.getPhaseTransitions(launch.jobId)).toEqual([
       { previousPhase: 'launching', phase: 'running' },
       { previousPhase: 'running', phase: 'completed' },

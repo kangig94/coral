@@ -1,1 +1,1 @@
-export * from '../simulation/core/index.js';
+export * from '../simulation/index.js';

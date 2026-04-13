@@ -1,20 +1,17 @@
-import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
-import { createReplayCursor } from '../progress-store.js';
+import { createReplayCursor, type ReplayCursor } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import type { BackendServerInfo, LifecycleState } from '../server-types.js';
 import {
   createSimulationBackend,
-  type ChildOutputChunk,
-  type FakeProviderScenario,
-  type MockDurableScript,
-  type MockKillAction,
-  type MockSpawnScript,
+  DEFAULT_EPOCH_MS,
   type SimulationBackend,
   type SimulationHookLog,
-  type SimulationScenario,
 } from './core/index.js';
-import type { CorruptTarget, LaunchStep, ScenarioError, WaitUntil, WorldConfig } from './schema.js';
+import { acquireNoRealIoMonitor, cloneNoRealIoReport, type NoRealIoRegistration, type NoRealIoReport } from './no-real-io.js';
+import { normalizeWorldConfig } from './normalize.js';
+import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
+import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
 import {
   isTerminalPhase,
   type DurableCliRuntimeRecord,
@@ -27,7 +24,6 @@ import {
   type TerminalResult,
 } from '../../shared/types.js';
 
-const DEFAULT_EPOCH_MS = 1_000_000;
 const STATUS_FILE = 'status.json';
 const RUNTIME_FILE = 'runtime.json';
 const EXIT_FILE = 'exit.json';
@@ -59,11 +55,7 @@ export type WaitDetail = {
   actual: WaitObservation;
 };
 
-export type NoRealIoReport = {
-  realKillCalls: number;
-  realFetchCalls: number;
-  violations: string[];
-};
+export { type NoRealIoReport } from './no-real-io.js';
 
 export type SimulationHttpResponse = {
   statusCode: number;
@@ -75,228 +67,7 @@ type WorldGenerationState = {
   backend: SimulationBackend;
   startedInfo: BackendServerInfo | null;
   phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
-  progressEvents: Map<string, string[]>;
 };
-
-type NoRealIoRegistration = {
-  report: NoRealIoReport;
-  release: () => void;
-};
-
-const activeNoRealIoReports = new Set<NoRealIoReport>();
-const originalFetch = globalThis.fetch;
-const originalProcessKill = process.kill;
-let noRealIoInstalled = false;
-
-function pushUniqueViolation(report: NoRealIoReport, message: string): void {
-  report.violations.push(message);
-}
-
-function describeFetchCall(input: unknown, init?: RequestInit): string {
-  let method = init?.method;
-  let target = 'unknown';
-
-  if (typeof input === 'string' || input instanceof URL) {
-    target = String(input);
-  } else if (typeof Request !== 'undefined' && input instanceof Request) {
-    target = input.url;
-    method ??= input.method;
-  }
-
-  return `fetch(${method ?? 'GET'} ${target})`;
-}
-
-function recordNoRealIoFetch(input: unknown, init?: RequestInit): void {
-  const message = describeFetchCall(input, init);
-  for (const report of activeNoRealIoReports) {
-    report.realFetchCalls += 1;
-    pushUniqueViolation(report, message);
-  }
-}
-
-function recordNoRealIoKill(pid: number, signal?: NodeJS.Signals | number): void {
-  const renderedSignal = signal ?? 'SIGTERM';
-  const message = `process.kill(${pid}, ${renderedSignal})`;
-  for (const report of activeNoRealIoReports) {
-    report.realKillCalls += 1;
-    pushUniqueViolation(report, message);
-  }
-}
-
-function installNoRealIoMonitor(): void {
-  if (noRealIoInstalled) {
-    return;
-  }
-
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    recordNoRealIoFetch(input, init);
-    throw new Error('Real fetch is disabled while SimulationWorld is active');
-  }) as typeof globalThis.fetch;
-
-  process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-    recordNoRealIoKill(pid, signal);
-    return true;
-  }) as typeof process.kill;
-
-  noRealIoInstalled = true;
-}
-
-function restoreNoRealIoMonitorIfIdle(): void {
-  if (!noRealIoInstalled || activeNoRealIoReports.size > 0) {
-    return;
-  }
-
-  globalThis.fetch = originalFetch;
-  process.kill = originalProcessKill;
-  noRealIoInstalled = false;
-}
-
-function acquireNoRealIoMonitor(): NoRealIoRegistration {
-  const report: NoRealIoReport = {
-    realKillCalls: 0,
-    realFetchCalls: 0,
-    violations: [],
-  };
-  activeNoRealIoReports.add(report);
-  installNoRealIoMonitor();
-
-  let released = false;
-  return {
-    report,
-    release: () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      activeNoRealIoReports.delete(report);
-      restoreNoRealIoMonitorIfIdle();
-    },
-  };
-}
-
-function toRuntimeError(value: ScenarioError | Error | string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    return new Error(value);
-  }
-
-  const error = new Error(value.message);
-  if (value.name) {
-    error.name = value.name;
-  }
-  if (value.code) {
-    (error as Error & { code?: string }).code = value.code;
-  }
-  return error;
-}
-
-function cloneOutputChunks(value: string | ChildOutputChunk[] | undefined): string | ChildOutputChunk[] | undefined {
-  if (value === undefined || typeof value === 'string') {
-    return value;
-  }
-  return value.map((chunk) => ({ ...chunk }));
-}
-
-function cloneKillActions(
-  kills:
-    | Array<{
-        signal?: string | 0;
-        delayMs?: number;
-        exitCode?: number | null;
-        exitSignal?: string | null;
-      }>
-    | undefined,
-): MockKillAction[] | undefined {
-  return kills?.map((entry) => ({
-    ...entry,
-    signal: entry.signal as MockKillAction['signal'],
-  }));
-}
-
-function normalizeSpawnScripts(scripts: WorldConfig['spawn']): MockSpawnScript[] | undefined {
-  return scripts?.map((script) => ({
-    pid: script.pid,
-    stdout: cloneOutputChunks(script.stdout),
-    stderr: cloneOutputChunks(script.stderr),
-    close:
-      script.close === undefined
-        ? undefined
-        : script.close === null
-          ? null
-          : { ...script.close },
-    error:
-      script.error === undefined
-        ? undefined
-        : script.error === null
-          ? null
-          : {
-              delayMs: script.error.delayMs,
-              error: toRuntimeError(script.error.error),
-            },
-    kills: cloneKillActions(script.kills),
-  }));
-}
-
-function normalizeDurableScripts(scripts: WorldConfig['durable']): MockDurableScript[] | undefined {
-  return scripts?.map((script) => ({
-    pid: script.pid,
-    runtimeDelayMs: script.runtimeDelayMs,
-    stdout: cloneOutputChunks(script.stdout),
-    stderr: cloneOutputChunks(script.stderr),
-    runtimeRecord: script.runtimeRecord ? { ...script.runtimeRecord } : undefined,
-    exit:
-      script.exit === undefined
-        ? undefined
-        : script.exit === null
-          ? null
-          : { ...script.exit },
-    kills: cloneKillActions(script.kills),
-    waitForExitError:
-      script.waitForExitError === undefined ? undefined : toRuntimeError(script.waitForExitError),
-  }));
-}
-
-function normalizeFakeProvider(config: WorldConfig['fakeProvider']): FakeProviderScenario | undefined {
-  if (!config) {
-    return undefined;
-  }
-
-  return {
-    name: config.name,
-    cli: config.cli
-      ? {
-          command: config.cli.command,
-          args: config.cli.args ? [...config.cli.args] : undefined,
-          extraEnv: config.cli.extraEnv ? { ...config.cli.extraEnv } : undefined,
-        }
-      : undefined,
-    progress: config.progress?.map((entry) => ({ ...entry })),
-    result: config.result
-      ? {
-          ...config.result,
-          errors: config.result.errors ? [...config.result.errors] : undefined,
-          warnings: config.result.warnings ? [...config.result.warnings] : undefined,
-          usage: config.result.usage ? { ...config.result.usage } : undefined,
-        }
-      : undefined,
-    preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),
-  };
-}
-
-function normalizeWorldConfig(config: WorldConfig): SimulationScenario {
-  return {
-    epochMs: config.epochMs,
-    env: config.env ? { ...config.env } : undefined,
-    pluginRoot: config.pluginRoot,
-    projectRoot: config.projectRoot,
-    listen: config.listen ? { ...config.listen } : undefined,
-    spawn: normalizeSpawnScripts(config.spawn),
-    durable: normalizeDurableScripts(config.durable),
-    fakeProvider: normalizeFakeProvider(config.fakeProvider),
-  };
-}
 
 function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
   return {
@@ -312,91 +83,6 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
     createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };
-}
-
-function cloneNoRealIoReport(report: NoRealIoReport): NoRealIoReport {
-  return {
-    realKillCalls: report.realKillCalls,
-    realFetchCalls: report.realFetchCalls,
-    violations: [...report.violations],
-  };
-}
-
-class ScenarioHttpRequest extends EventEmitter {
-  readonly method: string;
-  readonly url: string;
-  readonly headers: Record<string, string>;
-  private readonly bodyText: string | null;
-  private started = false;
-  destroyed = false;
-
-  constructor(method: string, url: string, token: string, body: unknown) {
-    super();
-    this.method = method;
-    this.url = url;
-    this.bodyText = body === undefined ? null : JSON.stringify(body);
-    this.headers = {
-      'x-coral-backend-token': token,
-      ...(this.bodyText !== null ? { 'content-type': 'application/json' } : {}),
-    };
-  }
-
-  start(): void {
-    if (this.started) {
-      return;
-    }
-    this.started = true;
-    queueMicrotask(() => {
-      if (this.destroyed) {
-        return;
-      }
-      if (this.bodyText !== null) {
-        this.emit('data', Buffer.from(this.bodyText, 'utf-8'));
-      }
-      this.emit('end');
-    });
-  }
-
-  resume(): void {}
-
-  destroy(): void {
-    this.destroyed = true;
-  }
-}
-
-class ScenarioHttpResponse extends EventEmitter {
-  statusCode = 200;
-  headersSent = false;
-  writableEnded = false;
-  destroyed = false;
-  readonly headers = new Map<string, string | number | string[]>();
-  body = '';
-
-  setHeader(name: string, value: string | number | string[]): void {
-    this.headers.set(name, value);
-  }
-
-  writeHead(statusCode: number): void {
-    this.statusCode = statusCode;
-    this.headersSent = true;
-  }
-
-  write(chunk: string | Buffer): boolean {
-    this.headersSent = true;
-    this.body += Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : chunk;
-    return true;
-  }
-
-  end(chunk?: string | Buffer): this {
-    if (chunk !== undefined) {
-      this.write(chunk);
-    }
-    this.headersSent = true;
-    this.writableEnded = true;
-    this.emit('finish');
-    this.emit('close');
-    return this;
-  }
 }
 
 function parseJsonArtifact<T>(raw: string | null): T | null {
@@ -438,28 +124,7 @@ export class SimulationWorld {
   private disposed = false;
 
   constructor(config: WorldConfig) {
-    this.initialConfig = {
-      ...config,
-      env: config.env ? { ...config.env } : undefined,
-      listen: config.listen ? { ...config.listen } : undefined,
-      spawn: config.spawn?.map((entry) => ({ ...entry })),
-      durable: config.durable?.map((entry) => ({ ...entry })),
-      fakeProvider: config.fakeProvider
-        ? {
-            ...config.fakeProvider,
-            cli: config.fakeProvider.cli ? { ...config.fakeProvider.cli } : undefined,
-            progress: config.fakeProvider.progress?.map((entry) => ({ ...entry })),
-            result: config.fakeProvider.result
-              ? {
-                  ...config.fakeProvider.result,
-                  errors: config.fakeProvider.result.errors ? [...config.fakeProvider.result.errors] : undefined,
-                  warnings: config.fakeProvider.result.warnings ? [...config.fakeProvider.result.warnings] : undefined,
-                  usage: config.fakeProvider.result.usage ? { ...config.fakeProvider.result.usage } : undefined,
-                }
-              : undefined,
-          }
-        : undefined,
-    };
+    this.initialConfig = config;
     this.epochMs = this.initialConfig.epochMs ?? DEFAULT_EPOCH_MS;
     this.noRealIoRegistration = acquireNoRealIoMonitor();
     this.current = this.createGenerationState();
@@ -495,6 +160,7 @@ export class SimulationWorld {
   async launchJob(step: LaunchStep): Promise<LaunchDecision>;
   async launchJob(promptOrStep: string | LaunchStep, opts: LaunchJobOptions = {}): Promise<LaunchDecision> {
     this.assertUsable();
+    this.assertBooted('launch');
     const step =
       typeof promptOrStep === 'string'
         ? ({
@@ -532,9 +198,12 @@ export class SimulationWorld {
     limits: { maxSteps?: number; timeoutMs?: number },
   ): Promise<WaitDetail> {
     this.assertUsable();
+    this.assertBooted('wait');
     const startedAt = this.getVirtualElapsedMs();
+    const cursor = createReplayCursor();
+    const accumulatedProgress: string[] = [];
     let steps = 0;
-    let actual = this.observeJob(jobId);
+    let actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
 
     if (this.matchesWaitCondition(until, actual)) {
       return {
@@ -579,7 +248,7 @@ export class SimulationWorld {
 
       await this.advance(advanceBy);
       steps += 1;
-      actual = this.observeJob(jobId);
+      actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
       if (this.matchesWaitCondition(until, actual)) {
         return {
           ok: true,
@@ -606,6 +275,7 @@ export class SimulationWorld {
 
   async abort(jobId: string): Promise<void> {
     this.assertUsable();
+    this.assertBooted('abort');
     const status = this.current.backend.progressStore.readStatus(jobId);
     if (!status) {
       throw new Error(`Cannot abort unknown job ${jobId}`);
@@ -620,6 +290,7 @@ export class SimulationWorld {
 
   async kill(target: { pid?: number; jobId?: string }): Promise<void> {
     this.assertUsable();
+    this.assertBooted('kill');
     const pid = target.pid ?? (target.jobId ? extractRuntimePid(this.readArtifact(target.jobId, 'runtime', { freshness: 'cached' })) : null);
     if (pid === null || pid === undefined) {
       if (target.jobId) {
@@ -757,23 +428,14 @@ export class SimulationWorld {
     return cloneNoRealIoReport(this.noRealIoRegistration.report);
   }
 
-  getLifecycleState(): LifecycleState {
+  getBackendLifecycle(): LifecycleState {
     this.assertUsable();
     return this.current.backend.backend.getLifecycle();
-  }
-
-  getBackendLifecycle(): LifecycleState {
-    return this.getLifecycleState();
   }
 
   getPhaseTransitions(jobId: string): Array<{ previousPhase: string; phase: string }> {
     this.assertUsable();
     return [...(this.current.phaseTransitions.get(jobId) ?? [])];
-  }
-
-  getProgressEvents(jobId: string): string[] {
-    this.assertUsable();
-    return [...(this.current.progressEvents.get(jobId) ?? [])];
   }
 
   getVirtualElapsedMs(): number {
@@ -804,6 +466,20 @@ export class SimulationWorld {
     return this.current.backend.runtime.process.isAlive(pid);
   }
 
+  async teardown(): Promise<void> {
+    try {
+      const lifecycle = this.current.backend.backend.getLifecycle();
+      if (lifecycle === 'starting' || lifecycle === 'running') {
+        await this.current.backend.backend.shutdown('teardown');
+      }
+      if (lifecycle !== 'stopped') {
+        await this.current.backend.backend.waitForShutdown();
+      }
+    } finally {
+      this.dispose();
+    }
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;
@@ -818,10 +494,15 @@ export class SimulationWorld {
     }
   }
 
+  private assertBooted(action: 'launch' | 'wait' | 'abort' | 'kill'): void {
+    if (this.current.startedInfo === null) {
+      throw new Error(`Simulation world must be booted before ${action}`);
+    }
+  }
+
   private createGenerationState(): WorldGenerationState {
     const backend = createSimulationBackend(normalizeWorldConfig(this.initialConfig));
     const phaseTransitions = new Map<string, Array<{ previousPhase: string; phase: string }>>();
-    const progressEvents = new Map<string, string[]>();
 
     backend.eventBus.on('job:phase_changed', ({ jobId, previousPhase, phase }) => {
       const entries = phaseTransitions.get(jobId) ?? [];
@@ -829,17 +510,10 @@ export class SimulationWorld {
       phaseTransitions.set(jobId, entries);
     });
 
-    backend.eventBus.on('job:progress', ({ jobId, message }) => {
-      const entries = progressEvents.get(jobId) ?? [];
-      entries.push(message);
-      progressEvents.set(jobId, entries);
-    });
-
     return {
       backend,
       startedInfo: null,
       phaseTransitions,
-      progressEvents,
     };
   }
 
@@ -858,6 +532,36 @@ export class SimulationWorld {
       progress: replay
         .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
         .map((event) => event.message),
+      result: status?.result ?? null,
+    };
+  }
+
+  private observeJobIncremental(
+    jobId: string,
+    cursor: ReplayCursor,
+    accumulatedProgress: string[],
+  ): WaitObservation {
+    const status = this.current.backend.progressStore.readStatus(jobId);
+    const newEvents = this.current.backend.progressStore.replayFrom(jobId, 0, cursor);
+    let terminalSeen = false;
+
+    for (const event of newEvents) {
+      if (event.type === 'progress' && event.message !== undefined) {
+        accumulatedProgress.push(event.message);
+      }
+      if (event.type === 'terminal') {
+        terminalSeen = true;
+      }
+    }
+
+    return {
+      phase: status?.phase ?? null,
+      runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
+      terminal:
+        terminalSeen ||
+        Boolean(status?.result) ||
+        (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
+      progress: accumulatedProgress,
       result: status?.result ?? null,
     };
   }

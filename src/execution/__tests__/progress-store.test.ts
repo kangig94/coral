@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
@@ -18,6 +18,7 @@ import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-st
 import { createRealRuntime } from '../runtime.js';
 
 const jobIdsToClean = new Set<string>();
+const installDirsToClean = new Set<string>();
 const projectRoot = '/tmp/project';
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
@@ -62,6 +63,10 @@ afterEach(() => {
     rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
   }
   jobIdsToClean.clear();
+  for (const installDir of installDirsToClean) {
+    rmSync(installDir, { recursive: true, force: true });
+  }
+  installDirsToClean.clear();
   rmSync(mockState.tmpRoot, { recursive: true, force: true });
   renameCalls.length = 0;
   eventBus.reset();
@@ -527,6 +532,26 @@ describe('durable snapshot artifacts', () => {
     expect(store.readRuntimeRecord(jobId)).toEqual(secondRecord);
   });
 
+  it('does not negative-cache a missing runtime.json record', () => {
+    const store = createStore();
+    const jobId = `test-runtime-cache-miss-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
+
+    const runtimePath = join(store.jobDir(jobId), 'runtime.json');
+    const record: PersistedRuntimeRecord = {
+      pid: 333,
+      stdoutPath: join(store.jobDir(jobId), 'stdout'),
+      stderrPath: join(store.jobDir(jobId), 'stderr'),
+      startTime: '2026-04-14T00:00:00.000Z',
+    };
+
+    expect(store.readRuntimeRecord(jobId)).toBeNull();
+
+    writeFileSync(runtimePath, JSON.stringify(record, null, 2), 'utf8');
+    expect(store.readRuntimeRecord(jobId)).toEqual(record);
+  });
+
   it('writes and reads exit.json', () => {
     const store = createStore();
     const jobId = `test-exit-${randomUUID()}`;
@@ -830,5 +855,184 @@ describe('namespace-bound discovery scan', () => {
     expect(betaIds.has(legacyId)).toBe(true);
     expect(betaIds.has(corruptId)).toBe(true);
     expect(betaIds.has(ownedId)).toBe(false);
+  });
+});
+
+describe('cross-namespace orphan adoption', () => {
+  it('adopts live-phase jobs from dead foreign namespaces but skips live ones', async () => {
+    const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
+
+    // Create a job under foreign namespace 'ns-old' with running phase
+    const seeder = new ProgressStore('ns-old', runtime);
+    const orphanId = `orphan-${randomUUID()}`;
+    const aliveId = `alive-${randomUUID()}`;
+    jobIdsToClean.add(orphanId);
+    jobIdsToClean.add(aliveId);
+
+    seeder.initJob({
+      jobId: orphanId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-old',
+      initialPhase: 'running',
+    });
+
+    seeder.initJob({
+      jobId: aliveId,
+      sessionId: 's2',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-alive',
+      initialPhase: 'running',
+    });
+
+    const installRoot = join(require('node:os').homedir(), '.claude', 'coral', 'installations');
+    const orphanInstallDir = join(installRoot, 'ns-old');
+    const aliveInstallDir = join(installRoot, 'ns-alive');
+    installDirsToClean.add(orphanInstallDir);
+    installDirsToClean.add(aliveInstallDir);
+    mkdirSync(orphanInstallDir, { recursive: true });
+    mkdirSync(aliveInstallDir, { recursive: true });
+
+    writeFileSync(
+      join(orphanInstallDir, 'backend.lock'),
+      JSON.stringify({
+        instanceId: 'orphan-stale-instance',
+        pid: process.pid,
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'prod',
+        startedAt: Date.now() - 60_000,
+      }),
+      'utf-8',
+    );
+    const staleAt = new Date(Date.now() - 60_000);
+    utimesSync(join(orphanInstallDir, 'backend.lock'), staleAt, staleAt);
+
+    writeFileSync(
+      join(aliveInstallDir, 'backend.json'),
+      JSON.stringify({ pid: process.pid, port: 9999, host: '127.0.0.1', token: 'x', version: '0.1.0', bundleHash: 'x', flavor: 'dev', instanceId: 'alive-instance', namespace: 'ns-alive', startedAt: Date.now() }),
+    );
+    writeFileSync(
+      join(aliveInstallDir, 'backend.lock'),
+      JSON.stringify({
+        instanceId: 'alive-instance',
+        pid: process.pid,
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'dev',
+        startedAt: Date.now(),
+      }),
+    );
+
+    // Run adoption for new namespace 'ns-new'
+    const logs: string[] = [];
+    const adopted = adoptOrphanedCrossNamespaceJobs('ns-new', runtime, (msg) => logs.push(msg));
+
+    // Should adopt orphan (dead daemon) but NOT alive (live daemon)
+    expect(adopted).toBe(1);
+    expect(logs.some((l) => l.includes(orphanId))).toBe(true);
+    expect(logs.some((l) => l.includes(aliveId))).toBe(false);
+
+    // New ProgressStore should now see the adopted job
+    const store = new ProgressStore('ns-new', runtime);
+    const ids = new Set(store.listJobIds());
+    expect(ids.has(orphanId)).toBe(true);
+    expect(ids.has(aliveId)).toBe(false);
+  });
+
+  it('does not adopt while a foreign namespace only has a fresh backend.lock startup sentinel', async () => {
+    const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
+
+    const seeder = new ProgressStore('ns-starting', runtime);
+    const startupId = `startup-${randomUUID()}`;
+    jobIdsToClean.add(startupId);
+
+    seeder.initJob({
+      jobId: startupId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-starting',
+      initialPhase: 'running',
+    });
+
+    const installDir = join(require('node:os').homedir(), '.claude', 'coral', 'installations', 'ns-starting');
+    installDirsToClean.add(installDir);
+    mkdirSync(installDir, { recursive: true });
+    writeFileSync(
+      join(installDir, 'backend.lock'),
+      JSON.stringify({
+        instanceId: 'startup-instance',
+        pid: process.pid,
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'prod',
+        startedAt: Date.now(),
+      }),
+      'utf-8',
+    );
+
+    const adopted = adoptOrphanedCrossNamespaceJobs('ns-new', runtime, () => {});
+
+    expect(adopted).toBe(0);
+    const store = new ProgressStore('ns-new', runtime);
+    expect(store.listJobIds()).not.toContain(startupId);
+  });
+
+  it('adopts when backend.json points at a reused pid but backend.lock belongs to a different instance', async () => {
+    const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
+
+    const seeder = new ProgressStore('ns-reused-pid', runtime);
+    const reusedId = `reused-${randomUUID()}`;
+    jobIdsToClean.add(reusedId);
+
+    seeder.initJob({
+      jobId: reusedId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-reused-pid',
+      initialPhase: 'running',
+    });
+
+    const installDir = join(require('node:os').homedir(), '.claude', 'coral', 'installations', 'ns-reused-pid');
+    installDirsToClean.add(installDir);
+    mkdirSync(installDir, { recursive: true });
+    writeFileSync(
+      join(installDir, 'backend.json'),
+      JSON.stringify({
+        pid: process.pid,
+        port: 9999,
+        host: '127.0.0.1',
+        token: 'x',
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'prod',
+        instanceId: 'stale-instance',
+        namespace: 'ns-reused-pid',
+        startedAt: Date.now(),
+      }),
+      'utf-8',
+    );
+    writeFileSync(
+      join(installDir, 'backend.lock'),
+      JSON.stringify({
+        instanceId: 'other-instance',
+        pid: process.pid,
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'prod',
+        startedAt: Date.now(),
+      }),
+      'utf-8',
+    );
+
+    const adopted = adoptOrphanedCrossNamespaceJobs('ns-new', runtime, () => {});
+
+    expect(adopted).toBe(1);
+    const store = new ProgressStore('ns-new', runtime);
+    expect(store.listJobIds()).toContain(reusedId);
   });
 });

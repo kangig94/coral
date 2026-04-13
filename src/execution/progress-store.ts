@@ -66,7 +66,7 @@ export class ProgressStore {
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
-  private readonly runtimeCache = new Map<string, PersistedRuntimeRecord | null>();
+  private readonly runtimeCache = new Map<string, PersistedRuntimeRecord>();
   private readonly knownJobIds = new Set<string>();
   private readonly eventBus: TypedEventBus;
   private enqueueSequence = 0;
@@ -484,7 +484,6 @@ export class ProgressStore {
       this.runtimeCache.set(jobId, record);
       return record;
     } catch {
-      this.runtimeCache.set(jobId, null);
       return null;
     }
   }
