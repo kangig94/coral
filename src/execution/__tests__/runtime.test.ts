@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime, type ChildProcessLike } from '../runtime.js';
+import { loadRecording } from '../simulation/recording.js';
 
 const createdDirs: string[] = [];
 
@@ -105,6 +106,39 @@ describe('createRealRuntime', () => {
       extra: 'extra-value',
       child: '1',
     });
+  });
+
+  it('records spawned children when CORAL_SIMULATE_RECORD is enabled', async () => {
+    vi.stubEnv('CORAL_SIMULATE_RECORD', '1');
+
+    const recordingDir = createTempDir('coral-runtime-recordings-');
+    const runtime = createRealRuntime({ recordingDir });
+    const child = runtime.process.spawn({
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('recorded\\n');"],
+      mode: 'piped',
+    });
+
+    const result = await readPipedOutput(child);
+    expect(result).toMatchObject({
+      stdout: 'recorded\n',
+      stderr: '',
+      code: 0,
+      signal: null,
+    });
+
+    const files = readdirSync(recordingDir);
+    expect(files).toHaveLength(1);
+
+    const recording = loadRecording(join(recordingDir, files[0] as string));
+    expect(recording.command).toBe(process.execPath);
+    expect(recording.args).toEqual(['-e', "process.stdout.write('recorded\\n');"]);
+    expect(recording.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'stdout', data: 'recorded\n' }),
+        expect.objectContaining({ type: 'close', code: 0, signal: null }),
+      ]),
+    );
   });
 
   it('models ignored stdio launches explicitly', async () => {

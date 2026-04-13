@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { DurableCliRuntimeRecord, PersistedExitRecord } from '../../../shared/types.js';
 import { nowIsoString } from '../../../shared/utils.js';
+import { attachSpawnRecordingMetadata } from '../recording.js';
 import type {
   ChildProcessLike,
   ChildReadableLike,
@@ -33,6 +34,7 @@ export type MockSpawnScript = {
   pid?: number;
   stdout?: string | ChildOutputChunk[];
   stderr?: string | ChildOutputChunk[];
+  onSpawn?: (context: MockSpawnContext) => void;
   close?: {
     delayMs?: number;
     code?: number | null;
@@ -58,6 +60,13 @@ export type MockDurableScript = {
   } | null;
   kills?: MockKillAction[];
   waitForExitError?: Error | string;
+};
+
+export type MockSpawnContext = {
+  child: MockChildProcess;
+  schedule: (delayMs: number, fn: () => void) => void;
+  close: (outcome?: { code?: number | null; signal?: string | null }) => void;
+  fail: (error: Error | string) => void;
 };
 
 type ProcessExitOutcome = {
@@ -102,6 +111,7 @@ export class MockStdin extends EventEmitter implements ChildStdinLike {
     }
     const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
     this.writes.push(text);
+    this.emit('write', text);
     return true;
   }
 
@@ -110,6 +120,7 @@ export class MockStdin extends EventEmitter implements ChildStdinLike {
       this.write(chunk);
     }
     this.destroyed = true;
+    this.emit('end');
   }
 }
 
@@ -219,6 +230,31 @@ export class MockProcessSpawner {
     const pid = script.pid ?? this.allocatePid();
     const child = new MockChildProcess(pid, options.mode, (childPid, signal) => this.killChild(childPid, signal));
     const record = this.registerProcess(pid, child, script.kills ?? [], null);
+    attachSpawnRecordingMetadata(child, {
+      command: options.command,
+      args: options.args,
+      env: options.envAdditions ? { ...options.envAdditions } : undefined,
+    });
+
+    script.onSpawn?.({
+      child,
+      schedule: (delayMs, fn) => {
+        this.schedule(record, delayMs, fn);
+      },
+      close: (outcome) => {
+        record.complete({
+          exitCode: outcome?.code ?? 0,
+          signal: outcome?.signal ?? null,
+        });
+      },
+      fail: (error) => {
+        if (record.closed) {
+          return;
+        }
+        record.alive = false;
+        child.emitFailure(toError(error));
+      },
+    });
 
     for (const chunk of asChunks(script.stdout)) {
       this.schedule(record, chunk.delayMs ?? 0, () => {

@@ -21,6 +21,10 @@ import {
 import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import {
+  createMockAppServerSpawnScript,
+  type MockAppServerScript,
+} from './mock-app-server.js';
+import {
   MockProcessSpawner,
   type ChildOutputChunk,
   type MockDurableScript,
@@ -32,6 +36,7 @@ import { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.j
 
 export { createDeferred, type Deferred } from './deferred.js';
 export { InMemoryStorage, normalizePathForStorage, type InMemoryStorageSnapshot, type InMemoryRoots } from './memory-storage.js';
+export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app-server.js';
 export {
   MockChildProcess,
   MockDurableTransport,
