@@ -9,6 +9,7 @@
  */
 
 import type { Server, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -137,6 +138,94 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
     ...status,
     backendNamespace: namespace,
   } as PersistedStatusRecord;
+}
+
+/**
+ * Adopt orphaned jobs from other namespaces whose daemon has died.
+ *
+ * When a plugin updates (e.g. 0.5.0→0.5.1), the plugin root path changes,
+ * causing a namespace hash change. Jobs from the old namespace are invisible
+ * to the new ProgressStore. This function runs BEFORE hydration to rebind
+ * orphaned live jobs to the current namespace on disk.
+ *
+ * Safety: only adopts if the foreign namespace's daemon is confirmed dead
+ * (backend.json missing or PID not alive). Jobs from live daemons (e.g.
+ * a dev-flavor daemon during a prod upgrade) are never touched.
+ */
+export function adoptOrphanedCrossNamespaceJobs(
+  currentNamespace: string,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process'>,
+  log: (message: string) => void,
+): number {
+  let adopted = 0;
+  const jobsDir = runtime.paths.jobsDir();
+
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
+  try {
+    entries = runtime.storage.readdirSync(jobsDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  // Cache daemon liveness per foreign namespace to avoid repeated checks
+  const namespaceLiveness = new Map<string, boolean>();
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    // Read status.json
+    let record: PersistedStatusRecord | null;
+    try {
+      const data = runtime.storage.readFileSync(join(jobsDir, entry.name, 'status.json'), 'utf-8');
+      record = JSON.parse(data) as PersistedStatusRecord;
+    } catch {
+      continue;
+    }
+
+    const foreignNs = readBackendNamespace(record);
+    if (foreignNs === null || foreignNs === currentNamespace) continue;
+    if (!isLivePhase(record.phase)) continue;
+
+    // Check if foreign namespace's daemon is still alive
+    if (!namespaceLiveness.has(foreignNs)) {
+      namespaceLiveness.set(foreignNs, isForeignDaemonAlive(foreignNs, runtime));
+    }
+    if (namespaceLiveness.get(foreignNs)) continue; // daemon alive → don't steal
+
+    // Rebind to current namespace on disk
+    const rebound: PersistedStatusRecord = { ...record, backendNamespace: currentNamespace };
+    try {
+      const statusPath = join(jobsDir, entry.name, 'status.json');
+      const tmpPath = statusPath + '.tmp';
+      runtime.storage.writeFileSync(tmpPath, JSON.stringify(rebound, null, 2), { encoding: 'utf-8' });
+      runtime.storage.renameSync(tmpPath, statusPath);
+      adopted++;
+      log(`Adopted orphaned job ${entry.name} from namespace ${foreignNs}\n`);
+    } catch (error: unknown) {
+      log(`Failed to adopt orphaned job ${entry.name}: ${formatError(error)}\n`);
+    }
+  }
+
+  return adopted;
+}
+
+function isForeignDaemonAlive(
+  foreignNamespace: string,
+  runtime: Pick<Runtime, 'storage' | 'process'>,
+): boolean {
+  try {
+    // Read the foreign namespace's backend.json
+    const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
+    const infoPath = join(installDir, 'backend.json');
+    const raw = runtime.storage.readFileSync(infoPath, 'utf-8');
+    const info: unknown = JSON.parse(raw);
+    if (info && typeof info === 'object' && 'pid' in info && typeof (info as Record<string, unknown>).pid === 'number') {
+      return runtime.process.isAlive((info as { pid: number }).pid);
+    }
+    return false;
+  } catch {
+    return false; // No backend.json or unreadable → daemon is dead
+  }
 }
 
 export function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {
@@ -1022,6 +1111,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         launchRecord: PersistedLaunchRecord;
         runtimeRecord: PersistedRuntimeRecord;
       }> = [];
+      // Adopt orphaned jobs from previous daemon versions (e.g. 0.5.0→0.5.1 upgrade)
+      // before ProgressStore hydration so they appear in the recovery snapshot.
+      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, runtime, log);
+      if (adoptedCount > 0) {
+        log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
+      }
+
       const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
       const invariants: RecoveryInvariants = {
         peerDaemonAlive: false,

@@ -832,3 +832,59 @@ describe('namespace-bound discovery scan', () => {
     expect(betaIds.has(ownedId)).toBe(false);
   });
 });
+
+describe('cross-namespace orphan adoption', () => {
+  it('adopts live-phase jobs from dead foreign namespaces but skips live ones', async () => {
+    const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
+
+    // Create a job under foreign namespace 'ns-old' with running phase
+    const seeder = new ProgressStore('ns-old', runtime);
+    const orphanId = `orphan-${randomUUID()}`;
+    const aliveId = `alive-${randomUUID()}`;
+    jobIdsToClean.add(orphanId);
+    jobIdsToClean.add(aliveId);
+
+    seeder.initJob({
+      jobId: orphanId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-old',
+      initialPhase: 'running',
+    });
+
+    seeder.initJob({
+      jobId: aliveId,
+      sessionId: 's2',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: 'ns-alive',
+      initialPhase: 'running',
+    });
+
+    // Write a fake backend.json for ns-alive to simulate a live daemon
+    // homedir() is mocked to mockState.tmpRoot in this test file
+    const aliveInstallDir = join(require('node:os').homedir(), '.claude', 'coral', 'installations', 'ns-alive');
+    mkdirSync(aliveInstallDir, { recursive: true });
+    writeFileSync(
+      join(aliveInstallDir, 'backend.json'),
+      JSON.stringify({ pid: process.pid, port: 9999, host: '127.0.0.1', token: 'x', version: '0.1.0', bundleHash: 'x', flavor: 'dev', instanceId: 'x', namespace: 'ns-alive', startedAt: Date.now() }),
+    );
+    // ns-old has NO backend.json → daemon is dead
+
+    // Run adoption for new namespace 'ns-new'
+    const logs: string[] = [];
+    const adopted = adoptOrphanedCrossNamespaceJobs('ns-new', runtime, (msg) => logs.push(msg));
+
+    // Should adopt orphan (dead daemon) but NOT alive (live daemon)
+    expect(adopted).toBe(1);
+    expect(logs.some((l) => l.includes(orphanId))).toBe(true);
+    expect(logs.some((l) => l.includes(aliveId))).toBe(false);
+
+    // New ProgressStore should now see the adopted job
+    const store = new ProgressStore('ns-new', runtime);
+    const ids = new Set(store.listJobIds());
+    expect(ids.has(orphanId)).toBe(true);
+    expect(ids.has(aliveId)).toBe(false);
+  });
+});
