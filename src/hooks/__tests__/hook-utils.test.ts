@@ -181,6 +181,24 @@ describe('hook-utils flavor gating', () => {
     expect(result.stdout.trim()).toBe('');
     expect(result.stderr).toContain("[coral] CORAL_FLAVOR='staging' is not recognized");
   });
+
+  it('warns when CORAL_FLAVOR=dev falls back to prod because the manifest is missing', () => {
+    const fixture = createHookUtilsFixture('prod');
+    rmSync(fixture.manifestPath, { force: true });
+
+    const result = runHookUtilsModule(
+      fixture.modulePath,
+      [
+        'mod.exitIfWrongFlavor();',
+        "console.log('after');",
+      ].join('\n'),
+      { CORAL_FLAVOR: 'dev' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+    expect(result.stderr).toContain('falling back to prod flavor gating');
+  });
 });
 
 describe('hook-utils KB root resolution', () => {

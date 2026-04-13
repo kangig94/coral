@@ -60,6 +60,7 @@ export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
+const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
 export const OLD_FORMAT_NOTICE =
   'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
 export const GHOST_LAUNCH_NOTICE =
@@ -167,9 +168,6 @@ export function adoptOrphanedCrossNamespaceJobs(
     return 0;
   }
 
-  // Cache daemon liveness per foreign namespace to avoid repeated checks
-  const namespaceLiveness = new Map<string, boolean>();
-
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
@@ -186,11 +184,7 @@ export function adoptOrphanedCrossNamespaceJobs(
     if (foreignNs === null || foreignNs === currentNamespace) continue;
     if (!isLivePhase(record.phase)) continue;
 
-    // Check if foreign namespace's daemon is still alive
-    if (!namespaceLiveness.has(foreignNs)) {
-      namespaceLiveness.set(foreignNs, isForeignDaemonAlive(foreignNs, runtime));
-    }
-    if (namespaceLiveness.get(foreignNs)) continue; // daemon alive → don't steal
+    if (isForeignDaemonAlive(foreignNs, runtime)) continue; // daemon alive → don't steal
 
     // Rebind to current namespace on disk
     const rebound: PersistedStatusRecord = { ...record, backendNamespace: currentNamespace };
@@ -213,19 +207,65 @@ function isForeignDaemonAlive(
   foreignNamespace: string,
   runtime: Pick<Runtime, 'storage' | 'process'>,
 ): boolean {
+  const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
+  const infoPath = join(installDir, 'backend.json');
+  const lockPath = join(installDir, 'backend.lock');
+
+  let backendRecord: { pid: number; instanceId: string } | null = null;
   try {
-    // Read the foreign namespace's backend.json
-    const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
-    const infoPath = join(installDir, 'backend.json');
     const raw = runtime.storage.readFileSync(infoPath, 'utf-8');
     const info: unknown = JSON.parse(raw);
-    if (info && typeof info === 'object' && 'pid' in info && typeof (info as Record<string, unknown>).pid === 'number') {
-      return runtime.process.isAlive((info as { pid: number }).pid);
+    if (
+      isRecord(info) &&
+      typeof info.pid === 'number' &&
+      Number.isFinite(info.pid) &&
+      typeof info.instanceId === 'string' &&
+      info.instanceId.length > 0
+    ) {
+      backendRecord = { pid: info.pid, instanceId: info.instanceId };
     }
-    return false;
   } catch {
-    return false; // No backend.json or unreadable → daemon is dead
+    backendRecord = null;
   }
+
+  let lockMissing = false;
+  let lockFresh = false;
+  let lockRecord: { pid: number; instanceId: string } | null = null;
+  try {
+    const raw = runtime.storage.readFileSync(lockPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    const ageMs = Date.now() - runtime.storage.statSync(lockPath).mtimeMs;
+    lockFresh = ageMs <= FOREIGN_DAEMON_LOCK_STALE_MS;
+    if (
+      isRecord(parsed) &&
+      typeof parsed.pid === 'number' &&
+      Number.isFinite(parsed.pid) &&
+      typeof parsed.instanceId === 'string' &&
+      parsed.instanceId.length > 0
+    ) {
+      lockRecord = { pid: parsed.pid, instanceId: parsed.instanceId };
+    }
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      lockMissing = true;
+    } else {
+      return true;
+    }
+  }
+
+  if (backendRecord === null) {
+    return !lockMissing && lockFresh;
+  }
+
+  if (lockMissing || !lockFresh || lockRecord === null) {
+    return false;
+  }
+
+  if (backendRecord.instanceId !== lockRecord.instanceId || backendRecord.pid !== lockRecord.pid) {
+    return false;
+  }
+
+  return runtime.process.isAlive(backendRecord.pid);
 }
 
 export function listLiveJobs(progressStore: ProgressStore, namespace: string): PersistedStatusRecord[] {

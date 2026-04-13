@@ -35,6 +35,23 @@ afterEach(async () => {
 });
 
 describe('scenario runner', () => {
+  it('records a launch-before-boot exception as a failed step', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [{ type: 'launch', provider: 'fake-provider', prompt: 'launch before boot' }],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.passed).toBe(false);
+    expect(run.result.steps[0]).toMatchObject({
+      ok: false,
+      detail: {
+        failureKind: 'exception',
+        message: 'Simulation world must be booted before launch',
+      },
+    });
+  });
+
   it('rejects invalid scenario documents with schema diagnostics', () => {
     const invalidExpect = simulationDocumentSchema.safeParse({
       world: {},

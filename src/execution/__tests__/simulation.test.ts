@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { isDurableCliRuntime } from '../../shared/types.js';
 import { runScenario, type StepResult } from '../simulation/runner.js';
 import type { SimulationDocument } from '../simulation/schema.js';
-import type { SimulationWorld } from '../simulation/world.js';
+import { SimulationWorld } from '../simulation/world.js';
 
 type LaunchReceipt = {
   decision: { status: 'running' | 'queued' };
@@ -149,6 +149,21 @@ afterEach(async () => {
 });
 
 describe('deterministic simulation lifecycle replay', () => {
+  it('requires a booted world before launching, waiting, aborting, or killing jobs', async () => {
+    const world = new SimulationWorld({});
+
+    try {
+      await expect(world.launchJob('launch before boot')).rejects.toThrow('Simulation world must be booted before launch');
+      await expect(world.waitUntil('job-1', { terminal: true }, 5, { maxSteps: 1 })).rejects.toThrow(
+        'Simulation world must be booted before wait',
+      );
+      await expect(world.abort('job-1')).rejects.toThrow('Simulation world must be booted before abort');
+      await expect(world.kill({ pid: 123 })).rejects.toThrow('Simulation world must be booted before kill');
+    } finally {
+      world.dispose();
+    }
+  });
+
   it('replays a complete lifecycle with hooks, artifacts, ordering, idle cleanup, and zero real I/O', async () => {
     const wallStart = performance.now();
     const { result, world } = await runScenario(COMPLETE_SCENARIO);

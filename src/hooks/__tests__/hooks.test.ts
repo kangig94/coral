@@ -463,6 +463,20 @@ describe('backend-warm-start.mjs', () => {
       await setup.closeServer();
     }
   });
+
+  it('spawns a replacement when the backend pid is live but the health check fails', async () => {
+    const setup = await setupWarmStartFixture('prod', 'prod');
+    await setup.closeServer();
+
+    const result = await runHookAsync(BACKEND_WARM_START_HOOK, {}, {
+      HOME: setup.fixture.root,
+      CLAUDE_PLUGIN_ROOT: setup.fixture.pluginRoot,
+    });
+
+    expect(result.status).toBe(0);
+    expect(await waitForFile(setup.markerPath)).toBe(true);
+    expect(setup.shutdownCount()).toBe(0);
+  });
 });
 
 describe('cli-resolve.mjs', () => {

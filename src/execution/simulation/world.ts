@@ -160,6 +160,7 @@ export class SimulationWorld {
   async launchJob(step: LaunchStep): Promise<LaunchDecision>;
   async launchJob(promptOrStep: string | LaunchStep, opts: LaunchJobOptions = {}): Promise<LaunchDecision> {
     this.assertUsable();
+    this.assertBooted('launch');
     const step =
       typeof promptOrStep === 'string'
         ? ({
@@ -197,6 +198,7 @@ export class SimulationWorld {
     limits: { maxSteps?: number; timeoutMs?: number },
   ): Promise<WaitDetail> {
     this.assertUsable();
+    this.assertBooted('wait');
     const startedAt = this.getVirtualElapsedMs();
     const cursor = createReplayCursor();
     const accumulatedProgress: string[] = [];
@@ -273,6 +275,7 @@ export class SimulationWorld {
 
   async abort(jobId: string): Promise<void> {
     this.assertUsable();
+    this.assertBooted('abort');
     const status = this.current.backend.progressStore.readStatus(jobId);
     if (!status) {
       throw new Error(`Cannot abort unknown job ${jobId}`);
@@ -287,6 +290,7 @@ export class SimulationWorld {
 
   async kill(target: { pid?: number; jobId?: string }): Promise<void> {
     this.assertUsable();
+    this.assertBooted('kill');
     const pid = target.pid ?? (target.jobId ? extractRuntimePid(this.readArtifact(target.jobId, 'runtime', { freshness: 'cached' })) : null);
     if (pid === null || pid === undefined) {
       if (target.jobId) {
@@ -487,6 +491,12 @@ export class SimulationWorld {
   private assertUsable(): void {
     if (this.disposed) {
       throw new Error('SimulationWorld has been disposed');
+    }
+  }
+
+  private assertBooted(action: 'launch' | 'wait' | 'abort' | 'kill'): void {
+    if (this.current.startedInfo === null) {
+      throw new Error(`Simulation world must be booted before ${action}`);
     }
   }
 

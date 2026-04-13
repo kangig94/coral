@@ -9,17 +9,27 @@ export function exitIfChildProcess() {
 }
 
 let _cachedFlavor;
+let _cachedFlavorSource;
 
-export function buildFlavor() {
-  if (_cachedFlavor !== undefined) return _cachedFlavor;
+function readBuildFlavorState() {
+  if (_cachedFlavor !== undefined && _cachedFlavorSource !== undefined) {
+    return { flavor: _cachedFlavor, source: _cachedFlavorSource };
+  }
+
   try {
     const here = fileURLToPath(import.meta.url);
     const manifest = resolve(dirname(here), '..', '..', 'bridge', 'manifest.json');
     _cachedFlavor = JSON.parse(readFileSync(manifest, 'utf8')).flavor === 'dev' ? 'dev' : 'prod';
+    _cachedFlavorSource = 'manifest';
   } catch {
     _cachedFlavor = 'prod';
+    _cachedFlavorSource = 'fallback';
   }
-  return _cachedFlavor;
+  return { flavor: _cachedFlavor, source: _cachedFlavorSource };
+}
+
+export function buildFlavor() {
+  return readBuildFlavorState().flavor;
 }
 
 export function exitIfWrongFlavor() {
@@ -28,7 +38,15 @@ export function exitIfWrongFlavor() {
     process.stderr.write(`[coral] CORAL_FLAVOR='${want}' is not recognized (expected 'prod' or 'dev')\n`);
     process.exit(1);
   }
-  if (buildFlavor() !== (want ?? 'prod')) process.exit(0);
+  const actual = readBuildFlavorState();
+  if (actual.flavor !== (want ?? 'prod')) {
+    if (want === 'dev' && actual.flavor === 'prod' && actual.source === 'fallback') {
+      process.stderr.write(
+        '[coral] CORAL_FLAVOR=dev requested, but bridge/manifest.json is missing or unreadable; falling back to prod flavor gating\n',
+      );
+    }
+    process.exit(0);
+  }
 }
 
 export function readStdin() {

@@ -16,6 +16,7 @@ import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 const STARTUP_POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
 const REPLACEMENT_TIMEOUT_MS = 45_000;
+const CORRUPT_LOCK_RETRY_LIMIT = 3;
 
 type ReplacementLock = string;
 
@@ -150,17 +151,34 @@ function releaseReplacementLock(root: string, lock: ReplacementLock): void {
   }
 }
 
-function tryRemoveStaleLock(root: string): boolean {
+function tryRemoveStaleLock(root: string): 'missing' | 'active' | 'removed' | 'corrupt' {
   const lockPath = backendLockPath(root);
   try {
     const content = readFileSync(lockPath, 'utf-8');
-    const parsed: unknown = JSON.parse(content);
-    if (!isRecord(parsed) || typeof parsed.pid !== 'number') return false;
-    if (isProcessAlive(parsed.pid)) return false;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return 'corrupt';
+    }
+    if (!isRecord(parsed) || typeof parsed.pid !== 'number' || !Number.isFinite(parsed.pid)) {
+      return 'corrupt';
+    }
+    if (isProcessAlive(parsed.pid)) return 'active';
     unlinkSync(lockPath);
-    return true;
-  } catch {
-    return false;
+    return 'removed';
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return 'missing';
+    throw error;
+  }
+}
+
+function quarantineCorruptLock(root: string): void {
+  try {
+    unlinkSync(backendLockPath(root));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
   }
 }
 
@@ -251,6 +269,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
   const version = currentVersion(root);
   const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
+  let corruptLockRetries = 0;
   while (Date.now() < startupDeadline) {
     const healthy = await readHealthyBackendInfo(root);
     if (healthy) {
@@ -273,21 +292,31 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
 
     const replacementLock = tryAcquireReplacementLock(root, version, expectedHash, expectedFlavor);
     if (!replacementLock) {
-      tryRemoveStaleLock(root);
+      const lockState = tryRemoveStaleLock(root);
+      if (lockState === 'corrupt') {
+        corruptLockRetries += 1;
+        if (corruptLockRetries >= CORRUPT_LOCK_RETRY_LIMIT) {
+          quarantineCorruptLock(root);
+          corruptLockRetries = 0;
+        }
+      } else {
+        corruptLockRetries = 0;
+      }
       await delay(STARTUP_POLL_MS);
       continue;
     }
 
+    corruptLockRetries = 0;
     try {
       removeStaleBackendInfo(root);
       spawnBackend(backendBin);
+      const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
+      return summarizeBackend(
+        await waitForReplacementBackend(root, replacedInstanceId, expectedHash, expectedFlavor, replacementDeadline),
+      );
     } finally {
       releaseReplacementLock(root, replacementLock);
     }
-    const replacementDeadline = Math.min(startupDeadline, Date.now() + REPLACEMENT_TIMEOUT_MS);
-    return summarizeBackend(
-      await waitForReplacementBackend(root, replacedInstanceId, expectedHash, expectedFlavor, replacementDeadline),
-    );
   }
 
   throw new Error(

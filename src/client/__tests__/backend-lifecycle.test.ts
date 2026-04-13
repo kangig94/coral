@@ -250,6 +250,107 @@ describe('shutdown cleanup ordering', () => {
 });
 
 describe('ensureBackend flavor-aware reuse', () => {
+  it('quarantines a corrupt replacement lock after repeated retries', async () => {
+    const root = createPluginRoot();
+    const lockPath = backendLockPath(root);
+    writeFileSync(lockPath, JSON.stringify({ instanceId: 'missing-pid' }), 'utf-8');
+
+    mockState.spawn.mockImplementation(() => {
+      writeBackendInfo(root, {
+        port: 4103,
+        token: 'replacement-token',
+        instanceId: 'replacement-backend',
+      });
+      return { unref: vi.fn() };
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
+      if (url === 'http://127.0.0.1:4103/health' && token === 'replacement-token') {
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            version: '0.0.0',
+            bundleHash: 'test-hash',
+            flavor: 'prod',
+            instanceId: 'replacement-backend',
+            namespace: pluginRootNamespace(root),
+            uptimeMs: 1,
+            active: 0,
+            activeJobs: 0,
+            inflightRequests: 0,
+            queueDepth: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const backend = await ensureBackend(root);
+
+    expect(backend).toEqual({
+      host: '127.0.0.1',
+      port: 4103,
+      token: 'replacement-token',
+      instanceId: 'replacement-backend',
+    });
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('holds the replacement lock until the replacement backend reports healthy', async () => {
+    const root = createPluginRoot();
+    const lockPath = backendLockPath(root);
+
+    mockState.spawn.mockImplementation(() => {
+      writeBackendInfo(root, {
+        port: 4104,
+        token: 'held-lock-token',
+        instanceId: 'held-lock-backend',
+      });
+      return { unref: vi.fn() };
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
+      if (url === 'http://127.0.0.1:4104/health' && token === 'held-lock-token') {
+        expect(existsSync(lockPath)).toBe(true);
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            version: '0.0.0',
+            bundleHash: 'test-hash',
+            flavor: 'prod',
+            instanceId: 'held-lock-backend',
+            namespace: pluginRootNamespace(root),
+            uptimeMs: 1,
+            active: 0,
+            activeJobs: 0,
+            inflightRequests: 0,
+            queueDepth: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const backend = await ensureBackend(root);
+
+    expect(backend).toEqual({
+      host: '127.0.0.1',
+      port: 4104,
+      token: 'held-lock-token',
+      instanceId: 'held-lock-backend',
+    });
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   it('reuses a healthy backend when bundle hash and flavor both match', async () => {
     const root = createPluginRootWithFlavor('dev');
     writeBackendInfo(root, {

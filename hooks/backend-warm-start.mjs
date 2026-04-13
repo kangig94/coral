@@ -88,11 +88,13 @@ try {
   try {
     const info = JSON.parse(readFileSync(join(installDir, 'backend.json'), 'utf-8'));
     if (hasLivePid(info)) {
-      const liveFlavor = (await readLiveBackendFlavor(info)) ?? recordFlavor(info);
+      const liveFlavor = await readLiveBackendFlavor(info);
       if (liveFlavor === expectedFlavor) {
         process.exit(0);
       }
-      await requestBackendShutdown(info);
+      if (liveFlavor !== null) {
+        await requestBackendShutdown(info);
+      }
     }
   } catch {}
 

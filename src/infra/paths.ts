@@ -15,6 +15,7 @@ function coralHome(): string {
 const namespaceCache = new Map<string, string>();
 const projectSourceCache = new Map<string, string>();
 let _buildFlavor: 'prod' | 'dev' = 'prod';
+let _settledBuildFlavor: 'prod' | 'dev' | null = null;
 
 function fallbackProjectSource(projectRoot: string): string {
   return `local/${basename(projectRoot)}`;
@@ -50,6 +51,13 @@ export function coralRoot(): string {
 }
 
 export function setBuildFlavor(flavor: 'prod' | 'dev'): void {
+  if (_settledBuildFlavor !== null) {
+    if (_settledBuildFlavor !== flavor) {
+      throw new Error(`Build flavor already set to ${_settledBuildFlavor}; cannot change to ${flavor}`);
+    }
+    return;
+  }
+  _settledBuildFlavor = flavor;
   _buildFlavor = flavor;
 }
 
