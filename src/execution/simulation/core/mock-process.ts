@@ -1,0 +1,449 @@
+import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
+import type { DurableCliRuntimeRecord, PersistedExitRecord } from '../../../shared/types.js';
+import { nowIsoString } from '../../../shared/utils.js';
+import type {
+  ChildProcessLike,
+  ChildReadableLike,
+  ChildStdinLike,
+  DurableExecutionTransport,
+  DurableLaunchOptions,
+  DurableLaunchResult,
+  RuntimeSpawnOptions,
+  RuntimeTimerHandle,
+} from '../../runtime.js';
+import { createDeferred, type Deferred } from './deferred.js';
+import type { InMemoryStorage } from './memory-storage.js';
+import { VirtualTime } from './virtual-time.js';
+
+export type ChildOutputChunk = {
+  delayMs?: number;
+  data: string;
+};
+
+export type MockKillAction = {
+  signal?: NodeJS.Signals | 0 | 'default';
+  delayMs?: number;
+  exitCode?: number | null;
+  exitSignal?: string | null;
+};
+
+export type MockSpawnScript = {
+  pid?: number;
+  stdout?: string | ChildOutputChunk[];
+  stderr?: string | ChildOutputChunk[];
+  close?: {
+    delayMs?: number;
+    code?: number | null;
+    signal?: string | null;
+  } | null;
+  error?: {
+    delayMs?: number;
+    error: Error | string;
+  } | null;
+  kills?: MockKillAction[];
+};
+
+export type MockDurableScript = {
+  pid?: number;
+  runtimeDelayMs?: number;
+  stdout?: string | ChildOutputChunk[];
+  stderr?: string | ChildOutputChunk[];
+  runtimeRecord?: Partial<DurableCliRuntimeRecord>;
+  exit?: {
+    delayMs?: number;
+    exitCode?: number | null;
+    signal?: string | null;
+  } | null;
+  kills?: MockKillAction[];
+  waitForExitError?: Error | string;
+};
+
+type ProcessExitOutcome = {
+  delayMs?: number;
+  exitCode?: number | null;
+  signal?: string | null;
+};
+
+type RegisteredProcess = {
+  pid: number;
+  alive: boolean;
+  closed: boolean;
+  timers: Set<RuntimeTimerHandle>;
+  child: MockChildProcess | null;
+  killActions: MockKillAction[];
+  complete: (outcome: ProcessExitOutcome) => void;
+  waitForExit: Deferred<PersistedExitRecord> | null;
+};
+
+function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputChunk[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (typeof value === 'string') {
+    return [{ delayMs: 0, data: value }];
+  }
+  return value.map((chunk) => ({ delayMs: chunk.delayMs ?? 0, data: chunk.data }));
+}
+
+function toError(value: Error | string): Error {
+  return value instanceof Error ? value : new Error(value);
+}
+
+export class MockStdin extends EventEmitter implements ChildStdinLike {
+  destroyed = false;
+  readonly writes: string[] = [];
+
+  write(chunk: string | Uint8Array): boolean {
+    if (this.destroyed) {
+      this.emit('error', new Error('stdin is destroyed'));
+      return false;
+    }
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
+    this.writes.push(text);
+    return true;
+  }
+
+  end(chunk?: string | Uint8Array): void {
+    if (chunk !== undefined) {
+      this.write(chunk);
+    }
+    this.destroyed = true;
+  }
+}
+
+export class MockChildProcess extends EventEmitter implements ChildProcessLike {
+  readonly stdin: ChildStdinLike | null;
+  readonly stdout: ChildReadableLike | null;
+  readonly stderr: ChildReadableLike | null;
+
+  constructor(
+    readonly pid: number,
+    mode: RuntimeSpawnOptions['mode'],
+    private readonly onKill: (pid: number, signal?: NodeJS.Signals) => boolean,
+  ) {
+    super();
+    this.stdin = mode === 'piped' ? new MockStdin() : null;
+    this.stdout = mode === 'piped' ? (new PassThrough() as unknown as ChildReadableLike) : null;
+    this.stderr = mode === 'piped' ? (new PassThrough() as unknown as ChildReadableLike) : null;
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    return this.onKill(this.pid, signal);
+  }
+
+  unref(): void {}
+
+  pushStdout(data: string): void {
+    const readable = this.stdout as unknown as PassThrough | null;
+    readable?.write(data);
+  }
+
+  pushStderr(data: string): void {
+    const readable = this.stderr as unknown as PassThrough | null;
+    readable?.write(data);
+  }
+
+  emitClose(code: number | null, signal: string | null): void {
+    (this.stdout as unknown as PassThrough | null)?.end();
+    (this.stderr as unknown as PassThrough | null)?.end();
+    if (this.stdin instanceof MockStdin) {
+      this.stdin.destroyed = true;
+    }
+    this.emit('close', code, signal as NodeJS.Signals | null);
+  }
+
+  emitFailure(error: Error): void {
+    this.emit('error', error);
+  }
+}
+
+export class MockDurableTransport implements DurableExecutionTransport {
+  readonly launchCalls: DurableLaunchOptions[] = [];
+  readonly waitForExitCalls: DurableLaunchResult[] = [];
+
+  constructor(private readonly spawner: MockProcessSpawner) {}
+
+  enqueue(script: MockDurableScript): void {
+    this.spawner.enqueueDurable(script);
+  }
+
+  async launch(options: DurableLaunchOptions): Promise<DurableLaunchResult> {
+    this.launchCalls.push({
+      ...options,
+      args: [...options.args],
+      ...(options.envAdditions ? { envAdditions: { ...options.envAdditions } } : {}),
+    });
+    return this.spawner.launchDurable(options);
+  }
+
+  waitForExit(handle: DurableLaunchResult): Promise<PersistedExitRecord> {
+    this.waitForExitCalls.push(handle);
+    return this.spawner.waitForDurableExit(handle);
+  }
+}
+
+export class MockProcessSpawner {
+  readonly spawnCalls: RuntimeSpawnOptions[] = [];
+  readonly killCalls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+  readonly durable: MockDurableTransport;
+  private readonly processes = new Map<number, RegisteredProcess>();
+  private readonly spawnScripts: MockSpawnScript[] = [];
+  private readonly durableScripts: MockDurableScript[] = [];
+  private nextPid = 20_000;
+
+  constructor(
+    private readonly time: VirtualTime,
+    private readonly storage: InMemoryStorage,
+  ) {
+    this.durable = new MockDurableTransport(this);
+  }
+
+  enqueueSpawn(script: MockSpawnScript): void {
+    this.spawnScripts.push(script);
+  }
+
+  enqueueDurable(script: MockDurableScript): void {
+    this.durableScripts.push(script);
+  }
+
+  spawn(options: RuntimeSpawnOptions): ChildProcessLike {
+    this.spawnCalls.push({
+      ...options,
+      args: [...options.args],
+      ...(options.envAdditions ? { envAdditions: { ...options.envAdditions } } : {}),
+    });
+
+    const script = this.spawnScripts.shift() ?? {};
+    const pid = script.pid ?? this.allocatePid();
+    const child = new MockChildProcess(pid, options.mode, (childPid, signal) => this.killChild(childPid, signal));
+    const record = this.registerProcess(pid, child, script.kills ?? [], null);
+
+    for (const chunk of asChunks(script.stdout)) {
+      this.schedule(record, chunk.delayMs ?? 0, () => {
+        if (!record.closed) {
+          child.pushStdout(chunk.data);
+        }
+      });
+    }
+    for (const chunk of asChunks(script.stderr)) {
+      this.schedule(record, chunk.delayMs ?? 0, () => {
+        if (!record.closed) {
+          child.pushStderr(chunk.data);
+        }
+      });
+    }
+
+    if (script.error) {
+      this.schedule(record, script.error.delayMs ?? 0, () => {
+        if (record.closed) {
+          return;
+        }
+        record.alive = false;
+        child.emitFailure(toError(script.error!.error));
+      });
+    }
+
+    if (script.close !== null) {
+      const close = script.close ?? { delayMs: 0, code: 0, signal: null };
+      this.schedule(record, close.delayMs ?? 0, () => {
+        record.complete({
+          exitCode: close.code ?? 0,
+          signal: close.signal ?? null,
+        });
+      });
+    }
+
+    return child;
+  }
+
+  kill(pid: number, signal: NodeJS.Signals | 0): void {
+    this.killCalls.push({ pid, signal });
+    if (signal === 0) {
+      return;
+    }
+    const record = this.processes.get(pid);
+    if (!record || record.closed) {
+      return;
+    }
+    const action = this.resolveKillAction(record.killActions, signal);
+    if (!action) {
+      record.complete({
+        exitCode: null,
+        signal,
+      });
+      return;
+    }
+    this.schedule(record, action.delayMs ?? 0, () => {
+      record.complete({
+        exitCode: action.exitCode ?? null,
+        signal: action.exitSignal ?? signal,
+      });
+    });
+  }
+
+  killChild(pid: number, signal?: NodeJS.Signals): boolean {
+    const record = this.processes.get(pid);
+    if (!record || record.closed) {
+      return false;
+    }
+    this.kill(pid, signal ?? 'SIGTERM');
+    return true;
+  }
+
+  isAlive(pid: number): boolean {
+    return this.processes.get(pid)?.alive === true;
+  }
+
+  setAlive(pid: number, alive: boolean): void {
+    const record = this.processes.get(pid);
+    if (record) {
+      record.alive = alive;
+    }
+  }
+
+  async launchDurable(options: DurableLaunchOptions): Promise<DurableLaunchResult> {
+    const script = this.durableScripts.shift() ?? {};
+    const pid = script.pid ?? this.allocatePid();
+    const stdoutPath = script.runtimeRecord?.stdoutPath ?? join(options.jobDir, 'stdout');
+    const stderrPath = script.runtimeRecord?.stderrPath ?? join(options.jobDir, 'stderr');
+    const runtimePath = join(options.jobDir, 'runtime.json');
+    const exitPath = join(options.jobDir, 'exit.json');
+
+    this.storage.mkdirSync(options.jobDir, { recursive: true });
+    this.storage.writeFileSync(stdoutPath, '');
+    this.storage.writeFileSync(stderrPath, '');
+
+    const exitDeferred = createDeferred<PersistedExitRecord>();
+    const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;
+    const record = this.registerProcess(pid, null, script.kills ?? [], exitDeferred, (outcome) => {
+      const exitRecord: PersistedExitRecord = {
+        exitCode: outcome.exitCode ?? null,
+        signal: outcome.signal ?? null,
+        endTime: nowIsoString(this.time),
+      };
+      this.storage.writeAtomicSync(exitPath, JSON.stringify(exitRecord, null, 2), { encoding: 'utf-8' });
+      if (exitError) {
+        exitDeferred.reject(exitError);
+      } else {
+        exitDeferred.resolve(exitRecord);
+      }
+    });
+
+    for (const chunk of asChunks(script.stdout)) {
+      this.schedule(record, chunk.delayMs ?? 0, () => {
+        if (record.closed) {
+          return;
+        }
+        this.storage.appendFileSync(stdoutPath, chunk.data);
+      });
+    }
+    for (const chunk of asChunks(script.stderr)) {
+      this.schedule(record, chunk.delayMs ?? 0, () => {
+        if (record.closed) {
+          return;
+        }
+        this.storage.appendFileSync(stderrPath, chunk.data);
+      });
+    }
+
+    if (script.exit !== null) {
+      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
+      this.schedule(record, exit.delayMs ?? 0, () => {
+        record.complete({
+          exitCode: exit.exitCode ?? 0,
+          signal: exit.signal ?? null,
+        });
+      });
+    }
+
+    if ((script.runtimeDelayMs ?? 0) > 0) {
+      await this.time.sleep(script.runtimeDelayMs ?? 0);
+    }
+    if (!record.alive && !this.storage.existsSync(exitPath)) {
+      throw new Error(`Durable process ${pid} exited before runtime.json was written`);
+    }
+
+    const runtimeRecord: DurableCliRuntimeRecord = {
+      ...script.runtimeRecord,
+      startTime: script.runtimeRecord?.startTime ?? nowIsoString(this.time),
+      pid,
+      stdoutPath,
+      stderrPath,
+    };
+    this.storage.writeAtomicSync(runtimePath, JSON.stringify(runtimeRecord, null, 2), { encoding: 'utf-8' });
+
+    return {
+      pid,
+      stdoutPath,
+      stderrPath,
+      runtimeRecord,
+    };
+  }
+
+  waitForDurableExit(handle: DurableLaunchResult): Promise<PersistedExitRecord> {
+    const record = this.processes.get(handle.pid);
+    if (!record?.waitForExit) {
+      return Promise.reject(new Error(`No durable process registered for pid ${handle.pid}`));
+    }
+    return record.waitForExit.promise;
+  }
+
+  private allocatePid(): number {
+    const pid = this.nextPid;
+    this.nextPid += 1;
+    return pid;
+  }
+
+  private registerProcess(
+    pid: number,
+    child: MockChildProcess | null,
+    killActions: MockKillAction[],
+    waitForExit: Deferred<PersistedExitRecord> | null,
+    onExit?: (outcome: ProcessExitOutcome) => void,
+  ): RegisteredProcess {
+    const record: RegisteredProcess = {
+      pid,
+      alive: true,
+      closed: false,
+      timers: new Set(),
+      child,
+      killActions,
+      waitForExit,
+      complete: (outcome) => {
+        if (record.closed) {
+          return;
+        }
+        record.closed = true;
+        record.alive = false;
+        for (const timer of record.timers) {
+          this.time.clearTimeout(timer);
+        }
+        record.timers.clear();
+        onExit?.(outcome);
+        if (child) {
+          child.emitClose(outcome.exitCode ?? null, outcome.signal ?? null);
+        }
+      },
+    };
+    this.processes.set(pid, record);
+    return record;
+  }
+
+  private schedule(record: RegisteredProcess, delayMs: number, fn: () => void): void {
+    const timer = this.time.setTimeout(() => {
+      record.timers.delete(timer);
+      fn();
+    }, delayMs);
+    record.timers.add(timer);
+  }
+
+  private resolveKillAction(killActions: MockKillAction[], signal: NodeJS.Signals | 0): MockKillAction | null {
+    return (
+      killActions.find((entry) => entry.signal === signal) ??
+      killActions.find((entry) => entry.signal === 'default') ??
+      null
+    );
+  }
+}

@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import { createReplayCursor, type ReplayCursor } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
@@ -6,16 +5,13 @@ import type { BackendServerInfo, LifecycleState } from '../server-types.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
-  type ChildOutputChunk,
-  type FakeProviderScenario,
-  type MockDurableScript,
-  type MockKillAction,
-  type MockSpawnScript,
   type SimulationBackend,
   type SimulationHookLog,
-  type SimulationScenario,
 } from './core/index.js';
-import type { CorruptTarget, LaunchStep, ScenarioError, WaitUntil, WorldConfig } from './schema.js';
+import { acquireNoRealIoMonitor, cloneNoRealIoReport, type NoRealIoRegistration, type NoRealIoReport } from './no-real-io.js';
+import { normalizeWorldConfig } from './normalize.js';
+import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
+import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
 import {
   isTerminalPhase,
   type DurableCliRuntimeRecord,
@@ -59,11 +55,7 @@ export type WaitDetail = {
   actual: WaitObservation;
 };
 
-export type NoRealIoReport = {
-  realKillCalls: number;
-  realFetchCalls: number;
-  violations: string[];
-};
+export { type NoRealIoReport } from './no-real-io.js';
 
 export type SimulationHttpResponse = {
   statusCode: number;
@@ -76,226 +68,6 @@ type WorldGenerationState = {
   startedInfo: BackendServerInfo | null;
   phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
 };
-
-type NoRealIoRegistration = {
-  report: NoRealIoReport;
-  release: () => void;
-};
-
-const activeNoRealIoReports = new Set<NoRealIoReport>();
-const originalFetch = globalThis.fetch;
-const originalProcessKill = process.kill;
-let noRealIoInstalled = false;
-
-function pushUniqueViolation(report: NoRealIoReport, message: string): void {
-  report.violations.push(message);
-}
-
-function describeFetchCall(input: unknown, init?: RequestInit): string {
-  let method = init?.method;
-  let target = 'unknown';
-
-  if (typeof input === 'string' || input instanceof URL) {
-    target = String(input);
-  } else if (typeof Request !== 'undefined' && input instanceof Request) {
-    target = input.url;
-    method ??= input.method;
-  }
-
-  return `fetch(${method ?? 'GET'} ${target})`;
-}
-
-function recordNoRealIoFetch(input: unknown, init?: RequestInit): void {
-  const message = describeFetchCall(input, init);
-  for (const report of activeNoRealIoReports) {
-    report.realFetchCalls += 1;
-    pushUniqueViolation(report, message);
-  }
-}
-
-function recordNoRealIoKill(pid: number, signal?: NodeJS.Signals | number): void {
-  const renderedSignal = signal ?? 'SIGTERM';
-  const message = `process.kill(${pid}, ${renderedSignal})`;
-  for (const report of activeNoRealIoReports) {
-    report.realKillCalls += 1;
-    pushUniqueViolation(report, message);
-  }
-}
-
-function installNoRealIoMonitor(): void {
-  if (noRealIoInstalled) {
-    return;
-  }
-
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    recordNoRealIoFetch(input, init);
-    throw new Error('Real fetch is disabled while SimulationWorld is active');
-  }) as typeof globalThis.fetch;
-
-  process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-    recordNoRealIoKill(pid, signal);
-    return true;
-  }) as typeof process.kill;
-
-  noRealIoInstalled = true;
-}
-
-function restoreNoRealIoMonitorIfIdle(): void {
-  if (!noRealIoInstalled || activeNoRealIoReports.size > 0) {
-    return;
-  }
-
-  globalThis.fetch = originalFetch;
-  process.kill = originalProcessKill;
-  noRealIoInstalled = false;
-}
-
-function acquireNoRealIoMonitor(): NoRealIoRegistration {
-  const report: NoRealIoReport = {
-    realKillCalls: 0,
-    realFetchCalls: 0,
-    violations: [],
-  };
-  activeNoRealIoReports.add(report);
-  installNoRealIoMonitor();
-
-  let released = false;
-  return {
-    report,
-    release: () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      activeNoRealIoReports.delete(report);
-      restoreNoRealIoMonitorIfIdle();
-    },
-  };
-}
-
-function toRuntimeError(value: ScenarioError | Error | string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    return new Error(value);
-  }
-
-  const error = new Error(value.message);
-  if (value.name) {
-    error.name = value.name;
-  }
-  if (value.code) {
-    (error as Error & { code?: string }).code = value.code;
-  }
-  return error;
-}
-
-function cloneOutputChunks(value: string | ChildOutputChunk[] | undefined): string | ChildOutputChunk[] | undefined {
-  if (value === undefined || typeof value === 'string') {
-    return value;
-  }
-  return value.map((chunk) => ({ ...chunk }));
-}
-
-function cloneKillActions(
-  kills:
-    | Array<{
-        signal?: string | 0;
-        delayMs?: number;
-        exitCode?: number | null;
-        exitSignal?: string | null;
-      }>
-    | undefined,
-): MockKillAction[] | undefined {
-  return kills?.map((entry) => ({
-    ...entry,
-    signal: entry.signal as MockKillAction['signal'],
-  }));
-}
-
-function normalizeSpawnScripts(scripts: WorldConfig['spawn']): MockSpawnScript[] | undefined {
-  return scripts?.map((script) => ({
-    pid: script.pid,
-    stdout: cloneOutputChunks(script.stdout),
-    stderr: cloneOutputChunks(script.stderr),
-    close:
-      script.close === undefined
-        ? undefined
-        : script.close === null
-          ? null
-          : { ...script.close },
-    error:
-      script.error === undefined
-        ? undefined
-        : script.error === null
-          ? null
-          : {
-              delayMs: script.error.delayMs,
-              error: toRuntimeError(script.error.error),
-            },
-    kills: cloneKillActions(script.kills),
-  }));
-}
-
-function normalizeDurableScripts(scripts: WorldConfig['durable']): MockDurableScript[] | undefined {
-  return scripts?.map((script) => ({
-    pid: script.pid,
-    runtimeDelayMs: script.runtimeDelayMs,
-    stdout: cloneOutputChunks(script.stdout),
-    stderr: cloneOutputChunks(script.stderr),
-    runtimeRecord: script.runtimeRecord ? { ...script.runtimeRecord } : undefined,
-    exit:
-      script.exit === undefined
-        ? undefined
-        : script.exit === null
-          ? null
-          : { ...script.exit },
-    kills: cloneKillActions(script.kills),
-    waitForExitError:
-      script.waitForExitError === undefined ? undefined : toRuntimeError(script.waitForExitError),
-  }));
-}
-
-function normalizeFakeProvider(config: WorldConfig['fakeProvider']): FakeProviderScenario | undefined {
-  if (!config) {
-    return undefined;
-  }
-
-  return {
-    name: config.name,
-    cli: config.cli
-      ? {
-          command: config.cli.command,
-          args: config.cli.args ? [...config.cli.args] : undefined,
-          extraEnv: config.cli.extraEnv ? { ...config.cli.extraEnv } : undefined,
-        }
-      : undefined,
-    progress: config.progress?.map((entry) => ({ ...entry })),
-    result: config.result
-      ? {
-          ...config.result,
-          errors: config.result.errors ? [...config.result.errors] : undefined,
-          warnings: config.result.warnings ? [...config.result.warnings] : undefined,
-          usage: config.result.usage ? { ...config.result.usage } : undefined,
-        }
-      : undefined,
-    preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),
-  };
-}
-
-function normalizeWorldConfig(config: WorldConfig): SimulationScenario {
-  return {
-    epochMs: config.epochMs,
-    env: config.env ? { ...config.env } : undefined,
-    pluginRoot: config.pluginRoot,
-    projectRoot: config.projectRoot,
-    listen: config.listen ? { ...config.listen } : undefined,
-    spawn: normalizeSpawnScripts(config.spawn),
-    durable: normalizeDurableScripts(config.durable),
-    fakeProvider: normalizeFakeProvider(config.fakeProvider),
-  };
-}
 
 function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
   return {
@@ -311,91 +83,6 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
     createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };
-}
-
-function cloneNoRealIoReport(report: NoRealIoReport): NoRealIoReport {
-  return {
-    realKillCalls: report.realKillCalls,
-    realFetchCalls: report.realFetchCalls,
-    violations: [...report.violations],
-  };
-}
-
-class ScenarioHttpRequest extends EventEmitter {
-  readonly method: string;
-  readonly url: string;
-  readonly headers: Record<string, string>;
-  private readonly bodyText: string | null;
-  private started = false;
-  destroyed = false;
-
-  constructor(method: string, url: string, token: string, body: unknown) {
-    super();
-    this.method = method;
-    this.url = url;
-    this.bodyText = body === undefined ? null : JSON.stringify(body);
-    this.headers = {
-      'x-coral-backend-token': token,
-      ...(this.bodyText !== null ? { 'content-type': 'application/json' } : {}),
-    };
-  }
-
-  start(): void {
-    if (this.started) {
-      return;
-    }
-    this.started = true;
-    queueMicrotask(() => {
-      if (this.destroyed) {
-        return;
-      }
-      if (this.bodyText !== null) {
-        this.emit('data', Buffer.from(this.bodyText, 'utf-8'));
-      }
-      this.emit('end');
-    });
-  }
-
-  resume(): void {}
-
-  destroy(): void {
-    this.destroyed = true;
-  }
-}
-
-class ScenarioHttpResponse extends EventEmitter {
-  statusCode = 200;
-  headersSent = false;
-  writableEnded = false;
-  destroyed = false;
-  readonly headers = new Map<string, string | number | string[]>();
-  body = '';
-
-  setHeader(name: string, value: string | number | string[]): void {
-    this.headers.set(name, value);
-  }
-
-  writeHead(statusCode: number): void {
-    this.statusCode = statusCode;
-    this.headersSent = true;
-  }
-
-  write(chunk: string | Buffer): boolean {
-    this.headersSent = true;
-    this.body += Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : chunk;
-    return true;
-  }
-
-  end(chunk?: string | Buffer): this {
-    if (chunk !== undefined) {
-      this.write(chunk);
-    }
-    this.headersSent = true;
-    this.writableEnded = true;
-    this.emit('finish');
-    this.emit('close');
-    return this;
-  }
 }
 
 function parseJsonArtifact<T>(raw: string | null): T | null {
