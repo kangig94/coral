@@ -78,7 +78,9 @@ function addGitignoreEntry(projectDir, entry, gitRoot) {
 }
 
 function ensureCoralSymlink(projectDir, gitRoot) {
-  const link = join(projectDir, '.claude', 'coral');
+  const claudeDir = join(projectDir, '.claude');
+  if (!existsSync(claudeDir)) return; // no .claude dir — nothing to link into
+  const link = join(claudeDir, 'coral');
   const target = coralProjectDir(projectDir);
   try {
     if (existsSync(link)) return;
