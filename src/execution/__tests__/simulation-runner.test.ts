@@ -15,22 +15,6 @@ const EXAMPLE_SCENARIOS = ['lifecycle-complete.yaml', 'lifecycle-abort.yaml', 'l
 
 const worlds: SimulationWorld[] = [];
 
-async function cleanupWorld(world: SimulationWorld): Promise<void> {
-  try {
-    const lifecycle = world.getBackendLifecycle();
-    if (lifecycle === 'running' || lifecycle === 'starting') {
-      await world.shutdown('test-cleanup');
-    }
-    if (lifecycle !== 'stopped') {
-      await world.waitForShutdown();
-    }
-  } catch {
-    // Best-effort cleanup only.
-  } finally {
-    world.dispose();
-  }
-}
-
 function getDurableRuntime(world: SimulationWorld, jobId: string) {
   const runtime = world.readArtifact(jobId, 'runtime', { freshness: 'cached' });
   const candidate = runtime as Parameters<typeof isDurableCliRuntime>[0];
@@ -46,7 +30,7 @@ afterEach(async () => {
     if (!world) {
       continue;
     }
-    await cleanupWorld(world);
+    await world.teardown();
   }
 });
 

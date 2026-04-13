@@ -138,29 +138,13 @@ function getDurableRuntime(world: SimulationWorld, jobId: string) {
   return candidate;
 }
 
-async function cleanupWorld(world: SimulationWorld): Promise<void> {
-  try {
-    const lifecycle = world.getBackendLifecycle();
-    if (lifecycle === 'running' || lifecycle === 'starting') {
-      await world.shutdown('test-cleanup');
-    }
-    if (lifecycle !== 'stopped') {
-      await world.waitForShutdown();
-    }
-  } catch {
-    // Best-effort cleanup only.
-  } finally {
-    world.dispose();
-  }
-}
-
 afterEach(async () => {
   while (worlds.length > 0) {
     const world = worlds.pop();
     if (!world) {
       continue;
     }
-    await cleanupWorld(world);
+    await world.teardown();
   }
 });
 
@@ -232,9 +216,9 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(replay.map((event) => event.type)).toEqual(['progress', 'progress', 'terminal']);
     expect(replay[0]?.type === 'progress' ? replay[0].message : '').toContain('provider-progress-1');
     expect(replay[1]?.type === 'progress' ? replay[1].message : '').toContain('provider-progress-2');
-    expect(world.getProgressEvents(launch.jobId)).toHaveLength(2);
-    expect(world.getProgressEvents(launch.jobId)[0]).toContain('provider-progress-1');
-    expect(world.getProgressEvents(launch.jobId)[1]).toContain('provider-progress-2');
+    expect(world.getProgress(launch.jobId)).toHaveLength(2);
+    expect(world.getProgress(launch.jobId)[0]).toContain('provider-progress-1');
+    expect(world.getProgress(launch.jobId)[1]).toContain('provider-progress-2');
     expect(world.getPhaseTransitions(launch.jobId)).toEqual([
       { previousPhase: 'launching', phase: 'running' },
       { previousPhase: 'running', phase: 'completed' },

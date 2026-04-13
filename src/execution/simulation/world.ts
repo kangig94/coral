@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
-import { createReplayCursor } from '../progress-store.js';
+import { createReplayCursor, type ReplayCursor } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import type { BackendServerInfo, LifecycleState } from '../server-types.js';
 import {
   createSimulationBackend,
+  DEFAULT_EPOCH_MS,
   type ChildOutputChunk,
   type FakeProviderScenario,
   type MockDurableScript,
@@ -27,7 +28,6 @@ import {
   type TerminalResult,
 } from '../../shared/types.js';
 
-const DEFAULT_EPOCH_MS = 1_000_000;
 const STATUS_FILE = 'status.json';
 const RUNTIME_FILE = 'runtime.json';
 const EXIT_FILE = 'exit.json';
@@ -75,7 +75,6 @@ type WorldGenerationState = {
   backend: SimulationBackend;
   startedInfo: BackendServerInfo | null;
   phaseTransitions: Map<string, Array<{ previousPhase: string; phase: string }>>;
-  progressEvents: Map<string, string[]>;
 };
 
 type NoRealIoRegistration = {
@@ -438,28 +437,7 @@ export class SimulationWorld {
   private disposed = false;
 
   constructor(config: WorldConfig) {
-    this.initialConfig = {
-      ...config,
-      env: config.env ? { ...config.env } : undefined,
-      listen: config.listen ? { ...config.listen } : undefined,
-      spawn: config.spawn?.map((entry) => ({ ...entry })),
-      durable: config.durable?.map((entry) => ({ ...entry })),
-      fakeProvider: config.fakeProvider
-        ? {
-            ...config.fakeProvider,
-            cli: config.fakeProvider.cli ? { ...config.fakeProvider.cli } : undefined,
-            progress: config.fakeProvider.progress?.map((entry) => ({ ...entry })),
-            result: config.fakeProvider.result
-              ? {
-                  ...config.fakeProvider.result,
-                  errors: config.fakeProvider.result.errors ? [...config.fakeProvider.result.errors] : undefined,
-                  warnings: config.fakeProvider.result.warnings ? [...config.fakeProvider.result.warnings] : undefined,
-                  usage: config.fakeProvider.result.usage ? { ...config.fakeProvider.result.usage } : undefined,
-                }
-              : undefined,
-          }
-        : undefined,
-    };
+    this.initialConfig = config;
     this.epochMs = this.initialConfig.epochMs ?? DEFAULT_EPOCH_MS;
     this.noRealIoRegistration = acquireNoRealIoMonitor();
     this.current = this.createGenerationState();
@@ -533,8 +511,10 @@ export class SimulationWorld {
   ): Promise<WaitDetail> {
     this.assertUsable();
     const startedAt = this.getVirtualElapsedMs();
+    const cursor = createReplayCursor();
+    const accumulatedProgress: string[] = [];
     let steps = 0;
-    let actual = this.observeJob(jobId);
+    let actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
 
     if (this.matchesWaitCondition(until, actual)) {
       return {
@@ -579,7 +559,7 @@ export class SimulationWorld {
 
       await this.advance(advanceBy);
       steps += 1;
-      actual = this.observeJob(jobId);
+      actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
       if (this.matchesWaitCondition(until, actual)) {
         return {
           ok: true,
@@ -757,23 +737,14 @@ export class SimulationWorld {
     return cloneNoRealIoReport(this.noRealIoRegistration.report);
   }
 
-  getLifecycleState(): LifecycleState {
+  getBackendLifecycle(): LifecycleState {
     this.assertUsable();
     return this.current.backend.backend.getLifecycle();
-  }
-
-  getBackendLifecycle(): LifecycleState {
-    return this.getLifecycleState();
   }
 
   getPhaseTransitions(jobId: string): Array<{ previousPhase: string; phase: string }> {
     this.assertUsable();
     return [...(this.current.phaseTransitions.get(jobId) ?? [])];
-  }
-
-  getProgressEvents(jobId: string): string[] {
-    this.assertUsable();
-    return [...(this.current.progressEvents.get(jobId) ?? [])];
   }
 
   getVirtualElapsedMs(): number {
@@ -804,6 +775,20 @@ export class SimulationWorld {
     return this.current.backend.runtime.process.isAlive(pid);
   }
 
+  async teardown(): Promise<void> {
+    try {
+      const lifecycle = this.current.backend.backend.getLifecycle();
+      if (lifecycle === 'starting' || lifecycle === 'running') {
+        await this.current.backend.backend.shutdown('teardown');
+      }
+      if (lifecycle !== 'stopped') {
+        await this.current.backend.backend.waitForShutdown();
+      }
+    } finally {
+      this.dispose();
+    }
+  }
+
   dispose(): void {
     if (this.disposed) {
       return;
@@ -821,7 +806,6 @@ export class SimulationWorld {
   private createGenerationState(): WorldGenerationState {
     const backend = createSimulationBackend(normalizeWorldConfig(this.initialConfig));
     const phaseTransitions = new Map<string, Array<{ previousPhase: string; phase: string }>>();
-    const progressEvents = new Map<string, string[]>();
 
     backend.eventBus.on('job:phase_changed', ({ jobId, previousPhase, phase }) => {
       const entries = phaseTransitions.get(jobId) ?? [];
@@ -829,17 +813,10 @@ export class SimulationWorld {
       phaseTransitions.set(jobId, entries);
     });
 
-    backend.eventBus.on('job:progress', ({ jobId, message }) => {
-      const entries = progressEvents.get(jobId) ?? [];
-      entries.push(message);
-      progressEvents.set(jobId, entries);
-    });
-
     return {
       backend,
       startedInfo: null,
       phaseTransitions,
-      progressEvents,
     };
   }
 
@@ -858,6 +835,36 @@ export class SimulationWorld {
       progress: replay
         .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
         .map((event) => event.message),
+      result: status?.result ?? null,
+    };
+  }
+
+  private observeJobIncremental(
+    jobId: string,
+    cursor: ReplayCursor,
+    accumulatedProgress: string[],
+  ): WaitObservation {
+    const status = this.current.backend.progressStore.readStatus(jobId);
+    const newEvents = this.current.backend.progressStore.replayFrom(jobId, 0, cursor);
+    let terminalSeen = false;
+
+    for (const event of newEvents) {
+      if (event.type === 'progress' && event.message !== undefined) {
+        accumulatedProgress.push(event.message);
+      }
+      if (event.type === 'terminal') {
+        terminalSeen = true;
+      }
+    }
+
+    return {
+      phase: status?.phase ?? null,
+      runtimeRecorded: this.current.backend.progressStore.hasRuntimeRecord(jobId),
+      terminal:
+        terminalSeen ||
+        Boolean(status?.result) ||
+        (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
+      progress: accumulatedProgress,
       result: status?.result ?? null,
     };
   }

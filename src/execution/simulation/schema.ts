@@ -175,12 +175,7 @@ const waitStepObjectSchema = z.object({
   maxSteps: z.number().int().positive().optional(),
   timeoutMs: z.number().positive().optional(),
 });
-
-export const waitStepSchema = waitStepObjectSchema
-  .refine((step) => (step.maxSteps === undefined) !== (step.timeoutMs === undefined), {
-    message: 'wait requires exactly one of maxSteps or timeoutMs',
-  });
-export type WaitStep = z.infer<typeof waitStepSchema>;
+export type WaitStep = z.infer<typeof waitStepObjectSchema>;
 
 export const advanceStepSchema = z.object({
   type: z.literal('advance'),
@@ -199,12 +194,7 @@ const killStepObjectSchema = z.object({
   pid: z.number().optional(),
   jobId: z.string().optional(),
 });
-
-export const killStepSchema = killStepObjectSchema
-  .refine((step) => (step.pid !== undefined) !== (step.jobId !== undefined), {
-    message: 'kill requires exactly one of pid or jobId',
-  });
-export type KillStep = z.infer<typeof killStepSchema>;
+export type KillStep = z.infer<typeof killStepObjectSchema>;
 
 export const restartStepSchema = z.object({
   type: z.literal('restart'),
@@ -248,23 +238,7 @@ const expectStepObjectSchema = z.object({
   timing: timingExpectationSchema.optional(),
   noRealIO: z.boolean().optional(),
 });
-
-export const expectStepSchema = expectStepObjectSchema
-  .refine(
-    (step) =>
-      [
-        step.phase,
-        step.progress,
-        step.result,
-        step.runtimeRecorded,
-        step.jobCount,
-        step.sessionCount,
-        step.timing,
-        step.noRealIO,
-      ].some((value) => value !== undefined),
-    { message: 'expect requires at least one assertion field' },
-  );
-export type ExpectStep = z.infer<typeof expectStepSchema>;
+export type ExpectStep = z.infer<typeof expectStepObjectSchema>;
 
 export const hangStepSchema = z.object({
   type: z.literal('hang'),

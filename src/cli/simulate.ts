@@ -80,21 +80,6 @@ function normalizeSimulateError(error: unknown): unknown {
   return new Error(`Simulation document validation failed: ${message}`);
 }
 
-async function cleanupWorld(world: SimulationWorld): Promise<void> {
-  try {
-    const wasBooted = world.getHookLog().listenCalls.length > 0;
-    const lifecycle = world.getBackendLifecycle();
-    if (wasBooted && (lifecycle === 'starting' || lifecycle === 'running')) {
-      await world.shutdown('simulate-cleanup');
-    }
-    if (wasBooted && lifecycle !== 'stopped') {
-      await world.waitForShutdown();
-    }
-  } finally {
-    world.dispose();
-  }
-}
-
 async function withMutedStderr<T>(fn: () => Promise<T>): Promise<T> {
   const originalWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((() => true) as unknown) as typeof process.stderr.write;
@@ -135,7 +120,7 @@ export function registerSimulateCommand(program: Command, helpers: SimulateHelpe
         const worldToCleanup = world;
 
         try {
-          await withMutedStderr(() => cleanupWorld(worldToCleanup));
+          await withMutedStderr(() => worldToCleanup.teardown());
         } catch (cleanupError: unknown) {
           process.stderr.write(`Simulation cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
           process.exitCode = 1;

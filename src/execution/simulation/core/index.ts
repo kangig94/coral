@@ -43,7 +43,7 @@ import { createDeferred, type Deferred } from './deferred.js';
 
 export { createDeferred, type Deferred } from './deferred.js';
 
-const DEFAULT_EPOCH_MS = 1_000_000;
+export const DEFAULT_EPOCH_MS = 1_000_000;
 const DEFAULT_PID = 12_345;
 const DEFAULT_PLATFORM = 'linux';
 const DEFAULT_CWD = '/tmp/sim';
