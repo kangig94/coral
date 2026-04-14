@@ -3543,7 +3543,6 @@ describe('execution backend server', () => {
         } as never,
         streamResponses: new Set(),
         discussStores: new Map(),
-        discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
         launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
@@ -3569,6 +3568,11 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
       });
@@ -3817,7 +3821,6 @@ describe('execution backend server', () => {
         sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
-        discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
         launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
@@ -3843,6 +3846,11 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
       });
@@ -3937,7 +3945,6 @@ describe('execution backend server', () => {
         sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
-        discussRegistry: createDiscussContextRegistry(),
         eventBus: new TypedEventBus(),
         launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
@@ -3963,6 +3970,11 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4103, host: '127.0.0.1' }),
       });
@@ -4083,7 +4095,6 @@ describe('execution backend server', () => {
         sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map([[source, store]]),
-        discussRegistry,
         eventBus: new TypedEventBus(),
         launchCoordinator: createLaunchCoordinator(),
         providerRegistry: new ProviderRegistry(),
@@ -4111,6 +4122,11 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
         closeServerFn: async () => {},
         listenFn: async () => ({ port: 4101, host: '127.0.0.1' }),
       });

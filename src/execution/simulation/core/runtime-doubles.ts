@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
-import type { RuntimeEnv, RuntimeIds, RuntimePaths } from '../../runtime.js';
+import type {
+  Disposable,
+  RuntimeEnv,
+  RuntimeIds,
+  RuntimeObserver,
+  RuntimePaths,
+  SpawnEvent,
+  SpawnListener,
+} from '../../runtime.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 
 const DEFAULT_HOME = '/tmp/sim/home';
@@ -19,6 +27,37 @@ export type InMemoryPathsSnapshot = {
 
 function hashToken(input: string, length: number): string {
   return createHash('sha256').update(input).digest('hex').slice(0, length);
+}
+
+function cloneSpawnEvent(event: SpawnEvent): SpawnEvent {
+  return {
+    child: event.child,
+    command: event.command,
+    args: [...event.args],
+    ...(event.env ? { env: { ...event.env } } : {}),
+  };
+}
+
+export class InMemoryObserver implements RuntimeObserver {
+  readonly events: SpawnEvent[] = [];
+  private readonly listeners = new Set<SpawnListener>();
+
+  emit(event: SpawnEvent): void {
+    const snapshot = cloneSpawnEvent(event);
+    this.events.push(snapshot);
+    for (const listener of this.listeners) {
+      listener(cloneSpawnEvent(snapshot));
+    }
+  }
+
+  onSpawn(listener: SpawnListener): Disposable {
+    this.listeners.add(listener);
+    return {
+      dispose: () => {
+        this.listeners.delete(listener);
+      },
+    };
+  }
 }
 
 export class InMemoryPaths implements RuntimePaths {

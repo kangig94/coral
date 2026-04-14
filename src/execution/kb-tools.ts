@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CurateHandle } from '../kb/curate/scheduler.js';
+import { kbRoot } from '../infra/paths.js';
+import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { z, type ZodError } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
@@ -8,6 +9,7 @@ import { extractBody, extractPrincipleStatement, parseMembersFromBody, parseSumm
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/ops/memo.js';
 import {
   memoDir,
+  kbRuntimeDir,
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
@@ -16,6 +18,7 @@ import {
 import { promote as kbPromote } from '../kb/ops/promote.js';
 import { loadKbCommunity, loadKbNote, loadKbSource } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/ops/reindex.js';
+import { createKbRuntime } from '../kb/runtime.js';
 import { searchKb } from '../kb/ops/search.js';
 import { deleteSource, listSources, persistPreparedSource } from '../kb/ops/source-store.js';
 import { isNoteEntry } from '../kb/types.js';
@@ -29,12 +32,39 @@ import {
 } from '../shared/kb-read-contract.js';
 import { assertOwnerId } from '../shared/utils.js';
 import type { CallerContext } from '../shared/request-context.js';
+import type { SpawnCliFn } from './engine.js';
 import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
 
 export type KbSubsystem = {
   kb: KbRuntime;
   curateScheduler: CurateHandle;
 };
+
+export async function createKbSubsystem({
+  pluginRoot,
+  spawnCli: spawnKbCli,
+}: {
+  pluginRoot: string;
+  spawnCli: SpawnCliFn;
+}): Promise<KbSubsystem> {
+  const kb = createKbRuntime({
+    markdownRoot: kbRoot(),
+    runtimeDir: kbRuntimeDir(),
+  });
+  await kb.initVectorStore(pluginRoot);
+
+  const curateScheduler = createCurateScheduler({
+    kb,
+    spawnCli: spawnKbCli,
+  });
+
+  await curateScheduler.start();
+
+  return {
+    kb,
+    curateScheduler,
+  };
+}
 
 type KbArgs = Record<string, unknown>;
 

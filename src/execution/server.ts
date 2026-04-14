@@ -25,14 +25,18 @@ import { IdleTimer, resolveIdleTimeoutMs } from './idle-timer.js';
 import { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { SessionIndex } from './session-index.js';
-import { createRealRuntime, type Runtime } from './runtime.js';
+import { createRealRuntime, type Runtime, type RuntimeObserver } from './runtime.js';
 import { type DiscussContext } from './discuss/context.js';
 import {
+  clearAllDiscuss,
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
+  hasRunningSessions,
   listAttachedSessions,
   type DiscussContextRegistry,
 } from './discuss/context-registry.js';
+import * as discussLoop from './discuss/loop.js';
+import * as discussOperations from './discuss/operations.js';
 import { DiscussSessionStore } from './discuss/session-store.js';
 import {
   knownDiscussSources,
@@ -42,7 +46,7 @@ import {
 } from './discuss/read-helpers.js';
 import { ExecutionService as DefaultExecutionService } from './service.js';
 import { belongsToNamespace } from '../shared/types.js';
-import type { KbSubsystem } from './kb-tools.js';
+import { createKbSubsystem as defaultCreateKbSubsystem, type KbSubsystem } from './kb-tools.js';
 import { createHttpHandler, sendJson } from './http-handler.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import type {
@@ -57,9 +61,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import {
   closeServer as defaultCloseServer,
-  createKbSubsystem as defaultCreateKbSubsystem,
   listen as defaultListen,
-  recoverPersistedDiscuss as defaultRecoverPersistedDiscuss,
   cleanupStaleJobs,
   markJobsAsError,
   createLifecycle,
@@ -67,10 +69,19 @@ import {
   type CreateKbSubsystemFn,
   type LifecycleDeps,
   type LifecycleController,
+  type LifecycleHooks,
   type RecoverPersistedDiscussFn,
   type RegisterBuiltInProvidersFn,
 } from './lifecycle.js';
+import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from './discuss/recovery.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
+import {
+  EventEmitterObserver,
+  asEmittingRuntimeObserver,
+  attachRecordingObserver,
+  observeRuntimeSpawns,
+  resolveSpawnRecordingDir,
+} from './recording-observer.js';
 
 export type BackendBootSnapshot = {
   version?: string;
@@ -92,6 +103,7 @@ const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
 
 export type BackendServerOptions = {
   runtime?: Runtime;
+  runtimeObserver?: RuntimeObserver;
   bootSnapshot?: BackendBootSnapshot;
   progressStore?: ProgressStore;
   pluginRoot?: string;
@@ -211,6 +223,16 @@ export function listInstantiatedExecutionServices(
 
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const runtime = options.runtime ?? createRealRuntime();
+  const runtimeObserver = asEmittingRuntimeObserver(options.runtimeObserver ?? new EventEmitterObserver());
+  observeRuntimeSpawns(runtime, runtimeObserver);
+  const recordingDir = resolveSpawnRecordingDir(runtime.env.get('CORAL_SIMULATE_RECORD'), runtime.env.cwd());
+  if (recordingDir) {
+    attachRecordingObserver({
+      observer: runtimeObserver,
+      runtime,
+      recordingDir,
+    });
+  }
   const bootSnapshot = options.bootSnapshot ?? {};
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
@@ -398,6 +420,40 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     resolveProjectSource: resolveProjectSourceFn,
   };
 
+  const hooks: LifecycleHooks = {
+    onShutdown: async (mode) => {
+      const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources(discussReadHelpersDeps)] : [];
+
+      await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
+
+      if (mode !== 'hard') {
+        return;
+      }
+
+      await discussOperations.persistAbortEndForPersistedShutdownCandidates(
+        discussSourcesAtShutdown,
+        getDiscussStoreForSource,
+        (snapshot) =>
+          getDiscussContext({
+            projectRoot: snapshot.projectRoot,
+            pluginRoot: resolvedPluginRoot,
+            coralEnv: {},
+          }),
+      );
+      discussRegistry.contexts.clear();
+    },
+    onIdleCheck: () => hasRunningSessions(discussRegistry),
+    onRecoveryComplete: async (resumes) => {
+      for (const recovered of resumes) {
+        try {
+          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
+        } catch (error: unknown) {
+          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${formatError(error)}`);
+        }
+      }
+    },
+  };
+
   // -- Abort / scope helpers ------------------------------------------------
   function abortJobs(jobIds: string[]): AbortResult {
     const pending = new Set(jobIds);
@@ -550,7 +606,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     sessionIndex,
     streamResponses,
     discussStores,
-    discussRegistry,
     eventBus,
     launchCoordinator,
     providerRegistry,
@@ -572,6 +627,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     createKbSubsystemFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
+    hooks,
     closeServerFn,
     listenFn,
     onStopped: options.onStopped,

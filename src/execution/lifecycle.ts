@@ -13,7 +13,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { kbRoot } from '../infra/paths.js';
 import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { RecoveryRegistry } from './recovery-registry.js';
@@ -25,9 +24,7 @@ import type { SessionIndex } from './session-index.js';
 import { listSessionShards, SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
-import { clearAllDiscuss, hasRunningSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
-import * as discussLoop from './discuss/loop.js';
-import * as discussOperations from './discuss/operations.js';
+import type { RecoveredDiscussResume } from './discuss/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { type RecoveryCapableService } from './service.js';
 import {
@@ -42,15 +39,12 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
-import { createCurateScheduler } from '../kb/curate/scheduler.js';
-import { kbRuntimeDir } from '../kb/paths.js';
-import { createKbRuntime } from '../kb/runtime.js';
 import type { KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
 import { planRecovery, type JobStoreSnapshot, type RecoveryAction, type RecoveryInvariants } from './recovery-core.js';
-import type { Runtime } from './runtime.js';
+import type { Runtime, RuntimeTimerHandle } from './runtime.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,6 +73,12 @@ export type CreateKbSubsystemFn = (options: {
  * - hard: kill children and mark jobs as error (current behavior)
  */
 export type ShutdownMode = 'handoff' | 'hard';
+
+export interface LifecycleHooks {
+  onShutdown(mode: ShutdownMode): Promise<void>;
+  onIdleCheck(): boolean;
+  onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
+}
 
 export function shutdownModeFromReason(reason: string): ShutdownMode {
   if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
@@ -370,32 +370,6 @@ export function markJobsAsError(progressStore: ProgressStore, namespace: string,
   }
 }
 
-export async function createKbSubsystem({
-  pluginRoot,
-  spawnCli: spawnKbCli,
-}: {
-  pluginRoot: string;
-  spawnCli: SpawnCliFn;
-}): Promise<KbSubsystem> {
-  const kb = createKbRuntime({
-    markdownRoot: kbRoot(),
-    runtimeDir: kbRuntimeDir(),
-  });
-  await kb.initVectorStore(pluginRoot);
-
-  const curateScheduler = createCurateScheduler({
-    kb,
-    spawnCli: spawnKbCli,
-  });
-
-  await curateScheduler.start();
-
-  return {
-    kb,
-    curateScheduler,
-  };
-}
-
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 export function resolveClientHost(bindHost: string, advertiseHost?: string): string {
   let host = bindHost;
@@ -440,30 +414,7 @@ export type RecoverPersistedDiscussDeps = {
 
 export type RecoverPersistedDiscussFn = (
   deps: RecoverPersistedDiscussDeps,
-) => Promise<discussOperations.RecoveredDiscussResume[]>;
-
-export async function recoverPersistedDiscuss(
-  deps: RecoverPersistedDiscussDeps,
-): Promise<discussOperations.RecoveredDiscussResume[]> {
-  const recoveredDiscussResumes: discussOperations.RecoveredDiscussResume[] = [];
-
-  for (const source of deps.knownDiscussSources()) {
-    try {
-      recoveredDiscussResumes.push(
-        ...(await discussOperations.recoverPersistedSessionsFromStore(
-          deps.getDiscussStoreForSource(source),
-          (snapshot) => deps.getDiscussContext(deps.createCallerContext(snapshot.projectRoot)),
-          (snapshot) => deps.createCallerContext(snapshot.projectRoot),
-        )),
-      );
-    } catch (err) {
-      backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(err)}`);
-    }
-    deps.assertStartupStillActive();
-  }
-
-  return recoveredDiscussResumes;
-}
+) => Promise<RecoveredDiscussResume[]>;
 
 // ---------------------------------------------------------------------------
 // LifecycleDeps — everything the lifecycle module needs
@@ -484,7 +435,6 @@ export type LifecycleDeps = {
   readonly sessionIndex: SessionIndex;
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
-  readonly discussRegistry: DiscussContextRegistry;
   readonly eventBus: TypedEventBus;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
@@ -522,6 +472,7 @@ export type LifecycleDeps = {
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
+  readonly hooks: LifecycleHooks;
 
   // Transport hooks
   readonly closeServerFn: (server: Server) => Promise<void>;
@@ -544,6 +495,16 @@ export type LifecycleController = {
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
 
+type LifecycleControlState = {
+  shutdownPromise: Promise<void> | null;
+  started: boolean;
+  sessionIndexSubscribed: boolean;
+  recoveryRegistry: RecoveryRegistry | null;
+  ownershipCheckerInterval: RuntimeTimerHandle | null;
+  adoptedRunningPids: Map<string, { pid: number; pool: string }>;
+  recoveryPollIntervals: Set<RuntimeTimerHandle>;
+};
+
 export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const {
     identity,
@@ -555,7 +516,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     sessionIndex,
     streamResponses,
     discussStores,
-    discussRegistry,
     eventBus,
     launchCoordinator,
     providerRegistry,
@@ -575,6 +535,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     createKbSubsystemFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
+    hooks,
     closeServerFn,
     listenFn,
     onStopped,
@@ -583,13 +544,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
   const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now, log } = identity;
 
-  let shutdownPromise: Promise<void> | null = null;
-  let started = false;
-  let sessionIndexSubscribed = false;
-  let recoveryRegistry: RecoveryRegistry | null = null;
-  let ownershipCheckerInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
-  const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
-  const recoveryPollIntervals = new Set<ReturnType<Runtime['time']['setInterval']>>();
+  const state: LifecycleControlState = {
+    shutdownPromise: null,
+    started: false,
+    sessionIndexSubscribed: false,
+    recoveryRegistry: null,
+    ownershipCheckerInterval: null,
+    adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
+    recoveryPollIntervals: new Set<RuntimeTimerHandle>(),
+  };
 
   // -- Session index subscription -------------------------------------------
 
@@ -605,15 +568,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   }
 
   function subscribeSessionIndex(): void {
-    if (sessionIndexSubscribed) return;
+    if (state.sessionIndexSubscribed) return;
     eventBus.on('session:updated', onSessionIndexUpdated);
-    sessionIndexSubscribed = true;
+    state.sessionIndexSubscribed = true;
   }
 
   function unsubscribeSessionIndex(): void {
-    if (!sessionIndexSubscribed) return;
+    if (!state.sessionIndexSubscribed) return;
     eventBus.off('session:updated', onSessionIndexUpdated);
-    sessionIndexSubscribed = false;
+    state.sessionIndexSubscribed = false;
   }
 
   async function finalizeLiveAppServerJobsForHandoff(): Promise<void> {
@@ -836,7 +799,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           assertStartupStillActive();
           await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
           assertStartupStillActive();
-          recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
           continue;
         }
@@ -847,7 +810,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         assertStartupStillActive();
 
         // Track adopted PID
-        adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
+        state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
 
         const drainRecoveredProgress = (): void => {
           if (!recovery?.extractProgress) {
@@ -892,8 +855,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
           if (!alive) {
             runtime.time.clearInterval(pollInterval);
-            recoveryPollIntervals.delete(pollInterval);
-            adoptedRunningPids.delete(jobId);
+            state.recoveryPollIntervals.delete(pollInterval);
+            state.adoptedRunningPids.delete(jobId);
 
             const exitRecord = progressStore.readExitRecord(jobId);
             if (exitRecord) {
@@ -988,9 +951,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           }
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
-        recoveryPollIntervals.add(pollInterval);
+        state.recoveryPollIntervals.add(pollInterval);
 
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
       } catch (err) {
         if (err instanceof StartupInterruptedError) {
@@ -998,7 +961,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           throw err;
         }
         log(`Failed to adopt running job ${jobId}: ${formatError(err)}\n`);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
       }
     }
 
@@ -1009,18 +972,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         const service = getRecoveryService(ctx);
         assertStartupStillActive();
         service.recoverQueuedJob(launchRecord);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
       } catch (err) {
         if (err instanceof StartupInterruptedError) throw err;
         log(`Failed to recover queued job ${jobId}: ${formatError(err)}\n`);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
       }
     }
 
     // All entries migrated — dissolve registry and lift launch fence
     assertStartupStillActive();
-    recoveryRegistry = null;
+    state.recoveryRegistry = null;
     runtimeState.setLaunchFenceActive(false);
     log(`Recovery adoption complete. Launch fence lifted.\n`);
   }
@@ -1028,13 +991,12 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   // -- shutdown -------------------------------------------------------------
 
   async function shutdown(reason: string): Promise<void> {
-    if (shutdownPromise) return shutdownPromise;
+    if (state.shutdownPromise) return state.shutdownPromise;
 
-    shutdownPromise = (async () => {
+    state.shutdownPromise = (async () => {
       if (runtimeState.getLifecycle() === 'stopped') return;
 
       const mode = shutdownModeFromReason(reason);
-      const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources()] : [];
       const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
       log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
@@ -1059,31 +1021,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // handoff mode: detached durable wrappers continue for replacement recovery,
       // while app-server jobs are terminalized locally before provider-server drain.
 
-      for (const interval of recoveryPollIntervals) runtime.time.clearInterval(interval);
-      recoveryPollIntervals.clear();
-      if (ownershipCheckerInterval) {
-        runtime.time.clearInterval(ownershipCheckerInterval);
-        ownershipCheckerInterval = null;
+      for (const interval of state.recoveryPollIntervals) runtime.time.clearInterval(interval);
+      state.recoveryPollIntervals.clear();
+      if (state.ownershipCheckerInterval) {
+        runtime.time.clearInterval(state.ownershipCheckerInterval);
+        state.ownershipCheckerInterval = null;
       }
       await Promise.race([
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         runtime.time.sleep(5_000),
       ]);
       await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch((e: unknown) => { backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(e)}`); });
-      await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
-      if (mode === 'hard') {
-        await discussOperations.persistAbortEndForPersistedShutdownCandidates(
-          discussSourcesAtShutdown,
-          getDiscussStoreForSource,
-          (snapshot) =>
-            getDiscussContext({
-              projectRoot: snapshot.projectRoot,
-              pluginRoot,
-              coralEnv: {},
-            }),
-        );
-        discussRegistry.contexts.clear();
-      }
+      await hooks.onShutdown(mode);
       unsubscribeSessionIndex();
       for (const store of discussStores.values()) {
         store.dispose();
@@ -1100,18 +1049,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         onStopped?.();
       });
 
-    return shutdownPromise;
+    return state.shutdownPromise;
   }
 
   // -- start ----------------------------------------------------------------
 
   async function start(): Promise<BackendServerInfo> {
-    if (started || runtimeState.getLifecycle() !== 'starting') {
+    if (state.started || runtimeState.getLifecycle() !== 'starting') {
       throw new Error('Backend server already started');
     }
 
     const assertStartupStillActive = (): void => {
-      if (shutdownPromise !== null || runtimeState.getLifecycle() !== 'starting') {
+      if (state.shutdownPromise !== null || runtimeState.getLifecycle() !== 'starting') {
         throw new StartupInterruptedError();
       }
     };
@@ -1142,7 +1091,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       // Scan recoverable jobs and install recovery registry + launch fence
       runtimeState.setLaunchFenceActive(true);
-      recoveryRegistry = new RecoveryRegistry(runtime.process);
+      state.recoveryRegistry = new RecoveryRegistry(runtime.process);
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
       const runningRecoverable: Array<{
         jobId: string;
@@ -1168,7 +1117,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           applyRecoveryAction(
             action,
             progressStore,
-            recoveryRegistry,
+            state.recoveryRegistry,
             queuedRecoverable,
             runningRecoverable,
             log,
@@ -1184,7 +1133,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           applyRecoveryAction(
             action,
             progressStore,
-            recoveryRegistry,
+            state.recoveryRegistry,
             queuedRecoverable,
             runningRecoverable,
             log,
@@ -1223,11 +1172,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
               /* best-effort */
             }
           }
-          recoveryRegistry = null;
+          state.recoveryRegistry = null;
           runtimeState.setLaunchFenceActive(false);
         }
       } else {
-        recoveryRegistry = null;
+        state.recoveryRegistry = null;
         runtimeState.setLaunchFenceActive(false);
       }
 
@@ -1247,18 +1196,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       });
 
       runtimeState.setLifecycle('running');
-      started = true;
+      state.started = true;
 
       // Idle timer with namespace-based counting
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
-          adoptedRunningPids.size === 0 &&
+          state.adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
-          (recoveryRegistry === null || recoveryRegistry.size === 0) &&
-          !hasRunningSessions(discussRegistry) &&
+          (state.recoveryRegistry === null || state.recoveryRegistry.size === 0) &&
+          !hooks.onIdleCheck() &&
           !(runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false),
         (reason) => {
           void shutdown(reason).catch(() => {});
@@ -1268,30 +1217,25 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Self-terminate if another backend replaces this one (backend-info.json
       // will point to the replacement's instanceId). Covers the case where
       // ensureBackend's shutdown request is lost during rapid rebuild cycles.
-      ownershipCheckerInterval = runtime.time.setInterval(() => {
+      state.ownershipCheckerInterval = runtime.time.setInterval(() => {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
           const current = readBackendInfo(pluginRoot, runtime);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it
-            runtime.time.clearInterval(ownershipCheckerInterval!);
-            ownershipCheckerInterval = null;
+            if (state.ownershipCheckerInterval !== null) {
+              runtime.time.clearInterval(state.ownershipCheckerInterval);
+              state.ownershipCheckerInterval = null;
+            }
             idleTimer.requestDrain('replaced');
           }
         } catch {
           // read failure — skip this check
         }
       }, 30_000);
-      ownershipCheckerInterval.unref?.();
+      state.ownershipCheckerInterval?.unref?.();
 
-      for (const recovered of recoveredDiscussResumes) {
-        try {
-          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
-        } catch (err) {
-          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${errorMessage(err)}`);
-        }
-      }
+      await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
       return {
         port,
@@ -1305,8 +1249,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         startedAt,
       };
     } catch (error: unknown) {
-      if (error instanceof StartupInterruptedError && shutdownPromise !== null) {
-        await shutdownPromise;
+      if (error instanceof StartupInterruptedError && state.shutdownPromise !== null) {
+        await state.shutdownPromise;
         throw error;
       }
 
@@ -1329,7 +1273,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   return {
     start,
     shutdown,
-    waitForShutdown: () => shutdownPromise ?? Promise.resolve(),
-    getRecoveryRegistry: () => recoveryRegistry,
+    waitForShutdown: () => state.shutdownPromise ?? Promise.resolve(),
+    getRecoveryRegistry: () => state.recoveryRegistry,
   };
 }

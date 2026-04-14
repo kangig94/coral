@@ -1,6 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import type { ChildProcessLike, ChildStdinLike } from '../runtime.js';
+import type { ChildProcessLike, ChildStdinLike, RuntimeStorage } from '../runtime.js';
 import type { ChildOutputChunk, MockDurableScript, MockSpawnScript } from './core/mock-process.js';
 
 type SpawnRecordingEvent = {
@@ -287,20 +286,20 @@ export function recordingToDurableScript(recording: SpawnRecording): MockDurable
   };
 }
 
-export function saveRecording(recording: SpawnRecording, filePath: string): void {
+export function saveRecording(storage: RuntimeStorage, recording: SpawnRecording, filePath: string): void {
   const normalized = validateRecording(recording);
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, JSON.stringify(normalized, null, 2), { encoding: 'utf-8' });
+  storage.mkdirSync(dirname(filePath), { recursive: true });
+  storage.writeFileSync(filePath, JSON.stringify(normalized, null, 2), { encoding: 'utf-8' });
 }
 
-export function loadRecording(filePath: string): SpawnRecording {
-  const parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as unknown;
+export function loadRecording(storage: RuntimeStorage, filePath: string): SpawnRecording {
+  const parsed = JSON.parse(storage.readFileSync(filePath, 'utf-8')) as unknown;
   const recording = validateRecording(parsed);
   recording.events.sort((a, b) => a.timestamp - b.timestamp);
   return recording;
 }
 
-export function buildRecordingFilePath(recordingDir: string, command: string, timestamp = Date.now()): string {
+export function buildRecordingFilePath(recordingDir: string, command: string, timestamp: number): string {
   const base = basename(command || 'spawn').replace(/[^A-Za-z0-9._-]+/g, '_') || 'spawn';
   return `${recordingDir}/${base}-${timestamp}.json`;
 }

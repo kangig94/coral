@@ -184,6 +184,54 @@ describe('simulation runtime', () => {
     });
   });
 
+  it('collects spawn events through the in-memory runtime observer', () => {
+    const world = createSimulationBackend();
+
+    const received: Array<{ command: string; args: string[]; env?: Record<string, string> }> = [];
+    const subscription = world.runtime.observer.onSpawn((event) => {
+      received.push({
+        command: event.command,
+        args: [...event.args],
+        ...(event.env ? { env: { ...event.env } } : {}),
+      });
+    });
+
+    const child = world.runtime.process.spawn({
+      command: 'fake-child',
+      args: ['--observe'],
+      envAdditions: {
+        TOKEN: 'redacted',
+      },
+      mode: 'piped',
+    });
+
+    expect(world.runtime.observer.events).toHaveLength(1);
+    expect(world.runtime.observer.events[0]).toMatchObject({
+      command: 'fake-child',
+      args: ['--observe'],
+      env: { TOKEN: 'redacted' },
+    });
+    expect(world.runtime.observer.events[0]?.child).toBe(child);
+    expect(received).toEqual([
+      {
+        command: 'fake-child',
+        args: ['--observe'],
+        env: { TOKEN: 'redacted' },
+      },
+    ]);
+
+    subscription.dispose();
+
+    world.runtime.process.spawn({
+      command: 'after-dispose',
+      args: [],
+      mode: 'ignored',
+    });
+
+    expect(world.runtime.observer.events).toHaveLength(2);
+    expect(received).toHaveLength(1);
+  });
+
   it('creates an isolated simulation backend world with inert boot hooks and a fake provider registry', async () => {
     const worldA = createSimulationBackend({ listen: { port: 4_201 } });
     const worldB = createSimulationBackend({ listen: { port: 4_202 } });

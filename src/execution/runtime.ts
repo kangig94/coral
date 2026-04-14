@@ -16,7 +16,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import {
   parsePassthrough,
   resolveEnvBudgetBytes,
@@ -32,12 +32,6 @@ import {
   sessionBase,
 } from '../infra/paths.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
-import {
-  attachSpawnRecordingMetadata,
-  buildRecordingFilePath,
-  recordSpawn,
-  saveRecording,
-} from './simulation/recording.js';
 import type { LaunchPool } from './engine.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
@@ -173,6 +167,23 @@ export interface ChildProcessLike {
   unref?(): void;
 }
 
+export interface Disposable {
+  dispose(): void;
+}
+
+export interface SpawnEvent {
+  child: ChildProcessLike;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+export type SpawnListener = (event: SpawnEvent) => void;
+
+export interface RuntimeObserver {
+  onSpawn(listener: SpawnListener): Disposable;
+}
+
 export type RuntimeSpawnMode = 'piped' | 'ignored' | 'detached';
 
 export type RuntimeSpawnOptions = {
@@ -180,7 +191,6 @@ export type RuntimeSpawnOptions = {
   args: string[];
   cwd?: string;
   envAdditions?: Record<string, string>;
-  recordingDir?: string;
   shell?: boolean;
   mode: RuntimeSpawnMode;
 };
@@ -253,14 +263,8 @@ type CapturedEnvState = {
   cwd: string;
 };
 
-export type CreateRealRuntimeOptions = {
-  recordingDir?: string;
-};
-
-export function createRealRuntime(options: CreateRealRuntimeOptions = {}): Runtime {
+export function createRealRuntime(): Runtime {
   const capturedEnv = captureEnvState();
-  const recordingEnv = capturedEnv.fullEnv.CORAL_SIMULATE_RECORD;
-  const defaultRecordingDir = resolveRecordingDir(recordingEnv, options.recordingDir, capturedEnv.cwd);
   const time: RuntimeTime = {
     now: () => Date.now(),
     sleep: (ms) =>
@@ -389,12 +393,6 @@ export function createRealRuntime(options: CreateRealRuntimeOptions = {}): Runti
         detached: options.mode === 'detached',
       });
       const runtimeChild = child as unknown as ChildProcessLike;
-      attachSpawnRecordingMetadata(runtimeChild, {
-        command: options.command,
-        args: options.args,
-        env: spawnEnv,
-      });
-      maybeAutoRecordSpawn(runtimeChild, options.command, options.recordingDir ?? defaultRecordingDir, time.now);
       return runtimeChild;
     },
     kill: (pid, signal) => {
@@ -431,35 +429,6 @@ export function createRealRuntime(options: CreateRealRuntimeOptions = {}): Runti
   };
 }
 
-function maybeAutoRecordSpawn(
-  child: ChildProcessLike,
-  command: string,
-  recordingDir: string | null,
-  now: () => number = Date.now,
-): void {
-  if (!recordingDir) {
-    return;
-  }
-
-  const recording = recordSpawn(child, now);
-  const filePath = buildRecordingFilePath(recordingDir, command, now());
-  let closed = false;
-
-  child.on('close', () => {
-    closed = true;
-    saveRecording(recording, filePath);
-  });
-
-  child.on('error', () => {
-    const timer = setTimeout(() => {
-      if (!closed) {
-        saveRecording(recording, filePath);
-      }
-    }, 0);
-    timer.unref?.();
-  });
-}
-
 function captureEnvState(): CapturedEnvState {
   const fullEnv: Record<string, string> = {};
   const coralEnv: Record<string, string> = {};
@@ -491,23 +460,6 @@ function toNodeStdio(mode: RuntimeSpawnMode): ['pipe' | 'ignore', 'pipe' | 'igno
     return ['pipe', 'pipe', 'pipe'];
   }
   return ['ignore', 'ignore', 'ignore'];
-}
-
-function resolveRecordingDir(envValue: string | undefined, explicitDir: string | undefined, cwd: string): string | null {
-  if (explicitDir) {
-    return explicitDir;
-  }
-
-  if (envValue === undefined) {
-    return null;
-  }
-
-  const normalized = envValue.trim();
-  if (!normalized || normalized === '1' || normalized.toLowerCase() === 'true') {
-    return join(cwd, '.coral-spawn-recordings');
-  }
-
-  return normalized;
 }
 
 function writeAtomicJson(storage: RuntimeStorage, path: string, value: unknown): void {

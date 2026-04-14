@@ -15,7 +15,6 @@ import type * as EventBusModule from '../event-bus.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../discuss/operations.js'
-import type * as DiscussContextRegistryModule from '../discuss/context-registry.js'
 import { createRealRuntime } from '../runtime.js'
 import { createDeferred } from '../../shared/test-deferred.js'
 
@@ -48,7 +47,6 @@ type LoadedModules = {
   pathsModule: typeof PathsModule
   providerRegistryModule: typeof ProviderRegistryModule
   discussOperationsModule: typeof DiscussOperationsModule
-  discussContextRegistryModule: typeof DiscussContextRegistryModule
 }
 
 function createLaunchCoordinator(modules: LoadedModules): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
@@ -69,7 +67,6 @@ async function loadModules(): Promise<LoadedModules> {
     pathsModule,
     providerRegistryModule,
     discussOperationsModule,
-    discussContextRegistryModule,
   ] = await Promise.all([
     import('../progress-store.js'),
     import('../session-manager.js'),
@@ -82,7 +79,6 @@ async function loadModules(): Promise<LoadedModules> {
     import('../../infra/paths.js'),
     import('../../providers/registry.js'),
     import('../discuss/operations.js'),
-    import('../discuss/context-registry.js'),
   ])
 
   return {
@@ -97,7 +93,6 @@ async function loadModules(): Promise<LoadedModules> {
     pathsModule,
     providerRegistryModule,
     discussOperationsModule,
-    discussContextRegistryModule,
   }
 }
 
@@ -356,7 +351,6 @@ function createLifecycleHarness(
     sessionIndex: sessionIndex as never,
     streamResponses: new Set(),
     discussStores: new Map(),
-    discussRegistry: modules.discussContextRegistryModule.createDiscussContextRegistry(),
     eventBus: options.eventBus,
     launchCoordinator,
     providerRegistry,
@@ -383,6 +377,11 @@ function createLifecycleHarness(
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
+    hooks: {
+      onShutdown: async () => {},
+      onIdleCheck: () => false,
+      onRecoveryComplete: async () => {},
+    },
     closeServerFn: async () => {},
     listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
   })

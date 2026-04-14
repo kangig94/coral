@@ -31,7 +31,7 @@ import {
   type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
-import { InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
+import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
 
 export { createDeferred, type Deferred } from './deferred.js';
@@ -47,7 +47,13 @@ export {
   type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
-export { InMemoryPaths, SealedEnv, SequentialIds, type InMemoryPathsSnapshot } from './runtime-doubles.js';
+export {
+  InMemoryObserver,
+  InMemoryPaths,
+  SealedEnv,
+  SequentialIds,
+  type InMemoryPathsSnapshot,
+} from './runtime-doubles.js';
 export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } from './virtual-time.js';
 
 export type FakeProviderScenario = {
@@ -95,6 +101,7 @@ export class SimulationRuntime implements Runtime {
   readonly paths: InMemoryPaths;
   readonly ids: SequentialIds;
   readonly env: SealedEnv;
+  readonly observer: InMemoryObserver;
   readonly spawner: MockProcessSpawner;
   readonly process: RuntimeProcess;
 
@@ -105,9 +112,19 @@ export class SimulationRuntime implements Runtime {
     this.paths = new InMemoryPaths(roots);
     this.storage = new InMemoryStorage(this.time, roots);
     this.ids = new SequentialIds();
+    this.observer = new InMemoryObserver();
     this.spawner = new MockProcessSpawner(this.time, this.storage);
     this.process = {
-      spawn: (spawnOptions) => this.spawner.spawn(spawnOptions),
+      spawn: (spawnOptions) => {
+        const child = this.spawner.spawn(spawnOptions);
+        this.observer.emit({
+          child,
+          command: spawnOptions.command,
+          args: [...spawnOptions.args],
+          ...(spawnOptions.envAdditions ? { env: { ...spawnOptions.envAdditions } } : {}),
+        });
+        return child;
+      },
       kill: (pid, signal) => {
         this.spawner.kill(pid, signal);
       },
