@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { DurableCliRuntimeRecord, PersistedExitRecord } from '../../../shared/types.js';
 import { nowIsoString } from '../../../shared/utils.js';
@@ -84,6 +84,10 @@ type RegisteredProcess = {
   killActions: MockKillAction[];
   complete: (outcome: ProcessExitOutcome) => void;
   waitForExit: Deferred<PersistedExitRecord> | null;
+};
+
+type MockProcessSpawnerOptions = {
+  buildDurableEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
 };
 
 function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputChunk[] {
@@ -207,6 +211,7 @@ export class MockProcessSpawner {
   constructor(
     private readonly time: VirtualTime,
     private readonly storage: InMemoryStorage,
+    private readonly options: MockProcessSpawnerOptions,
   ) {
     this.durable = new MockDurableTransport(this);
   }
@@ -344,12 +349,28 @@ export class MockProcessSpawner {
     const pid = script.pid ?? this.allocatePid();
     const stdoutPath = script.runtimeRecord?.stdoutPath ?? join(options.jobDir, 'stdout');
     const stderrPath = script.runtimeRecord?.stderrPath ?? join(options.jobDir, 'stderr');
+    const envPath = join(options.jobDir, 'env.json');
     const runtimePath = join(options.jobDir, 'runtime.json');
     const exitPath = join(options.jobDir, 'exit.json');
+
+    // Ensure scripted output paths stay within the job directory.
+    // InMemoryStorage is entirely in-memory so this is a correctness concern,
+    // not a security concern — a malicious scenario YAML could still only
+    // overwrite other in-memory artifacts.
+    const normalizedJobDir = normalize(options.jobDir) + '/';
+    if (!normalize(stdoutPath).startsWith(normalizedJobDir)) {
+      throw new Error(`stdoutPath "${stdoutPath}" escapes job directory "${options.jobDir}"`);
+    }
+    if (!normalize(stderrPath).startsWith(normalizedJobDir)) {
+      throw new Error(`stderrPath "${stderrPath}" escapes job directory "${options.jobDir}"`);
+    }
 
     this.storage.mkdirSync(options.jobDir, { recursive: true });
     this.storage.writeFileSync(stdoutPath, '');
     this.storage.writeFileSync(stderrPath, '');
+    this.storage.writeAtomicSync(envPath, JSON.stringify(this.options.buildDurableEnv(options.envAdditions)), {
+      encoding: 'utf-8',
+    });
 
     const exitDeferred = createDeferred<PersistedExitRecord>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;
@@ -384,16 +405,6 @@ export class MockProcessSpawner {
       });
     }
 
-    if (script.exit !== null) {
-      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
-      this.schedule(record, exit.delayMs ?? 0, () => {
-        record.complete({
-          exitCode: exit.exitCode ?? 0,
-          signal: exit.signal ?? null,
-        });
-      });
-    }
-
     if ((script.runtimeDelayMs ?? 0) > 0) {
       await this.time.sleep(script.runtimeDelayMs ?? 0);
     }
@@ -409,6 +420,18 @@ export class MockProcessSpawner {
       stderrPath,
     };
     this.storage.writeAtomicSync(runtimePath, JSON.stringify(runtimeRecord, null, 2), { encoding: 'utf-8' });
+
+    // Schedule exit AFTER runtime.json is persisted — mirrors production ordering
+    // where the wrapper always writes runtime.json before exit.json
+    if (script.exit !== null) {
+      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
+      this.schedule(record, exit.delayMs ?? 0, () => {
+        record.complete({
+          exitCode: exit.exitCode ?? 0,
+          signal: exit.signal ?? null,
+        });
+      });
+    }
 
     return {
       pid,

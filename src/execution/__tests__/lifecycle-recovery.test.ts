@@ -15,7 +15,6 @@ import type * as EventBusModule from '../event-bus.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../discuss/operations.js'
-import type * as DiscussContextRegistryModule from '../discuss/context-registry.js'
 import { createRealRuntime } from '../runtime.js'
 import { createDeferred } from '../../shared/test-deferred.js'
 
@@ -48,7 +47,6 @@ type LoadedModules = {
   pathsModule: typeof PathsModule
   providerRegistryModule: typeof ProviderRegistryModule
   discussOperationsModule: typeof DiscussOperationsModule
-  discussContextRegistryModule: typeof DiscussContextRegistryModule
 }
 
 function createLaunchCoordinator(modules: LoadedModules): InstanceType<LoadedModules['engineModule']['LaunchCoordinator']> {
@@ -69,7 +67,6 @@ async function loadModules(): Promise<LoadedModules> {
     pathsModule,
     providerRegistryModule,
     discussOperationsModule,
-    discussContextRegistryModule,
   ] = await Promise.all([
     import('../progress-store.js'),
     import('../session-manager.js'),
@@ -82,7 +79,6 @@ async function loadModules(): Promise<LoadedModules> {
     import('../../infra/paths.js'),
     import('../../providers/registry.js'),
     import('../discuss/operations.js'),
-    import('../discuss/context-registry.js'),
   ])
 
   return {
@@ -97,7 +93,6 @@ async function loadModules(): Promise<LoadedModules> {
     pathsModule,
     providerRegistryModule,
     discussOperationsModule,
-    discussContextRegistryModule,
   }
 }
 
@@ -356,7 +351,6 @@ function createLifecycleHarness(
     sessionIndex: sessionIndex as never,
     streamResponses: new Set(),
     discussStores: new Map(),
-    discussRegistry: modules.discussContextRegistryModule.createDiscussContextRegistry(),
     eventBus: options.eventBus,
     launchCoordinator,
     providerRegistry,
@@ -383,6 +377,11 @@ function createLifecycleHarness(
     createKbSubsystemFn: async () => createMockKbSubsystem(),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
+    hooks: {
+      onShutdown: async () => {},
+      onIdleCheck: () => false,
+      onRecoveryComplete: async () => {},
+    },
     closeServerFn: async () => {},
     listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
   })
@@ -1275,6 +1274,66 @@ describe('lifecycle recovery characterization', () => {
     } finally {
       await stopLifecycleController(controller)
     }
+  })
+
+  it('13a. concurrent orphan adoption leaves a competing status writer intact', async () => {
+    const modules = await loadModules()
+    const pluginRoot = createProjectRoot('plugin-adoption-race')
+    const projectRoot = createProjectRoot('project-adoption-race')
+    const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
+    const foreignNamespace = 'foreign-adoption-race'
+    const jobId = 'adoption-race-job'
+    const jobDir = join(runtime.paths.jobsDir(), jobId)
+    const statusPath = join(jobDir, 'status.json')
+    const originalStatus = {
+      jobId,
+      sessionId: 'adoption-race-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: foreignNamespace,
+      phase: 'running',
+      launch: { state: 'pending', updatedAt: '2026-04-12T00:00:00.000Z' },
+    }
+    const competingStatus = {
+      ...originalStatus,
+      backendNamespace: 'competing-namespace',
+    }
+
+    writeJson(statusPath, originalStatus)
+
+    let competingWriterInjected = false
+    const storage = {
+      ...runtime.storage,
+      tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }) {
+        if (path === statusPath && !competingWriterInjected) {
+          competingWriterInjected = true
+          runtime.storage.tryExclusiveWriteSync(statusPath, JSON.stringify(competingStatus, null, 2), {
+            encoding: 'utf-8',
+            mode: 0o600,
+          })
+        }
+        return runtime.storage.tryExclusiveWriteSync(path, data, options)
+      },
+    }
+    const adoptionRuntime = {
+      ...runtime,
+      storage,
+      process: {
+        ...runtime.process,
+        isAlive: () => false,
+      },
+    }
+
+    const adopted = modules.lifecycleModule.adoptOrphanedCrossNamespaceJobs(currentNamespace, adoptionRuntime, () => {})
+    const residue = runtime.storage
+      .readdirSync(jobDir, { withFileTypes: true })
+      .map((entry) => entry.name)
+      .filter((name) => name.startsWith('status.json.adopt'))
+
+    expect(adopted).toBe(0)
+    expect(competingWriterInjected).toBe(true)
+    expect(JSON.parse(runtime.storage.readFileSync(statusPath, 'utf-8'))).toEqual(competingStatus)
+    expect(residue).toEqual([])
   })
 
   it('14. missing-namespace live jobs are normalized to the current namespace and processed by recovery', async () => {

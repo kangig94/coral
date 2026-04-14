@@ -1,29 +1,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
 import { removeBackendInfoIfOwner, writeBackendInfo, type BackendInfo } from '../../../infra/backend-info.js';
-import { createPluginRegistry } from '../../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
-import { nowIsoString } from '../../../shared/utils.js';
+import { composeChildEnv } from '../../../shared/env-sanitize.js';
+import { formatError, nowIsoString } from '../../../shared/utils.js';
+import { sendJson } from '../../http-handler.js';
 import { LaunchCoordinator } from '../../engine.js';
 import { TypedEventBus } from '../../event-bus.js';
 import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, RuntimeProcess, RuntimeStorage } from '../../runtime.js';
 import {
-  createBackendServer,
-  type BackendServerController,
+  createBackendCore,
+  type BackendCoreResult,
   type CreateServerFn,
-} from '../../server.js';
+} from '../../backend-core.js';
 import { ExecutionService } from '../../service.js';
-import { InMemoryStorage, normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
-import {
-  createMockAppServerSpawnScript,
-  type MockAppServerScript,
-} from './mock-app-server.js';
+import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
 import {
   MockProcessSpawner,
   type ChildOutputChunk,
@@ -31,12 +28,12 @@ import {
   type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
-import { InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
+import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
 
 export { createDeferred, type Deferred } from './deferred.js';
 export { InMemoryStorage, normalizePathForStorage, type InMemoryStorageSnapshot, type InMemoryRoots } from './memory-storage.js';
-export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app-server.js';
+export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app.js';
 export {
   MockChildProcess,
   MockDurableTransport,
@@ -47,7 +44,13 @@ export {
   type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
-export { InMemoryPaths, SealedEnv, SequentialIds, type InMemoryPathsSnapshot } from './runtime-doubles.js';
+export {
+  InMemoryObserver,
+  InMemoryPaths,
+  SealedEnv,
+  SequentialIds,
+  type InMemoryPathsSnapshot,
+} from './runtime-doubles.js';
 export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } from './virtual-time.js';
 
 export type FakeProviderScenario = {
@@ -69,6 +72,7 @@ const DEFAULT_BUNDLE_HASH = 'sim-bundle';
 const DEFAULT_FAKE_PROVIDER = 'fake-provider';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
+const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
 
 export type SimulationScenario = {
   epochMs?: number;
@@ -95,6 +99,7 @@ export class SimulationRuntime implements Runtime {
   readonly paths: InMemoryPaths;
   readonly ids: SequentialIds;
   readonly env: SealedEnv;
+  readonly observer: InMemoryObserver;
   readonly spawner: MockProcessSpawner;
   readonly process: RuntimeProcess;
 
@@ -105,9 +110,28 @@ export class SimulationRuntime implements Runtime {
     this.paths = new InMemoryPaths(roots);
     this.storage = new InMemoryStorage(this.time, roots);
     this.ids = new SequentialIds();
-    this.spawner = new MockProcessSpawner(this.time, this.storage);
+    this.observer = new InMemoryObserver();
+    const inheritedEnv = this.env.fullSnapshot();
+    this.spawner = new MockProcessSpawner(this.time, this.storage, {
+      buildDurableEnv: (envAdditions) =>
+        composeChildEnv(
+          { ...inheritedEnv },
+          envAdditions ?? {},
+          SIMULATION_ENV_BUDGET_BYTES,
+          new Set<string>(),
+        ),
+    });
     this.process = {
-      spawn: (spawnOptions) => this.spawner.spawn(spawnOptions),
+      spawn: (spawnOptions) => {
+        const child = this.spawner.spawn(spawnOptions);
+        this.observer.emit({
+          child,
+          command: spawnOptions.command,
+          args: [...spawnOptions.args],
+          ...(spawnOptions.envAdditions ? { env: { ...spawnOptions.envAdditions } } : {}),
+        });
+        return child;
+      },
       kill: (pid, signal) => {
         this.spawner.kill(pid, signal);
       },
@@ -228,8 +252,15 @@ export type SimulationHookLog = {
   recoverPersistedDiscussCalls: number;
 };
 
+export type SimulationController = {
+  start: BackendCoreResult['lifecycleController']['start'];
+  shutdown: BackendCoreResult['lifecycleController']['shutdown'];
+  waitForShutdown: BackendCoreResult['lifecycleController']['waitForShutdown'];
+  getLifecycle: () => ReturnType<BackendCoreResult['runtimeState']['getLifecycle']>;
+};
+
 export type SimulationBackend = {
-  backend: BackendServerController;
+  backend: SimulationController;
   runtime: SimulationRuntime;
   time: VirtualTime;
   storage: InMemoryStorage;
@@ -245,6 +276,7 @@ export type SimulationBackend = {
   projectRoot: string;
   namespace: string;
   hooks: SimulationHookLog;
+  handleRequest: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   createCallerContext: (projectRoot?: string, coralEnv?: Record<string, string>) => CallerContext;
   createService: (projectRoot?: string, coralEnv?: Record<string, string>) => ExecutionService;
   service: ExecutionService;
@@ -279,11 +311,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     runtime,
     spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
   });
-  const pluginRegistry = createPluginRegistry({
-    storage: runtime.storage,
-    env: runtime.env,
-    homeDir: runtime.env.get('HOME'),
-  });
 
   const hooks: SimulationHookLog = {
     createServerCalls: [],
@@ -296,33 +323,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     recoverPersistedDiscussCalls: 0,
   };
 
-  const services = new Map<string, ExecutionService>();
   const createCallerContext = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): CallerContext => ({
     projectRoot: root,
     pluginRoot,
     coralEnv: { ...coralEnv },
   });
-
-  const createService = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): ExecutionService => {
-    const key = normalizePathForStorage(root);
-    const existing = services.get(key);
-    if (existing) {
-      return existing;
-    }
-    const service = new ExecutionService(createCallerContext(root, coralEnv), {
-      runtime,
-      progressStore,
-      bundleHash: DEFAULT_BUNDLE_HASH,
-      backendNamespace: namespace,
-      providerHostManager,
-      launchCoordinator,
-      eventBus,
-      providerRegistry,
-      pluginRegistry,
-    });
-    services.set(key, service);
-    return service;
-  };
 
   const createServerFn: CreateServerFn = (handler) => {
     hooks.createServerCalls.push(handler);
@@ -332,7 +337,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const listenHost = scenario.listen?.host ?? DEFAULT_LISTEN_HOST;
   const listenPort = scenario.listen?.port ?? DEFAULT_LISTEN_PORT;
 
-  const backend = createBackendServer({
+  const core = createBackendCore({
     runtime,
     pluginRoot,
     backendNamespace: namespace,
@@ -351,7 +356,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       bindHost: listenHost,
       advertiseHost: listenHost,
     },
-    createExecutionService: (ctx) => createService(ctx.projectRoot, ctx.coralEnv),
+    createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
     createServerFn,
     listenFn: async () => {
       hooks.listenCalls.push({ host: listenHost, port: listenPort });
@@ -389,6 +394,29 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
   });
 
+  const backend: SimulationController = {
+    start: () => core.lifecycleController.start(),
+    shutdown: (reason) => core.lifecycleController.shutdown(reason),
+    waitForShutdown: () => core.lifecycleController.waitForShutdown(),
+    getLifecycle: () => core.runtimeState.getLifecycle(),
+  };
+
+  const createService = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): ExecutionService =>
+    core.getExecutionService(createCallerContext(root, coralEnv)) as ExecutionService;
+
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      await core.handleRequest(req, res);
+    } catch (error: unknown) {
+      core.identity.log(`Backend request error: ${formatError(error)}\n`);
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: 'internal_error' });
+        return;
+      }
+      res.destroy();
+    }
+  };
+
   return {
     backend,
     runtime,
@@ -406,6 +434,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     projectRoot,
     namespace,
     hooks,
+    handleRequest,
     createCallerContext,
     createService,
     service: createService(projectRoot),

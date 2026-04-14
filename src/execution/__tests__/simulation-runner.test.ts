@@ -261,6 +261,93 @@ describe('scenario runner', () => {
     expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'runtime', { freshness: 'raw' })).toBe('{invalid-json');
   });
 
+  it('advances virtual time by the specified milliseconds', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [
+        { type: 'boot' },
+        { type: 'advance', ms: 500 },
+        { type: 'advance', ms: 1000 },
+      ],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.passed).toBe(true);
+    expect(run.result.steps[1]).toMatchObject({
+      ok: true,
+      type: 'advance',
+      actual: { advancedMs: 500 },
+    });
+    expect(run.result.steps[2]).toMatchObject({
+      ok: true,
+      type: 'advance',
+      actual: { advancedMs: 1000 },
+    });
+  });
+
+  it('shuts down the backend and reports the reason', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [
+        { type: 'boot' },
+        { type: 'shutdown', reason: 'test-shutdown' },
+      ],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.passed).toBe(true);
+    expect(run.result.steps[1]).toMatchObject({
+      ok: true,
+      type: 'shutdown',
+      actual: { reason: 'test-shutdown' },
+    });
+  });
+
+  it('treats restart as a deprecated alias for the cycle step', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [
+        { type: 'boot' },
+        { type: 'restart' },
+      ],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.passed).toBe(true);
+    expect(run.result.steps[1]).toMatchObject({
+      ok: true,
+      type: 'restart',
+      detail: {
+        generation: 1,
+      },
+    });
+    expect(run.world.generation()).toMatchObject({
+      index: 1,
+    });
+  });
+
+  it('kills a running job by resolved cursor target', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [
+        { type: 'boot' },
+        { type: 'launch', provider: 'fake-provider', prompt: 'launch then kill' },
+        { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 10 },
+        { type: 'kill', jobId: FIRST_BOOTED_JOB_ID },
+        { type: 'wait', until: { terminal: true }, stepMs: 100, maxSteps: 20 },
+      ],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.steps[3]).toMatchObject({
+      ok: true,
+      type: 'kill',
+      actual: { jobId: FIRST_BOOTED_JOB_ID },
+    });
+    expect(run.result.passed).toBe(true);
+    expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)?.phase).toBe('completed');
+  });
+
   it('round-trips example scenario YAML files through parse, validate, and re-serialize', () => {
     for (const fileName of EXAMPLE_SCENARIOS) {
       const raw = readFileSync(join(process.cwd(), 'docs/examples/scenarios', fileName), 'utf8');

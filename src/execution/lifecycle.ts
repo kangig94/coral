@@ -13,7 +13,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { kbRoot } from '../infra/paths.js';
 import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { RecoveryRegistry } from './recovery-registry.js';
@@ -25,9 +24,7 @@ import type { SessionIndex } from './session-index.js';
 import { listSessionShards, SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
-import { clearAllDiscuss, hasRunningSessions, type DiscussContextRegistry } from './discuss/context-registry.js';
-import * as discussLoop from './discuss/loop.js';
-import * as discussOperations from './discuss/operations.js';
+import type { RecoveredDiscussResume } from './discuss/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { type RecoveryCapableService } from './service.js';
 import {
@@ -42,15 +39,12 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
-import { createCurateScheduler } from '../kb/curate/scheduler.js';
-import { kbRuntimeDir } from '../kb/paths.js';
-import { createKbRuntime } from '../kb/runtime.js';
 import type { KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import { planRecovery, type JobStoreSnapshot, type RecoveryAction, type RecoveryInvariants } from './recovery-core.js';
-import type { Runtime } from './runtime.js';
+import { planRecovery, type JobStoreSnapshot, type RecoveryAction } from './recovery-core.js';
+import type { Runtime, RuntimeTimerHandle } from './runtime.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,10 +55,9 @@ export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
 const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
-export const OLD_FORMAT_NOTICE =
-  'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
-export const GHOST_LAUNCH_NOTICE =
-  'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
+const ADOPTION_CLAIM_STALE_MS = 30_000;
+import { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE } from './recovery-notices.js';
+export { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE };
 
 export type CreateKbSubsystemFn = (options: {
   pluginRoot: string;
@@ -81,6 +74,12 @@ export type CreateKbSubsystemFn = (options: {
  * - hard: kill children and mark jobs as error (current behavior)
  */
 export type ShutdownMode = 'handoff' | 'hard';
+
+export interface LifecycleHooks {
+  onShutdown(mode: ShutdownMode): Promise<void>;
+  onIdleCheck(): boolean;
+  onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
+}
 
 export function shutdownModeFromReason(reason: string): ShutdownMode {
   if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
@@ -141,6 +140,293 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
   } as PersistedStatusRecord;
 }
 
+type AdoptionStatusSnapshot = {
+  raw: string;
+  record: PersistedStatusRecord;
+};
+
+type AdoptionClaimRecord = {
+  ownerId: string;
+  claimedAt: number;
+  stagedPath: string;
+  verifiedStatusRaw: string;
+};
+
+type AdoptionClaimSnapshot = {
+  raw: string;
+  record: AdoptionClaimRecord | null;
+  mtimeMs: number;
+};
+
+function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
+  return (
+    isRecord(value) &&
+    typeof value.jobId === 'string' &&
+    typeof value.sessionId === 'string' &&
+    typeof value.provider === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.phase === 'string'
+  );
+}
+
+function isAdoptionClaimRecord(value: unknown): value is AdoptionClaimRecord {
+  return (
+    isRecord(value) &&
+    typeof value.ownerId === 'string' &&
+    value.ownerId.length > 0 &&
+    typeof value.claimedAt === 'number' &&
+    Number.isFinite(value.claimedAt) &&
+    typeof value.stagedPath === 'string' &&
+    value.stagedPath.length > 0 &&
+    typeof value.verifiedStatusRaw === 'string'
+  );
+}
+
+function claimPathForStatus(statusPath: string): string {
+  return `${statusPath}.adopt.lock`;
+}
+
+function stagedStatusPath(statusPath: string, ownerId: string): string {
+  return `${statusPath}.adopt.stage.${ownerId}`;
+}
+
+function createAdoptionOwnerId(nowMs: number): string {
+  return `${nowMs}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readAdoptionStatusSnapshot(
+  statusPath: string,
+  storage: Pick<Runtime['storage'], 'readFileSync'>,
+): AdoptionStatusSnapshot | null {
+  try {
+    const raw = storage.readFileSync(statusPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPersistedStatusRecordLike(parsed)) return null;
+    return {
+      raw,
+      record: parsed as PersistedStatusRecord,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readAdoptionClaimSnapshot(
+  claimPath: string,
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync'>,
+): AdoptionClaimSnapshot | null {
+  try {
+    const raw = storage.readFileSync(claimPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    return {
+      raw,
+      record: isAdoptionClaimRecord(parsed) ? parsed : null,
+      mtimeMs: storage.statSync(claimPath).mtimeMs,
+    };
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return null;
+    throw error;
+  }
+}
+
+function unlinkIfPresent(path: string, storage: Pick<Runtime['storage'], 'unlinkSync'>): void {
+  try {
+    storage.unlinkSync(path);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+}
+
+function restoreClaimFileIfMissing(
+  fromPath: string,
+  toPath: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'renameSync'>,
+): void {
+  if (storage.existsSync(toPath)) return;
+  try {
+    storage.renameSync(fromPath, toPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+}
+
+function rollbackUnexpectedStagedStatus(
+  statusPath: string,
+  stagedPath: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'renameSync' | 'unlinkSync'>,
+): void {
+  if (!storage.existsSync(stagedPath)) return;
+
+  if (!storage.existsSync(statusPath)) {
+    try {
+      storage.renameSync(stagedPath, statusPath);
+      return;
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) throw error;
+    }
+  }
+
+  unlinkIfPresent(stagedPath, storage);
+}
+
+function restoreVerifiedStagedStatus(
+  statusPath: string,
+  stagedPath: string,
+  verifiedStatusRaw: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'readFileSync' | 'renameSync' | 'tryExclusiveWriteSync' | 'unlinkSync'>,
+): void {
+  let stagedRaw: string;
+  try {
+    stagedRaw = storage.readFileSync(stagedPath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+
+  if (stagedRaw !== verifiedStatusRaw) {
+    rollbackUnexpectedStagedStatus(statusPath, stagedPath, storage);
+    return;
+  }
+
+  if (!storage.existsSync(statusPath)) {
+    storage.tryExclusiveWriteSync(statusPath, stagedRaw, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  }
+
+  unlinkIfPresent(stagedPath, storage);
+}
+
+function stageVerifiedStatusSnapshot(
+  statusPath: string,
+  stagedPath: string,
+  verifiedStatusRaw: string,
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'renameSync' | 'existsSync' | 'unlinkSync'>,
+): boolean {
+  try {
+    storage.renameSync(statusPath, stagedPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+
+  let stagedRaw: string;
+  try {
+    stagedRaw = storage.readFileSync(stagedPath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+
+  if (stagedRaw === verifiedStatusRaw) return true;
+
+  rollbackUnexpectedStagedStatus(statusPath, stagedPath, storage);
+  return false;
+}
+
+function removeAdoptionClaimIfOwner(
+  claimPath: string,
+  ownerId: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+): void {
+  const stagePath = `${claimPath}.removing.${ownerId}`;
+
+  try {
+    storage.renameSync(claimPath, stagePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+
+  try {
+    const raw = storage.readFileSync(stagePath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!isAdoptionClaimRecord(parsed) || parsed.ownerId !== ownerId) {
+      restoreClaimFileIfMissing(stagePath, claimPath, storage);
+      return;
+    }
+    storage.unlinkSync(stagePath);
+  } catch (error: unknown) {
+    unlinkIfPresent(stagePath, storage);
+    if (isNoEntryError(error) || error instanceof SyntaxError) return;
+    throw error;
+  }
+}
+
+function reapStaleAdoptionClaim(
+  statusPath: string,
+  runtime: Pick<Runtime, 'storage' | 'time'>,
+): boolean {
+  const claimPath = claimPathForStatus(statusPath);
+  const snapshot = readAdoptionClaimSnapshot(claimPath, runtime.storage);
+  if (snapshot === null) return true;
+
+  const claimedAt = snapshot.record?.claimedAt ?? snapshot.mtimeMs;
+  if (runtime.time.now() - claimedAt < ADOPTION_CLAIM_STALE_MS) {
+    return false;
+  }
+
+  const reapingPath = `${claimPath}.reaping.${createAdoptionOwnerId(runtime.time.now())}`;
+  try {
+    runtime.storage.renameSync(claimPath, reapingPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return true;
+    throw error;
+  }
+
+  try {
+    const reapedRaw = runtime.storage.readFileSync(reapingPath, 'utf-8');
+    if (reapedRaw !== snapshot.raw) {
+      restoreClaimFileIfMissing(reapingPath, claimPath, runtime.storage);
+      return false;
+    }
+
+    if (snapshot.record !== null) {
+      restoreVerifiedStagedStatus(
+        statusPath,
+        snapshot.record.stagedPath,
+        snapshot.record.verifiedStatusRaw,
+        runtime.storage,
+      );
+    }
+
+    runtime.storage.unlinkSync(reapingPath);
+    return true;
+  } catch (error: unknown) {
+    unlinkIfPresent(reapingPath, runtime.storage);
+    if (isNoEntryError(error)) return true;
+    throw error;
+  }
+}
+
+function tryAcquireAdoptionClaim(
+  statusPath: string,
+  verifiedStatusRaw: string,
+  runtime: Pick<Runtime, 'storage' | 'time'>,
+): AdoptionClaimRecord | null {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ownerId = createAdoptionOwnerId(runtime.time.now());
+    const claimRecord: AdoptionClaimRecord = {
+      ownerId,
+      claimedAt: runtime.time.now(),
+      stagedPath: stagedStatusPath(statusPath, ownerId),
+      verifiedStatusRaw,
+    };
+
+    const acquired = runtime.storage.tryExclusiveWriteSync(claimPathForStatus(statusPath), JSON.stringify(claimRecord), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    if (acquired) return claimRecord;
+    if (!reapStaleAdoptionClaim(statusPath, runtime)) return null;
+  }
+
+  return null;
+}
+
 /**
  * Adopt orphaned jobs from other namespaces whose daemon has died.
  *
@@ -155,7 +441,7 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time'>,
   log: (message: string) => void,
 ): number {
   let adopted = 0;
@@ -171,32 +457,56 @@ export function adoptOrphanedCrossNamespaceJobs(
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
-    // Read status.json
-    let record: PersistedStatusRecord | null;
-    try {
-      const data = runtime.storage.readFileSync(join(jobsDir, entry.name, 'status.json'), 'utf-8');
-      record = JSON.parse(data) as PersistedStatusRecord;
-    } catch {
-      continue;
-    }
+    const statusPath = join(jobsDir, entry.name, 'status.json');
+    const snapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
+    if (snapshot === null) continue;
 
+    const { raw: verifiedStatusRaw, record } = snapshot;
     const foreignNs = readBackendNamespace(record);
     if (foreignNs === null || foreignNs === currentNamespace) continue;
     if (!isLivePhase(record.phase)) continue;
 
     if (isForeignDaemonAlive(foreignNs, runtime)) continue; // daemon alive → don't steal
 
-    // Rebind to current namespace on disk
-    const rebound: PersistedStatusRecord = { ...record, backendNamespace: currentNamespace };
+    const claim = tryAcquireAdoptionClaim(statusPath, verifiedStatusRaw, runtime);
+    if (claim === null) continue;
+
     try {
-      const statusPath = join(jobsDir, entry.name, 'status.json');
-      const tmpPath = statusPath + '.tmp';
-      runtime.storage.writeFileSync(tmpPath, JSON.stringify(rebound, null, 2), { encoding: 'utf-8' });
-      runtime.storage.renameSync(tmpPath, statusPath);
+      const confirmedSnapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
+      if (confirmedSnapshot === null || confirmedSnapshot.raw !== verifiedStatusRaw) continue;
+      if (!isLivePhase(confirmedSnapshot.record.phase)) continue;
+
+      const confirmedNamespace = readBackendNamespace(confirmedSnapshot.record);
+      if (confirmedNamespace !== foreignNs) continue;
+
+      if (!stageVerifiedStatusSnapshot(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage)) continue;
+
+      if (isForeignDaemonAlive(foreignNs, runtime)) {
+        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
+        continue;
+      }
+
+      const rebound: PersistedStatusRecord = {
+        ...confirmedSnapshot.record,
+        backendNamespace: currentNamespace,
+      };
+      const published = runtime.storage.tryExclusiveWriteSync(statusPath, JSON.stringify(rebound, null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      if (!published) {
+        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
+        continue;
+      }
+
+      unlinkIfPresent(claim.stagedPath, runtime.storage);
       adopted++;
       log(`Adopted orphaned job ${entry.name} from namespace ${foreignNs}\n`);
     } catch (error: unknown) {
+      restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
       log(`Failed to adopt orphaned job ${entry.name}: ${formatError(error)}\n`);
+    } finally {
+      removeAdoptionClaimIfOwner(claimPathForStatus(statusPath), claim.ownerId, runtime.storage);
     }
   }
 
@@ -205,7 +515,7 @@ export function adoptOrphanedCrossNamespaceJobs(
 
 function isForeignDaemonAlive(
   foreignNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'process' | 'time'>,
 ): boolean {
   const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
   const infoPath = join(installDir, 'backend.json');
@@ -234,7 +544,7 @@ function isForeignDaemonAlive(
   try {
     const raw = runtime.storage.readFileSync(lockPath, 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    const ageMs = Date.now() - runtime.storage.statSync(lockPath).mtimeMs;
+    const ageMs = runtime.time.now() - runtime.storage.statSync(lockPath).mtimeMs;
     lockFresh = ageMs <= FOREIGN_DAEMON_LOCK_STALE_MS;
     if (
       isRecord(parsed) &&
@@ -372,32 +682,6 @@ export function markJobsAsError(progressStore: ProgressStore, namespace: string,
   }
 }
 
-export async function createKbSubsystem({
-  pluginRoot,
-  spawnCli: spawnKbCli,
-}: {
-  pluginRoot: string;
-  spawnCli: SpawnCliFn;
-}): Promise<KbSubsystem> {
-  const kb = createKbRuntime({
-    markdownRoot: kbRoot(),
-    runtimeDir: kbRuntimeDir(),
-  });
-  await kb.initVectorStore(pluginRoot);
-
-  const curateScheduler = createCurateScheduler({
-    kb,
-    spawnCli: spawnKbCli,
-  });
-
-  await curateScheduler.start();
-
-  return {
-    kb,
-    curateScheduler,
-  };
-}
-
 /** Returns a URL-ready host: IPv6 addresses are wrapped in brackets. */
 export function resolveClientHost(bindHost: string, advertiseHost?: string): string {
   let host = bindHost;
@@ -442,30 +726,7 @@ export type RecoverPersistedDiscussDeps = {
 
 export type RecoverPersistedDiscussFn = (
   deps: RecoverPersistedDiscussDeps,
-) => Promise<discussOperations.RecoveredDiscussResume[]>;
-
-export async function recoverPersistedDiscuss(
-  deps: RecoverPersistedDiscussDeps,
-): Promise<discussOperations.RecoveredDiscussResume[]> {
-  const recoveredDiscussResumes: discussOperations.RecoveredDiscussResume[] = [];
-
-  for (const source of deps.knownDiscussSources()) {
-    try {
-      recoveredDiscussResumes.push(
-        ...(await discussOperations.recoverPersistedSessionsFromStore(
-          deps.getDiscussStoreForSource(source),
-          (snapshot) => deps.getDiscussContext(deps.createCallerContext(snapshot.projectRoot)),
-          (snapshot) => deps.createCallerContext(snapshot.projectRoot),
-        )),
-      );
-    } catch (err) {
-      backendLog.warn(`Discuss recovery failed for source ${source}: ${errorMessage(err)}`);
-    }
-    deps.assertStartupStillActive();
-  }
-
-  return recoveredDiscussResumes;
-}
+) => Promise<RecoveredDiscussResume[]>;
 
 // ---------------------------------------------------------------------------
 // LifecycleDeps — everything the lifecycle module needs
@@ -486,7 +747,6 @@ export type LifecycleDeps = {
   readonly sessionIndex: SessionIndex;
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
-  readonly discussRegistry: DiscussContextRegistry;
   readonly eventBus: TypedEventBus;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
@@ -524,6 +784,7 @@ export type LifecycleDeps = {
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
+  readonly hooks: LifecycleHooks;
 
   // Transport hooks
   readonly closeServerFn: (server: Server) => Promise<void>;
@@ -546,6 +807,16 @@ export type LifecycleController = {
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
 
+type LifecycleControlState = {
+  shutdownPromise: Promise<void> | null;
+  started: boolean;
+  sessionIndexSubscribed: boolean;
+  recoveryRegistry: RecoveryRegistry | null;
+  ownershipCheckerInterval: RuntimeTimerHandle | null;
+  adoptedRunningPids: Map<string, { pid: number; pool: string }>;
+  recoveryPollIntervals: Set<RuntimeTimerHandle>;
+};
+
 export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const {
     identity,
@@ -557,7 +828,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     sessionIndex,
     streamResponses,
     discussStores,
-    discussRegistry,
     eventBus,
     launchCoordinator,
     providerRegistry,
@@ -577,6 +847,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     createKbSubsystemFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
+    hooks,
     closeServerFn,
     listenFn,
     onStopped,
@@ -585,13 +856,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
   const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now, log } = identity;
 
-  let shutdownPromise: Promise<void> | null = null;
-  let started = false;
-  let sessionIndexSubscribed = false;
-  let recoveryRegistry: RecoveryRegistry | null = null;
-  let ownershipCheckerInterval: ReturnType<Runtime['time']['setInterval']> | null = null;
-  const adoptedRunningPids = new Map<string, { pid: number; pool: string }>();
-  const recoveryPollIntervals = new Set<ReturnType<Runtime['time']['setInterval']>>();
+  const state: LifecycleControlState = {
+    shutdownPromise: null,
+    started: false,
+    sessionIndexSubscribed: false,
+    recoveryRegistry: null,
+    ownershipCheckerInterval: null,
+    adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
+    recoveryPollIntervals: new Set<RuntimeTimerHandle>(),
+  };
 
   // -- Session index subscription -------------------------------------------
 
@@ -607,15 +880,15 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   }
 
   function subscribeSessionIndex(): void {
-    if (sessionIndexSubscribed) return;
+    if (state.sessionIndexSubscribed) return;
     eventBus.on('session:updated', onSessionIndexUpdated);
-    sessionIndexSubscribed = true;
+    state.sessionIndexSubscribed = true;
   }
 
   function unsubscribeSessionIndex(): void {
-    if (!sessionIndexSubscribed) return;
+    if (!state.sessionIndexSubscribed) return;
     eventBus.off('session:updated', onSessionIndexUpdated);
-    sessionIndexSubscribed = false;
+    state.sessionIndexSubscribed = false;
   }
 
   async function finalizeLiveAppServerJobsForHandoff(): Promise<void> {
@@ -838,7 +1111,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           assertStartupStillActive();
           await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
           assertStartupStillActive();
-          recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
           continue;
         }
@@ -849,7 +1122,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         assertStartupStillActive();
 
         // Track adopted PID
-        adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
+        state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
 
         const drainRecoveredProgress = (): void => {
           if (!recovery?.extractProgress) {
@@ -894,8 +1167,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
           if (!alive) {
             runtime.time.clearInterval(pollInterval);
-            recoveryPollIntervals.delete(pollInterval);
-            adoptedRunningPids.delete(jobId);
+            state.recoveryPollIntervals.delete(pollInterval);
+            state.adoptedRunningPids.delete(jobId);
 
             const exitRecord = progressStore.readExitRecord(jobId);
             if (exitRecord) {
@@ -990,9 +1263,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           }
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
-        recoveryPollIntervals.add(pollInterval);
+        state.recoveryPollIntervals.add(pollInterval);
 
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
       } catch (err) {
         if (err instanceof StartupInterruptedError) {
@@ -1000,7 +1273,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           throw err;
         }
         log(`Failed to adopt running job ${jobId}: ${formatError(err)}\n`);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
       }
     }
 
@@ -1011,18 +1284,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         const service = getRecoveryService(ctx);
         assertStartupStillActive();
         service.recoverQueuedJob(launchRecord);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
       } catch (err) {
         if (err instanceof StartupInterruptedError) throw err;
         log(`Failed to recover queued job ${jobId}: ${formatError(err)}\n`);
-        recoveryRegistry?.remove(jobId);
+        state.recoveryRegistry?.remove(jobId);
       }
     }
 
     // All entries migrated — dissolve registry and lift launch fence
     assertStartupStillActive();
-    recoveryRegistry = null;
+    state.recoveryRegistry = null;
     runtimeState.setLaunchFenceActive(false);
     log(`Recovery adoption complete. Launch fence lifted.\n`);
   }
@@ -1030,13 +1303,12 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   // -- shutdown -------------------------------------------------------------
 
   async function shutdown(reason: string): Promise<void> {
-    if (shutdownPromise) return shutdownPromise;
+    if (state.shutdownPromise) return state.shutdownPromise;
 
-    shutdownPromise = (async () => {
+    state.shutdownPromise = (async () => {
       if (runtimeState.getLifecycle() === 'stopped') return;
 
       const mode = shutdownModeFromReason(reason);
-      const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources()] : [];
       const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
       log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
@@ -1061,31 +1333,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // handoff mode: detached durable wrappers continue for replacement recovery,
       // while app-server jobs are terminalized locally before provider-server drain.
 
-      for (const interval of recoveryPollIntervals) runtime.time.clearInterval(interval);
-      recoveryPollIntervals.clear();
-      if (ownershipCheckerInterval) {
-        runtime.time.clearInterval(ownershipCheckerInterval);
-        ownershipCheckerInterval = null;
+      for (const interval of state.recoveryPollIntervals) runtime.time.clearInterval(interval);
+      state.recoveryPollIntervals.clear();
+      if (state.ownershipCheckerInterval) {
+        runtime.time.clearInterval(state.ownershipCheckerInterval);
+        state.ownershipCheckerInterval = null;
       }
       await Promise.race([
         runtimeState.getKbSubsystem()?.curateScheduler.stop?.(),
         runtime.time.sleep(5_000),
       ]);
       await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch((e: unknown) => { backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(e)}`); });
-      await clearAllDiscuss(discussRegistry, mode, discussOperations.persistAbortEndForShutdown);
-      if (mode === 'hard') {
-        await discussOperations.persistAbortEndForPersistedShutdownCandidates(
-          discussSourcesAtShutdown,
-          getDiscussStoreForSource,
-          (snapshot) =>
-            getDiscussContext({
-              projectRoot: snapshot.projectRoot,
-              pluginRoot,
-              coralEnv: {},
-            }),
-        );
-        discussRegistry.contexts.clear();
-      }
+      await hooks.onShutdown(mode);
       unsubscribeSessionIndex();
       for (const store of discussStores.values()) {
         store.dispose();
@@ -1102,18 +1361,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         onStopped?.();
       });
 
-    return shutdownPromise;
+    return state.shutdownPromise;
   }
 
   // -- start ----------------------------------------------------------------
 
   async function start(): Promise<BackendServerInfo> {
-    if (started || runtimeState.getLifecycle() !== 'starting') {
+    if (state.started || runtimeState.getLifecycle() !== 'starting') {
       throw new Error('Backend server already started');
     }
 
     const assertStartupStillActive = (): void => {
-      if (shutdownPromise !== null || runtimeState.getLifecycle() !== 'starting') {
+      if (state.shutdownPromise !== null || runtimeState.getLifecycle() !== 'starting') {
         throw new StartupInterruptedError();
       }
     };
@@ -1144,7 +1403,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
       // Scan recoverable jobs and install recovery registry + launch fence
       runtimeState.setLaunchFenceActive(true);
-      recoveryRegistry = new RecoveryRegistry(runtime.process);
+      state.recoveryRegistry = new RecoveryRegistry(runtime.process);
       const queuedRecoverable: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }> = [];
       const runningRecoverable: Array<{
         jobId: string;
@@ -1159,18 +1418,14 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       }
 
       const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
-      const invariants: RecoveryInvariants = {
-        peerDaemonAlive: false,
-        kbInitialized: true,
-      };
-      const plan = planRecovery(snapshot, invariants);
+      const plan = planRecovery(snapshot);
 
       for (const action of plan.register) {
         try {
           applyRecoveryAction(
             action,
             progressStore,
-            recoveryRegistry,
+            state.recoveryRegistry,
             queuedRecoverable,
             runningRecoverable,
             log,
@@ -1186,7 +1441,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
           applyRecoveryAction(
             action,
             progressStore,
-            recoveryRegistry,
+            state.recoveryRegistry,
             queuedRecoverable,
             runningRecoverable,
             log,
@@ -1225,11 +1480,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
               /* best-effort */
             }
           }
-          recoveryRegistry = null;
+          state.recoveryRegistry = null;
           runtimeState.setLaunchFenceActive(false);
         }
       } else {
-        recoveryRegistry = null;
+        state.recoveryRegistry = null;
         runtimeState.setLaunchFenceActive(false);
       }
 
@@ -1249,18 +1504,18 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       });
 
       runtimeState.setLifecycle('running');
-      started = true;
+      state.started = true;
 
       // Idle timer with namespace-based counting
       idleTimer.startWatching(
         () =>
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
-          adoptedRunningPids.size === 0 &&
+          state.adoptedRunningPids.size === 0 &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
-          (recoveryRegistry === null || recoveryRegistry.size === 0) &&
-          !hasRunningSessions(discussRegistry) &&
+          (state.recoveryRegistry === null || state.recoveryRegistry.size === 0) &&
+          !hooks.onIdleCheck() &&
           !(runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false),
         (reason) => {
           void shutdown(reason).catch(() => {});
@@ -1270,30 +1525,25 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       // Self-terminate if another backend replaces this one (backend-info.json
       // will point to the replacement's instanceId). Covers the case where
       // ensureBackend's shutdown request is lost during rapid rebuild cycles.
-      ownershipCheckerInterval = runtime.time.setInterval(() => {
+      state.ownershipCheckerInterval = runtime.time.setInterval(() => {
         if (runtimeState.getLifecycle() !== 'running' || idleTimer.isDraining) return;
         try {
           const current = readBackendInfo(pluginRoot, runtime);
           // null means backend.json was deleted (replacement) or corrupt — drain either way
           if (current?.instanceId !== instanceId) {
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- always set: callback runs inside the setInterval that assigned it
-            runtime.time.clearInterval(ownershipCheckerInterval!);
-            ownershipCheckerInterval = null;
+            if (state.ownershipCheckerInterval !== null) {
+              runtime.time.clearInterval(state.ownershipCheckerInterval);
+              state.ownershipCheckerInterval = null;
+            }
             idleTimer.requestDrain('replaced');
           }
         } catch {
           // read failure — skip this check
         }
       }, 30_000);
-      ownershipCheckerInterval.unref?.();
+      state.ownershipCheckerInterval?.unref?.();
 
-      for (const recovered of recoveredDiscussResumes) {
-        try {
-          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
-        } catch (err) {
-          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${errorMessage(err)}`);
-        }
-      }
+      await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
       return {
         port,
@@ -1307,8 +1557,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         startedAt,
       };
     } catch (error: unknown) {
-      if (error instanceof StartupInterruptedError && shutdownPromise !== null) {
-        await shutdownPromise;
+      if (error instanceof StartupInterruptedError && state.shutdownPromise !== null) {
+        await state.shutdownPromise;
         throw error;
       }
 
@@ -1331,7 +1581,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   return {
     start,
     shutdown,
-    waitForShutdown: () => shutdownPromise ?? Promise.resolve(),
-    getRecoveryRegistry: () => recoveryRegistry,
+    waitForShutdown: () => state.shutdownPromise ?? Promise.resolve(),
+    getRecoveryRegistry: () => state.recoveryRegistry,
   };
 }

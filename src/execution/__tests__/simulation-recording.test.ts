@@ -231,8 +231,8 @@ describe('simulation app-server and recording', () => {
     );
 
     const filePath = join(recordingDir, 'spawn.json');
-    saveRecording(recording, filePath);
-    const loaded = loadRecording(filePath);
+    saveRecording(runtime.storage, recording, filePath);
+    const loaded = loadRecording(runtime.storage, filePath);
     expect(loaded).toEqual(recording);
 
     const replayRuntime = new SimulationRuntime();

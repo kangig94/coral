@@ -15,7 +15,7 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
   return parts.join('\n\n---\n\n');
 }
 
-export function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
+function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
   return bypassPermissions ? 'danger-full-access' : 'workspace-write';
 }
 
@@ -47,20 +47,12 @@ function resolveCodexModel(requestModel: string | undefined): string {
   return resolveModelTier(requestModel) ?? process.env.CORAL_CODEX_MODEL ?? DEFAULT_CODEX_MODEL;
 }
 
-function buildThreadParams(
-  request: ProviderRequest,
-): Pick<ThreadStartParams, 'cwd' | 'model' | 'approvalPolicy' | 'sandbox'> {
+export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
   return {
     cwd: request.cwd ?? process.cwd(),
     model: resolveCodexModel(request.model),
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
-  };
-}
-
-export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
-  return {
-    ...buildThreadParams(request),
     ephemeral: false,
   };
 }
@@ -68,7 +60,12 @@ export function mapThreadStartParams(request: ProviderRequest): ThreadStartParam
 export function mapThreadResumeParams(request: ProviderRequest, threadId: string): ThreadResumeParams {
   return {
     threadId,
-    ...buildThreadParams(request),
+    cwd: request.cwd ?? process.cwd(),
+    model: resolveCodexModel(request.model),
+    approvalPolicy: 'never',
+    // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
+    // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).
+    sandbox: resolveCodexSandbox(request.bypassPermissions),
   };
 }
 

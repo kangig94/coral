@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
 
 const ctx: CallerContext = {
@@ -11,6 +12,17 @@ function createExecutionService(result = { status: 'running', job: 'job-1', sess
   return {
     executeWorkflow: vi.fn(async () => result),
   };
+}
+
+function createProviderRegistry(): ProviderRegistry {
+  const registry = new ProviderRegistry();
+  for (const name of ['claude', 'codex']) {
+    registry.register({
+      name,
+      execute: async () => ({ content: `${name} response` }),
+    });
+  }
+  return registry;
 }
 
 async function loadWorkflowHandler() {
@@ -27,6 +39,7 @@ describe('workflow handler', () => {
   it('validates schema and returns a LaunchDecision', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     const decision = await handleWorkflow(
       {
@@ -35,6 +48,7 @@ describe('workflow handler', () => {
       },
       executionSvc,
       ctx,
+      providerRegistry,
     );
 
     expect(decision).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
@@ -57,6 +71,7 @@ describe('workflow handler', () => {
   it('passes work_dir separately without mutating projectRoot', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     await handleWorkflow(
       {
@@ -66,6 +81,7 @@ describe('workflow handler', () => {
       },
       executionSvc,
       ctx,
+      providerRegistry,
     );
 
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
@@ -86,6 +102,7 @@ describe('workflow handler', () => {
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     const decision = await handleWorkflow(
       {
@@ -95,6 +112,7 @@ describe('workflow handler', () => {
       },
       executionSvc,
       ctx,
+      providerRegistry,
     );
 
     expect(decision).toEqual({
@@ -109,13 +127,15 @@ describe('workflow handler', () => {
   it('throws on schema validation failures', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
-    await expect(handleWorkflow({ expression: 'architect' }, executionSvc, ctx)).rejects.toThrow();
+    await expect(handleWorkflow({ expression: 'architect' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
   });
 
   it('rejected LaunchDecision has no job or session properties', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     const decision = await handleWorkflow(
       {
@@ -125,6 +145,7 @@ describe('workflow handler', () => {
       },
       executionSvc,
       ctx,
+      providerRegistry,
     );
 
     expect(decision.status).toBe('rejected');
@@ -136,6 +157,7 @@ describe('workflow handler', () => {
   it('throws when duplicate agent names appear in the same parallel step', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     await expect(
       handleWorkflow(
@@ -146,6 +168,7 @@ describe('workflow handler', () => {
         },
         executionSvc,
         ctx,
+        providerRegistry,
       ),
     ).rejects.toThrow('Duplicate atom');
 
@@ -155,13 +178,15 @@ describe('workflow handler', () => {
   it('throws on missing expression field', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
-    await expect(handleWorkflow({ start_prompt: 'no expression' }, executionSvc, ctx)).rejects.toThrow();
+    await expect(handleWorkflow({ start_prompt: 'no expression' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
   });
 
   it('rejected message names multiple unknown providers', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
+    const providerRegistry = createProviderRegistry();
 
     const decision = await handleWorkflow(
       {
@@ -171,6 +196,7 @@ describe('workflow handler', () => {
       },
       executionSvc,
       ctx,
+      providerRegistry,
     );
 
     expect(decision.status).toBe('rejected');

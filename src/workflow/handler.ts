@@ -1,4 +1,3 @@
-import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
@@ -105,7 +104,7 @@ export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
   executionSvc: WorkflowService,
   ctx: CallerContext,
-  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
+  providerRegistry: ProviderRegistry,
 ): Promise<LaunchDecision> {
   const input = workflowInputSchema.parse(rawArgs);
   let ast: PipelineAST;

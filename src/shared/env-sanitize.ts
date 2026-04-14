@@ -136,3 +136,27 @@ export function stripInternalCoralKeys(env: Record<string, string>): Record<stri
   }
   return stripped;
 }
+
+/**
+ * Compose the launch env for a child process from a captured inherited env snapshot.
+ *
+ * Applies the same production ordering everywhere:
+ * 1. Strip internal CORAL_* keys from the inherited env snapshot
+ * 2. Shed oversized inherited env entries against the provided budget
+ * 3. Overlay launch-specific additions
+ * 4. Mark the child boundary with CORAL_CHILD=1
+ */
+export function composeChildEnv(
+  baseEnv: Record<string, string>,
+  envAdditions: Record<string, string>,
+  budgetBytes: number,
+  passthrough: Set<string>,
+): Record<string, string> {
+  const stripped = stripInternalCoralKeys(baseEnv);
+  const inheritedEnv = shedIfOverBudget(stripped, budgetBytes, passthrough);
+  return {
+    ...inheritedEnv,
+    ...envAdditions,
+    CORAL_CHILD: '1',
+  };
+}
