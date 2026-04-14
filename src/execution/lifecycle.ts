@@ -61,10 +61,8 @@ export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
 const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
-export const OLD_FORMAT_NOTICE =
-  'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.';
-export const GHOST_LAUNCH_NOTICE =
-  'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.';
+import { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE } from './recovery-notices.js';
+export { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE };
 
 export type CreateKbSubsystemFn = (options: {
   pluginRoot: string;
@@ -155,7 +153,7 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time'>,
   log: (message: string) => void,
 ): number {
   let adopted = 0;
@@ -205,7 +203,7 @@ export function adoptOrphanedCrossNamespaceJobs(
 
 function isForeignDaemonAlive(
   foreignNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'process'>,
+  runtime: Pick<Runtime, 'storage' | 'process' | 'time'>,
 ): boolean {
   const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
   const infoPath = join(installDir, 'backend.json');
@@ -234,7 +232,7 @@ function isForeignDaemonAlive(
   try {
     const raw = runtime.storage.readFileSync(lockPath, 'utf-8');
     const parsed: unknown = JSON.parse(raw);
-    const ageMs = Date.now() - runtime.storage.statSync(lockPath).mtimeMs;
+    const ageMs = runtime.time.now() - runtime.storage.statSync(lockPath).mtimeMs;
     lockFresh = ageMs <= FOREIGN_DAEMON_LOCK_STALE_MS;
     if (
       isRecord(parsed) &&

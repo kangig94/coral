@@ -7,7 +7,7 @@ import type {
   SessionEntry,
   TerminalResult,
 } from '../../shared/types.js'
-import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from '../lifecycle.js'
+import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from '../recovery-notices.js'
 import type { JobStoreSnapshot, RecoveryAction, RecoveryInvariants, RecoveryPlan } from '../recovery-core.js'
 import { planRecovery } from '../recovery-core.js'
 

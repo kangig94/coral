@@ -9,7 +9,7 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
-import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from './lifecycle.js';
+import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from './recovery-notices.js';
 
 /**
  * Invariant — jobIds freshness:
@@ -65,11 +65,6 @@ export type RecoveryPlan = {
   register: RegisterAction[];
   cleanup: CleanupAction[];
 };
-
-export const CRASH_POINTS = {
-  GHOST_LAUNCH: 'ghost launch window',
-  INCOMPATIBLE_FORMAT: 'pre-handoff format',
-} as const;
 
 type RecoveryJobRow = {
   jobId: string;

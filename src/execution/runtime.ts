@@ -394,7 +394,7 @@ export function createRealRuntime(options: CreateRealRuntimeOptions = {}): Runti
         args: options.args,
         env: spawnEnv,
       });
-      maybeAutoRecordSpawn(runtimeChild, options.command, options.recordingDir ?? defaultRecordingDir);
+      maybeAutoRecordSpawn(runtimeChild, options.command, options.recordingDir ?? defaultRecordingDir, time.now);
       return runtimeChild;
     },
     kill: (pid, signal) => {
@@ -431,13 +431,18 @@ export function createRealRuntime(options: CreateRealRuntimeOptions = {}): Runti
   };
 }
 
-function maybeAutoRecordSpawn(child: ChildProcessLike, command: string, recordingDir: string | null): void {
+function maybeAutoRecordSpawn(
+  child: ChildProcessLike,
+  command: string,
+  recordingDir: string | null,
+  now: () => number = Date.now,
+): void {
   if (!recordingDir) {
     return;
   }
 
-  const recording = recordSpawn(child);
-  const filePath = buildRecordingFilePath(recordingDir, command);
+  const recording = recordSpawn(child, now);
+  const filePath = buildRecordingFilePath(recordingDir, command, now());
   let closed = false;
 
   child.on('close', () => {

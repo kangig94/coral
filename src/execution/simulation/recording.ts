@@ -36,8 +36,8 @@ function asText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
 }
 
-function nowSince(startedAt: number): number {
-  return Math.max(0, Date.now() - startedAt);
+function nowSince(startedAt: number, now: () => number): number {
+  return Math.max(0, now() - startedAt);
 }
 
 function ensureObject(value: unknown, message: string): Record<string, unknown> {
@@ -182,9 +182,9 @@ export function attachSpawnRecordingMetadata(child: ChildProcessLike, metadata: 
   };
 }
 
-export function recordSpawn(child: ChildProcessLike): SpawnRecording {
+export function recordSpawn(child: ChildProcessLike, now: () => number = Date.now): SpawnRecording {
   const metadata = (child as RecordableChildProcess).__coralSpawnRecordingMetadata;
-  const startedAt = Date.now();
+  const startedAt = now();
   const recording: SpawnRecording = {
     command: metadata?.command ?? '',
     args: [...(metadata?.args ?? [])],
@@ -197,7 +197,7 @@ export function recordSpawn(child: ChildProcessLike): SpawnRecording {
 
   const pushEvent = (event: Omit<SpawnRecordingEvent, 'timestamp'>): void => {
     recording.events.push({
-      timestamp: nowSince(startedAt),
+      timestamp: nowSince(startedAt, now),
       ...event,
     });
   };

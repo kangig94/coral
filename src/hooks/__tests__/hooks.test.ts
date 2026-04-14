@@ -15,6 +15,9 @@ const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder
 const CLI_RESOLVE_HOOK = join(process.cwd(), 'hooks', 'cli-resolve.mjs');
 const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
 const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
+const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'hooks', 'coral-skill-vars.mjs');
+const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'hooks', 'hud-auto-update.mjs');
+const RALPH_LOOP_HOOK = join(process.cwd(), 'hooks', 'ralph-loop.mjs');
 const HOOKS_JSON_PATH = join(process.cwd(), 'hooks', 'hooks.json');
 
 const createdRoots: string[] = [];
@@ -1347,6 +1350,252 @@ describe('post-compact.mjs', () => {
       {
         CLAUDE_PROJECT_DIR: fixture.projectRoot,
         TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('coral-skill-vars hook', () => {
+  it('injects CORAL_PROJECT and CORAL_METHODS for matching UserPromptSubmit', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/coral:plan do something',
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as HookOutput;
+    expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
+    expect(output.hookSpecificOutput.additionalContext).toContain('CORAL_PROJECT:');
+    expect(output.hookSpecificOutput.additionalContext).toContain('CORAL_METHODS:');
+    expect(output.hookSpecificOutput.additionalContext).toContain(join(fixture.pluginRoot, 'methods'));
+  });
+
+  it('injects context for PreToolUse with coral: skill prefix', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_input: { skill: 'coral:analyze' },
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as HookOutput;
+    expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(output.hookSpecificOutput.additionalContext).toContain('CORAL_PROJECT:');
+  });
+
+  it('exits silently for non-matching messages', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: 'just a regular message',
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently when CLAUDE_PLUGIN_ROOT is missing', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/coral:plan do something',
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: undefined,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently when flavor mismatch (CORAL_FLAVOR=dev vs prod manifest)', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/coral:plan do something',
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_FLAVOR: 'dev',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('hud-auto-update hook', () => {
+  it('exits silently when CLAUDE_PLUGIN_ROOT is missing', () => {
+    const result = runHook(
+      HUD_AUTO_UPDATE_HOOK,
+      { hook_event_name: 'SessionStart' },
+      { CLAUDE_PLUGIN_ROOT: undefined },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently when flavor mismatch (CORAL_FLAVOR=dev vs prod manifest)', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      HUD_AUTO_UPDATE_HOOK,
+      { hook_event_name: 'SessionStart' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CORAL_FLAVOR: 'dev',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently when no hud file is installed', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      HUD_AUTO_UPDATE_HOOK,
+      { hook_event_name: 'SessionStart' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('ralph-loop hook', () => {
+  it('injects ralph state context for matching UserPromptSubmit', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/ralph build the feature',
+        session_id: 'test-session-ralph-001',
+      },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as HookOutput;
+    expect(output.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
+    expect(output.hookSpecificOutput.additionalContext).toContain('ralph-state-');
+  });
+
+  it('injects context for PreToolUse with coral:ralph skill', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_input: { skill: 'coral:ralph' },
+        session_id: 'test-session-ralph-002',
+      },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as HookOutput;
+    expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(output.hookSpecificOutput.additionalContext).toContain('ralph-state-');
+  });
+
+  it('exits silently for non-matching messages', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: 'just a normal message',
+        session_id: 'test-session-ralph-003',
+      },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently without session_id', () => {
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/ralph do something',
+      },
+      {},
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('exits silently when flavor mismatch (CORAL_FLAVOR=dev vs prod manifest)', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      {
+        hook_event_name: 'UserPromptSubmit',
+        user_message: '/ralph do something',
+        session_id: 'test-session-ralph-004',
+      },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_FLAVOR: 'dev',
       },
     );
 

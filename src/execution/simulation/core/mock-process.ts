@@ -396,16 +396,6 @@ export class MockProcessSpawner {
       });
     }
 
-    if (script.exit !== null) {
-      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
-      this.schedule(record, exit.delayMs ?? 0, () => {
-        record.complete({
-          exitCode: exit.exitCode ?? 0,
-          signal: exit.signal ?? null,
-        });
-      });
-    }
-
     if ((script.runtimeDelayMs ?? 0) > 0) {
       await this.time.sleep(script.runtimeDelayMs ?? 0);
     }
@@ -421,6 +411,18 @@ export class MockProcessSpawner {
       stderrPath,
     };
     this.storage.writeAtomicSync(runtimePath, JSON.stringify(runtimeRecord, null, 2), { encoding: 'utf-8' });
+
+    // Schedule exit AFTER runtime.json is persisted — mirrors production ordering
+    // where the wrapper always writes runtime.json before exit.json
+    if (script.exit !== null) {
+      const exit = script.exit ?? { delayMs: 0, exitCode: 0, signal: null };
+      this.schedule(record, exit.delayMs ?? 0, () => {
+        record.complete({
+          exitCode: exit.exitCode ?? 0,
+          signal: exit.signal ?? null,
+        });
+      });
+    }
 
     return {
       pid,
