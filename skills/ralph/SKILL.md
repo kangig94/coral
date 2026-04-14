@@ -96,7 +96,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     Scope gate: source-affecting files run a–d; non-source changes skip to e.
 
     a. **Lint**: run linter if available.
-    b. **Validation**: `Agent("coral:architect")` + any project-defined review workflows in parallel.
+    b. **Validation**: `Agent("coral:architect")` (foreground, never `run_in_background`) + any project-defined review workflows in parallel.
     c. **Build**: run project build command.
     d. **Test**: run test suite after build passes.
 
@@ -131,7 +131,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
 
     **Execution loop** — process batches from Execution Order sequentially; parallelize within each batch:
     1. For each batch, group ACs by coupling (shared files, sequential dependency).
-       Always spawn `Agent` calls for implementation — never implement directly in the main context.
+       Always spawn `Agent` calls for implementation (foreground, never `run_in_background`) — never implement directly in the main context.
        Launch independent ACs as parallel `Agent` calls; tightly coupled ACs go into one `Agent` call.
     2. Verify each AC's output before proceeding to the next batch.
 
