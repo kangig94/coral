@@ -575,6 +575,8 @@ const codexAppServer: ProviderAppServerContract = {
     }
 
     try {
+      // Probe only checks thread existence — sandbox is intentionally omitted because
+      // no commands execute during probe, so the sandbox policy is irrelevant.
       await rpc(lease, 'thread/resume', {
         threadId: parsed.threadId,
         cwd: parsed.cwd ?? process.cwd(),
