@@ -580,7 +580,6 @@ const codexAppServer: ProviderAppServerContract = {
         cwd: parsed.cwd ?? process.cwd(),
         model: null,
         approvalPolicy: 'never',
-        sandbox: 'workspace-write',
       });
       return {
         resumable: true,

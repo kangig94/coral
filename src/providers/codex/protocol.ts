@@ -39,7 +39,7 @@ export interface ThreadResumeParams {
   cwd: string;
   model: string | null;
   approvalPolicy: string;
-  sandbox: string;
+  sandbox?: string;
 }
 
 export interface ThreadResumeResponse {
