@@ -1,6 +1,7 @@
 import { isNoEntryError } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort } from './runtime.js';
+import { probeProcessStartedAtSeconds } from '../infra/backend-info.js';
 
 export { backendLockPath } from '../infra/paths.js';
 export const STARTUP_DEADLINE = 30_000;
@@ -15,6 +16,7 @@ export type LockRecord = {
   bundleHash: string;
   flavor: 'prod' | 'dev';
   startedAt: number;
+  processStartedAt?: number;
 };
 
 type LockSnapshot = {
@@ -57,7 +59,9 @@ function isLockRecord(value: unknown): value is LockRecord {
     record.bundleHash.length > 0 &&
     (record.flavor === 'prod' || record.flavor === 'dev') &&
     Number.isFinite(record.startedAt) &&
-    (record.startedAt as number) > 0
+    (record.startedAt as number) > 0 &&
+    (record.processStartedAt === undefined ||
+      (Number.isInteger(record.processStartedAt) && (record.processStartedAt as number) > 0))
   );
 }
 
@@ -86,7 +90,7 @@ function readLockSnapshot(
 
 function snapshotKey(snapshot: LockSnapshot): string {
   if (snapshot.record) {
-    return `${snapshot.record.instanceId}:${snapshot.record.pid}:${snapshot.record.version}:${snapshot.record.flavor}:${snapshot.record.startedAt}`;
+    return `${snapshot.record.instanceId}:${snapshot.record.pid}:${snapshot.record.version}:${snapshot.record.flavor}:${snapshot.record.startedAt}:${snapshot.record.processStartedAt ?? 'na'}`;
   }
   return `invalid:${snapshot.raw}`;
 }
@@ -155,13 +159,15 @@ export async function acquireLock(
   flavor: 'prod' | 'dev',
   runtime: BackendLockRuntime,
 ): Promise<void> {
+  const pid = runtime.env.pid();
   const record: LockRecord = {
     instanceId,
-    pid: runtime.env.pid(),
+    pid,
     version,
     bundleHash,
     flavor,
     startedAt: runtime.time.now(),
+    processStartedAt: probeProcessStartedAtSeconds(pid, runtime.env.platform() as NodeJS.Platform) ?? undefined,
   };
 
   let observedKey: string | null = null;

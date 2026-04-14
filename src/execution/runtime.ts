@@ -18,10 +18,9 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import {
+  composeChildEnv,
   parsePassthrough,
   resolveEnvBudgetBytes,
-  shedIfOverBudget,
-  stripInternalCoralKeys,
 } from '../shared/env-sanitize.js';
 import {
   backendInfoPath,
@@ -256,7 +255,6 @@ export type RuntimeEnvPort = Runtime['env'];
 
 type CapturedEnvState = {
   fullEnv: Readonly<Record<string, string>>;
-  inheritedEnv: Readonly<Record<string, string>>;
   coralEnv: Readonly<Record<string, string>>;
   pid: number;
   platform: NodeJS.Platform;
@@ -265,6 +263,8 @@ type CapturedEnvState = {
 
 export function createRealRuntime(): Runtime {
   const capturedEnv = captureEnvState();
+  const envBudgetBytes = resolveEnvBudgetBytes();
+  const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
   const time: RuntimeTime = {
     now: () => Date.now(),
     sleep: (ms) =>
@@ -319,11 +319,12 @@ export function createRealRuntime(): Runtime {
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
-    return {
-      ...capturedEnv.inheritedEnv,
-      ...envAdditions,
-      CORAL_CHILD: '1',
-    };
+    return composeChildEnv(
+      { ...capturedEnv.fullEnv },
+      envAdditions ?? {},
+      envBudgetBytes,
+      envPassthrough,
+    );
   };
 
   const durable: DurableExecutionTransport = {
@@ -441,13 +442,8 @@ function captureEnvState(): CapturedEnvState {
     }
   }
 
-  const stripped = stripInternalCoralKeys(fullEnv);
-  const budget = resolveEnvBudgetBytes();
-  const passthrough = parsePassthrough(coralEnv.CORAL_ENV_PASSTHROUGH);
-
   return {
     fullEnv: Object.freeze({ ...fullEnv }),
-    inheritedEnv: Object.freeze(shedIfOverBudget(stripped, budget, passthrough)),
     coralEnv: Object.freeze(coralEnv),
     pid: process.pid,
     platform: process.platform,

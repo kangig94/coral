@@ -196,7 +196,13 @@ const killStepObjectSchema = z.object({
 });
 export type KillStep = z.infer<typeof killStepObjectSchema>;
 
-const restartStepSchema = z.object({
+export const cycleStepSchema = z.object({
+  type: z.literal('cycle'),
+});
+type CycleStep = z.infer<typeof cycleStepSchema>;
+
+/** @deprecated Use cycleStepSchema. */
+export const restartStepSchema = z.object({
   type: z.literal('restart'),
 });
 type RestartStep = z.infer<typeof restartStepSchema>;
@@ -272,6 +278,7 @@ const stepSchema = z
     advanceStepSchema,
     abortStepSchema,
     killStepObjectSchema,
+    cycleStepSchema,
     restartStepSchema,
     shutdownStepSchema,
     expectStepObjectSchema,

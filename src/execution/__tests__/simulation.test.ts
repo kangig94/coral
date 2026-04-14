@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isDurableCliRuntime } from '../../shared/types.js';
@@ -92,7 +93,7 @@ const RESET_SCENARIO: SimulationDocument = {
   steps: [
     { type: 'boot' },
     { type: 'launch', provider: 'fake-provider', prompt: 'simulate clean reset world' },
-    { type: 'restart' },
+    { type: 'cycle' },
     {
       type: 'expect',
       jobCount: 0,
@@ -303,7 +304,7 @@ describe('deterministic simulation lifecycle replay', () => {
     });
   });
 
-  it('recreates a fresh world on restart, proves empty reset state, and relaunches with identical IDs', async () => {
+  it('recreates a fresh world on cycle, proves empty reset state, and relaunches with identical IDs', async () => {
     const { result, world } = await runScenario(RESET_SCENARIO);
     worlds.push(world);
 
@@ -347,5 +348,95 @@ describe('deterministic simulation lifecycle replay', () => {
       realFetchCalls: 0,
       violations: [],
     });
+  });
+
+  it('tracks generation snapshots across cycle() and the deprecated restart() alias', async () => {
+    const world = new SimulationWorld({
+      listen: { port: 4_304 },
+    });
+    worlds.push(world);
+
+    expect(world.generation()).toMatchObject({
+      index: 0,
+      startedInfo: null,
+    });
+
+    const initialInfo = await world.boot();
+    const initialGeneration = world.generation();
+    expect(initialGeneration).toMatchObject({
+      index: 0,
+      startedInfo: initialInfo,
+    });
+
+    const initialBackend = initialGeneration.backend;
+    const cycledInfo = await world.cycle();
+    const cycledGeneration = world.generation();
+    expect(cycledGeneration).toMatchObject({
+      index: 1,
+      startedInfo: cycledInfo,
+    });
+    expect(cycledGeneration.backend).not.toBe(initialBackend);
+
+    const cycledBackend = cycledGeneration.backend;
+    const restartedInfo = await world.restart();
+    expect(world.generation()).toMatchObject({
+      index: 2,
+      startedInfo: restartedInfo,
+    });
+    expect(world.generation().backend).not.toBe(cycledBackend);
+  });
+
+  it('writes env.json before runtime.json with composed child-env semantics', async () => {
+    const world = new SimulationWorld({
+      env: {
+        KEEP_BASE: 'base-value',
+        CORAL_BACKEND_IDLE_MS: '1',
+      },
+      durable: [
+        {
+          pid: 30_404,
+          runtimeDelayMs: 5,
+          exit: { delayMs: 5, exitCode: 0 },
+        },
+      ],
+      fakeProvider: {
+        result: { content: 'env artifact result' },
+      },
+    });
+    worlds.push(world);
+
+    await world.boot();
+    const launch = await world.launchJob('capture durable env', {
+      coralEnv: {
+        CORAL_OWNER: 'session-123',
+        EXTRA_ENV: 'extra-value',
+      },
+    });
+
+    expect(launch.status).toBe('running');
+    if (launch.status !== 'running' && launch.status !== 'queued') {
+      throw new Error(`Expected a launched job, received ${launch.status}`);
+    }
+
+    const runtimeWait = await world.waitUntil(launch.job, { runtimeRecorded: true }, 5, { maxSteps: 5 });
+    expect(runtimeWait.ok).toBe(true);
+
+    const runtime = getDurableRuntime(world, launch.job);
+    const jobDir = dirname(runtime.stdoutPath);
+    const generation = world.generation();
+    const envPath = join(jobDir, 'env.json');
+    const runtimePath = join(jobDir, 'runtime.json');
+    const env = JSON.parse(generation.backend.storage.readFileSync(envPath, 'utf-8')) as Record<string, string>;
+
+    expect(env).toMatchObject({
+      KEEP_BASE: 'base-value',
+      EXTRA_ENV: 'extra-value',
+      CORAL_OWNER: 'session-123',
+      CORAL_CHILD: '1',
+    });
+    expect(env).not.toHaveProperty('CORAL_BACKEND_IDLE_MS');
+    expect(generation.backend.storage.statSync(envPath).mtimeMs).toBeLessThan(
+      generation.backend.storage.statSync(runtimePath).mtimeMs,
+    );
   });
 });

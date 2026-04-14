@@ -63,6 +63,12 @@ export type SimulationHttpResponse = {
   body: string;
 };
 
+export type SimulationGeneration = {
+  index: number;
+  backend: SimulationBackend;
+  startedInfo: BackendServerInfo | null;
+};
+
 type WorldGenerationState = {
   backend: SimulationBackend;
   startedInfo: BackendServerInfo | null;
@@ -115,11 +121,16 @@ function hasRuntimeStreamPath(
   return typeof (record as unknown as Record<string, unknown>)[key] === 'string';
 }
 
+/**
+ * Control-flow exerciser for lifecycle/recovery sequencing and persisted artifact ordering within the simulation env snapshot.
+ * Does not model true lock contention, host env discovery/mutation, or network behavior.
+ */
 export class SimulationWorld {
   private readonly initialConfig: WorldConfig;
   private readonly epochMs: number;
   private readonly noRealIoRegistration: NoRealIoRegistration;
   private current: WorldGenerationState;
+  private generationIndex = 0;
   private elapsedOffsetMs = 0;
   private disposed = false;
 
@@ -137,13 +148,28 @@ export class SimulationWorld {
     return info;
   }
 
-  async restart(): Promise<BackendServerInfo> {
+  generation(): SimulationGeneration {
+    this.assertUsable();
+    return {
+      index: this.generationIndex,
+      backend: this.current.backend,
+      startedInfo: this.current.startedInfo ? { ...this.current.startedInfo } : null,
+    };
+  }
+
+  async cycle(): Promise<BackendServerInfo> {
     this.assertUsable();
     this.elapsedOffsetMs = this.getVirtualElapsedMs();
-    await this.current.backend.backend.shutdown('restart');
+    await this.current.backend.backend.shutdown('cycle');
     await this.current.backend.backend.waitForShutdown();
+    this.generationIndex += 1;
     this.current = this.createGenerationState();
     return this.boot();
+  }
+
+  /** @deprecated Use cycle(). */
+  async restart(): Promise<BackendServerInfo> {
+    return this.cycle();
   }
 
   async shutdown(reason = 'simulation-shutdown'): Promise<void> {

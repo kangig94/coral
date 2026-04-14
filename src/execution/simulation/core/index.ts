@@ -6,6 +6,7 @@ import type { Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
+import { composeChildEnv } from '../../../shared/env-sanitize.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { sendJson } from '../../http-handler.js';
 import { LaunchCoordinator } from '../../engine.js';
@@ -71,6 +72,7 @@ const DEFAULT_BUNDLE_HASH = 'sim-bundle';
 const DEFAULT_FAKE_PROVIDER = 'fake-provider';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
+const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
 
 export type SimulationScenario = {
   epochMs?: number;
@@ -109,7 +111,16 @@ export class SimulationRuntime implements Runtime {
     this.storage = new InMemoryStorage(this.time, roots);
     this.ids = new SequentialIds();
     this.observer = new InMemoryObserver();
-    this.spawner = new MockProcessSpawner(this.time, this.storage);
+    const inheritedEnv = this.env.fullSnapshot();
+    this.spawner = new MockProcessSpawner(this.time, this.storage, {
+      buildDurableEnv: (envAdditions) =>
+        composeChildEnv(
+          { ...inheritedEnv },
+          envAdditions ?? {},
+          SIMULATION_ENV_BUDGET_BYTES,
+          new Set<string>(),
+        ),
+    });
     this.process = {
       spawn: (spawnOptions) => {
         const child = this.spawner.spawn(spawnOptions);

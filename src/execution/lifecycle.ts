@@ -43,7 +43,7 @@ import type { KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import { planRecovery, type JobStoreSnapshot, type RecoveryAction, type RecoveryInvariants } from './recovery-core.js';
+import { planRecovery, type JobStoreSnapshot, type RecoveryAction } from './recovery-core.js';
 import type { Runtime, RuntimeTimerHandle } from './runtime.js';
 
 // ---------------------------------------------------------------------------
@@ -55,6 +55,7 @@ export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 export const RECOVERY_POLL_MS = 500;
 const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
+const ADOPTION_CLAIM_STALE_MS = 30_000;
 import { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE } from './recovery-notices.js';
 export { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE };
 
@@ -139,6 +140,293 @@ export function withBackendNamespace(status: PersistedStatusRecord, namespace: s
   } as PersistedStatusRecord;
 }
 
+type AdoptionStatusSnapshot = {
+  raw: string;
+  record: PersistedStatusRecord;
+};
+
+type AdoptionClaimRecord = {
+  ownerId: string;
+  claimedAt: number;
+  stagedPath: string;
+  verifiedStatusRaw: string;
+};
+
+type AdoptionClaimSnapshot = {
+  raw: string;
+  record: AdoptionClaimRecord | null;
+  mtimeMs: number;
+};
+
+function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
+  return (
+    isRecord(value) &&
+    typeof value.jobId === 'string' &&
+    typeof value.sessionId === 'string' &&
+    typeof value.provider === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.phase === 'string'
+  );
+}
+
+function isAdoptionClaimRecord(value: unknown): value is AdoptionClaimRecord {
+  return (
+    isRecord(value) &&
+    typeof value.ownerId === 'string' &&
+    value.ownerId.length > 0 &&
+    typeof value.claimedAt === 'number' &&
+    Number.isFinite(value.claimedAt) &&
+    typeof value.stagedPath === 'string' &&
+    value.stagedPath.length > 0 &&
+    typeof value.verifiedStatusRaw === 'string'
+  );
+}
+
+function claimPathForStatus(statusPath: string): string {
+  return `${statusPath}.adopt.lock`;
+}
+
+function stagedStatusPath(statusPath: string, ownerId: string): string {
+  return `${statusPath}.adopt.stage.${ownerId}`;
+}
+
+function createAdoptionOwnerId(nowMs: number): string {
+  return `${nowMs}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function readAdoptionStatusSnapshot(
+  statusPath: string,
+  storage: Pick<Runtime['storage'], 'readFileSync'>,
+): AdoptionStatusSnapshot | null {
+  try {
+    const raw = storage.readFileSync(statusPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPersistedStatusRecordLike(parsed)) return null;
+    return {
+      raw,
+      record: parsed as PersistedStatusRecord,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readAdoptionClaimSnapshot(
+  claimPath: string,
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync'>,
+): AdoptionClaimSnapshot | null {
+  try {
+    const raw = storage.readFileSync(claimPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    return {
+      raw,
+      record: isAdoptionClaimRecord(parsed) ? parsed : null,
+      mtimeMs: storage.statSync(claimPath).mtimeMs,
+    };
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return null;
+    throw error;
+  }
+}
+
+function unlinkIfPresent(path: string, storage: Pick<Runtime['storage'], 'unlinkSync'>): void {
+  try {
+    storage.unlinkSync(path);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+}
+
+function restoreClaimFileIfMissing(
+  fromPath: string,
+  toPath: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'renameSync'>,
+): void {
+  if (storage.existsSync(toPath)) return;
+  try {
+    storage.renameSync(fromPath, toPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+}
+
+function rollbackUnexpectedStagedStatus(
+  statusPath: string,
+  stagedPath: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'renameSync' | 'unlinkSync'>,
+): void {
+  if (!storage.existsSync(stagedPath)) return;
+
+  if (!storage.existsSync(statusPath)) {
+    try {
+      storage.renameSync(stagedPath, statusPath);
+      return;
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) throw error;
+    }
+  }
+
+  unlinkIfPresent(stagedPath, storage);
+}
+
+function restoreVerifiedStagedStatus(
+  statusPath: string,
+  stagedPath: string,
+  verifiedStatusRaw: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'readFileSync' | 'renameSync' | 'tryExclusiveWriteSync' | 'unlinkSync'>,
+): void {
+  let stagedRaw: string;
+  try {
+    stagedRaw = storage.readFileSync(stagedPath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+
+  if (stagedRaw !== verifiedStatusRaw) {
+    rollbackUnexpectedStagedStatus(statusPath, stagedPath, storage);
+    return;
+  }
+
+  if (!storage.existsSync(statusPath)) {
+    storage.tryExclusiveWriteSync(statusPath, stagedRaw, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+  }
+
+  unlinkIfPresent(stagedPath, storage);
+}
+
+function stageVerifiedStatusSnapshot(
+  statusPath: string,
+  stagedPath: string,
+  verifiedStatusRaw: string,
+  storage: Pick<Runtime['storage'], 'readFileSync' | 'renameSync' | 'existsSync' | 'unlinkSync'>,
+): boolean {
+  try {
+    storage.renameSync(statusPath, stagedPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+
+  let stagedRaw: string;
+  try {
+    stagedRaw = storage.readFileSync(stagedPath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+
+  if (stagedRaw === verifiedStatusRaw) return true;
+
+  rollbackUnexpectedStagedStatus(statusPath, stagedPath, storage);
+  return false;
+}
+
+function removeAdoptionClaimIfOwner(
+  claimPath: string,
+  ownerId: string,
+  storage: Pick<Runtime['storage'], 'existsSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+): void {
+  const stagePath = `${claimPath}.removing.${ownerId}`;
+
+  try {
+    storage.renameSync(claimPath, stagePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+
+  try {
+    const raw = storage.readFileSync(stagePath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (!isAdoptionClaimRecord(parsed) || parsed.ownerId !== ownerId) {
+      restoreClaimFileIfMissing(stagePath, claimPath, storage);
+      return;
+    }
+    storage.unlinkSync(stagePath);
+  } catch (error: unknown) {
+    unlinkIfPresent(stagePath, storage);
+    if (isNoEntryError(error) || error instanceof SyntaxError) return;
+    throw error;
+  }
+}
+
+function reapStaleAdoptionClaim(
+  statusPath: string,
+  runtime: Pick<Runtime, 'storage' | 'time'>,
+): boolean {
+  const claimPath = claimPathForStatus(statusPath);
+  const snapshot = readAdoptionClaimSnapshot(claimPath, runtime.storage);
+  if (snapshot === null) return true;
+
+  const claimedAt = snapshot.record?.claimedAt ?? snapshot.mtimeMs;
+  if (runtime.time.now() - claimedAt < ADOPTION_CLAIM_STALE_MS) {
+    return false;
+  }
+
+  const reapingPath = `${claimPath}.reaping.${createAdoptionOwnerId(runtime.time.now())}`;
+  try {
+    runtime.storage.renameSync(claimPath, reapingPath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return true;
+    throw error;
+  }
+
+  try {
+    const reapedRaw = runtime.storage.readFileSync(reapingPath, 'utf-8');
+    if (reapedRaw !== snapshot.raw) {
+      restoreClaimFileIfMissing(reapingPath, claimPath, runtime.storage);
+      return false;
+    }
+
+    if (snapshot.record !== null) {
+      restoreVerifiedStagedStatus(
+        statusPath,
+        snapshot.record.stagedPath,
+        snapshot.record.verifiedStatusRaw,
+        runtime.storage,
+      );
+    }
+
+    runtime.storage.unlinkSync(reapingPath);
+    return true;
+  } catch (error: unknown) {
+    unlinkIfPresent(reapingPath, runtime.storage);
+    if (isNoEntryError(error)) return true;
+    throw error;
+  }
+}
+
+function tryAcquireAdoptionClaim(
+  statusPath: string,
+  verifiedStatusRaw: string,
+  runtime: Pick<Runtime, 'storage' | 'time'>,
+): AdoptionClaimRecord | null {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ownerId = createAdoptionOwnerId(runtime.time.now());
+    const claimRecord: AdoptionClaimRecord = {
+      ownerId,
+      claimedAt: runtime.time.now(),
+      stagedPath: stagedStatusPath(statusPath, ownerId),
+      verifiedStatusRaw,
+    };
+
+    const acquired = runtime.storage.tryExclusiveWriteSync(claimPathForStatus(statusPath), JSON.stringify(claimRecord), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    if (acquired) return claimRecord;
+    if (!reapStaleAdoptionClaim(statusPath, runtime)) return null;
+  }
+
+  return null;
+}
+
 /**
  * Adopt orphaned jobs from other namespaces whose daemon has died.
  *
@@ -169,32 +457,56 @@ export function adoptOrphanedCrossNamespaceJobs(
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
-    // Read status.json
-    let record: PersistedStatusRecord | null;
-    try {
-      const data = runtime.storage.readFileSync(join(jobsDir, entry.name, 'status.json'), 'utf-8');
-      record = JSON.parse(data) as PersistedStatusRecord;
-    } catch {
-      continue;
-    }
+    const statusPath = join(jobsDir, entry.name, 'status.json');
+    const snapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
+    if (snapshot === null) continue;
 
+    const { raw: verifiedStatusRaw, record } = snapshot;
     const foreignNs = readBackendNamespace(record);
     if (foreignNs === null || foreignNs === currentNamespace) continue;
     if (!isLivePhase(record.phase)) continue;
 
     if (isForeignDaemonAlive(foreignNs, runtime)) continue; // daemon alive → don't steal
 
-    // Rebind to current namespace on disk
-    const rebound: PersistedStatusRecord = { ...record, backendNamespace: currentNamespace };
+    const claim = tryAcquireAdoptionClaim(statusPath, verifiedStatusRaw, runtime);
+    if (claim === null) continue;
+
     try {
-      const statusPath = join(jobsDir, entry.name, 'status.json');
-      const tmpPath = statusPath + '.tmp';
-      runtime.storage.writeFileSync(tmpPath, JSON.stringify(rebound, null, 2), { encoding: 'utf-8' });
-      runtime.storage.renameSync(tmpPath, statusPath);
+      const confirmedSnapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
+      if (confirmedSnapshot === null || confirmedSnapshot.raw !== verifiedStatusRaw) continue;
+      if (!isLivePhase(confirmedSnapshot.record.phase)) continue;
+
+      const confirmedNamespace = readBackendNamespace(confirmedSnapshot.record);
+      if (confirmedNamespace !== foreignNs) continue;
+
+      if (!stageVerifiedStatusSnapshot(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage)) continue;
+
+      if (isForeignDaemonAlive(foreignNs, runtime)) {
+        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
+        continue;
+      }
+
+      const rebound: PersistedStatusRecord = {
+        ...confirmedSnapshot.record,
+        backendNamespace: currentNamespace,
+      };
+      const published = runtime.storage.tryExclusiveWriteSync(statusPath, JSON.stringify(rebound, null, 2), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      if (!published) {
+        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
+        continue;
+      }
+
+      unlinkIfPresent(claim.stagedPath, runtime.storage);
       adopted++;
       log(`Adopted orphaned job ${entry.name} from namespace ${foreignNs}\n`);
     } catch (error: unknown) {
+      restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
       log(`Failed to adopt orphaned job ${entry.name}: ${formatError(error)}\n`);
+    } finally {
+      removeAdoptionClaimIfOwner(claimPathForStatus(statusPath), claim.ownerId, runtime.storage);
     }
   }
 
@@ -1106,11 +1418,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       }
 
       const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
-      const invariants: RecoveryInvariants = {
-        peerDaemonAlive: false,
-        kbInitialized: true,
-      };
-      const plan = planRecovery(snapshot, invariants);
+      const plan = planRecovery(snapshot);
 
       for (const action of plan.register) {
         try {

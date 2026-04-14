@@ -169,6 +169,10 @@ export class SealedEnv implements RuntimeEnv {
     return this.fullEnv[key];
   }
 
+  fullSnapshot(): Readonly<Record<string, string>> {
+    return this.fullEnv;
+  }
+
   coralSnapshot(): Readonly<Record<string, string>> {
     return this.coralEnv;
   }

@@ -86,6 +86,10 @@ type RegisteredProcess = {
   waitForExit: Deferred<PersistedExitRecord> | null;
 };
 
+type MockProcessSpawnerOptions = {
+  buildDurableEnv: (envAdditions?: Record<string, string>) => Record<string, string>;
+};
+
 function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputChunk[] {
   if (value === undefined) {
     return [];
@@ -207,6 +211,7 @@ export class MockProcessSpawner {
   constructor(
     private readonly time: VirtualTime,
     private readonly storage: InMemoryStorage,
+    private readonly options: MockProcessSpawnerOptions,
   ) {
     this.durable = new MockDurableTransport(this);
   }
@@ -344,6 +349,7 @@ export class MockProcessSpawner {
     const pid = script.pid ?? this.allocatePid();
     const stdoutPath = script.runtimeRecord?.stdoutPath ?? join(options.jobDir, 'stdout');
     const stderrPath = script.runtimeRecord?.stderrPath ?? join(options.jobDir, 'stderr');
+    const envPath = join(options.jobDir, 'env.json');
     const runtimePath = join(options.jobDir, 'runtime.json');
     const exitPath = join(options.jobDir, 'exit.json');
 
@@ -362,6 +368,9 @@ export class MockProcessSpawner {
     this.storage.mkdirSync(options.jobDir, { recursive: true });
     this.storage.writeFileSync(stdoutPath, '');
     this.storage.writeFileSync(stderrPath, '');
+    this.storage.writeAtomicSync(envPath, JSON.stringify(this.options.buildDurableEnv(options.envAdditions)), {
+      encoding: 'utf-8',
+    });
 
     const exitDeferred = createDeferred<PersistedExitRecord>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;

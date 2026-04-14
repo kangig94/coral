@@ -100,7 +100,7 @@ describe('backend-lock', () => {
       .mockResolvedValueOnce('stale');
 
     await acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
-      env: { pid: () => 222 } as never,
+      env: { pid: () => 222, platform: () => process.platform } as never,
       storage: storage as never,
       paths: storage as never,
       time: time as never,
@@ -127,7 +127,7 @@ describe('backend-lock', () => {
 
     await expect(
       acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
-        env: { pid: () => 222 } as never,
+        env: { pid: () => 222, platform: () => process.platform } as never,
         storage: storage as never,
         paths: storage as never,
         time: time as never,

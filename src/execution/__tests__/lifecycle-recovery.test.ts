@@ -1276,6 +1276,66 @@ describe('lifecycle recovery characterization', () => {
     }
   })
 
+  it('13a. concurrent orphan adoption leaves a competing status writer intact', async () => {
+    const modules = await loadModules()
+    const pluginRoot = createProjectRoot('plugin-adoption-race')
+    const projectRoot = createProjectRoot('project-adoption-race')
+    const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
+    const foreignNamespace = 'foreign-adoption-race'
+    const jobId = 'adoption-race-job'
+    const jobDir = join(runtime.paths.jobsDir(), jobId)
+    const statusPath = join(jobDir, 'status.json')
+    const originalStatus = {
+      jobId,
+      sessionId: 'adoption-race-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: foreignNamespace,
+      phase: 'running',
+      launch: { state: 'pending', updatedAt: '2026-04-12T00:00:00.000Z' },
+    }
+    const competingStatus = {
+      ...originalStatus,
+      backendNamespace: 'competing-namespace',
+    }
+
+    writeJson(statusPath, originalStatus)
+
+    let competingWriterInjected = false
+    const storage = {
+      ...runtime.storage,
+      tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }) {
+        if (path === statusPath && !competingWriterInjected) {
+          competingWriterInjected = true
+          runtime.storage.tryExclusiveWriteSync(statusPath, JSON.stringify(competingStatus, null, 2), {
+            encoding: 'utf-8',
+            mode: 0o600,
+          })
+        }
+        return runtime.storage.tryExclusiveWriteSync(path, data, options)
+      },
+    }
+    const adoptionRuntime = {
+      ...runtime,
+      storage,
+      process: {
+        ...runtime.process,
+        isAlive: () => false,
+      },
+    }
+
+    const adopted = modules.lifecycleModule.adoptOrphanedCrossNamespaceJobs(currentNamespace, adoptionRuntime, () => {})
+    const residue = runtime.storage
+      .readdirSync(jobDir, { withFileTypes: true })
+      .map((entry) => entry.name)
+      .filter((name) => name.startsWith('status.json.adopt'))
+
+    expect(adopted).toBe(0)
+    expect(competingWriterInjected).toBe(true)
+    expect(JSON.parse(runtime.storage.readFileSync(statusPath, 'utf-8'))).toEqual(competingStatus)
+    expect(residue).toEqual([])
+  })
+
   it('14. missing-namespace live jobs are normalized to the current namespace and processed by recovery', async () => {
     const modules = await loadModules()
     const pluginRoot = createProjectRoot('plugin-missing-namespace')

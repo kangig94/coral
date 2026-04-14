@@ -303,6 +303,29 @@ describe('scenario runner', () => {
     });
   });
 
+  it('treats restart as a deprecated alias for the cycle step', async () => {
+    const run = await runScenario({
+      world: {},
+      steps: [
+        { type: 'boot' },
+        { type: 'restart' },
+      ],
+    });
+    worlds.push(run.world);
+
+    expect(run.result.passed).toBe(true);
+    expect(run.result.steps[1]).toMatchObject({
+      ok: true,
+      type: 'restart',
+      detail: {
+        generation: 1,
+      },
+    });
+    expect(run.world.generation()).toMatchObject({
+      index: 1,
+    });
+  });
+
   it('kills a running job by resolved cursor target', async () => {
     const run = await runScenario({
       world: {},

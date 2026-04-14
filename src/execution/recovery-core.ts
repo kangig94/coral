@@ -39,13 +39,6 @@ export interface JobStoreSnapshot {
   readSession(shardDir: string, provider: string, sessionId: string): SessionEntry | null;
 }
 
-export interface RecoveryInvariants {
-  peerDaemonAlive: boolean;
-  kbInitialized: boolean;
-  pidLivenessProbe?: (pid: number) => 'alive' | 'dead' | 'unknown';
-  wrapperSchemaVersion?: string;
-}
-
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
   | { type: 'markError'; jobId: string; notice: string; status: PersistedStatusRecord }
@@ -80,7 +73,7 @@ type RecoveryJobRow = {
 
 const CLASSIFIER_TABLE: ReadonlyArray<{
   match: (snap: RecoveryJobRow, snapshot: JobStoreSnapshot) => boolean;
-  action: (snap: RecoveryJobRow, invariants: RecoveryInvariants) => RecoveryAction | null;
+  action: (snap: RecoveryJobRow) => RecoveryAction | null;
   description: string;
 }> = [
   {
@@ -190,15 +183,8 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
   },
 ];
 
-export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInvariants): RecoveryPlan {
+export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
   try {
-    const normalizedInvariants: RecoveryInvariants = {
-      peerDaemonAlive: invariants?.peerDaemonAlive ?? false,
-      kbInitialized: invariants?.kbInitialized ?? true,
-      ...(invariants?.pidLivenessProbe ? { pidLivenessProbe: invariants.pidLivenessProbe } : {}),
-      ...(invariants?.wrapperSchemaVersion ? { wrapperSchemaVersion: invariants.wrapperSchemaVersion } : {}),
-    };
-
     const jobIds = readJobIds(snapshot);
     const registerRunning: RegisterAction[] = [];
     const registerQueued: Array<Extract<RecoveryAction, { type: 'registerQueued' }>> = [];
@@ -208,7 +194,7 @@ export function planRecovery(snapshot: JobStoreSnapshot, invariants: RecoveryInv
 
     for (const jobId of jobIds) {
       const row = buildJobRow(snapshot, jobId);
-      const classified = classifyJobRow(row, snapshot, normalizedInvariants);
+      const classified = classifyJobRow(row, snapshot);
       if (classified.action === null) continue;
 
       switch (classified.description) {
@@ -251,14 +237,13 @@ function belongsToCurrentNamespace(status: PersistedStatusRecord, snapshot: JobS
 function classifyJobRow(
   row: RecoveryJobRow,
   snapshot: JobStoreSnapshot,
-  invariants: RecoveryInvariants,
 ): { description: string; action: RecoveryAction | null } {
   for (const classifier of CLASSIFIER_TABLE) {
     const matches = safeCall(() => classifier.match(row, snapshot), false);
     if (!matches) continue;
     return {
       description: classifier.description,
-      action: safeCall(() => classifier.action(row, invariants), null),
+      action: safeCall(() => classifier.action(row), null),
     };
   }
 

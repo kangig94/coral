@@ -424,8 +424,9 @@ async function executeStep(
         });
       }
 
+      case 'cycle':
       case 'restart': {
-        const info = await world.restart();
+        const info = await world.cycle();
         resetCursor(cursor);
         return buildStepResult(world, step, stepIndex, startedAt, {
           ok: true,
