@@ -139,7 +139,6 @@ function createService(
     providerRegistry: {
       get: mockState.getNewProvider,
       getAll: () => [],
-      registerBuiltIns: () => {},
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
   });

@@ -1,5 +1,3 @@
-import { claudeProvider } from './claude/adapter.js';
-import { codexProvider } from './codex/adapter.js';
 import type { Provider } from './types.js';
 
 const RESERVED_TOOL_NAMES = new Set([
@@ -29,7 +27,6 @@ const RESERVED_TOOL_NAMES = new Set([
 ]);
 export class ProviderRegistry {
   private providers = new Map<string, Provider>();
-  private bootstrapped = false;
 
   register(provider: Provider): void {
     if (RESERVED_TOOL_NAMES.has(provider.name)) {
@@ -49,16 +46,8 @@ export class ProviderRegistry {
     return [...this.providers.values()];
   }
 
-  registerBuiltIns(): void {
-    if (this.bootstrapped) return;
-    this.register(codexProvider);
-    this.register(claudeProvider);
-    this.bootstrapped = true;
-  }
-
   /** Reset provider registry state. Intended for test isolation. */
   clear(): void {
     this.providers.clear();
-    this.bootstrapped = false;
   }
 }

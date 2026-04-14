@@ -97,7 +97,7 @@ export interface HttpHandlerDeps {
   // Request-time control ports
   readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
   readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
-  readonly providerRegistry?: ProviderRegistry;
+  readonly providerRegistry: ProviderRegistry;
   readonly abortJobs: (jobIds: string[]) => AbortResult;
   readonly scopeCheckJobs: (jobIds: string[], projectRoot: string) => ScopeCheckResult;
 

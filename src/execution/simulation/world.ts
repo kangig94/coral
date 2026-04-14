@@ -333,15 +333,14 @@ export class SimulationWorld {
 
   async invokeHttp(method: string, path: string, body?: unknown): Promise<SimulationHttpResponse> {
     this.assertUsable();
-    const handler = this.current.backend.hooks.createServerCalls[0];
     const startedInfo = this.current.startedInfo;
-    if (!handler || !startedInfo) {
+    if (!startedInfo) {
       throw new Error('Simulation world must be booted before invoking HTTP');
     }
 
     const req = new ScenarioHttpRequest(method, path, startedInfo.token, body);
     const res = new ScenarioHttpResponse();
-    const completion = Promise.resolve(handler(req as never, res as never));
+    const completion = Promise.resolve(this.current.backend.handleRequest(req as never, res as never));
     req.start();
     await completion;
 

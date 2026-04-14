@@ -121,7 +121,7 @@ describe('registerBuiltInProviders', () => {
     expect(providerNames(registry.getAll())).toEqual(['codex']);
   });
 
-  it('clear resets registered providers and bootstrap state', () => {
+  it('clear resets registered providers and allows re-bootstrap', () => {
     const registry = new ProviderRegistry();
 
     registerBuiltInProviders(registry);
