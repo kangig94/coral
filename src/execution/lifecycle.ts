@@ -31,6 +31,7 @@ import {
   isLivePhase,
   isTerminalPhase,
   readBackendNamespace,
+  type DurableCliRuntimeRecord,
   type PersistedExitRecord,
   type PersistedLaunchRecord,
   type PersistedRuntimeRecord,
@@ -805,6 +806,8 @@ type LifecycleControlState = {
   recoveryPollIntervals: Set<RuntimeTimerHandle>;
 };
 
+type ProviderLike = NonNullable<ReturnType<ProviderRegistry['get']>>;
+
 export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const {
     identity,
@@ -1073,6 +1076,101 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
 
   // -- Recovery adoption ----------------------------------------------------
 
+  function finalizeDeadAdoptedJob(
+    jobId: string,
+    launchRecord: PersistedLaunchRecord,
+    runtimeRecord: DurableCliRuntimeRecord,
+    service: RecoveryCapableService,
+    provider: ProviderLike | undefined,
+  ): void {
+    const exitRecord = progressStore.readExitRecord(jobId);
+    if (exitRecord) {
+      // Finalize from durable artifacts via provider recovery
+      if (provider?.recovery) {
+        void provider.recovery
+          .finalizeFromArtifacts({
+            stdoutPath: runtimeRecord.stdoutPath,
+            stderrPath: runtimeRecord.stderrPath,
+            exitCode: exitRecord.exitCode,
+            signal: exitRecord.signal,
+            fallbackConversationRef: launchRecord.request.conversationRef,
+          })
+          .then((result) => {
+            const phase = result.aborted ? ('aborted' as const) : ('completed' as const);
+            service.completeRecoveredJob(
+              jobId,
+              launchRecord.sessionId,
+              {
+                content: result.content,
+                durationMs: result.durationMs,
+                aborted: result.aborted,
+                nonResumable: result.nonResumable,
+                exitCode: result.exitCode,
+                notice: result.notice,
+                errors: result.errors,
+                warnings: result.warnings,
+                usage: result.usage,
+              },
+              phase,
+              {
+                conversationRef: result.conversationRef,
+                nonResumable: result.nonResumable,
+              },
+            );
+          })
+          .catch((recoverErr: unknown) => {
+            log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
+            service.completeRecoveredJob(
+              jobId,
+              launchRecord.sessionId,
+              {
+                content: '',
+                notice: `Provider recovery failed: ${formatError(recoverErr)}`,
+              },
+              'error',
+            );
+          });
+      } else {
+        const persistedPayload = progressStore.readTerminalPayload(jobId);
+        if (persistedPayload !== null) {
+          const phase: 'aborted' | 'completed' | 'error' =
+            persistedPayload.aborted === true ? 'aborted' : exitRecord.exitCode === 0 ? 'completed' : 'error';
+          const payload: TerminalResult =
+            persistedPayload.exitCode === undefined
+              ? { ...persistedPayload, exitCode: exitRecord.exitCode }
+              : persistedPayload;
+          // NOTE: `conversationRef` is deliberately omitted. `TerminalResult`
+          // has no `conversationRef` channel, and `completeRecoveredJob`
+          // treats `{ conversationRef? | nonResumable? }` as mutually exclusive.
+          service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, {
+            nonResumable: persistedPayload.nonResumable === true,
+          });
+        } else {
+          service.completeRecoveredJob(
+            jobId,
+            launchRecord.sessionId,
+            {
+              content: '',
+              exitCode: exitRecord.exitCode,
+            },
+            exitRecord.exitCode === 0 ? 'completed' : 'error',
+          );
+        }
+      }
+    } else {
+      // PID dead + no exit.json = wrapper lost
+      service.completeRecoveredJob(
+        jobId,
+        launchRecord.sessionId,
+        {
+          content: '',
+          notice: 'Wrapper process lost — no exit.json found',
+        },
+        'error',
+      );
+    }
+  }
+
   async function runRecoveryAdoption(
     queuedJobs: Array<{ jobId: string; launchRecord: PersistedLaunchRecord }>,
     runningJobs: Array<{ jobId: string; launchRecord: PersistedLaunchRecord; runtimeRecord: PersistedRuntimeRecord }>,
@@ -1158,95 +1256,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
             state.recoveryPollIntervals.delete(pollInterval);
             state.adoptedRunningPids.delete(jobId);
 
-            const exitRecord = progressStore.readExitRecord(jobId);
-            if (exitRecord) {
-              drainRecoveredProgress();
-
-              // Finalize from durable artifacts via provider recovery
-              if (provider?.recovery) {
-                void provider.recovery
-                  .finalizeFromArtifacts({
-                    stdoutPath: runtimeRecord.stdoutPath,
-                    stderrPath: runtimeRecord.stderrPath,
-                    exitCode: exitRecord.exitCode,
-                    signal: exitRecord.signal,
-                    fallbackConversationRef: launchRecord.request.conversationRef,
-                  })
-                  .then((result) => {
-                    const phase = result.aborted ? ('aborted' as const) : ('completed' as const);
-                    service.completeRecoveredJob(
-                      jobId,
-                      launchRecord.sessionId,
-                      {
-                        content: result.content,
-                        durationMs: result.durationMs,
-                        aborted: result.aborted,
-                        nonResumable: result.nonResumable,
-                        exitCode: result.exitCode,
-                        notice: result.notice,
-                        errors: result.errors,
-                        warnings: result.warnings,
-                        usage: result.usage,
-                      },
-                      phase,
-                      {
-                        conversationRef: result.conversationRef,
-                        nonResumable: result.nonResumable,
-                      },
-                    );
-                  })
-                  .catch((recoverErr: unknown) => {
-                    log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
-                    service.completeRecoveredJob(
-                      jobId,
-                      launchRecord.sessionId,
-                      {
-                        content: '',
-                        notice: `Provider recovery failed: ${formatError(recoverErr)}`,
-                      },
-                      'error',
-                    );
-                  });
-              } else {
-                const persistedPayload = progressStore.readTerminalPayload(jobId);
-                if (persistedPayload !== null) {
-                  const phase: 'aborted' | 'completed' | 'error' =
-                    persistedPayload.aborted === true ? 'aborted' : exitRecord.exitCode === 0 ? 'completed' : 'error';
-                  const payload: TerminalResult =
-                    persistedPayload.exitCode === undefined
-                      ? { ...persistedPayload, exitCode: exitRecord.exitCode }
-                      : persistedPayload;
-                  // NOTE: `conversationRef` is deliberately omitted. `TerminalResult`
-                  // has no `conversationRef` channel, and `completeRecoveredJob`
-                  // treats `{ conversationRef? | nonResumable? }` as mutually exclusive.
-                  service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, {
-                    nonResumable: persistedPayload.nonResumable === true,
-                  });
-                } else {
-                  service.completeRecoveredJob(
-                    jobId,
-                    launchRecord.sessionId,
-                    {
-                      content: '',
-                      exitCode: exitRecord.exitCode,
-                    },
-                    exitRecord.exitCode === 0 ? 'completed' : 'error',
-                  );
-                }
-              }
-            } else {
-              // PID dead + no exit.json = wrapper lost
-              service.completeRecoveredJob(
-                jobId,
-                launchRecord.sessionId,
-                {
-                  content: '',
-                  notice: 'Wrapper process lost — no exit.json found',
-                },
-                'error',
-              );
-            }
-
+            drainRecoveredProgress();
+            finalizeDeadAdoptedJob(jobId, launchRecord, runtimeRecord, service, provider);
             cleanup?.();
           }
         }, RECOVERY_POLL_MS);
@@ -1408,23 +1419,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus);
       const plan = planRecovery(snapshot);
 
-      for (const action of plan.register) {
-        try {
-          applyRecoveryAction(
-            action,
-            progressStore,
-            state.recoveryRegistry,
-            queuedRecoverable,
-            runningRecoverable,
-            log,
-            eventBus,
-          );
-        } catch (error: unknown) {
-          logRecoveryActionFailure(action, error, log);
-        }
-      }
-
-      for (const action of plan.cleanup) {
+      for (const action of [...plan.register, ...plan.cleanup]) {
         try {
           applyRecoveryAction(
             action,
