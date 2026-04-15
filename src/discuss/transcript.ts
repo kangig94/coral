@@ -49,7 +49,7 @@ export function wrapText(text: string, opts?: { soft?: number; hard?: number }):
 
 function formatTimestamp(ts: string): string {
   const d = new Date(ts);
-  return `[${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}]`;
+  return `[${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}]`;
 }
 
 export function generateOneLiner(content: string): string {

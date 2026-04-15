@@ -28,8 +28,8 @@ import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { collectBids } from './subflows.js';
 
-function readDiscussMaxEpochs(): number {
-  const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
+function readDiscussMaxEpochs(ctx: DiscussContext): number {
+  const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);
   if (!Number.isFinite(raw) || raw < 1 || raw > 10) {
     return DEFAULT_MAX_EPOCHS;
   }
@@ -92,7 +92,7 @@ function buildAbortEndEventsForShutdown(
       snapshot.state.topic,
       snapshot.lastAppliedSeq + 1,
       'session.ended',
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
       {
         endReasonContent: ABORT_REASON,
         force: true,
@@ -125,8 +125,8 @@ export async function startDiscussSession(
   };
 
   const created = unwrapResult(
-    decideSessionCreate(input, sessionId, ctx.projectRoot, topic, 1, nowIsoString(), {
-      maxEpochs: readDiscussMaxEpochs(),
+    decideSessionCreate(input, sessionId, ctx.projectRoot, topic, 1, nowIsoString(ctx.runtime.time), {
+      maxEpochs: readDiscussMaxEpochs(ctx),
       agentExecution: buildAgentExecutionConfig(agents),
     }),
   );
@@ -169,7 +169,7 @@ export async function submitManualBid(
       ctx.projectRoot,
       current.state.topic,
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok) {
@@ -218,7 +218,7 @@ export async function submitManualSpeech(
       ctx.projectRoot,
       current.state.topic,
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok) {
@@ -240,7 +240,7 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
       ctx.projectRoot,
       current.state.topic,
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {

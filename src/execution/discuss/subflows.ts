@@ -263,7 +263,11 @@ function buildFollowUpPrompt(state: DiscussState, agentName: string, question: s
   ].join('\n\n');
 }
 
-function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[]): DiscussDomainEvent[] {
+function buildBidBatch(
+  ctx: DiscussContext,
+  snapshot: PersistedDiscussSnapshot,
+  outcomes: BidOutcome[],
+): DiscussDomainEvent[] {
   if (snapshot.state.status !== 'bidding') {
     return [];
   }
@@ -284,7 +288,7 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
       snapshot.projectRoot,
       snapshot.state.topic,
       nextSeq,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     );
 
     if (!bidDecision.ok) {
@@ -315,7 +319,7 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
         snapshot.projectRoot,
         snapshot.state.topic,
         nextSeq,
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
       ),
     );
     events.push(...expelEvents);
@@ -336,7 +340,7 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
         snapshot.state.topic,
         nextSeq,
         'must_answer.carry_forward.set',
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
         { items: remaining },
       );
       events.push(clearEvent);
@@ -357,7 +361,7 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
         snapshot.projectRoot,
         snapshot.state.topic,
         nextSeq,
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
       ),
     );
     events.push(...endEvents);
@@ -610,7 +614,7 @@ export async function collectBids(
 
   const committed = await commitDecision(ctx, sessionId, (current) => ({
     ok: true,
-    value: buildBidBatch(current, outcomes),
+    value: buildBidBatch(ctx, current, outcomes),
   }));
   if (!committed.ok && committed.error !== 'session_not_found') {
     throw new DiscussManagerError(committed.error, committed.detail);
@@ -668,7 +672,7 @@ export async function collectSpeech(
         ctx.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {
@@ -694,7 +698,7 @@ export async function collectSpeech(
       ctx.projectRoot,
       current.state.topic,
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {
@@ -759,7 +763,7 @@ export async function handleEpochTransition(
     }
 
     const nextSeq = current.lastAppliedSeq + 1;
-    const ts = nowIsoString();
+    const ts = nowIsoString(ctx.runtime.time);
     if (evaluation.convergence < CONVERGENCE_THRESHOLD) {
       const summaryEvents = unwrapResult(
         decideEpochSummary(
@@ -844,7 +848,7 @@ export async function runFollowUpTurns(
           ctx.projectRoot,
           current.state.topic,
           current.lastAppliedSeq + 1,
-          nowIsoString(),
+          nowIsoString(ctx.runtime.time),
         ),
       );
       if (!ended.ok && ended.error !== 'session_not_found') {
@@ -863,7 +867,7 @@ export async function runFollowUpTurns(
           current.state.topic,
           current.lastAppliedSeq + 1,
           'follow_up.answered',
-          nowIsoString(),
+          nowIsoString(ctx.runtime.time),
           {
             agent: item.agent,
             question: item.question,
@@ -926,7 +930,7 @@ export async function handleSynthesis(
         ctx.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {

@@ -207,7 +207,7 @@ export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFi
         current.state.topic,
         current.lastAppliedSeq + 1,
         'agent.job.finished',
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
         {
           agent: agentName,
           jobId,
@@ -362,7 +362,7 @@ export async function executeAgentAttempt(
           current.state.topic,
           current.lastAppliedSeq + 1,
           'agent.run.bound',
-          nowIsoString(),
+          nowIsoString(ctx.runtime.time),
           {
             agent: agentName,
             executionSessionId: launch.session,
@@ -389,7 +389,7 @@ export async function executeAgentAttempt(
         current.state.topic,
         current.lastAppliedSeq + 1,
         'agent.job.started',
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
         {
           agent: agentName,
           jobId: launch.job,

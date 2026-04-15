@@ -39,7 +39,7 @@ function redactTranscriptEntry(entry: TranscriptEntry): DiscussControlTranscript
 
 function parseWatchEventTs(ts: string): number {
   const parsed = Date.parse(ts);
-  return Number.isFinite(parsed) ? parsed : Date.now();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function buildControlView(snapshot: PersistedDiscussSnapshot): DiscussControlView {
