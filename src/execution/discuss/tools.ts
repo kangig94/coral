@@ -4,7 +4,13 @@ import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartS
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../../discuss/persona-seed.js';
-import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
+import {
+  deriveErrorMessage,
+  domainError,
+  domainSuccess,
+  toolValidationError,
+  type ToolDomainResult,
+} from '../tool-response.js';
 import type { CallerContext } from '../../shared/request-context.js';
 
 const discussSessionSchema = z.object({
@@ -32,10 +38,6 @@ type LegacyDiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchem
 
 function isDiscussSpeechArgs(args: LegacyDiscussParticipateArgs): args is DiscussSpeechArgs {
   return typeof args.content === 'string';
-}
-
-function toolValidationError(error: z.ZodError): ToolDomainResult {
-  return domainError('invalid_request', error.message);
 }
 
 function discussManagerError(error: DiscussManagerError): ToolDomainResult {

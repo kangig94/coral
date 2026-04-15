@@ -65,11 +65,9 @@ export class TypedEventBus {
     return this;
   }
 
-  /** Remove all listeners and reset max listener count. For test isolation. */
+  /** Remove all listeners. For test isolation. */
   reset(): this {
-    this.emitter.removeAllListeners();
-    this.emitter.setMaxListeners(MAX_EVENT_BUS_LISTENERS);
-    return this;
+    return this.removeAllListeners();
   }
 }
 

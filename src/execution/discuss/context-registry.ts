@@ -2,6 +2,7 @@ import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import type { ExecutionService } from '../service.js';
 import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, LiveDiscussSession } from './context.js';
+import { isWithinLiveSessionBoundary } from './operations.js';
 
 export type AttachedDiscussSession = {
   projectRoot: string;
@@ -73,10 +74,6 @@ export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
   return false;
 }
 
-function isWithinLiveSessionBoundary(session: LiveDiscussSession): boolean {
-  return session.snapshot.state.status !== 'ended' || session.snapshot.runtime.controlPhase !== 'idle';
-}
-
 /** Abort all live sessions and clear every context from the registry. */
 export async function clearAllDiscuss(
   registry: DiscussContextRegistry,
@@ -85,7 +82,7 @@ export async function clearAllDiscuss(
 ): Promise<void> {
   for (const context of registry.contexts.values()) {
     for (const [sessionId, session] of context.sessions.entries()) {
-      if (mode === 'hard' && !session.abortEnded && isWithinLiveSessionBoundary(session)) {
+      if (mode === 'hard' && !session.abortEnded && isWithinLiveSessionBoundary(session.snapshot)) {
         try {
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {

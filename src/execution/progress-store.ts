@@ -58,7 +58,7 @@ function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'path
   );
 }
 
-function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
+export function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
   return (
     isRecord(value) &&
     typeof value.jobId === 'string' &&

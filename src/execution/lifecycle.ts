@@ -17,7 +17,7 @@ import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner }
 import { RecoveryRegistry } from './recovery-registry.js';
 import { type EventBusEvents, type TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
-import type { ProgressStore } from './progress-store.js';
+import { isPersistedStatusRecordLike, type ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { SessionIndex } from './session-index.js';
 import { listSessionShards, SessionManager } from './session-manager.js';
@@ -156,17 +156,6 @@ type AdoptionClaimSnapshot = {
   record: AdoptionClaimRecord | null;
   mtimeMs: number;
 };
-
-function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
-  return (
-    isRecord(value) &&
-    typeof value.jobId === 'string' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.provider === 'string' &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.phase === 'string'
-  );
-}
 
 function isAdoptionClaimRecord(value: unknown): value is AdoptionClaimRecord {
   return (

@@ -29,6 +29,13 @@ export const PURPOSE_EPOCH_EVALUATION = 'epoch_evaluation';
 export const PURPOSE_FOLLOW_UP = 'follow_up';
 export const PURPOSE_SYNTHESIS = 'synthesis';
 
+export type DiscussPurpose =
+  | typeof PURPOSE_BID
+  | typeof PURPOSE_SPEECH
+  | typeof PURPOSE_EPOCH_EVALUATION
+  | typeof PURPOSE_FOLLOW_UP
+  | typeof PURPOSE_SYNTHESIS;
+
 export type AttemptSuccess = {
   ok: true;
   attempt: number;
@@ -55,7 +62,7 @@ export type ExecuteAgentAttemptParams = {
   instruction: string;
   cwd: string;
   callerCtx: CallerContext;
-  purpose: string;
+  purpose: DiscussPurpose;
   timeoutMs?: number;
 };
 
@@ -67,13 +74,13 @@ export type RunFacilitatorTurnParams = {
   instruction: string;
   callerCtx: CallerContext;
   timeoutMs: number;
-  purpose: string;
+  purpose: DiscussPurpose;
 };
 
 export type RecordJobFinishedParams = {
   sessionId: string;
   agentName: string;
-  purpose: string;
+  purpose: DiscussPurpose;
   jobId: string;
   attempt: number;
   outcome: string;
@@ -122,7 +129,7 @@ export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string,
   ) as Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
-export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: string): number {
+export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussPurpose): number {
   if (!run) {
     return 1;
   }

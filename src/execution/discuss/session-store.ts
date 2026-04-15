@@ -510,7 +510,6 @@ export class DiscussSessionStore {
     const logPath = this.paths.discussEventLogPath(sessionDir);
     const snapshot = this.readSessionSnapshot(sessionId, statePath);
 
-    // Skip log read if snapshot records the log size and the log hasn't grown
     if (snapshot?.logByteOffset !== undefined) {
       try {
         if (this.storage.statSync(logPath).size === snapshot.logByteOffset) {

@@ -44,7 +44,7 @@ function requireLiveSession(ctx: DiscussContext, sessionId: string): LiveDiscuss
   return session;
 }
 
-function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
+export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
   return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';
 }
 

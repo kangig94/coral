@@ -88,6 +88,24 @@ type BidOutcome = {
   answeredCarryForward: boolean;
 };
 
+function failedBidOutcome(
+  agentName: string,
+  options: {
+    executionFailure: boolean;
+    shouldExpel?: boolean;
+    answeredCarryForward?: boolean;
+  },
+): BidOutcome {
+  return {
+    agentName,
+    score: 0,
+    thought: '',
+    executionFailure: options.executionFailure,
+    shouldExpel: options.shouldExpel ?? false,
+    answeredCarryForward: options.answeredCarryForward ?? false,
+  };
+}
+
 export type SubflowResult = {
   shouldResume: boolean;
 };
@@ -405,14 +423,7 @@ async function collectBidOutcome(
     latestRun.lastAttemptOutcome === 'retryable_parse_error' &&
     (latestRun.currentAttempt ?? 0) >= MAX_BID_ATTEMPTS
   ) {
-    return {
-      agentName,
-      score: 0,
-      thought: '',
-      executionFailure: false,
-      shouldExpel: false,
-      answeredCarryForward: false,
-    };
+    return failedBidOutcome(agentName, { executionFailure: false });
   }
 
   let prompt = basePrompt;
@@ -432,15 +443,11 @@ async function collectBidOutcome(
     });
 
     if (!isAttemptSuccess(attempt)) {
-      return {
-        agentName,
-        score: 0,
-        thought: '',
+      return failedBidOutcome(agentName, {
         executionFailure: true,
         shouldExpel:
           loadAttachedOrPersistedSnapshot(ctx, sessionId)?.state.agents[agentName]?.participation === 'required',
-        answeredCarryForward: false,
-      };
+      });
     }
 
     if (attempt.nonResumable) {
@@ -452,14 +459,10 @@ async function collectBidOutcome(
         attempt: attempt.attempt,
         outcome: 'non_resumable',
       });
-      return {
-        agentName,
-        score: 0,
-        thought: '',
+      return failedBidOutcome(agentName, {
         executionFailure: true,
         shouldExpel: snapshot.state.agents[agentName]?.participation === 'required',
-        answeredCarryForward: false,
-      };
+      });
     }
 
     try {
@@ -491,14 +494,7 @@ async function collectBidOutcome(
       });
 
       if (attempt.attempt >= MAX_BID_ATTEMPTS) {
-        return {
-          agentName,
-          score: 0,
-          thought: '',
-          executionFailure: false,
-          shouldExpel: false,
-          answeredCarryForward: false,
-        };
+        return failedBidOutcome(agentName, { executionFailure: false });
       }
 
       const failure = errorMessage(error);

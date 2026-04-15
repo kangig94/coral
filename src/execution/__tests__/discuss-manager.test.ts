@@ -9,7 +9,7 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
 } from '../discuss/context-registry.js';
-import { runPlainTurn } from '../discuss/executor.js';
+import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../discuss/executor.js';
 import {
   abortDiscussSession,
   getWatchState,
@@ -119,7 +119,7 @@ describe('Discuss executor and operations', () => {
       instruction: 'System turn contract',
       cwd: '/repo',
       callerCtx: harness.ctx,
-      purpose: 'turn',
+      purpose: PURPOSE_BID,
     });
 
     expect(start).toHaveBeenCalledWith(
@@ -186,7 +186,7 @@ describe('Discuss executor and operations', () => {
       instruction: 'Resume turn contract',
       cwd: '/repo',
       callerCtx: harness.ctx,
-      purpose: 'turn',
+      purpose: PURPOSE_SPEECH,
     });
 
     expect(resume).toHaveBeenCalledWith(

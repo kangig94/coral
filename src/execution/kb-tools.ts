@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { KbRuntime } from '../kb/contracts.js';
-import { z, type ZodError } from 'zod';
+import { z } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
 import {
   extractBody,
@@ -41,7 +41,13 @@ import { assertOwnerId } from '../shared/utils.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { SpawnCliFn } from './engine.js';
 import type { Runtime } from './runtime.js';
-import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
+import {
+  deriveErrorMessage,
+  domainError,
+  domainSuccess,
+  toolValidationError,
+  type ToolDomainResult,
+} from './tool-response.js';
 
 export type KbSubsystem = {
   kb: KbRuntime;
@@ -188,10 +194,6 @@ const kbPrinciplesSchema = z
 function kbErrorResult(error: unknown): ToolDomainResult {
   const detail = error instanceof Error ? { message: error.message } : error;
   return domainError('kb_error', deriveErrorMessage('kb_error', detail), detail);
-}
-
-function toolValidationError(error: ZodError): ToolDomainResult {
-  return domainError('invalid_request', error.message);
 }
 
 async function runKbAction(action: () => Promise<unknown> | unknown): Promise<ToolDomainResult> {
