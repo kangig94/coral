@@ -1,5 +1,5 @@
 import { mkdirSync, rmSync, statSync } from 'node:fs';
-import type { RuntimeStoragePort, RuntimeTimePort } from '../execution/runtime.js';
+import type { RuntimeStoragePort, RuntimeTimePort } from './runtime-ports.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;

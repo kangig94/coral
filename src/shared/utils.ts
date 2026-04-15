@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { RuntimeProcessPort, RuntimeStoragePort, RuntimeTimePort } from '../execution/runtime.js';
+import type { RuntimeProcessPort, RuntimeStoragePort, RuntimeTimePort } from './runtime-ports.js';
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -176,4 +176,3 @@ export function raceTimeout(
     );
   });
 }
-
