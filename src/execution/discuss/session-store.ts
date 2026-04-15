@@ -17,10 +17,6 @@ import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../.
 import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
 import type { DiscussPathResolver, RuntimeStorage, RuntimeTime, RuntimeTimerHandle } from '../runtime.js';
 
-const sessionAppendLocks = new Map<string, Promise<void>>();
-const projectDiscoveryLocks = new Map<string, Promise<void>>();
-const discussSourcesRegistryLocks = new Map<string, Promise<void>>();
-
 type DiscussSessionStoreOptions = {
   storage: RuntimeStorage;
   time: Pick<RuntimeTime, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
@@ -45,19 +41,31 @@ export class DiscussStaleWriteError extends Error {
   }
 }
 
-function sessionLockKey(source: string, sessionId: string): string {
-  return `${source}\u0000${sessionId}`;
-}
-
 async function withFilesystemLock<T>(
   lockDir: string,
   deps: DirectoryLockDeps,
-  work: () => Promise<T>,
+  work: () => T | Promise<T>,
 ): Promise<T> {
   deps.storage.mkdirSync(dirname(lockDir), { recursive: true });
-  const release = await acquireDirectoryLock(lockDir, deps);
+  let release: () => void;
   try {
-    return await work();
+    deps.storage.mkdirSync(lockDir);
+    release = () => {
+      deps.storage.rmSync(lockDir, { recursive: true, force: true });
+    };
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw error;
+    }
+    release = await acquireDirectoryLock(lockDir, deps);
+  }
+
+  try {
+    const result = work();
+    if (result instanceof Promise) {
+      return await result;
+    }
+    return result;
   } finally {
     release();
   }
@@ -70,52 +78,6 @@ function withFilesystemLockSync<T>(lockDir: string, deps: DirectoryLockDeps, wor
     return work();
   } finally {
     release();
-  }
-}
-
-async function withPromiseChainLock<T>(
-  locks: Map<string, Promise<void>>,
-  key: string,
-  work: () => T | Promise<T>,
-): Promise<T> {
-  const previous = (locks.get(key) ?? Promise.resolve()).catch(() => undefined);
-  let releaseLock!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    releaseLock = resolve;
-  });
-  const current = previous.then(() => gate);
-  locks.set(key, current);
-
-  await previous;
-
-  try {
-    return await work();
-  } finally {
-    releaseLock();
-    if (locks.get(key) === current) {
-      locks.delete(key);
-    }
-  }
-}
-
-function tryWithPromiseChainLockSync<T>(locks: Map<string, Promise<void>>, key: string, work: () => T): T | null {
-  if (locks.has(key)) {
-    return null;
-  }
-
-  let releaseLock!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    releaseLock = resolve;
-  });
-  locks.set(key, gate);
-
-  try {
-    return work();
-  } finally {
-    releaseLock();
-    if (locks.get(key) === gate) {
-      locks.delete(key);
-    }
   }
 }
 
@@ -299,39 +261,37 @@ export class DiscussSessionStore {
     const sessionDir = this.paths.discussSessionDirForSource(this.source, sessionId);
     this.storage.mkdirSync(sessionDir, { recursive: true });
 
-    return withPromiseChainLock(sessionAppendLocks, sessionLockKey(this.source, sessionId), () =>
-      withFilesystemLock(this.sessionFilesystemLockPath(sessionDir), this.lockDeps, async () => {
-        const logPath = this.paths.discussEventLogPath(sessionDir);
-        const statePath = this.paths.discussStatePath(sessionDir);
+    return withFilesystemLock(this.sessionFilesystemLockPath(sessionDir), this.lockDeps, () => {
+      const logPath = this.paths.discussEventLogPath(sessionDir);
+      const statePath = this.paths.discussStatePath(sessionDir);
 
-        const currentSnapshot =
-          this.loadFromSessionDir(sessionId, sessionDir) ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
+      const currentSnapshot =
+        this.loadFromSessionDir(sessionId, sessionDir) ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
 
-        if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
-          throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
-        }
+      if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
+        throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
+      }
 
-        if (events.length === 0) {
-          return currentSnapshot;
-        }
+      if (events.length === 0) {
+        return currentSnapshot;
+      }
 
-        validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
+      validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
 
-        this.appendEventBatch(logPath, events);
-        const logByteOffset = this.storage.statSync(logPath).size;
+      this.appendEventBatch(logPath, events);
+      const logByteOffset = this.storage.statSync(logPath).size;
 
-        const nextSnapshot = events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), currentSnapshot);
-        nextSnapshot.logByteOffset = logByteOffset;
+      const nextSnapshot = events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), currentSnapshot);
+      nextSnapshot.logByteOffset = logByteOffset;
 
-        this.writeAtomicJson(statePath, nextSnapshot);
+      this.writeAtomicJson(statePath, nextSnapshot);
 
-        this.pendingSnapshots.set(sessionId, { sessionDir, snapshot: nextSnapshot });
-        this.markIndexesDirty();
+      this.pendingSnapshots.set(sessionId, { sessionDir, snapshot: nextSnapshot });
+      this.markIndexesDirty();
 
-        this.onCommit?.(nextSnapshot, events);
-        return nextSnapshot;
-      }),
-    );
+      this.onCommit?.(nextSnapshot, events);
+      return nextSnapshot;
+    });
   }
 
   listSummaries(): DiscussSummaryDto[] {
@@ -396,14 +356,12 @@ export class DiscussSessionStore {
       return;
     }
 
-    tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
-      const flushedKeys = this.flushDiscoveryAndSummaryIndex();
-      this.flushSourcesRegistry();
+    const flushedKeys = this.flushDiscoveryAndSummaryIndex();
+    this.flushSourcesRegistry();
 
-      for (const key of flushedKeys) {
-        this.pendingSnapshots.delete(key);
-      }
-    });
+    for (const key of flushedKeys) {
+      this.pendingSnapshots.delete(key);
+    }
   }
 
   private flushDiscoveryAndSummaryIndex(): string[] {
@@ -468,20 +426,15 @@ export class DiscussSessionStore {
       (latest, { snapshot }) => (snapshot.updatedAt > latest.updatedAt ? snapshot : latest),
       { updatedAt: '' } as { updatedAt: string },
     );
-    const wroteSources = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, this.paths.discussSourcesPath(), () => {
-      return withFilesystemLockSync(this.paths.discussSourcesLockPath(), this.lockDeps, () => {
-        const sources = new Set(this.readSources());
-        sources.add(this.source);
-        this.writeAtomicJson(this.paths.discussSourcesPath(), {
-          updatedAt: latestSnapshot.updatedAt,
-          sources: [...sources].sort(),
-        });
-        return true;
+    withFilesystemLockSync(this.paths.discussSourcesLockPath(), this.lockDeps, () => {
+      const sources = new Set(this.readSources());
+      sources.add(this.source);
+      this.writeAtomicJson(this.paths.discussSourcesPath(), {
+        updatedAt: latestSnapshot.updatedAt,
+        sources: [...sources].sort(),
       });
     });
-    if (wroteSources !== null) {
-      this.dirtySources = false;
-    }
+    this.dirtySources = false;
   }
 
   dispose(): void {
@@ -575,40 +528,31 @@ export class DiscussSessionStore {
   private persistPersistedSummaryRepair(repair: PersistedSummaryRepair): boolean {
     const currentIndex = this.readSummaryIndex();
     if (!summaryIndexDataEquals(currentIndex, repair.index)) {
-      const wroteSummaryIndex = tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
-        return withFilesystemLockSync(this.sourceFilesystemLockPath(), this.lockDeps, () => {
-          const latestIndex = this.readSummaryIndex();
-          if (summaryIndexDataEquals(latestIndex, repair.index)) {
-            return true;
-          }
-          this.writeAtomicJson(this.paths.discussSummaryIndexPathForSource(this.source), repair.index);
-          return true;
-        });
+      withFilesystemLockSync(this.sourceFilesystemLockPath(), this.lockDeps, () => {
+        const latestIndex = this.readSummaryIndex();
+        if (summaryIndexDataEquals(latestIndex, repair.index)) {
+          return;
+        }
+        this.writeAtomicJson(this.paths.discussSummaryIndexPathForSource(this.source), repair.index);
       });
-      if (wroteSummaryIndex === null) {
-        return false;
-      }
     }
 
     if (repair.index.sessions.length === 0 || this.readSources().includes(this.source)) {
       return true;
     }
 
-    const updatedRegistry = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, this.paths.discussSourcesPath(), () => {
-      return withFilesystemLockSync(this.paths.discussSourcesLockPath(), this.lockDeps, () => {
-        const sources = new Set(this.readSources());
-        if (sources.has(this.source)) {
-          return true;
-        }
-        sources.add(this.source);
-        this.writeAtomicJson(this.paths.discussSourcesPath(), {
-          updatedAt: repair.index.updatedAt,
-          sources: [...sources].sort(),
-        });
-        return true;
+    withFilesystemLockSync(this.paths.discussSourcesLockPath(), this.lockDeps, () => {
+      const sources = new Set(this.readSources());
+      if (sources.has(this.source)) {
+        return;
+      }
+      sources.add(this.source);
+      this.writeAtomicJson(this.paths.discussSourcesPath(), {
+        updatedAt: repair.index.updatedAt,
+        sources: [...sources].sort(),
       });
     });
 
-    return updatedRegistry !== null;
+    return true;
   }
 }
