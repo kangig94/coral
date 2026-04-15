@@ -15,9 +15,9 @@
     "bridge/manifest.json"
   ],
   "scripts": {
-    "build": "tsc && node scripts/verify-simulation-sealing.mjs && node scripts/build-server.mjs --flavor prod",
+    "build": "tsc && node scripts/build-server.mjs --flavor prod",
     "build:dev": "tsc && node scripts/build-server.mjs --flavor dev",
-    "build:server": "node scripts/build-server.mjs --flavor prod",
+    "build:release": "tsc && node scripts/build-server.mjs --flavor prod --release",
     "dev": "tsc --watch",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",

@@ -1,0 +1,28 @@
+name: Verify Bridge
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: npm ci
+      - run: npm run build
+      - name: Verify bridge matches build
+        run: |
+          for f in coral-backend.cjs coral-cli.cjs coral-claude-appserver.cjs manifest.json; do
+            build_hash=$(sha256sum "build/$f" | cut -d' ' -f1)
+            bridge_hash=$(sha256sum "bridge/$f" | cut -d' ' -f1)
+            if [ "$build_hash" != "$bridge_hash" ]; then
+              echo "::error::MISMATCH: $f (build: $build_hash, bridge: $bridge_hash)"
+              echo "Run 'npm run build:release' to update bridge/"
+              exit 1
+            fi
+            echo "OK: $f"
+          done

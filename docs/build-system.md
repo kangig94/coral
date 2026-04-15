@@ -6,28 +6,28 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | TypeScript compile plus esbuild bundle (prod flavor) |
-| `npm run build:dev` | TypeScript compile plus esbuild bundle (dev flavor) |
-| `npm run build:server` | esbuild bundle only (prod flavor) |
+| `npm run build` | TypeScript compile plus esbuild bundle to `build/` (prod flavor) |
+| `npm run build:dev` | TypeScript compile plus esbuild bundle to `build/` (dev flavor) |
+| `npm run build:release` | TypeScript compile plus esbuild bundle (prod), then copy `build/` to `bridge/` |
 | `npm run dev` | TypeScript watch mode |
 | `npm test` | Run the test suite |
 
 ## Build Flavors
 
-`scripts/build-server.mjs` accepts `--flavor prod|dev`. `npm run build` and `npm run build:server` pass `--flavor prod`, `npm run build:dev` passes `--flavor dev`, and omitting the flag defaults to `prod`. Flavor is selected explicitly by the build command, not inferred from `NODE_ENV`.
+`scripts/build-server.mjs` accepts `--flavor prod|dev` and `--release`. `npm run build` passes `--flavor prod`, `npm run build:dev` passes `--flavor dev`, and `npm run build:release` passes `--flavor prod --release`. Omitting `--flavor` defaults to `prod`. Flavor is selected explicitly by the build command, not inferred from `NODE_ENV`.
 
-The bundle code is identical across flavors; the distinction lives in `bridge/manifest.json`, which carries both `bundleHash` and `flavor`. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
+The bundle code is identical across flavors; the distinction lives in `manifest.json`, which carries both `bundleHash` and `flavor`. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
 
-## Bundle Commit Policy
+## Build Output and Bridge
 
-The committed runtime bundles are:
+Build output goes to `build/` (git-ignored). The committed runtime bundles in `bridge/` are updated only by `npm run build:release`:
 
 - `bridge/coral-backend.cjs`
 - `bridge/coral-cli.cjs`
 - `bridge/coral-claude-appserver.cjs`
 - `bridge/manifest.json`
 
-Users can point Claude Code at the plugin directory without a local rebuild, but source changes still require `npm run build`. A local `npm run build:dev` rewrites the same bridge outputs with a dev-flavored manifest for coexistence testing.
+CI verifies that committed `bridge/` files match a fresh build via hash comparison (see `.github/workflows/verify-bridge.yml`).
 
 ## Build Pipeline
 
@@ -37,32 +37,40 @@ src/**/*.ts
   ▼  tsc
 dist/**/*.js + dist/**/*.d.ts
   │
+  ▼  verify-simulation-sealing
+  │
   ▼  esbuild (`scripts/build-server.mjs`)
-bridge/coral-backend.cjs
-bridge/coral-cli.cjs
-bridge/coral-claude-appserver.cjs
-bridge/manifest.json (`{ "bundleHash", "flavor" }`)
+build/coral-backend.cjs
+build/coral-cli.cjs
+build/coral-claude-appserver.cjs
+build/manifest.json (`{ "bundleHash", "flavor" }`)
+  │
+  ▼  --release (copy to bridge/)
+bridge/*
 ```
 
 The runtime is anchored by two primary entry points:
 
 | Entry point | Output | Role |
 | --- | --- | --- |
-| `src/execution/server.ts` | `bridge/coral-backend.cjs` | Backend daemon |
-| `src/cli/bootstrap.ts` | `bridge/coral-cli.cjs` | CLI entrypoint |
+| `src/execution/server.ts` | `build/coral-backend.cjs` | Backend daemon |
+| `src/cli/bootstrap.ts` | `build/coral-cli.cjs` | CLI entrypoint |
 
-The build script also emits `bridge/coral-claude-appserver.cjs` from `src/providers/claude-appserver/server.ts` for the Claude appserver helper runtime.
+The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude-appserver/server.ts` for the Claude appserver helper runtime.
 
 ## Build Script Responsibilities
 
-`scripts/build-server.mjs` does four things:
+`scripts/build-server.mjs` does five things:
 
-1. Reads `package.json` as the single source of truth for the version.
-2. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
-3. Bundles the backend, CLI, and Claude appserver helper.
-4. Rewrites `bridge/manifest.json` atomically with `{ bundleHash, flavor }` for change detection and flavor identity.
+1. Runs simulation sealing verification (`verify-simulation-sealing.mjs`).
+2. Reads `package.json` as the single source of truth for the version.
+3. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
+4. Bundles the backend, CLI, and Claude appserver helper to `build/`.
+5. Rewrites `build/manifest.json` atomically with `{ bundleHash, flavor }` for change detection and flavor identity.
 
-`bundleHash` remains the content hash of `bridge/coral-backend.cjs`. Flavor is stored and compared separately, so a same-byte prod/dev pair still forces replacement when the flavor changes.
+When `--release` is passed, it additionally copies all artifacts from `build/` to `bridge/`.
+
+`bundleHash` remains the content hash of `build/coral-backend.cjs`. Flavor is stored and compared separately, so a same-byte prod/dev pair still forces replacement when the flavor changes.
 
 ## esbuild Settings
 

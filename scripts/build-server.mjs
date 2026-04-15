@@ -1,20 +1,33 @@
 import * as esbuild from 'esbuild';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 
-mkdirSync('bridge', { recursive: true });
+mkdirSync('build', { recursive: true });
 
-function parseFlavor(argv) {
-  const index = argv.indexOf('--flavor');
-  if (index === -1) return 'prod';
+function parseArgs(argv) {
+  let flavor = 'prod';
+  let release = false;
 
-  const value = argv[index + 1];
-  if (value === 'prod' || value === 'dev') return value;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--flavor') {
+      const value = argv[++i];
+      if (value !== 'prod' && value !== 'dev') {
+        throw new Error("--flavor must be followed by 'prod' or 'dev'");
+      }
+      flavor = value;
+    } else if (argv[i] === '--release') {
+      release = true;
+    }
+  }
 
-  throw new Error("--flavor must be followed by 'prod' or 'dev'");
+  return { flavor, release };
 }
 
-const flavor = parseFlavor(process.argv.slice(2));
+const { flavor, release } = parseArgs(process.argv.slice(2));
+// Verify simulation sealing before bundling
+execFileSync('node', ['scripts/verify-simulation-sealing.mjs'], { stdio: 'inherit' });
+
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
 // Sync version to .claude-plugin/ (single source of truth: package.json)
@@ -54,29 +67,29 @@ const sharedOpts = {
 await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/execution/server.ts'],
-  outfile: 'bridge/coral-backend.cjs',
+  outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
-console.log('Built bridge/coral-backend.cjs');
+console.log('Built build/coral-backend.cjs');
 
 await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/cli/bootstrap.ts'],
-  outfile: 'bridge/coral-cli.cjs',
+  outfile: 'build/coral-cli.cjs',
   banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
 });
-console.log('Built bridge/coral-cli.cjs');
+console.log('Built build/coral-cli.cjs');
 
 await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/providers/claude-appserver/server.ts'],
-  outfile: 'bridge/coral-claude-appserver.cjs',
+  outfile: 'build/coral-claude-appserver.cjs',
 });
-console.log('Built bridge/coral-claude-appserver.cjs');
+console.log('Built build/coral-claude-appserver.cjs');
 
 // Write bundle manifest with content hash for version-independent change detection
-const backendHash = createHash('sha256').update(readFileSync('bridge/coral-backend.cjs')).digest('hex').slice(0, 16);
-const manifestPath = 'bridge/manifest.json';
+const backendHash = createHash('sha256').update(readFileSync('build/coral-backend.cjs')).digest('hex').slice(0, 16);
+const manifestPath = 'build/manifest.json';
 const manifestTmp = manifestPath + '.tmp';
 
 writeFileSync(
@@ -87,3 +100,12 @@ writeFileSync(
   }) + '\n',
 );
 renameSync(manifestTmp, manifestPath);
+
+if (release) {
+  mkdirSync('bridge', { recursive: true });
+  for (const file of ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json']) {
+    copyFileSync(`build/${file}`, `bridge/${file}`);
+  }
+  chmodSync('bridge/coral-cli.cjs', 0o755);
+  console.log('Copied build/ -> bridge/');
+}
