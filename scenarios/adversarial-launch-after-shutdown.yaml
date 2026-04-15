@@ -1,0 +1,10 @@
+# Adversarial: launch a job after the backend has shut down.
+# Tests whether post-shutdown launch produces a clear error instead of undefined behavior.
+world: {}
+steps:
+  - type: boot
+  - type: shutdown
+    reason: deliberate-stop
+  - type: launch
+    prompt: launch on stopped backend
+continueOnFailure: true

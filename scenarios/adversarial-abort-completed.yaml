@@ -1,0 +1,32 @@
+# Adversarial: abort an already-completed job.
+# Tests whether aborting a terminal job throws, silently fails, or corrupts state.
+world:
+  durable:
+    - pid: 99003
+      runtimeDelayMs: 5
+      exit:
+        delayMs: 10
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: completed-result
+steps:
+  - type: boot
+  - type: launch
+    prompt: complete then abort
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    result:
+      content: completed-result
+  - type: abort
+  - type: expect
+    phase: completed
+    result:
+      content: completed-result
+      aborted: false
+continueOnFailure: true

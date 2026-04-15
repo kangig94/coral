@@ -1,0 +1,53 @@
+# Adversarial: max_workers=1, two launches (one running, one queued), abort running.
+# Tests whether queued job gets promoted when the active job is aborted.
+world:
+  env:
+    CORAL_MAX_WORKERS: '1'
+  durable:
+    - pid: 99005
+      runtimeDelayMs: 5
+      exit: null
+      kills:
+        - signal: SIGTERM
+          delayMs: 10
+          exitSignal: SIGTERM
+    - pid: 99006
+      runtimeDelayMs: 5
+      exit:
+        delayMs: 15
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: promoted-result
+steps:
+  - type: boot
+  - type: hang
+  - type: launch
+    prompt: occupy the only worker
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 10
+  - type: launch
+    prompt: become queued
+  - type: expect
+    jobId: "00000000-0000-0000-0000-000000000005"
+    phase: queued
+  - type: abort
+    jobId: "00000000-0000-0000-0000-000000000003"
+  - type: advance
+    ms: 100
+  - type: wait
+    jobId: "00000000-0000-0000-0000-000000000005"
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 10
+  - type: expect
+    jobId: "00000000-0000-0000-0000-000000000005"
+    phase: completed
+    result:
+      content: promoted-result
+    noRealIO: true
+continueOnFailure: true

@@ -1,0 +1,12 @@
+# Adversarial: three rapid cycles with no jobs between them.
+# Tests whether cycle without any launched jobs causes state corruption or resource leaks.
+world: {}
+steps:
+  - type: boot
+  - type: cycle
+  - type: cycle
+  - type: cycle
+  - type: expect
+    jobCount: 0
+    noRealIO: true
+continueOnFailure: true

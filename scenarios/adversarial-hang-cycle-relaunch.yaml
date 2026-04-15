@@ -1,0 +1,37 @@
+# Adversarial: provider hangs via step injection, force cycle, then relaunch.
+# Config durable is normal (for gen1); hang step injects ephemeral fault (gen0 only).
+# Tests whether cycle discards step-injected durables and gen1 uses config durable.
+world:
+  durable:
+    - pid: 99004
+      runtimeDelayMs: 5
+      exit:
+        delayMs: 10
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: post-hang-result
+steps:
+  - type: boot
+  - type: hang
+  - type: launch
+    prompt: hang forever via step injection
+  - type: wait
+    until:
+      runtimeRecorded: true
+    stepMs: 5
+    maxSteps: 10
+  - type: cycle
+  - type: expect
+    jobCount: 0
+  - type: launch
+    prompt: fresh launch after hang
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 500
+    maxSteps: 4
+  - type: expect
+    phase: completed
+    noRealIO: true
+continueOnFailure: true

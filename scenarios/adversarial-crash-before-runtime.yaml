@@ -1,0 +1,27 @@
+# Adversarial: provider crashes instantly (0ms) before runtime record is written.
+# Tests whether the engine handles a race where exit arrives before runtime.
+world:
+  durable:
+    - pid: 99001
+      runtimeDelayMs: 50
+      exit:
+        delayMs: 0
+        exitCode: 137
+  fakeProvider:
+    result:
+      content: should-not-reach
+steps:
+  - type: boot
+  - type: crash
+    exitCode: 137
+    delayMs: 0
+  - type: launch
+    prompt: crash before runtime record
+  - type: wait
+    until:
+      terminal: true
+    stepMs: 100
+    maxSteps: 20
+  - type: expect
+    noRealIO: true
+continueOnFailure: true
