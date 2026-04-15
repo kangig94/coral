@@ -1,5 +1,5 @@
 import { spawn as spawnChild } from 'node:child_process';
-import { randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
+import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   closeSync,
@@ -39,6 +39,7 @@ import {
   discussSummaryIndexPathForSource,
   jobsDir,
   jobStatusPath,
+  installationDirForNamespace,
   pluginRootNamespace,
   resolveProjectSource,
   sessionBase,
@@ -211,6 +212,7 @@ export function createRealRuntime(): Runtime {
     jobsDir,
     jobStatusPath,
     sessionBase,
+    installationDirForNamespace,
     backendInfoPath,
     backendLockPath,
     pluginRootNamespace,
@@ -318,6 +320,7 @@ export function createRealRuntime(): Runtime {
   const ids: RuntimeIds = {
     uuid: () => randomUUID(),
     randomBytes: (size) => randomBytesNode(size),
+    sha256: (input) => createHash('sha256').update(input).digest('hex'),
   };
 
   const env: RuntimeEnv = {
@@ -325,6 +328,7 @@ export function createRealRuntime(): Runtime {
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,
     cwd: () => capturedEnv.cwd,
+    fullSnapshot: () => capturedEnv.fullEnv,
     coralSnapshot: () => capturedEnv.coralEnv,
   };
 

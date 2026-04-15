@@ -57,8 +57,11 @@ describe('createRealRuntime', () => {
     vi.stubEnv('CORAL_EFFORT', 'high');
 
     const runtime = createRealRuntime();
+    const fullSnapshot = runtime.env.fullSnapshot();
     const snapshot = runtime.env.coralSnapshot();
 
+    expect(fullSnapshot.CORAL_OWNER).toBe('owner-a');
+    expect(Object.isFrozen(fullSnapshot)).toBe(true);
     expect(snapshot).toMatchObject({
       CORAL_OWNER: 'owner-a',
       CORAL_EFFORT: 'high',

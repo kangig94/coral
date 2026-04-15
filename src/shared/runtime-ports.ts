@@ -57,6 +57,7 @@ export interface DiscussPathResolver {
 export interface RuntimePaths extends DiscussPathResolver {
   jobsDir(): string;
   sessionBase(): string;
+  installationDirForNamespace(namespace: string): string;
   backendInfoPath(pluginRoot: string): string;
   backendLockPath(pluginRoot: string): string;
   pluginRootNamespace(pluginRoot: string): string;
@@ -153,6 +154,7 @@ export interface RuntimeProcess {
 export interface RuntimeIds {
   uuid(): string;
   randomBytes(size: number): Buffer;
+  sha256(input: string): string;
 }
 
 export interface RuntimeEnv {
@@ -160,6 +162,7 @@ export interface RuntimeEnv {
   pid(): number;
   platform(): string;
   cwd(): string;
+  fullSnapshot(): Readonly<Record<string, string>>;
   coralSnapshot(): Readonly<Record<string, string>>;
 }
 

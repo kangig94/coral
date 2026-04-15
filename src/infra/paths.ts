@@ -124,8 +124,12 @@ export function pluginRootNamespace(pluginRoot: string): string {
   return ns;
 }
 
+export function installationDirForNamespace(namespace: string): string {
+  return join(coralHome(), 'installations', namespace);
+}
+
 export function installationDir(pluginRoot: string): string {
-  return join(coralHome(), 'installations', pluginRootNamespace(pluginRoot));
+  return installationDirForNamespace(pluginRootNamespace(pluginRoot));
 }
 
 export function backendInfoPath(pluginRoot: string): string {

@@ -9,7 +9,6 @@
  */
 
 import type { Server, ServerResponse } from 'node:http';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -190,8 +189,8 @@ function stagedStatusPath(statusPath: string, ownerId: string): string {
   return `${statusPath}.adopt.stage.${ownerId}`;
 }
 
-function createAdoptionOwnerId(nowMs: number): string {
-  return `${nowMs}-${Math.random().toString(36).slice(2, 10)}`;
+function createAdoptionOwnerId(nowMs: number, ids: Pick<Runtime['ids'], 'randomBytes'>): string {
+  return `${nowMs}-${ids.randomBytes(6).toString('hex')}`;
 }
 
 function readAdoptionStatusSnapshot(
@@ -358,7 +357,7 @@ function removeAdoptionClaimIfOwner(
 
 function reapStaleAdoptionClaim(
   statusPath: string,
-  runtime: Pick<Runtime, 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'storage' | 'time' | 'ids'>,
 ): boolean {
   const claimPath = claimPathForStatus(statusPath);
   const snapshot = readAdoptionClaimSnapshot(claimPath, runtime.storage);
@@ -369,7 +368,7 @@ function reapStaleAdoptionClaim(
     return false;
   }
 
-  const reapingPath = `${claimPath}.reaping.${createAdoptionOwnerId(runtime.time.now())}`;
+  const reapingPath = `${claimPath}.reaping.${createAdoptionOwnerId(runtime.time.now(), runtime.ids)}`;
   try {
     runtime.storage.renameSync(claimPath, reapingPath);
   } catch (error: unknown) {
@@ -405,10 +404,10 @@ function reapStaleAdoptionClaim(
 function tryAcquireAdoptionClaim(
   statusPath: string,
   verifiedStatusRaw: string,
-  runtime: Pick<Runtime, 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'storage' | 'time' | 'ids'>,
 ): AdoptionClaimRecord | null {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const ownerId = createAdoptionOwnerId(runtime.time.now());
+    const ownerId = createAdoptionOwnerId(runtime.time.now(), runtime.ids);
     const claimRecord: AdoptionClaimRecord = {
       ownerId,
       claimedAt: runtime.time.now(),
@@ -441,7 +440,7 @@ function tryAcquireAdoptionClaim(
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time'>,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time' | 'ids'>,
   log: (message: string) => void,
 ): number {
   let adopted = 0;
@@ -515,9 +514,9 @@ export function adoptOrphanedCrossNamespaceJobs(
 
 function isForeignDaemonAlive(
   foreignNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'process' | 'time'>,
+  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time'>,
 ): boolean {
-  const installDir = join(homedir(), '.claude', 'coral', 'installations', foreignNamespace);
+  const installDir = runtime.paths.installationDirForNamespace(foreignNamespace);
   const infoPath = join(installDir, 'backend.json');
   const lockPath = join(installDir, 'backend.lock');
 

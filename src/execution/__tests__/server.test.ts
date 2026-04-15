@@ -548,6 +548,63 @@ describe('execution backend server', () => {
     });
   });
 
+  it('uses injected fetchFn for lock ownership health checks', async () => {
+    const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('backend-ownership-fetch');
+    const namespace = pluginRootNamespace(pluginRoot);
+    const existingOwner = {
+      instanceId: 'existing-backend-instance',
+      pid: process.pid,
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'prod' as const,
+      startedAt: 1,
+    };
+
+    backendInfo.writeBackendInfo(pluginRoot, {
+      ...existingOwner,
+      host: '127.0.0.1',
+      port: 4999,
+      token: 'existing-backend-token',
+      namespace,
+    });
+    writeFileSync(backendLock.backendLockPath(pluginRoot), JSON.stringify(existingOwner), 'utf-8');
+
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('http://127.0.0.1:4999/health');
+      expect(init?.headers).toEqual({ 'X-Coral-Backend-Token': 'existing-backend-token' });
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          bundleHash: existingOwner.bundleHash,
+          flavor: existingOwner.flavor,
+          instanceId: existingOwner.instanceId,
+          namespace,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const globalFetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    controller = serverModule.createBackendServer({
+      pluginRoot,
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
+      fetchFn,
+      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      cleanupStaleJobsFn: () => {},
+    });
+
+    await expect(controller.start()).rejects.toBeInstanceOf(backendLock.BackendAlreadyRunningError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(globalFetchSpy).not.toHaveBeenCalled();
+  });
+
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
@@ -1143,7 +1200,7 @@ describe('execution backend server', () => {
           now: () => Date.now(),
           log: () => {},
         },
-        runtime: { ids: runtime.ids, time: runtime.time },
+        runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
@@ -1571,6 +1628,8 @@ describe('execution backend server', () => {
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
               }),
             }),
+            started.deps.runtime,
+            started.deps.runtimeState.getKbSubsystem(),
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -1607,7 +1666,7 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual(expectedBody);
         const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
         expect(handler).toHaveBeenCalledTimes(1);
-        expect(handler).toHaveBeenCalledWith(expectedBody.slug, kbSubsystem);
+        expect(handler).toHaveBeenCalledWith(expectedBody.slug, kbSubsystem, started.deps.runtime);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -1640,6 +1699,7 @@ describe('execution backend server', () => {
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
               }),
             }),
+            started.deps.runtime,
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -4198,7 +4258,7 @@ describe('execution backend server', () => {
           now: () => Date.now(),
           log: () => {},
         },
-        runtime: { ids: runtime.ids, time: runtime.time },
+        runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),

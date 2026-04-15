@@ -1,11 +1,19 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { z, type ZodError } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
-import { extractBody, extractPrincipleStatement, parseMembersFromBody, parseSummaryFromBody } from '../kb/frontmatter.js';
+import {
+  extractBody,
+  extractPrincipleStatement,
+  extractTitle,
+  parseCommunityFrontmatter,
+  parseFrontmatter,
+  parseMembersFromBody,
+  parseSourceFrontmatter,
+  parseSummaryFromBody,
+} from '../kb/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../kb/ops/memo.js';
 import {
   memoDir,
@@ -16,7 +24,6 @@ import {
   communityPathFromName,
 } from '../kb/paths.js';
 import { promote as kbPromote } from '../kb/ops/promote.js';
-import { loadKbCommunity, loadKbNote, loadKbSource } from '../kb/read.js';
 import { reindex as kbReindex } from '../kb/ops/reindex.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { searchKb } from '../kb/ops/search.js';
@@ -33,6 +40,7 @@ import {
 import { assertOwnerId } from '../shared/utils.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { SpawnCliFn } from './engine.js';
+import type { Runtime } from './runtime.js';
 import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from './tool-response.js';
 
 export type KbSubsystem = {
@@ -67,6 +75,9 @@ export async function createKbSubsystem({
 }
 
 type KbArgs = Record<string, unknown>;
+type KbToolRuntime = {
+  storage: Pick<Runtime['storage'], 'existsSync' | 'readFileSync'>;
+};
 
 const kbSearchSchema = z
   .object({
@@ -244,6 +255,10 @@ function resolveSourcePath(slug: string, kbSubsystem?: KbSubsystem): string {
   return kbSubsystem?.kb.sourcePath(slug) ?? sourcePathFromName(slug);
 }
 
+function resolveNotePath(slug: string, kbSubsystem?: KbSubsystem): string {
+  return kbSubsystem?.kb.notePath(slug) ?? notePathFromName(slug);
+}
+
 function resolveCommunityPath(slug: string, kbSubsystem?: KbSubsystem): string {
   return kbSubsystem?.kb.communityPath(slug) ?? communityPathFromName(slug);
 }
@@ -255,19 +270,20 @@ function resolvePrinciplePath(slug: string, kbSubsystem?: KbSubsystem): string {
 function dispatchKbReadCandidate(
   candidate: KbResolvedReadSelector,
   ctx: CallerContext,
+  runtime: KbToolRuntime,
   kbSubsystem?: KbSubsystem,
 ): ToolDomainResult {
   switch (candidate.kind) {
     case 'memo':
-      return handleKbMemoRead(candidate.slug, ctx);
+      return handleKbMemoRead(candidate.slug, ctx, runtime);
     case 'note':
-      return handleKbNoteRead(candidate.slug, ctx);
+      return handleKbNoteRead(candidate.slug, ctx, runtime, kbSubsystem);
     case 'community':
-      return handleKbCommunityRead(candidate.slug, kbSubsystem);
+      return handleKbCommunityRead(candidate.slug, kbSubsystem, runtime);
     case 'source':
-      return handleKbSourceRead(candidate.slug, kbSubsystem);
+      return handleKbSourceRead(candidate.slug, kbSubsystem, runtime);
     case 'principle':
-      return handleKbPrincipleRead(candidate.slug, kbSubsystem);
+      return handleKbPrincipleRead(candidate.slug, kbSubsystem, runtime);
   }
 }
 
@@ -282,19 +298,27 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KbSubsystem): Pr
   );
 }
 
-export function handleKbNoteRead(slug: string, _ctx: CallerContext): ToolDomainResult {
+export function handleKbNoteRead(
+  slug: string,
+  _ctx: CallerContext,
+  runtime: KbToolRuntime,
+  kbSubsystem?: KbSubsystem,
+): ToolDomainResult {
   const normalized = normalizeKbSlug(slug, 'note');
   if (!normalized.ok) {
     return normalized.result;
   }
 
   try {
-    const notePath = notePathFromName(normalized.slug);
-    if (!existsSync(notePath)) {
+    const notePath = resolveNotePath(normalized.slug, kbSubsystem);
+    if (!runtime.storage.existsSync(notePath)) {
       return kbNotFoundResult('note', normalized.slug);
     }
 
-    const { frontmatter, title, body } = loadKbNote(notePath);
+    const raw = runtime.storage.readFileSync(notePath, 'utf-8');
+    const frontmatter = parseFrontmatter(raw);
+    const title = extractTitle(raw);
+    const body = extractBody(raw);
     return domainSuccess({
       kind: 'note',
       note: normalized.slug,
@@ -309,7 +333,11 @@ export function handleKbNoteRead(slug: string, _ctx: CallerContext): ToolDomainR
   }
 }
 
-export function handleKbSourceRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+export function handleKbSourceRead(
+  slug: string,
+  kbSubsystem: KbSubsystem | undefined,
+  runtime: KbToolRuntime,
+): ToolDomainResult {
   const normalized = normalizeKbSlug(slug, 'source');
   if (!normalized.ok) {
     return normalized.result;
@@ -317,11 +345,14 @@ export function handleKbSourceRead(slug: string, kbSubsystem?: KbSubsystem): Too
 
   try {
     const sourcePath = resolveSourcePath(normalized.slug, kbSubsystem);
-    if (!existsSync(sourcePath)) {
+    if (!runtime.storage.existsSync(sourcePath)) {
       return kbNotFoundResult('source', normalized.slug);
     }
 
-    const { frontmatter, title, body } = loadKbSource(sourcePath);
+    const raw = runtime.storage.readFileSync(sourcePath, 'utf-8');
+    const frontmatter = parseSourceFrontmatter(raw);
+    const title = frontmatter.title;
+    const body = extractBody(raw);
     return domainSuccess({
       kind: 'source',
       note: normalized.slug,
@@ -335,7 +366,11 @@ export function handleKbSourceRead(slug: string, kbSubsystem?: KbSubsystem): Too
   }
 }
 
-export function handleKbCommunityRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+export function handleKbCommunityRead(
+  slug: string,
+  kbSubsystem: KbSubsystem | undefined,
+  runtime: KbToolRuntime,
+): ToolDomainResult {
   const normalized = normalizeKbSlug(slug, 'community');
   if (!normalized.ok) {
     return normalized.result;
@@ -343,11 +378,15 @@ export function handleKbCommunityRead(slug: string, kbSubsystem?: KbSubsystem): 
 
   try {
     const communityPath = resolveCommunityPath(normalized.slug, kbSubsystem);
-    if (!existsSync(communityPath)) {
+    if (!runtime.storage.existsSync(communityPath)) {
       return kbNotFoundResult('community', normalized.slug);
     }
 
-    const { title, body, level, parent, children, updatedAt } = loadKbCommunity(communityPath);
+    const raw = runtime.storage.readFileSync(communityPath, 'utf-8');
+    const frontmatter = parseCommunityFrontmatter(raw);
+    const title = extractTitle(raw);
+    const body = extractBody(raw);
+    const { level, parent, children, updatedAt } = frontmatter;
     const summary = parseSummaryFromBody(body);
     return domainSuccess({
       kind: 'community',
@@ -368,7 +407,7 @@ export function handleKbCommunityRead(slug: string, kbSubsystem?: KbSubsystem): 
   }
 }
 
-export function handleKbMemoRead(slug: string, ctx: CallerContext): ToolDomainResult {
+export function handleKbMemoRead(slug: string, ctx: CallerContext, runtime: KbToolRuntime): ToolDomainResult {
   const normalized = normalizeKbSlug(slug, 'memo');
   if (!normalized.ok) {
     return normalized.result;
@@ -376,11 +415,11 @@ export function handleKbMemoRead(slug: string, ctx: CallerContext): ToolDomainRe
 
   try {
     const memoPath = join(memoDir(ctx.projectRoot), `${normalized.slug}.md`);
-    if (!existsSync(memoPath)) {
+    if (!runtime.storage.existsSync(memoPath)) {
       return kbNotFoundResult('memo', normalized.slug);
     }
 
-    const raw = readFileSync(memoPath, 'utf-8');
+    const raw = runtime.storage.readFileSync(memoPath, 'utf-8');
     return domainSuccess({
       kind: 'memo',
       note: normalized.slug,
@@ -394,7 +433,11 @@ export function handleKbMemoRead(slug: string, ctx: CallerContext): ToolDomainRe
   }
 }
 
-export function handleKbPrincipleRead(slug: string, kbSubsystem?: KbSubsystem): ToolDomainResult {
+export function handleKbPrincipleRead(
+  slug: string,
+  kbSubsystem: KbSubsystem | undefined,
+  runtime: KbToolRuntime,
+): ToolDomainResult {
   const normalized = normalizeKbSlug(slug, 'principle');
   if (!normalized.ok) {
     return normalized.result;
@@ -402,11 +445,11 @@ export function handleKbPrincipleRead(slug: string, kbSubsystem?: KbSubsystem): 
 
   try {
     const principlePath = resolvePrinciplePath(normalized.slug, kbSubsystem);
-    if (!existsSync(principlePath)) {
+    if (!runtime.storage.existsSync(principlePath)) {
       return kbNotFoundResult('principle', normalized.slug);
     }
 
-    const raw = readFileSync(principlePath, 'utf-8');
+    const raw = runtime.storage.readFileSync(principlePath, 'utf-8');
     const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
     return domainSuccess({
       kind: 'principle',
@@ -423,7 +466,12 @@ export function handleKbPrincipleRead(slug: string, kbSubsystem?: KbSubsystem): 
   }
 }
 
-export function handleKbRead(args: KbArgs, ctx: CallerContext, kbSubsystem?: KbSubsystem): ToolDomainResult {
+export function handleKbRead(
+  args: KbArgs,
+  ctx: CallerContext,
+  runtime: KbToolRuntime,
+  kbSubsystem?: KbSubsystem,
+): ToolDomainResult {
   const parsed = kbReadSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -433,7 +481,7 @@ export function handleKbRead(args: KbArgs, ctx: CallerContext, kbSubsystem?: KbS
     const selector = parseKbSelector(parsed.data.note);
 
     for (const candidate of expandKbReadSelector(selector)) {
-      const result = dispatchKbReadCandidate(candidate, ctx, kbSubsystem);
+      const result = dispatchKbReadCandidate(candidate, ctx, runtime, kbSubsystem);
       if (!result.ok && result.code === 'not_found') {
         continue;
       }

@@ -98,11 +98,15 @@ export class InMemoryPaths implements RuntimePaths {
   }
 
   backendInfoPath(pluginRoot: string): string {
-    return join(this.installationsDir(), this.pluginRootNamespace(pluginRoot), 'backend.json');
+    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.json');
   }
 
   backendLockPath(pluginRoot: string): string {
-    return join(this.installationsDir(), this.pluginRootNamespace(pluginRoot), 'backend.lock');
+    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.lock');
+  }
+
+  installationDirForNamespace(namespace: string): string {
+    return join(this.installationsDir(), namespace);
   }
 
   pluginRootNamespace(pluginRoot: string): string {
@@ -192,6 +196,10 @@ export class SequentialIds implements RuntimeIds {
       this.byteCounter += 1;
     }
     return bytes;
+  }
+
+  sha256(input: string): string {
+    return hashToken(input, 64);
   }
 }
 

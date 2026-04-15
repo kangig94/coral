@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
-import { removeBackendInfoIfOwner, writeBackendInfo, type BackendInfo } from '../../../infra/backend-info.js';
+import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo, type BackendInfo } from '../../../infra/backend-info.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
@@ -18,6 +18,7 @@ import {
   createBackendCore,
   type BackendCoreResult,
   type CreateServerFn,
+  type FetchFn,
 } from '../../backend-core.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
@@ -165,6 +166,59 @@ function createMockKbSubsystem() {
 
 function toError(value: Error | string): Error {
   return value instanceof Error ? value : new Error(value);
+}
+
+function headerValue(headers: HeadersInit | undefined, name: string): string | null {
+  if (!headers) {
+    return null;
+  }
+
+  if (headers instanceof Headers) {
+    return headers.get(name);
+  }
+
+  const normalizedName = name.toLowerCase();
+  if (Array.isArray(headers)) {
+    return headers.find(([key]) => key.toLowerCase() === normalizedName)?.[1] ?? null;
+  }
+
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === normalizedName);
+  return entry?.[1] ?? null;
+}
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: string): FetchFn {
+  return async (url, init) => {
+    const parsed = new URL(url);
+    const info = readBackendInfo(pluginRoot, runtime);
+    const port = parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
+
+    if (!info || parsed.pathname !== '/health' || parsed.hostname !== info.host || port !== info.port) {
+      return jsonResponse({ error: 'not_found' }, 404);
+    }
+
+    if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
+      return jsonResponse({ error: 'unauthorized' }, 401);
+    }
+
+    return jsonResponse(
+      {
+        status: 'ok',
+        version: info.version,
+        bundleHash: info.bundleHash,
+        flavor: info.flavor,
+        namespace: info.namespace,
+        instanceId: info.instanceId,
+      },
+      200,
+    );
+  };
 }
 
 export function createFakeProvider(runtime: SimulationRuntime, scenario: FakeProviderScenario | undefined): Provider {
@@ -361,6 +415,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
     createServerFn,
+    fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
     listenFn: async () => {
       hooks.listenCalls.push({ host: listenHost, port: listenPort });
       return { host: listenHost, port: listenPort };

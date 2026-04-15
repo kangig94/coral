@@ -91,6 +91,7 @@ export type BackendBootSnapshot = {
 };
 
 export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerResponse) => void) => Server;
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
@@ -103,6 +104,7 @@ export type BackendCoreOptions = {
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
   createServerFn?: CreateServerFn;
+  fetchFn?: FetchFn;
   listenFn?: LifecycleDeps['listenFn'];
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (
@@ -169,6 +171,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   pluginRoot: string,
   record: LockRecord,
   runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
   const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const info = readBackendInfo(pluginRoot, runtime);
@@ -192,7 +195,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   const timeout = runtime.time.setTimeout(() => controller.abort(), LOCK_HEALTHCHECK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    const response = await fetchFn(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,
@@ -221,8 +224,11 @@ async function verifyBackendOwnershipWithHealthcheck(
   }
 }
 
-function createDefaultBackendOwnershipVerifier(runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>): VerifyBackendOwnershipFn {
-  return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime);
+function createDefaultBackendOwnershipVerifier(
+  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  fetchFn: FetchFn,
+): VerifyBackendOwnershipFn {
+  return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime, fetchFn);
 }
 
 export function listInstantiatedExecutionServices(
@@ -280,7 +286,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   const createExecutionService =
     options.createExecutionService ??
     ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
-  const verifyBackendOwnershipFn = options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime);
+  const fetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
+  const verifyBackendOwnershipFn = options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);
   const acquireLockFn =
     options.acquireLockFn ?? ((pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
       acquireLock(pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor, {

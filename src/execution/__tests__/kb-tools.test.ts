@@ -87,6 +87,7 @@ const KB_ROOT = '/virtual/kb';
 function createKbSubsystem(): KbSubsystem {
   return {
     kb: {
+      notePath: (slug: string) => `${KB_ROOT}/notes/${slug}.md`,
       sourcePath: (slug: string) => `${KB_ROOT}/sources/${slug}.md`,
       communityPath: (slug: string) => `${KB_ROOT}/communities/${slug}.md`,
       principlePath: (slug: string) => `${KB_ROOT}/principles/${slug}.md`,
@@ -105,6 +106,22 @@ const testContext: CallerContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
   coralEnv: {},
+};
+
+const testRuntime = {
+  storage: {
+    existsSync: (path: string) => mockState.files.has(path),
+    readFileSync: (path: string, _encoding: 'utf-8') => {
+      const content = mockState.files.get(path);
+      if (content !== undefined) {
+        return content;
+      }
+
+      const error = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    },
+  },
 };
 
 function expectInvalidRequest(result: unknown): void {
@@ -133,7 +150,7 @@ describe('kb-tools', () => {
 
   it.each([
     ['search', () => handleKbSearch({ query: 'contracts', extra: true }, createKbSubsystem())],
-    ['read', () => handleKbRead({ note: 'contracts/overview', extra: true }, testContext)],
+    ['read', () => handleKbRead({ note: 'contracts/overview', extra: true }, testContext, testRuntime)],
     [
       'promote',
       () =>
@@ -271,7 +288,7 @@ State contracts first.
 `,
     );
 
-    expect(handleKbNoteRead('contract-first-design', testContext)).toEqual({
+    expect(handleKbNoteRead('contract-first-design', testContext, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'note',
@@ -286,7 +303,7 @@ State contracts first.
   });
 
   it('returns not_found for a missing note read', () => {
-    expectNotFound(handleKbNoteRead('missing-note', testContext));
+    expectNotFound(handleKbNoteRead('missing-note', testContext, testRuntime));
   });
 
   it('reads a source by slug via the per-kind source handler', () => {
@@ -303,7 +320,7 @@ Source body.
 `,
     );
 
-    expect(handleKbSourceRead('bridge-removal-plan', kbSubsystem)).toEqual({
+    expect(handleKbSourceRead('bridge-removal-plan', kbSubsystem, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'source',
@@ -317,7 +334,7 @@ Source body.
   });
 
   it('returns not_found for a missing source read', () => {
-    expectNotFound(handleKbSourceRead('missing-source', createKbSubsystem()));
+    expectNotFound(handleKbSourceRead('missing-source', createKbSubsystem(), testRuntime));
   });
 
   it('reads a community by slug via the per-kind community handler', () => {
@@ -344,7 +361,7 @@ Clusters graph-backed retrieval notes.
 `,
     );
 
-    expect(handleKbCommunityRead('graph-rag', kbSubsystem)).toEqual({
+    expect(handleKbCommunityRead('graph-rag', kbSubsystem, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'community',
@@ -365,7 +382,7 @@ Clusters graph-backed retrieval notes.
   });
 
   it('returns not_found for a missing community read', () => {
-    expectNotFound(handleKbCommunityRead('missing-community', createKbSubsystem()));
+    expectNotFound(handleKbCommunityRead('missing-community', createKbSubsystem(), testRuntime));
   });
 
   it('reads a memo by slug via the per-kind memo handler', () => {
@@ -380,7 +397,7 @@ Memo body.
 `,
     );
 
-    expect(handleKbMemoRead(slug, testContext)).toEqual({
+    expect(handleKbMemoRead(slug, testContext, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'memo',
@@ -394,7 +411,7 @@ Memo body.
   });
 
   it('returns not_found for a missing memo read', () => {
-    expectNotFound(handleKbMemoRead('20260323-010203-missing', testContext));
+    expectNotFound(handleKbMemoRead('20260323-010203-missing', testContext, testRuntime));
   });
 
   it('reads a principle by slug via the per-kind principle handler', () => {
@@ -402,7 +419,7 @@ Memo body.
     const raw = '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n';
     setMockFile(kbSubsystem.kb.principlePath('contract-first-design'), raw);
 
-    expect(handleKbPrincipleRead('contract-first-design', kbSubsystem)).toEqual({
+    expect(handleKbPrincipleRead('contract-first-design', kbSubsystem, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'principle',
@@ -418,7 +435,7 @@ Memo body.
   });
 
   it('returns not_found for a missing principle read', () => {
-    expectNotFound(handleKbPrincipleRead('missing-principle', createKbSubsystem()));
+    expectNotFound(handleKbPrincipleRead('missing-principle', createKbSubsystem(), testRuntime));
   });
 
   it('keeps memo precedence for timestamp-shaped bare reads', () => {
@@ -447,7 +464,7 @@ Note body.
 `,
     );
 
-    expect(handleKbRead({ note: slug }, testContext)).toEqual({
+    expect(handleKbRead({ note: slug }, testContext, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'memo',
@@ -476,7 +493,7 @@ level: 1
 `,
     );
 
-    expect(handleKbRead({ note: 'communities:graph-rag' }, testContext, kbSubsystem)).toMatchObject({
+    expect(handleKbRead({ note: 'communities:graph-rag' }, testContext, testRuntime, kbSubsystem)).toMatchObject({
       ok: true,
       data: {
         kind: 'community',
