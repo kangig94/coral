@@ -7,6 +7,7 @@ import {
   discussBaseDirForSource,
   discussDiscoveryPathForSource,
   discussEventLogPath,
+  discussSessionDirForSource,
   discussStatePath,
   discussSummaryIndexPathForSource,
   jobsDir,
@@ -100,6 +101,36 @@ const persistedProgressRecordSchema = z
 function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
   try {
     return readdirSync(baseDir, { withFileTypes: true });
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return [];
+    throw error;
+  }
+}
+
+function readJsonFileWithStorage(storage: Pick<DiscussReaderStorage, 'readFileSync'>, filePath: string): unknown | null {
+  try {
+    return JSON.parse(storage.readFileSync(filePath, 'utf-8')) as unknown;
+  } catch (error: unknown) {
+    if (isNoEntryError(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+function readTextFileWithStorage(storage: Pick<DiscussReaderStorage, 'readFileSync'>, filePath: string): string | null {
+  try {
+    return storage.readFileSync(filePath, 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return null;
+    throw error;
+  }
+}
+
+function readDirectoryEntriesWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readdirSync'>,
+  baseDir: string,
+): Array<{ name: string; isDirectory(): boolean }> {
+  try {
+    return storage.readdirSync(baseDir, { withFileTypes: true });
   } catch (error: unknown) {
     if (isNoEntryError(error)) return [];
     throw error;
@@ -608,6 +639,42 @@ type DiscussSourcesRegistryData = {
   sources: string[];
 };
 
+export type DiscussReaderStorage = {
+  readFileSync(path: string, encoding: 'utf-8'): string;
+  readdirSync(path: string, options: { withFileTypes: true }): Array<{ name: string; isDirectory(): boolean }>;
+  existsSync(path: string): boolean;
+};
+
+export type DiscussReaderPathResolver = {
+  projectSource(projectRoot: string): string;
+  discussSourcesPath(): string;
+  discussBaseDirForSource(source: string): string;
+  discussDiscoveryPathForSource(source: string): string;
+  discussSummaryIndexPathForSource(source: string): string;
+  discussSessionDirForSource(source: string, sessionId: string): string;
+  discussStatePath(sessionDir: string): string;
+  discussEventLogPath(sessionDir: string): string;
+  jobStatusPath(jobId: string): string;
+};
+
+const nodeDiscussReaderStorage: DiscussReaderStorage = {
+  readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
+  readdirSync: (dirPath, options) => readdirSync(dirPath, options),
+  existsSync: (filePath) => existsSync(filePath),
+};
+
+const nodeDiscussReaderPaths: DiscussReaderPathResolver = {
+  projectSource: resolveProjectSource,
+  discussSourcesPath,
+  discussBaseDirForSource,
+  discussDiscoveryPathForSource,
+  discussSummaryIndexPathForSource,
+  discussSessionDirForSource,
+  discussStatePath,
+  discussEventLogPath,
+  jobStatusPath: (jobId) => join(jobsDir(), jobId, 'status.json'),
+};
+
 function parseSourceEnvelopeData<T>(
   value: unknown,
   source: string,
@@ -654,7 +721,10 @@ function parseDiscussSummaryIndexData(value: unknown, source: string): DiscussSu
   return parseSourceEnvelopeData(value, source, discussSummaryIndexRowSchema, 'summary index');
 }
 
-function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData | null {
+function parseDiscussSourcesRegistry(
+  value: unknown,
+  projectSource: (projectRoot: string) => string,
+): DiscussSourcesRegistryData | null {
   const schema = z
     .object({
       updatedAt: z.unknown().optional(),
@@ -696,7 +766,7 @@ function parseDiscussSourcesRegistry(value: unknown): DiscussSourcesRegistryData
       const projectRoots = parseStringArray(registry.projectRoots) ?? [];
       return {
         updatedAt,
-        sources: [...new Set(projectRoots.map((projectRoot) => resolveProjectSource(projectRoot)))],
+        sources: [...new Set(projectRoots.map((projectRoot) => projectSource(projectRoot)))],
       };
     });
   return parseWithSchema(schema, value);
@@ -758,6 +828,16 @@ export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
   return parseWithSchema(persistedStatusRecordSchema, record) as PersistedStatusRecord | null;
 }
 
+export function readStatusRecordWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  paths: Pick<DiscussReaderPathResolver, 'jobStatusPath'>,
+  jobId: string,
+): PersistedStatusRecord | null {
+  const record = readJsonFileWithStorage(storage, paths.jobStatusPath(jobId));
+  if (record === null) return null;
+  return parseWithSchema(persistedStatusRecordSchema, record) as PersistedStatusRecord | null;
+}
+
 /**
  * Reads and parses all persisted progress records for a job.
  */
@@ -788,6 +868,15 @@ export function readDiscussSnapshot(statePath: string): PersistedDiscussSnapshot
   return isValidPersistedDiscussSnapshot(snapshot) ? snapshot : null;
 }
 
+export function readDiscussSnapshotWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  statePath: string,
+): PersistedDiscussSnapshot | null {
+  const snapshot = readJsonFileWithStorage(storage, statePath);
+  if (snapshot === null) return null;
+  return isValidPersistedDiscussSnapshot(snapshot) ? snapshot : null;
+}
+
 /**
  * Reads and parses a discuss JSONL event log, skipping malformed lines.
  */
@@ -797,11 +886,30 @@ export function readDiscussEventLog(logPath: string): DiscussDomainEvent[] {
   return parseJsonLines(log, (lineValue) => (isValidDiscussDomainEvent(lineValue) ? lineValue : null));
 }
 
+export function readDiscussEventLogWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  logPath: string,
+): DiscussDomainEvent[] {
+  const log = readTextFileWithStorage(storage, logPath);
+  if (log === null) return [];
+  return parseJsonLines(log, (lineValue) => (isValidDiscussDomainEvent(lineValue) ? lineValue : null));
+}
+
 /**
  * Reads and validates the discuss discovery metadata for a project.
  */
 export function readDiscussDiscoveryForSource(source: string): DiscussDiscoveryData | null {
   const discovery = readJsonFile(discussDiscoveryPathForSource(source));
+  if (discovery === null) return null;
+  return parseDiscussDiscoveryData(discovery, source);
+}
+
+export function readDiscussDiscoveryForSourceWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  paths: Pick<DiscussReaderPathResolver, 'discussDiscoveryPathForSource'>,
+  source: string,
+): DiscussDiscoveryData | null {
+  const discovery = readJsonFileWithStorage(storage, paths.discussDiscoveryPathForSource(source));
   if (discovery === null) return null;
   return parseDiscussDiscoveryData(discovery, source);
 }
@@ -822,6 +930,16 @@ export function readDiscussSummaryIndexForSource(source: string): DiscussSummary
   return parseDiscussSummaryIndexData(index, source);
 }
 
+export function readDiscussSummaryIndexForSourceWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  paths: Pick<DiscussReaderPathResolver, 'discussSummaryIndexPathForSource'>,
+  source: string,
+): DiscussSummaryIndexData | null {
+  const index = readJsonFileWithStorage(storage, paths.discussSummaryIndexPathForSource(source));
+  if (index === null) return null;
+  return parseDiscussSummaryIndexData(index, source);
+}
+
 /**
  * Reads and validates the discuss summary index for a project.
  */
@@ -830,26 +948,51 @@ export function readDiscussSummaryIndex(projectRoot: string): DiscussSummaryInde
 }
 
 export function readDiscussSources(): string[] {
-  return parseDiscussSourcesRegistry(readJsonFile(discussSourcesPath()))?.sources ?? [];
+  return parseDiscussSourcesRegistry(readJsonFile(discussSourcesPath()), resolveProjectSource)?.sources ?? [];
+}
+
+export function readDiscussSourcesWithStorage(
+  storage: Pick<DiscussReaderStorage, 'readFileSync'>,
+  paths: Pick<DiscussReaderPathResolver, 'discussSourcesPath' | 'projectSource'>,
+): string[] {
+  return parseDiscussSourcesRegistry(
+    readJsonFileWithStorage(storage, paths.discussSourcesPath()),
+    paths.projectSource,
+  )?.sources ?? [];
 }
 
 export function readDiscussProjectRoots(): string[] {
   return readDiscussSources();
 }
 
-function canUseDiscussSessionDir(sessionDir: string): boolean {
-  return existsSync(discussStatePath(sessionDir)) || existsSync(discussEventLogPath(sessionDir));
+function canUseDiscussSessionDirWithStorage(
+  storage: Pick<DiscussReaderStorage, 'existsSync'>,
+  paths: Pick<DiscussReaderPathResolver, 'discussStatePath' | 'discussEventLogPath'>,
+  sessionDir: string,
+): boolean {
+  return storage.existsSync(paths.discussStatePath(sessionDir)) || storage.existsSync(paths.discussEventLogPath(sessionDir));
 }
 
-function scanPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
-  const baseDir = discussBaseDirForSource(source);
-  const entries = readDirectoryEntries(baseDir);
+function canUseDiscussSessionDir(sessionDir: string): boolean {
+  return canUseDiscussSessionDirWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, sessionDir);
+}
+
+function scanPersistedDiscussSessionsForSourceWithStorage(
+  storage: DiscussReaderStorage,
+  paths: Pick<
+    DiscussReaderPathResolver,
+    'discussBaseDirForSource' | 'discussStatePath' | 'discussEventLogPath'
+  >,
+  source: string,
+): DiscussDiscoverySession[] {
+  const baseDir = paths.discussBaseDirForSource(source);
+  const entries = readDirectoryEntriesWithStorage(storage, baseDir);
 
   const sessions: DiscussDiscoverySession[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const sessionDir = join(baseDir, entry.name);
-    const snapshot = readDiscussSnapshot(discussStatePath(sessionDir));
+    const snapshot = readDiscussSnapshotWithStorage(storage, paths.discussStatePath(sessionDir));
     if (!snapshot) continue;
     sessions.push({
       sessionId: snapshot.sessionId,
@@ -860,6 +1003,10 @@ function scanPersistedDiscussSessionsForSource(source: string): DiscussDiscovery
   }
 
   return sessions;
+}
+
+function scanPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
+  return scanPersistedDiscussSessionsForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source);
 }
 
 /**
@@ -890,6 +1037,42 @@ export function resolveDiscussSessionDirForSource(source: string, sessionId: str
   return null;
 }
 
+export function resolveDiscussSessionDirForSourceWithStorage(
+  storage: DiscussReaderStorage,
+  paths: Pick<
+    DiscussReaderPathResolver,
+    | 'discussDiscoveryPathForSource'
+    | 'discussBaseDirForSource'
+    | 'discussStatePath'
+    | 'discussEventLogPath'
+  >,
+  source: string,
+  sessionId: string,
+): string | null {
+  const discovery = readDiscussDiscoveryForSourceWithStorage(storage, paths, source);
+  const discoveredDir = discovery?.sessions.find((session) => session.sessionId === sessionId)?.sessionDir;
+  if (discoveredDir && canUseDiscussSessionDirWithStorage(storage, paths, discoveredDir)) {
+    return discoveredDir;
+  }
+
+  const baseDir = paths.discussBaseDirForSource(source);
+  const entries = readDirectoryEntriesWithStorage(storage, baseDir);
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const sessionDir = join(baseDir, entry.name);
+    if (entry.name === sessionId && canUseDiscussSessionDirWithStorage(storage, paths, sessionDir)) {
+      return sessionDir;
+    }
+    const snapshot = readDiscussSnapshotWithStorage(storage, paths.discussStatePath(sessionDir));
+    if (snapshot?.sessionId === sessionId) {
+      return sessionDir;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Resolves a discuss session directory using discovery first, then directory scan fallback.
  */
@@ -911,6 +1094,54 @@ export function listPersistedDiscussSessionsForSource(source: string): DiscussDi
   let stale = false;
   for (const session of discovered.sessions) {
     if (!canUseDiscussSessionDir(session.sessionDir)) {
+      stale = true;
+      continue;
+    }
+    usableDiscovered.push(session);
+  }
+
+  const discoveredIds = new Set(usableDiscovered.map((session) => session.sessionId));
+  if (scanned.some((session) => !discoveredIds.has(session.sessionId))) {
+    stale = true;
+  }
+
+  if (!stale) {
+    return usableDiscovered;
+  }
+
+  const merged = new Map<string, DiscussDiscoverySession>();
+  for (const session of usableDiscovered) {
+    merged.set(session.sessionId, session);
+  }
+  for (const session of scanned) {
+    if (!merged.has(session.sessionId)) {
+      merged.set(session.sessionId, session);
+    }
+  }
+  return [...merged.values()];
+}
+
+export function listPersistedDiscussSessionsForSourceWithStorage(
+  storage: DiscussReaderStorage,
+  paths: Pick<
+    DiscussReaderPathResolver,
+    | 'discussDiscoveryPathForSource'
+    | 'discussBaseDirForSource'
+    | 'discussStatePath'
+    | 'discussEventLogPath'
+  >,
+  source: string,
+): DiscussDiscoverySession[] {
+  const discovered = readDiscussDiscoveryForSourceWithStorage(storage, paths, source);
+  const scanned = scanPersistedDiscussSessionsForSourceWithStorage(storage, paths, source);
+  if (!discovered) {
+    return scanned;
+  }
+
+  const usableDiscovered: DiscussDiscoverySession[] = [];
+  let stale = false;
+  for (const session of discovered.sessions) {
+    if (!canUseDiscussSessionDirWithStorage(storage, paths, session.sessionDir)) {
       stale = true;
       continue;
     }

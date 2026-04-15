@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
-import * as discussReaders from '../../client/readers.js';
 import * as discussLoop from '../discuss/loop.js';
 import * as discussSubflows from '../discuss/subflows.js';
 import {
@@ -275,10 +274,10 @@ describe('Discuss executor and operations', () => {
         ),
       ],
     });
-    const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
+    const readSessionEventsSpy = vi.spyOn(harness.store, 'readSessionEvents');
 
     const recovered = await recoverSessions(harness);
-    const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
+    const recoveryReadCount = readSessionEventsSpy.mock.calls.length;
 
     expect(recovered).toHaveLength(0);
     expect(recoveryReadCount).toBeGreaterThan(0);
@@ -289,7 +288,7 @@ describe('Discuss executor and operations', () => {
     expect(getWatchState(harness.context, 'discuss-recovery', 1)).toMatchObject({
       cursor: 2,
     });
-    expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
+    expect(readSessionEventsSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
 
     harness.cleanup();
   });

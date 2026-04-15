@@ -8,6 +8,10 @@ export function jobsDir(): string {
   return join(tmpdir(), 'coral-jobs');
 }
 
+export function jobStatusPath(jobId: string): string {
+  return join(jobsDir(), jobId, 'status.json');
+}
+
 function coralHome(): string {
   return join(homedir(), '.claude', 'coral');
 }
@@ -140,6 +144,10 @@ export function discussSourcesPath(): string {
   return join(coralRoot(), 'discuss-sources.json');
 }
 
+export function discussSourcesLockPath(): string {
+  return `${discussSourcesPath()}.lock`;
+}
+
 /**
  * Returns the base directory that stores discuss sessions for a project source.
  */
@@ -159,6 +167,10 @@ export function discussBaseDir(projectRoot: string): string {
  */
 export function discussDiscoveryPathForSource(source: string): string {
   return join(discussBaseDirForSource(source), 'discovery.json');
+}
+
+export function discussDiscoveryLockPathForSource(source: string): string {
+  return join(discussBaseDirForSource(source), '.lock');
 }
 
 /**

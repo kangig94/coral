@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import { setBuildFlavor } from '../infra/paths.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../client/readers.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -384,6 +385,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     const created = new DiscussSessionStore(source, {
       storage: runtime.storage,
       time: runtime.time,
+      paths: runtime.paths,
       onCommit: (snapshot) => {
         eventBus.emit('discuss:updated', {
           projectRoot: snapshot.projectRoot,
@@ -403,11 +405,15 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
 
   function getDiscussContext(ctx: CallerContext): DiscussContext {
     const store = getDiscussStore(ctx.projectRoot);
+    const jobStatusReader = {
+      read: (jobId: string) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+    };
     return getOrCreateDiscussContext(
       discussRegistry,
       ctx.projectRoot,
       getExecutionService(ctx) as ExecutionService,
       store,
+      jobStatusReader,
     );
   }
 
@@ -415,6 +421,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     discussRegistry,
     getDiscussStoreForSource,
     resolveProjectSource: resolveProjectSourceFn,
+    readDiscussSources: () => readDiscussSourcesWithStorage(runtime.storage, runtime.paths),
   };
 
   const hooks: LifecycleHooks = {

@@ -29,6 +29,7 @@ import { replayDiscussEvents } from '../../discuss/reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '../../discuss/types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '../discuss/session-store.js';
+import { createRealRuntime } from '../runtime.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';
@@ -41,7 +42,12 @@ const originalHome = process.env.HOME;
 const activeStores: DiscussSessionStore[] = [];
 
 function createStore(src: string): DiscussSessionStore {
-  const store = new DiscussSessionStore(src);
+  const runtime = createRealRuntime();
+  const store = new DiscussSessionStore(src, {
+    storage: runtime.storage,
+    time: runtime.time,
+    paths: runtime.paths,
+  });
   activeStores.push(store);
   return store;
 }

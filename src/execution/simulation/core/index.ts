@@ -91,6 +91,7 @@ export type SimulationScenario = {
 export type SimulationRuntimeOptions = {
   epochMs?: number;
   env?: Record<string, string>;
+  roots?: InMemoryRoots;
 };
 
 export class SimulationRuntime implements Runtime {
@@ -104,7 +105,7 @@ export class SimulationRuntime implements Runtime {
   readonly process: RuntimeProcess;
 
   constructor(options: SimulationRuntimeOptions = {}) {
-    const roots: InMemoryRoots = {};
+    const roots: InMemoryRoots = options.roots ?? {};
     this.time = new VirtualTime(options.epochMs ?? DEFAULT_EPOCH_MS);
     this.env = new SealedEnv(options.env);
     this.paths = new InMemoryPaths(roots);

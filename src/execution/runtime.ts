@@ -28,7 +28,17 @@ import {
 import {
   backendInfoPath,
   backendLockPath,
+  discussBaseDirForSource,
+  discussDiscoveryLockPathForSource,
+  discussDiscoveryPathForSource,
+  discussEventLogPath,
+  discussSessionDirForSource,
+  discussSourcesLockPath,
+  discussSourcesPath,
+  discussStatePath,
+  discussSummaryIndexPathForSource,
   jobsDir,
+  jobStatusPath,
   pluginRootNamespace,
   resolveProjectSource,
   sessionBase,
@@ -136,13 +146,26 @@ export interface RuntimeStorage {
   chmodSync(path: string, mode: number): void;
 }
 
-export interface RuntimePaths {
+export interface DiscussPathResolver {
+  projectSource(projectRoot: string): string;
+  discussSourcesPath(): string;
+  discussSourcesLockPath(): string;
+  discussBaseDirForSource(source: string): string;
+  discussDiscoveryPathForSource(source: string): string;
+  discussDiscoveryLockPathForSource(source: string): string;
+  discussSummaryIndexPathForSource(source: string): string;
+  discussSessionDirForSource(source: string, sessionId: string): string;
+  discussStatePath(sessionDir: string): string;
+  discussEventLogPath(sessionDir: string): string;
+  jobStatusPath(jobId: string): string;
+}
+
+export interface RuntimePaths extends DiscussPathResolver {
   jobsDir(): string;
   sessionBase(): string;
   backendInfoPath(pluginRoot: string): string;
   backendLockPath(pluginRoot: string): string;
   pluginRootNamespace(pluginRoot: string): string;
-  projectSource(projectRoot: string): string;
 }
 
 export interface ChildStdinLike {
@@ -318,11 +341,21 @@ export function createRealRuntime(): Runtime {
 
   const paths: RuntimePaths = {
     jobsDir,
+    jobStatusPath,
     sessionBase,
     backendInfoPath,
     backendLockPath,
     pluginRootNamespace,
     projectSource: resolveProjectSource,
+    discussSourcesPath,
+    discussSourcesLockPath,
+    discussBaseDirForSource,
+    discussDiscoveryPathForSource,
+    discussDiscoveryLockPathForSource,
+    discussSummaryIndexPathForSource,
+    discussSessionDirForSource,
+    discussStatePath,
+    discussEventLogPath,
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {

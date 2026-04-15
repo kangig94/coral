@@ -19,6 +19,7 @@ const DEFAULT_PLATFORM = 'linux';
 const DEFAULT_JOBS_DIR = '/tmp/sim/jobs';
 const DEFAULT_SESSION_BASE = '/tmp/sim/sessions';
 const DEFAULT_INSTALLATIONS_DIR = '/tmp/sim/installations';
+const DEFAULT_CORAL_ROOT = '/tmp/sim/coral';
 
 export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
@@ -88,6 +89,10 @@ export class InMemoryPaths implements RuntimePaths {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
 
+  jobStatusPath(jobId: string): string {
+    return join(this.jobsDir(), jobId, 'status.json');
+  }
+
   sessionBase(): string {
     return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
   }
@@ -122,8 +127,52 @@ export class InMemoryPaths implements RuntimePaths {
     return source;
   }
 
+  discussSourcesPath(): string {
+    return join(this.coralRoot(), 'discuss-sources.json');
+  }
+
+  discussSourcesLockPath(): string {
+    return `${this.discussSourcesPath()}.lock`;
+  }
+
+  discussBaseDirForSource(source: string): string {
+    return join(this.projectDataDirForSource(source), 'discuss');
+  }
+
+  discussDiscoveryPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), 'discovery.json');
+  }
+
+  discussDiscoveryLockPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), '.lock');
+  }
+
+  discussSummaryIndexPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), 'summary-index.json');
+  }
+
+  discussSessionDirForSource(source: string, sessionId: string): string {
+    return join(this.discussBaseDirForSource(source), sessionId);
+  }
+
+  discussStatePath(sessionDir: string): string {
+    return join(sessionDir, 'state.json');
+  }
+
+  discussEventLogPath(sessionDir: string): string {
+    return join(sessionDir, 'event-log.jsonl');
+  }
+
   private installationsDir(): string {
     return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
+  }
+
+  private coralRoot(): string {
+    return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
+  }
+
+  private projectDataDirForSource(source: string): string {
+    return join(this.coralRoot(), 'projects', source.replace(/\//g, '-'));
   }
 }
 

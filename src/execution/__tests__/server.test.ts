@@ -494,7 +494,12 @@ describe('execution backend server', () => {
   }
 
   function createDiscussStore(source: string): DiscussSessionStore {
-    const store = new DiscussSessionStore(source);
+    const runtime = createRealRuntime();
+    const store = new DiscussSessionStore(source, {
+      storage: runtime.storage,
+      time: runtime.time,
+      paths: runtime.paths,
+    });
     createdDiscussStores.push(store);
     return store;
   }

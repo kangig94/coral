@@ -31,11 +31,13 @@ export type InMemoryRoots = {
   jobsDir?: string;
   sessionBase?: string;
   installationsDir?: string;
+  coralRoot?: string;
 };
 
 const DEFAULT_JOBS_DIR = '/tmp/sim/jobs';
 const DEFAULT_SESSION_BASE = '/tmp/sim/sessions';
 const DEFAULT_INSTALLATIONS_DIR = '/tmp/sim/installations';
+const DEFAULT_CORAL_ROOT = '/tmp/sim/coral';
 
 export function normalizePathForStorage(path: string): string {
   const normalized = normalize(path.replace(/\\/g, '/'));
@@ -111,6 +113,7 @@ export class InMemoryStorage implements RuntimeStorage {
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
     this.mkdirSync(this.sessionBaseRoot(), { recursive: true });
     this.mkdirSync(this.installationsDirRoot(), { recursive: true });
+    this.mkdirSync(this.coralRoot(), { recursive: true });
   }
 
   snapshot(): InMemoryStorageSnapshot {
@@ -533,6 +536,10 @@ export class InMemoryStorage implements RuntimeStorage {
 
   private installationsDirRoot(): string {
     return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
+  }
+
+  private coralRoot(): string {
+    return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
   }
 
   private nextStamp(): number {

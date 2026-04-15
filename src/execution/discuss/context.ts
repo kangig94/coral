@@ -3,6 +3,7 @@ import type { Result } from '../../discuss/types.js';
 import type { WatchEvent } from '../../discuss/watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { ExecutionService } from '../service.js';
+import type { PersistedStatusRecord } from '../../shared/types.js';
 
 export type { WatchEvent, WatchState } from '../../discuss/watch.js';
 
@@ -39,11 +40,16 @@ export type LiveDiscussSession = {
 export type DiscussSession = LiveDiscussSession;
 export type AgentRun = PersistedDiscussAgentRun;
 
+export type DiscussJobStatusReader = {
+  read(jobId: string): PersistedStatusRecord | null;
+};
+
 export type DiscussContext = {
   projectRoot: string;
   sessions: Map<string, LiveDiscussSession>;
   service: ExecutionService;
   store: DiscussSessionStore;
+  jobStatusReader: DiscussJobStatusReader;
 };
 
 export class DiscussManagerError extends Error {

@@ -23,6 +23,7 @@ import { attachSession, detachSession, listSessions } from '../discuss/registry.
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
+import { createRealRuntime } from '../runtime.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -126,7 +127,12 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
   mkdirSync(pluginRoot, { recursive: true });
 
   const source = sourceOverride ?? resolveProjectSource(projectRoot);
-  const store = new DiscussSessionStore(source);
+  const runtime = createRealRuntime();
+  const store = new DiscussSessionStore(source, {
+    storage: runtime.storage,
+    time: runtime.time,
+    paths: runtime.paths,
+  });
   const registry = createDiscussContextRegistry();
   const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
   const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
