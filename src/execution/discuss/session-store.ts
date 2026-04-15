@@ -15,15 +15,15 @@ import { type DiscussSummaryDto } from '../../discuss/views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../../discuss/reducer.js';
 import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
-import type { DiscussPathResolver, RuntimeStoragePort, RuntimeTimePort, RuntimeTimerHandle } from '../runtime.js';
+import type { DiscussPathResolver, RuntimeStorage, RuntimeTime, RuntimeTimerHandle } from '../runtime.js';
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
 const discussSourcesRegistryLocks = new Map<string, Promise<void>>();
 
 type DiscussSessionStoreOptions = {
-  storage: RuntimeStoragePort;
-  time: Pick<RuntimeTimePort, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
+  storage: RuntimeStorage;
+  time: Pick<RuntimeTime, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
   paths: DiscussPathResolver;
   onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
 };
@@ -222,8 +222,8 @@ function buildPersistedSummary(row: DiscussSummaryIndexRow): DiscussSummaryDto {
 
 export class DiscussSessionStore {
   private readonly source: string;
-  private readonly storage: RuntimeStoragePort;
-  private readonly time: Pick<RuntimeTimePort, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
+  private readonly storage: RuntimeStorage;
+  private readonly time: Pick<RuntimeTime, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
   private readonly paths: DiscussPathResolver;
   private readonly lockDeps: DirectoryLockDeps;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
@@ -268,7 +268,9 @@ export class DiscussSessionStore {
 
   private writeAtomicJson(filePath: string, value: unknown): void {
     this.storage.mkdirSync(dirname(filePath), { recursive: true });
-    this.storage.writeAtomicDurableSync(filePath, JSON.stringify(value, null, 2));
+    if (!this.storage.writeAtomicDurableSync(filePath, JSON.stringify(value, null, 2))) {
+      return;
+    }
   }
 
   private appendEventBatch(logPath: string, events: DiscussDomainEvent[]): void {
@@ -276,7 +278,9 @@ export class DiscussSessionStore {
       return;
     }
     this.storage.mkdirSync(dirname(logPath), { recursive: true });
-    this.storage.appendFileDurableSync(logPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n');
+    if (!this.storage.appendFileDurableSync(logPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n')) {
+      return;
+    }
   }
 
   load(sessionId: string): PersistedDiscussSnapshot | null {
