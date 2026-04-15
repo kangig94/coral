@@ -35,6 +35,8 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     action: 'exec',
     sessionId: 'job-1',
     prompt: 'Run checks',
+    cwd: '/tmp/test',
+    effort: 'high',
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,

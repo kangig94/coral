@@ -116,13 +116,13 @@ function resolveClaudeModel(model: string | undefined, env: Record<string, strin
 
 function buildPreparedRequest(
   request: ProviderRequest,
-): { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel } {
+): { prompt: string; systemPrompt?: string; model?: string; effort: EffortLevel } {
   const { prompt, systemPrompt } = buildClaudeArgs(request);
   return {
     prompt,
     systemPrompt,
     model: resolveClaudeModel(request.model, request.coralEnv),
-    effort: request.effort as EffortLevel | undefined,
+    effort: request.effort,
   };
 }
 
@@ -170,7 +170,7 @@ function getPersistentRedirectReason(
 async function executeFork(
   request: ProviderRequest,
   runtime: ProviderRuntime,
-  prepared: { prompt: string; systemPrompt?: string; model?: string; effort?: EffortLevel },
+  prepared: { prompt: string; systemPrompt?: string; model?: string; effort: EffortLevel },
 ): Promise<ProviderResult> {
   const options = {
     model: prepared.model,

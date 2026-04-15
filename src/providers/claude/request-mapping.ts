@@ -59,7 +59,7 @@ export function buildClaudeBootstrapSignature(
   derivedSystemPrompt?: string,
 ): ClaudeBootstrapSignature {
   return {
-    cwd: request.cwd ?? process.cwd(),
+    cwd: request.cwd,
     systemPromptHash: buildSystemPromptSignature(derivedSystemPrompt),
     permissionMode: resolveClaudePermissionMode(request.bypassPermissions),
   };

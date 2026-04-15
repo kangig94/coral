@@ -189,6 +189,7 @@ function makeLaunch(
     providerAction: 'exec',
     request: {
       prompt: `prompt-${jobId}`,
+      cwd: `/projects/${jobId}`,
       bypassPermissions: false,
       coralEnv: {},
     },

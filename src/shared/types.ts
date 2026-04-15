@@ -1,6 +1,7 @@
 /**
  * Shared type definitions for the Coral plugin.
  */
+import type { EffortLevel } from './schemas.js';
 
 export type SessionControllerProfile = {
   owner?: string;
@@ -104,8 +105,8 @@ export interface ProviderRequest {
   conversationRef?: string;
   prompt: string;
   model?: string;
-  cwd?: string;
-  effort?: string;
+  cwd: string;
+  effort: EffortLevel;
   bypassPermissions: boolean;
   /** User-facing system prompt passed through the backend to the provider adapter (Claude: --append-system-prompt). */
   systemPrompt?: string;
@@ -211,7 +212,7 @@ export interface PersistedLaunchRecord {
     prompt: string;
     name?: string;
     model?: string;
-    cwd?: string;
+    cwd: string;
     effort?: string;
     bypassPermissions: boolean;
     systemPrompt?: string;

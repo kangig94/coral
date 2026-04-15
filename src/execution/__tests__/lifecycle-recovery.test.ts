@@ -266,6 +266,7 @@ function stubLaunchRecord(
     providerAction: 'exec',
     request: {
       prompt: '',
+      cwd: '/tmp/test',
       bypassPermissions: false,
       coralEnv: {},
     },

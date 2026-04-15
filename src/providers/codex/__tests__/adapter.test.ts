@@ -25,6 +25,8 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     action: 'exec',
     sessionId: 'job-1',
     prompt: 'Run checks',
+    cwd: '/tmp/test',
+    effort: 'high',
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,
@@ -240,7 +242,7 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          cwd: process.cwd(),
+          cwd: '/tmp/test',
           threadId: 'thread-1',
         },
       },
@@ -249,7 +251,7 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          cwd: process.cwd(),
+          cwd: '/tmp/test',
           threadId: 'thread-1',
           turnId: 'turn-1',
         },
@@ -286,7 +288,7 @@ describe('codex adapter app-server flow', () => {
       conversationRef: 'thread-1',
       providerMeta: {
         providerContinuity: {
-          cwd: process.cwd(),
+          cwd: '/tmp/test',
           threadId: 'thread-1',
         },
       },
@@ -324,7 +326,7 @@ describe('codex adapter app-server flow', () => {
         conversationRef: 'thread-1',
         providerMeta: {
           providerContinuity: {
-            cwd: process.cwd(),
+            cwd: '/tmp/test',
             threadId: 'thread-1',
             turnId: 'turn-1',
           },

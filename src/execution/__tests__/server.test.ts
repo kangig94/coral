@@ -336,6 +336,7 @@ function stubLaunchRecord(
     providerAction: 'exec',
     request: {
       prompt: '',
+      cwd: '/tmp/test',
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -569,6 +570,7 @@ describe('execution backend server', () => {
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const backend = await startBackendServer({
       createKbSubsystemFn: async () => {
         throw new Error('simulated KB init failure');
@@ -585,6 +587,7 @@ describe('execution backend server', () => {
     const subsystems = body.subsystems as Record<string, unknown>;
     expect(subsystems.kb).toBe('unavailable');
     expect(subsystems.kbError).toBe('simulated KB init failure');
+    stderrSpy.mockRestore();
   });
 
   it('includes active launches in active count', async () => {

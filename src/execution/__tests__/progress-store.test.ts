@@ -473,6 +473,7 @@ describe('durable snapshot artifacts', () => {
       providerAction: 'exec',
       request: {
         prompt: 'hello',
+        cwd: '/tmp/test',
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -626,7 +627,7 @@ describe('durable snapshot artifacts', () => {
       pool: 'default',
       enqueueSequence: 1,
       providerAction: 'exec',
-      request: { prompt: 'test', bypassPermissions: false, coralEnv: {} },
+      request: { prompt: 'test', cwd: '/tmp/test', bypassPermissions: false, coralEnv: {} },
       createdAt: new Date().toISOString(),
     });
     expect(store.hasLaunchRecord(jobId)).toBe(true);

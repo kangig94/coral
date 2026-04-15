@@ -30,6 +30,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     prompt: 'do work',
     bypassPermissions: true,
     cwd: '/workspace',
+    effort: 'high',
     coralEnv: {},
     ...overrides,
   };

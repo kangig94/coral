@@ -3,8 +3,6 @@ import type { ClaudeExecOptions } from '../claude-executor.js';
 import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from '../claude-executor.js';
 
 const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
-const defaultEffort = process.env.CORAL_CLAUDE_EFFORT ?? process.env.CORAL_EFFORT ?? 'high';
-const defaultEffortArgs = ['--effort', defaultEffort];
 
 let mockRunCli: ReturnType<typeof vi.fn>;
 
@@ -64,7 +62,6 @@ describe('claude-executor', () => {
         'You are precise',
         '--model',
         'claude-3-5-sonnet',
-        ...defaultEffortArgs,
         '--session-id',
         'bootstrap-id',
       ],
@@ -106,7 +103,6 @@ describe('claude-executor', () => {
         'Resume mode',
         '--model',
         'claude-sonnet',
-        ...defaultEffortArgs,
       ],
       prompt: 'Continue',
       cwd: '/tmp/project',
@@ -149,7 +145,7 @@ describe('claude-executor', () => {
 
     expect(mockRunCli).toHaveBeenCalledWith(
       expect.objectContaining({
-        args: [...baseArgs, '--dangerously-skip-permissions', ...defaultEffortArgs],
+        args: [...baseArgs, '--dangerously-skip-permissions'],
       }),
     );
   });
@@ -161,7 +157,7 @@ describe('claude-executor', () => {
 
     expect(mockRunCli).toHaveBeenCalledWith(
       expect.objectContaining({
-        args: [...baseArgs, '--resume', 'sess-6', '--dangerously-skip-permissions', ...defaultEffortArgs],
+        args: [...baseArgs, '--resume', 'sess-6', '--dangerously-skip-permissions'],
       }),
     );
   });
