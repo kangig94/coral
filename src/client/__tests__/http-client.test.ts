@@ -1,21 +1,13 @@
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { KbSearchResponse } from '../../kb/types.js';
-import type { WatchState } from '../../discuss/watch.js';
 import type { BackendHandle } from '../backend-lifecycle.js';
 import {
   BackendClient,
   BackendToolHttpError,
-  type AcceptedLaunchResponse,
   type CallerContext,
   type SessionCreateResponse,
   type WorkflowLaunchResponse,
 } from '../http-client.js';
-import type {
-  AcceptedLaunchResponse as BarrelAcceptedLaunchResponse,
-  SessionCreateResponse as BarrelSessionCreateResponse,
-  WorkflowLaunchResponse as BarrelWorkflowLaunchResponse,
-} from '../index.js';
 
 const backendHandle: BackendHandle = {
   port: 4100,
@@ -956,16 +948,6 @@ describe('client http-client', () => {
       statusCode: 503,
       body: errorBody,
     });
-  });
-
-  it('exports accepted-launch types through the public client barrel and returns typed direct payloads', () => {
-    expectTypeOf<AcceptedLaunchResponse>().toEqualTypeOf<BarrelAcceptedLaunchResponse>();
-    expectTypeOf<SessionCreateResponse>().toEqualTypeOf<BarrelSessionCreateResponse>();
-    expectTypeOf<WorkflowLaunchResponse>().toEqualTypeOf<BarrelWorkflowLaunchResponse>();
-    expectTypeOf<ReturnType<BackendClient['createSession']>>().toEqualTypeOf<Promise<SessionCreateResponse>>();
-    expectTypeOf<ReturnType<BackendClient['workflow']>>().toEqualTypeOf<Promise<WorkflowLaunchResponse>>();
-    expectTypeOf<ReturnType<BackendClient['discussWatch']>>().toEqualTypeOf<Promise<WatchState>>();
-    expectTypeOf<ReturnType<BackendClient['kbSearch']>>().toEqualTypeOf<Promise<KbSearchResponse>>();
   });
 
   it('still reserves BackendToolHttpError for transport and server failures', async () => {

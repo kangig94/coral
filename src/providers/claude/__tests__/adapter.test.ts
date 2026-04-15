@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../../../shared/types.js';
 import type { ProviderRuntime, ProviderServerLease } from '../../types.js';
 

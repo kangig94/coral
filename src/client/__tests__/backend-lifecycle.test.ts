@@ -208,7 +208,6 @@ describe('backend lock lifecycle', () => {
       process.kill(parsed.pid, 0);
       alive = true;
     } catch {
-      alive = false;
     }
     expect(alive).toBe(true);
   });

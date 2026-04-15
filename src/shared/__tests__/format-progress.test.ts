@@ -4,10 +4,6 @@ import { formatToolProgress, shortPath, truncate } from '../format-progress.js';
 const projectRoot = '/repo';
 const projectMainFile = '/repo/src/main.ts';
 
-function expectNoThrow(toolName: string, input: Record<string, unknown>): void {
-  expect(() => formatToolProgress(toolName, input)).not.toThrow();
-}
-
 describe('truncate', () => {
   it('returns original text when below max length', () => {
     expect(truncate('hello', 10)).toBe('hello');
@@ -111,15 +107,17 @@ describe('truncate — adversarial', () => {
 describe('formatToolProgress — adversarial', () => {
   describe('Read with partial range arguments', () => {
     it.each([
-      { label: 'only offset', input: { file_path: '/src/foo.ts', offset: 5 }, contains: 'foo.ts' },
-      { label: 'only limit', input: { file_path: '/src/bar.ts', limit: 50 }, contains: 'bar.ts' },
-      { label: 'both offset and limit', input: { file_path: 'main.ts', offset: 10, limit: 20 }, contains: 'main.ts' },
-      { label: 'empty file_path', input: { file_path: '' } },
-      { label: 'missing file_path', input: {} },
-    ])('handles Read with $label', ({ input, contains }) => {
-      const message = formatToolProgress('Read', input);
-      if (contains) expect(message).toContain(contains);
-      expectNoThrow('Read', input);
+      { label: 'only offset', input: { file_path: '/src/foo.ts', offset: 5 }, expected: 'Read(/src/foo.ts:5+)' },
+      { label: 'only limit', input: { file_path: '/src/bar.ts', limit: 50 }, expected: 'Read(/src/bar.ts)' },
+      {
+        label: 'both offset and limit',
+        input: { file_path: 'main.ts', offset: 10, limit: 20 },
+        expected: 'Read(main.ts:10-30)',
+      },
+      { label: 'empty file_path', input: { file_path: '' }, expected: 'Read()' },
+      { label: 'missing file_path', input: {}, expected: 'Read(file)' },
+    ])('handles Read with $label', ({ input, expected }) => {
+      expect(formatToolProgress('Read', input)).toBe(expected);
     });
 
     it('treats offset=0 as a provided offset', () => {
@@ -136,25 +134,25 @@ describe('formatToolProgress — adversarial', () => {
       {
         label: 'empty old_string',
         input: { file_path: 'target.ts', old_string: '', new_string: 'replacement' },
+        expected: 'Update(target.ts, "" → "replacement")',
       },
       {
         label: 'empty new_string',
         input: { file_path: 'target.ts', old_string: 'old content', new_string: '' },
+        expected: 'Update(target.ts, "old content" → "")',
       },
       {
         label: 'both strings empty',
         input: { file_path: 'f.ts', old_string: '', new_string: '' },
+        expected: 'Update(f.ts)',
       },
       {
         label: 'missing file_path',
         input: { old_string: 'x', new_string: 'y' },
+        expected: 'Update(file, "x" → "y")',
       },
-    ])('handles Edit with $label', ({ input }) => {
-      const message = formatToolProgress('Edit', input);
-      if ('file_path' in input && typeof input.file_path === 'string') {
-        expect(message).toContain(input.file_path);
-      }
-      expectNoThrow('Edit', input);
+    ])('handles Edit with $label', ({ input, expected }) => {
+      expect(formatToolProgress('Edit', input)).toBe(expected);
     });
 
     it('truncates long old_string in Edit display', () => {
@@ -169,12 +167,10 @@ describe('formatToolProgress — adversarial', () => {
 
   describe('Bash edge cases', () => {
     it.each([
-      { label: 'empty command and no description', input: { command: '' } },
-      { label: 'no input fields at all', input: {} },
-    ])('handles Bash with $label', ({ input }) => {
-      const message = formatToolProgress('Bash', input);
-      expect(typeof message).toBe('string');
-      expectNoThrow('Bash', input);
+      { label: 'empty command and no description', input: { command: '' }, expected: 'Bash()' },
+      { label: 'no input fields at all', input: {}, expected: 'Bash()' },
+    ])('handles Bash with $label', ({ input, expected }) => {
+      expect(formatToolProgress('Bash', input)).toBe(expected);
     });
 
     it('truncates Bash description when it exceeds limit', () => {
@@ -209,11 +205,11 @@ describe('formatToolProgress — adversarial', () => {
     });
 
     it.each([
-      { tool: 'Grep', input: { pattern: '' } },
-      { tool: 'Grep', input: {} },
-      { tool: 'Glob', input: { pattern: '' } },
-    ])('handles $tool with sparse input', ({ tool, input }) => {
-      expectNoThrow(tool, input);
+      { tool: 'Grep', input: { pattern: '' }, expected: 'Grep()' },
+      { tool: 'Grep', input: {}, expected: 'Grep()' },
+      { tool: 'Glob', input: { pattern: '' }, expected: 'Glob()' },
+    ])('handles $tool with sparse input', ({ tool, input, expected }) => {
+      expect(formatToolProgress(tool, input)).toBe(expected);
     });
   });
 
@@ -227,11 +223,11 @@ describe('formatToolProgress — adversarial', () => {
     });
 
     it('formats Write with missing file_path', () => {
-      expectNoThrow('Write', { content: 'hello' });
+      expect(formatToolProgress('Write', { content: 'hello' })).toBe('Write(file)');
     });
 
     it('formats Agent with missing description field', () => {
-      expectNoThrow('Agent', {});
+      expect(formatToolProgress('Agent', {})).toBe('Agent()');
     });
 
     it('truncates long Agent description', () => {
@@ -248,14 +244,18 @@ describe('formatToolProgress — adversarial', () => {
     });
 
     it('handles empty tool name for fallback', () => {
-      expectNoThrow('', {});
+      expect(formatToolProgress('', {})).toBe('Using: ');
     });
 
     it.each([
-      { tool: 'Read', input: { file_path: null as unknown as string } },
-      { tool: 'Edit', input: { file_path: 42 as unknown as string, old_string: 'x', new_string: 'y' } },
-    ])('handles non-string file_path for $tool', ({ tool, input }) => {
-      expectNoThrow(tool, input);
+      { tool: 'Read', input: { file_path: null as unknown as string }, expected: 'Read(file)' },
+      {
+        tool: 'Edit',
+        input: { file_path: 42 as unknown as string, old_string: 'x', new_string: 'y' },
+        expected: 'Update(file, "x" → "y")',
+      },
+    ])('handles non-string file_path for $tool', ({ tool, input, expected }) => {
+      expect(formatToolProgress(tool, input)).toBe(expected);
     });
   });
 });

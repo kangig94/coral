@@ -1,10 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
 import { readStatusRecordWithStorage } from '../../client/readers.js';
-import { resolveProjectSource, sourceToSlug } from '../../infra/paths.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -25,7 +22,8 @@ import { attachSession, detachSession, listSessions } from '../discuss/registry.
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
-import { createRealRuntime, type Runtime } from '../runtime.js';
+import type { Runtime } from '../runtime.js';
+import { SimulationRuntime } from '../simulation/core/index.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -85,38 +83,12 @@ export type DiscussHarness = {
 };
 
 const activeHarnesses = new Set<DiscussHarness>();
-const discussTestHomeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
-const originalHome = process.env.HOME;
-let usingDiscussTestHome = false;
 
 function cleanupLiveSessions(context: DiscussContext): void {
   for (const [sessionId, session] of listSessions(context)) {
     session.controller.abort();
     detachSession(context, sessionId);
   }
-}
-
-function enableDiscussTestHome(): void {
-  if (usingDiscussTestHome) {
-    return;
-  }
-  process.env.HOME = discussTestHomeRoot;
-  mkdirSync(join(discussTestHomeRoot, '.coral'), { recursive: true });
-  usingDiscussTestHome = true;
-}
-
-function disableDiscussTestHome(): void {
-  if (!usingDiscussTestHome || activeHarnesses.size > 0) {
-    return;
-  }
-  // Restore HOME before cleanup so rmSync targets are deterministic
-  if (originalHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = originalHome;
-  }
-  rmSync(discussTestHomeRoot, { recursive: true, force: true });
-  usingDiscussTestHome = false;
 }
 
 let harnessCounter = 0;
@@ -141,15 +113,15 @@ export function discussContextOptions(harness: Pick<DiscussHarness, 'runtime'>):
 }
 
 export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
-  enableDiscussTestHome();
-  const tmpRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-'));
-  const projectRoot = join(tmpRoot, `project-${++harnessCounter}`);
+  const harnessId = ++harnessCounter;
+  const tmpRoot = `/tmp/sim/coral-discuss-${harnessId}`;
+  const projectRoot = join(tmpRoot, `project-${harnessId}`);
   const pluginRoot = join(tmpRoot, 'plugin');
-  mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(pluginRoot, { recursive: true });
 
-  const source = sourceOverride ?? resolveProjectSource(projectRoot);
-  const runtime = createRealRuntime();
+  const runtime = new SimulationRuntime();
+  runtime.storage.mkdirSync(projectRoot, { recursive: true });
+  runtime.storage.mkdirSync(pluginRoot, { recursive: true });
+  const source = sourceOverride ?? runtime.paths.projectSource(projectRoot);
   const store = new DiscussSessionStore(source, {
     storage: runtime.storage,
     time: runtime.time,
@@ -182,15 +154,8 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
       cleaned = true;
       store.dispose();
       cleanupLiveSessions(context);
-      rmSync(tmpRoot, { recursive: true, force: true });
-      // Clean project data dir under both fake and real home (threads pool HOME pollution)
-      const slug = sourceToSlug(source);
-      rmSync(join(discussTestHomeRoot, '.coral', 'projects', slug), { recursive: true, force: true });
-      if (originalHome) {
-        rmSync(join(originalHome, '.coral', 'projects', slug), { recursive: true, force: true });
-      }
+      runtime.storage.rmSync(tmpRoot, { recursive: true, force: true });
       activeHarnesses.delete(harness);
-      disableDiscussTestHome();
     },
   };
   activeHarnesses.add(harness);
@@ -202,7 +167,17 @@ export function cleanupDiscussHarnesses(): void {
   for (const harness of [...activeHarnesses]) {
     harness.cleanup();
   }
-  disableDiscussTestHome();
+}
+
+export async function advanceDiscussRuntime(harness: Pick<DiscussHarness, 'runtime'>, ms: number): Promise<void> {
+  const tick = (harness.runtime.time as { tick?: (durationMs: number) => void }).tick;
+  if (typeof tick !== 'function') {
+    throw new Error('advanceDiscussRuntime requires a virtual-time runtime');
+  }
+  tick.call(harness.runtime.time, ms);
+  for (let index = 0; index < 50; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 export function attachPersistedSession(

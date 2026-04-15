@@ -143,7 +143,9 @@ const codexDetector = createCliDetector({
   authErrorMessage: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
 });
 
+/** @internal Test-only export for exercising shared CLI detection behavior. */
 export const detectCodexCli = codexDetector.detect;
+/** @internal Test-only export for clearing shared CLI detection state in tests. */
 export const resetCodexCliCache = codexDetector.resetCache;
 
 // ── Claude ─────────────────────────────────────
@@ -193,4 +195,5 @@ const claudeDetector = createCliDetector({
 });
 
 export const detectClaudeCli = claudeDetector.detect;
+/** @internal Test-only export for clearing Claude CLI detection state in tests. */
 export const resetClaudeCliCache = claudeDetector.resetCache;

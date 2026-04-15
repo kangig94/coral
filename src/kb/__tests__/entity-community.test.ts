@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ExistingGeneratedCommunity } from '../curate/community-detection.js';
-import type { EntityGraph, KbIndex } from '../types.js';
+import type { KbIndex } from '../types.js';
 
 async function loadCommunityDetectionWithMock(
   mockDetailed?: () => {

@@ -19,6 +19,7 @@ import {
 import { detachSession, getSession } from '../discuss/registry.js';
 import {
   DEFAULT_TOPIC,
+  advanceDiscussRuntime,
   attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
@@ -213,7 +214,6 @@ describe('Discuss executor and operations', () => {
   });
 
   it('schedules the loop after start completes initial bid collection', async () => {
-    vi.useFakeTimers();
     const start = vi
       .fn()
       .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
@@ -235,7 +235,7 @@ describe('Discuss executor and operations', () => {
 
     expect(session.snapshot.state.current_bids).toEqual({ alpha: 61, beta: 37 });
     expect(session.snapshot.state.status).toBe('bidding');
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
     expect(getSession(harness.context, 'discuss-1')?.snapshot.state.status).not.toBe('bidding');
 
     harness.cleanup();
@@ -307,7 +307,6 @@ describe('Discuss executor and operations', () => {
   });
 
   it('recovered observer_wait sessions restart the full bid delay from startup time', async () => {
-    vi.useFakeTimers();
     const harness = createDiscussHarness();
     vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
@@ -336,13 +335,13 @@ describe('Discuss executor and operations', () => {
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
 
-    await vi.advanceTimersByTimeAsync(4_999);
+    await advanceDiscussRuntime(harness, 4_999);
     expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
       status: 'bidding',
       current_speaker: null,
     });
 
-    await vi.advanceTimersByTimeAsync(1);
+    await advanceDiscussRuntime(harness, 1);
     expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
       status: 'speaking',
       current_speaker: 'alpha',
@@ -350,7 +349,6 @@ describe('Discuss executor and operations', () => {
   });
 
   it('recovered bidding sessions with no pending auto work still resume into round-close', async () => {
-    vi.useFakeTimers();
     const harness = createDiscussHarness();
     vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
@@ -374,7 +372,7 @@ describe('Discuss executor and operations', () => {
 
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
 
     expect(harness.store.load('discuss-round-close')?.state).toMatchObject({
       status: 'speaking',

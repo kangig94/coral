@@ -2,13 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeFs from 'node:fs';
 
 let mockInjectMd = '';
+let mockInjectMdError: Error | null = null;
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     readFileSync: vi.fn((path: string, encoding?: string) => {
-      if (typeof path === 'string' && path.endsWith('INJECT.md')) return mockInjectMd;
+      if (typeof path === 'string' && path.endsWith('INJECT.md')) {
+        if (mockInjectMdError) throw mockInjectMdError;
+        return mockInjectMd;
+      }
       return actual.readFileSync(path, encoding as BufferEncoding);
     }),
   };
@@ -22,6 +26,7 @@ vi.mock('../../infra/paths.js', () => ({
 
 beforeEach(() => {
   mockInjectMd = '';
+  mockInjectMdError = null;
   // Reset the module-level cache by re-importing
   vi.resetModules();
 });
@@ -91,7 +96,7 @@ describe('resolveInjectMd', () => {
   });
 
   it('returns empty string when INJECT.md is missing', async () => {
-    mockInjectMd = '';
+    mockInjectMdError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
     const resolveInjectMd = await loadResolve();
 
     const result = resolveInjectMd('/wd', 'sess');

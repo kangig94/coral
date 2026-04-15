@@ -221,15 +221,6 @@ async function _closeHttpServer(server: HttpServer): Promise<void> {
   });
 }
 
-async function _waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Timed out waiting for condition');
-}
-
 async function openHttpStream(
   url: string,
   headers: Record<string, string>,
