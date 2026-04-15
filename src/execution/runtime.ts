@@ -402,9 +402,6 @@ async function waitForRuntimeRecord(options: {
 }
 
 function readJsonIfPresent<T>(storage: RuntimeStorage, path: string): T | null {
-  if (!storage.existsSync(path)) {
-    return null;
-  }
   try {
     return JSON.parse(storage.readFileSync(path, 'utf-8')) as T;
   } catch {

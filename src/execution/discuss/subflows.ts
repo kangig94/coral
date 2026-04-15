@@ -92,6 +92,8 @@ export type SubflowResult = {
   shouldResume: boolean;
 };
 
+const ctxTs = (ctx: DiscussContext): string => nowIsoString(ctx.runtime.time);
+
 function emptyEpochEvaluation(): EpochEvaluation {
   return {
     convergence: 0,
@@ -288,7 +290,7 @@ function buildBidBatch(
       snapshot.projectRoot,
       snapshot.state.topic,
       nextSeq,
-      nowIsoString(ctx.runtime.time),
+      ctxTs(ctx),
     );
 
     if (!bidDecision.ok) {
@@ -319,7 +321,7 @@ function buildBidBatch(
         snapshot.projectRoot,
         snapshot.state.topic,
         nextSeq,
-        nowIsoString(ctx.runtime.time),
+        ctxTs(ctx),
       ),
     );
     events.push(...expelEvents);
@@ -340,7 +342,7 @@ function buildBidBatch(
         snapshot.state.topic,
         nextSeq,
         'must_answer.carry_forward.set',
-        nowIsoString(ctx.runtime.time),
+        ctxTs(ctx),
         { items: remaining },
       );
       events.push(clearEvent);
@@ -361,7 +363,7 @@ function buildBidBatch(
         snapshot.projectRoot,
         snapshot.state.topic,
         nextSeq,
-        nowIsoString(ctx.runtime.time),
+        ctxTs(ctx),
       ),
     );
     events.push(...endEvents);
@@ -672,7 +674,7 @@ export async function collectSpeech(
         ctx.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
-        nowIsoString(ctx.runtime.time),
+        ctxTs(ctx),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {
@@ -698,7 +700,7 @@ export async function collectSpeech(
       ctx.projectRoot,
       current.state.topic,
       current.lastAppliedSeq + 1,
-      nowIsoString(ctx.runtime.time),
+      ctxTs(ctx),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {
@@ -763,7 +765,7 @@ export async function handleEpochTransition(
     }
 
     const nextSeq = current.lastAppliedSeq + 1;
-    const ts = nowIsoString(ctx.runtime.time);
+    const ts = ctxTs(ctx);
     if (evaluation.convergence < CONVERGENCE_THRESHOLD) {
       const summaryEvents = unwrapResult(
         decideEpochSummary(
@@ -848,7 +850,7 @@ export async function runFollowUpTurns(
           ctx.projectRoot,
           current.state.topic,
           current.lastAppliedSeq + 1,
-          nowIsoString(ctx.runtime.time),
+          ctxTs(ctx),
         ),
       );
       if (!ended.ok && ended.error !== 'session_not_found') {
@@ -867,7 +869,7 @@ export async function runFollowUpTurns(
           current.state.topic,
           current.lastAppliedSeq + 1,
           'follow_up.answered',
-          nowIsoString(ctx.runtime.time),
+          ctxTs(ctx),
           {
             agent: item.agent,
             question: item.question,
@@ -930,7 +932,7 @@ export async function handleSynthesis(
         ctx.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
-        nowIsoString(ctx.runtime.time),
+        ctxTs(ctx),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {

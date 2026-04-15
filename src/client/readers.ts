@@ -42,21 +42,11 @@ export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '
 export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
 
 function readJsonFile(filePath: string): unknown | null {
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf-8')) as unknown;
-  } catch (error: unknown) {
-    if (isNoEntryError(error) || error instanceof SyntaxError) return null;
-    throw error;
-  }
+  return readJsonFileWithStorage(nodeDiscussReaderStorage, filePath);
 }
 
 function readTextFile(filePath: string): string | null {
-  try {
-    return readFileSync(filePath, 'utf-8');
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return null;
-    throw error;
-  }
+  return readTextFileWithStorage(nodeDiscussReaderStorage, filePath);
 }
 
 function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null): T[] {
@@ -99,12 +89,7 @@ const persistedProgressRecordSchema = z
   .passthrough();
 
 function readDirectoryEntries(baseDir: string): Array<{ name: string; isDirectory(): boolean }> {
-  try {
-    return readdirSync(baseDir, { withFileTypes: true });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
+  return readDirectoryEntriesWithStorage(nodeDiscussReaderStorage, baseDir);
 }
 
 function readJsonFileWithStorage(storage: Pick<DiscussReaderStorage, 'readFileSync'>, filePath: string): unknown | null {
@@ -1013,28 +998,7 @@ function scanPersistedDiscussSessionsForSource(source: string): DiscussDiscovery
  * Resolves a discuss session directory using discovery first, then directory scan fallback.
  */
 export function resolveDiscussSessionDirForSource(source: string, sessionId: string): string | null {
-  const discovery = readDiscussDiscoveryForSource(source);
-  const discoveredDir = discovery?.sessions.find((session) => session.sessionId === sessionId)?.sessionDir;
-  if (discoveredDir && canUseDiscussSessionDir(discoveredDir)) {
-    return discoveredDir;
-  }
-
-  const baseDir = discussBaseDirForSource(source);
-  const entries = readDirectoryEntries(baseDir);
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const sessionDir = join(baseDir, entry.name);
-    if (entry.name === sessionId && canUseDiscussSessionDir(sessionDir)) {
-      return sessionDir;
-    }
-    const snapshot = readDiscussSnapshot(discussStatePath(sessionDir));
-    if (snapshot?.sessionId === sessionId) {
-      return sessionDir;
-    }
-  }
-
-  return null;
+  return resolveDiscussSessionDirForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source, sessionId);
 }
 
 export function resolveDiscussSessionDirForSourceWithStorage(
@@ -1084,41 +1048,7 @@ export function resolveDiscussSessionDir(projectRoot: string, sessionId: string)
  * Lists persisted discuss sessions using discovery first with state-based fallback repair.
  */
 export function listPersistedDiscussSessionsForSource(source: string): DiscussDiscoverySession[] {
-  const discovered = readDiscussDiscoveryForSource(source);
-  const scanned = scanPersistedDiscussSessionsForSource(source);
-  if (!discovered) {
-    return scanned;
-  }
-
-  const usableDiscovered: DiscussDiscoverySession[] = [];
-  let stale = false;
-  for (const session of discovered.sessions) {
-    if (!canUseDiscussSessionDir(session.sessionDir)) {
-      stale = true;
-      continue;
-    }
-    usableDiscovered.push(session);
-  }
-
-  const discoveredIds = new Set(usableDiscovered.map((session) => session.sessionId));
-  if (scanned.some((session) => !discoveredIds.has(session.sessionId))) {
-    stale = true;
-  }
-
-  if (!stale) {
-    return usableDiscovered;
-  }
-
-  const merged = new Map<string, DiscussDiscoverySession>();
-  for (const session of usableDiscovered) {
-    merged.set(session.sessionId, session);
-  }
-  for (const session of scanned) {
-    if (!merged.has(session.sessionId)) {
-      merged.set(session.sessionId, session);
-    }
-  }
-  return [...merged.values()];
+  return listPersistedDiscussSessionsForSourceWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, source);
 }
 
 export function listPersistedDiscussSessionsForSourceWithStorage(
