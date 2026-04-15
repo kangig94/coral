@@ -1,5 +1,4 @@
 import { basename, join, resolve } from 'node:path';
-import { createHash } from 'node:crypto';
 import { backendLog } from '../shared/backend-log.js';
 import { acquireDirectoryLock } from '../shared/fs-lock.js';
 import { isValidSessionEntry } from '../shared/session-entry.js';
@@ -34,12 +33,16 @@ export type SessionAllocateOptions = {
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
-function toSessionNamespace(dir: string, paths: Pick<RuntimePathsPort, 'pluginRootNamespace'>): string {
+function toSessionNamespace(
+  dir: string,
+  paths: Pick<RuntimePathsPort, 'pluginRootNamespace'>,
+  ids: Pick<RuntimeIdsPort, 'sha256'>,
+): string {
   try {
     return paths.pluginRootNamespace(dir);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
-      return createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 12);
+      return ids.sha256(resolve(dir)).slice(0, 12);
     }
     throw error;
   }
@@ -89,7 +92,7 @@ export class SessionManager {
     this.ids = runtime.ids;
     this.sessionDir = isRawShardPath
       ? workingDirectory
-      : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths));
+      : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
     this.eventBus = eventBus ?? new TypedEventBus();
     if (!isRawShardPath) {
       this.storage.mkdirSync(this.sessionDir, { recursive: true });

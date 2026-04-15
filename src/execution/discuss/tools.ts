@@ -1,11 +1,16 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { errorMessage } from '../../shared/utils.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../../discuss/persona-seed.js';
-import { deriveErrorMessage, domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
+import {
+  deriveErrorMessage,
+  domainError,
+  domainSuccess,
+  toolValidationError,
+  type ToolDomainResult,
+} from '../tool-response.js';
 import type { CallerContext } from '../../shared/request-context.js';
 
 const discussSessionSchema = z.object({
@@ -33,10 +38,6 @@ type LegacyDiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchem
 
 function isDiscussSpeechArgs(args: LegacyDiscussParticipateArgs): args is DiscussSpeechArgs {
   return typeof args.content === 'string';
-}
-
-function toolValidationError(error: z.ZodError): ToolDomainResult {
-  return domainError('invalid_request', error.message);
 }
 
 function discussManagerError(error: DiscussManagerError): ToolDomainResult {
@@ -67,10 +68,11 @@ async function executeDiscussStart(
   context: CallerContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
-  const sessionId = randomUUID();
   try {
+    const ctx = helpers.getDiscussContext(context);
+    const sessionId = ctx.runtime.ids.uuid();
     await discussOperations.startDiscussSession(
-      helpers.getDiscussContext(context),
+      ctx,
       sessionId,
       args.topic,
       args.agents,

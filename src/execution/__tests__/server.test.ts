@@ -16,7 +16,7 @@ import type * as LifecycleMod from '../lifecycle.js';
 import type { ProviderServerHandle } from '../engine.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
-import { readDiscussEventLog } from '../../client/readers.js';
+import { readDiscussEventLog, readStatusRecordWithStorage } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
@@ -219,15 +219,6 @@ async function _closeHttpServer(server: HttpServer): Promise<void> {
     });
     server.closeIdleConnections?.();
   });
-}
-
-async function _waitForCondition(check: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('Timed out waiting for condition');
 }
 
 async function openHttpStream(
@@ -494,7 +485,12 @@ describe('execution backend server', () => {
   }
 
   function createDiscussStore(source: string): DiscussSessionStore {
-    const store = new DiscussSessionStore(source);
+    const runtime = createRealRuntime();
+    const store = new DiscussSessionStore(source, {
+      storage: runtime.storage,
+      time: runtime.time,
+      paths: runtime.paths,
+    });
     createdDiscussStores.push(store);
     return store;
   }
@@ -541,6 +537,63 @@ describe('execution backend server', () => {
       flavor: 'prod',
       namespace,
     });
+  });
+
+  it('uses injected fetchFn for lock ownership health checks', async () => {
+    const { serverModule, backendInfo, backendLock } = await loadExecutionModules();
+    const pluginRoot = createProjectRoot('backend-ownership-fetch');
+    const namespace = pluginRootNamespace(pluginRoot);
+    const existingOwner = {
+      instanceId: 'existing-backend-instance',
+      pid: process.pid,
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'prod' as const,
+      startedAt: 1,
+    };
+
+    backendInfo.writeBackendInfo(pluginRoot, {
+      ...existingOwner,
+      host: '127.0.0.1',
+      port: 4999,
+      token: 'existing-backend-token',
+      namespace,
+    });
+    writeFileSync(backendLock.backendLockPath(pluginRoot), JSON.stringify(existingOwner), 'utf-8');
+
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('http://127.0.0.1:4999/health');
+      expect(init?.headers).toEqual({ 'X-Coral-Backend-Token': 'existing-backend-token' });
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          bundleHash: existingOwner.bundleHash,
+          flavor: existingOwner.flavor,
+          instanceId: existingOwner.instanceId,
+          namespace,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    const globalFetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    controller = serverModule.createBackendServer({
+      pluginRoot,
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        log: () => {},
+      },
+      fetchFn,
+      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      cleanupStaleJobsFn: () => {},
+    });
+
+    await expect(controller.start()).rejects.toBeInstanceOf(backendLock.BackendAlreadyRunningError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(globalFetchSpy).not.toHaveBeenCalled();
   });
 
   it('returns 200 from /health with execution metadata', async () => {
@@ -664,9 +717,7 @@ describe('execution backend server', () => {
       .mockResolvedValueOnce(sharedClaudeHandle.handle)
       .mockResolvedValueOnce(codexHandleA.handle)
       .mockResolvedValueOnce(codexHandleB.handle);
-    const providerHostManager = createProviderHostManager({ runtime,
-      spawnProviderServer,
-    });
+    const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
     controller = serverModule.createBackendServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -876,9 +927,11 @@ describe('execution backend server', () => {
           { name: 'beta', persona: '# Beta', participation: 'required' },
         ],
       },
-      'discuss-only-session',
-      projectRoot,
-      'Should the city pedestrianize the downtown core?',
+      {
+        sessionId: 'discuss-only-session',
+        projectRoot: projectRoot,
+        topic: 'Should the city pedestrianize the downtown core?',
+      },
       1,
       '2026-03-11T00:00:00.000Z',
     );
@@ -1082,12 +1135,15 @@ describe('execution backend server', () => {
       count: 1,
     });
 
-    const purgeResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`, {
-      method: 'DELETE',
-      headers: {
-        'X-Coral-Backend-Token': backend.token,
+    const purgeResponse = await fetch(
+      `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
+      {
+        method: 'DELETE',
+        headers: {
+          'X-Coral-Backend-Token': backend.token,
+        },
       },
-    });
+    );
 
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
@@ -1138,7 +1194,7 @@ describe('execution backend server', () => {
           now: () => Date.now(),
           log: () => {},
         },
-        runtime: { ids: runtime.ids, time: runtime.time },
+        runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
@@ -1228,9 +1284,7 @@ describe('execution backend server', () => {
         handleKbPrinciples: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:principles', args })),
         handleKbMemo: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo', args })),
         handleKbMemoList: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo-list', args })),
-        handleKbMemoDeleteConsolidated: vi.fn((args: unknown) =>
-          domainSuccess({ route: 'kb:memo-delete', args }),
-        ),
+        handleKbMemoDeleteConsolidated: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo-delete', args })),
         ...options.kbToolOverrides,
       };
 
@@ -1566,6 +1620,8 @@ describe('execution backend server', () => {
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
               }),
             }),
+            started.deps.runtime,
+            started.deps.runtimeState.getKbSubsystem(),
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -1602,7 +1658,7 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual(expectedBody);
         const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
         expect(handler).toHaveBeenCalledTimes(1);
-        expect(handler).toHaveBeenCalledWith(expectedBody.slug, kbSubsystem);
+        expect(handler).toHaveBeenCalledWith(expectedBody.slug, kbSubsystem, started.deps.runtime);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -1635,6 +1691,7 @@ describe('execution backend server', () => {
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
               }),
             }),
+            started.deps.runtime,
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -1786,54 +1843,57 @@ describe('execution backend server', () => {
         handlerName: 'handleKbReindex',
         callShape: 'args-kb',
       },
-    ])('routes KB write routes for $name', async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
-      await withBaseCoralEnv(async () => {
-        const started = await startMockedRouteServer();
-        const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+    ])(
+      'routes KB write routes for $name',
+      async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
+        await withBaseCoralEnv(async () => {
+          const started = await startMockedRouteServer();
+          const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
 
-        try {
-          const response = await fetch(`${started.baseUrl}${path}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
-            },
-            body: JSON.stringify({
-              ...args,
-              projectRoot: '/tmp/project',
-              owner: 'team-a',
-              effort: 'high',
-              claudeModelCap: 'sonnet',
-            }),
-          });
+          try {
+            const response = await fetch(`${started.baseUrl}${path}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Coral-Backend-Token': 'test-token',
+              },
+              body: JSON.stringify({
+                ...args,
+                projectRoot: '/tmp/project',
+                owner: 'team-a',
+                effort: 'high',
+                claudeModelCap: 'sonnet',
+              }),
+            });
 
-          expect(response.status).toBe(expectedStatus);
-          expect(await response.json()).toEqual(expectedBody);
+            expect(response.status).toBe(expectedStatus);
+            expect(await response.json()).toEqual(expectedBody);
 
-          const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
-          const call = handler.mock.calls[0] as unknown[] | undefined;
-          expect(handler).toHaveBeenCalledTimes(1);
-          expect(call?.[0]).toEqual(expectedBody.args);
-          if (callShape === 'args-kb') {
+            const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
+            const call = handler.mock.calls[0] as unknown[] | undefined;
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(call?.[0]).toEqual(expectedBody.args);
+            if (callShape === 'args-kb') {
+              expect(call?.[1]).toBe(kbSubsystem);
+              return;
+            }
             expect(call?.[1]).toBe(kbSubsystem);
-            return;
+            expect(call?.[2]).toMatchObject({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+              coralEnv: expect.objectContaining({
+                CORAL_TEST_HTTP_BASE: 'daemon-base',
+                CORAL_OWNER: 'team-a',
+                CORAL_EFFORT: 'high',
+                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+              }),
+            });
+          } finally {
+            await _closeHttpServer(started.server);
           }
-          expect(call?.[1]).toBe(kbSubsystem);
-          expect(call?.[2]).toMatchObject({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-            coralEnv: expect.objectContaining({
-              CORAL_TEST_HTTP_BASE: 'daemon-base',
-              CORAL_OWNER: 'team-a',
-              CORAL_EFFORT: 'high',
-              CORAL_CLAUDE_MODEL_CAP: 'sonnet',
-            }),
-          });
-        } finally {
-          await _closeHttpServer(started.server);
-        }
-      });
-    });
+        });
+      },
+    );
 
     it('routes POST /kb/memos with owner preserved for the memo handler', async () => {
       await withBaseCoralEnv(async () => {
@@ -2208,12 +2268,13 @@ describe('execution backend server', () => {
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
           method,
-          headers: body === undefined
-            ? { 'X-Coral-Backend-Token': 'test-token' }
-            : {
-                'Content-Type': 'application/json',
-                'X-Coral-Backend-Token': 'test-token',
-              },
+          headers:
+            body === undefined
+              ? { 'X-Coral-Backend-Token': 'test-token' }
+              : {
+                  'Content-Type': 'application/json',
+                  'X-Coral-Backend-Token': 'test-token',
+                },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
 
@@ -3070,7 +3131,13 @@ describe('execution backend server', () => {
       projectRoot: foreignProjectRoot,
       backendNamespace: testBackendNamespace,
     });
-    const legacy = new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
+    const legacy = new SessionManager(projectRoot, runtime).allocate(
+      'codex',
+      'legacy',
+      'gpt-5',
+      projectRoot,
+      projectRoot,
+    );
 
     const backend = await startBackendServer();
     const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
@@ -3273,7 +3340,12 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore('test-ns', runtime);
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = new SessionManager(projectRoot, runtime).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
+    const session = new SessionManager(projectRoot, runtime).allocate(
+      'codex',
+      'workflow-session',
+      'gpt-5',
+      projectRoot,
+    );
 
     createdJobIds.add(jobId);
     progressStore.initJob({
@@ -3637,9 +3709,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'startup-candidate',
-        projectRoot,
-        topic,
+        { sessionId: 'startup-candidate', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
       );
@@ -3657,9 +3727,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'terminal-history',
-        projectRoot,
-        topic,
+        { sessionId: 'terminal-history', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:05:00.000Z',
       );
@@ -4044,9 +4112,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'recoverable-discuss',
-        pluginRoot,
-        topic,
+        { sessionId: 'recoverable-discuss', projectRoot: pluginRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
       );
@@ -4066,6 +4132,7 @@ describe('execution backend server', () => {
       };
       const discussRegistry = createDiscussContextRegistry();
       const writeBackendInfoFn = vi.fn();
+      const lifecycleRuntime = createRealRuntime();
       // eslint-disable-next-line prefer-const -- circular: fakeService closure reads controller, but controller assignment needs fakeService
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const providerHostManager = createFakeProviderHostManager();
@@ -4090,7 +4157,7 @@ describe('execution backend server', () => {
           now: () => 1,
           log: () => {},
         },
-        runtime: createRealRuntime(),
+        runtime: lifecycleRuntime,
         backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
@@ -4113,7 +4180,16 @@ describe('execution backend server', () => {
         },
         knownDiscussSources: () => new Set([source]),
         getDiscussContext: (ctx) =>
-          getOrCreateDiscussContext(discussRegistry, ctx.projectRoot, fakeService as never, store),
+          getOrCreateDiscussContext(discussRegistry, ctx.projectRoot, fakeService as never, store, {
+            runtime: {
+              ids: lifecycleRuntime.ids,
+              env: lifecycleRuntime.env,
+              time: lifecycleRuntime.time,
+            },
+            jobStatusReader: {
+              read: (jobId) => readStatusRecordWithStorage(lifecycleRuntime.storage, lifecycleRuntime.paths, jobId),
+            },
+          }),
         acquireLockFn: async () => {},
         writeBackendInfoFn,
         removeBackendInfoIfOwnerFn: () => {},
@@ -4182,7 +4258,7 @@ describe('execution backend server', () => {
           now: () => Date.now(),
           log: () => {},
         },
-        runtime: { ids: runtime.ids, time: runtime.time },
+        runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),

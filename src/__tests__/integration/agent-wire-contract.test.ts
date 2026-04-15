@@ -114,7 +114,9 @@ async function startHttpHandlerServer(
       if (!res.headersSent) {
         res.statusCode = 500;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'internal_error', message: error instanceof Error ? error.message : String(error) }));
+        res.end(
+          JSON.stringify({ error: 'internal_error', message: error instanceof Error ? error.message : String(error) }),
+        );
         return;
       }
       res.destroy();
@@ -217,7 +219,7 @@ describe('agent wire contract', () => {
     const runtime = createRealRuntime();
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('test-ns', eventBus, runtime);
+    const progressStore = new ProgressStore('test-ns', runtime, eventBus);
     const sessionIndex = new SessionIndex(runtime);
     const pluginRegistry = createPluginRegistry({
       storage: runtime.storage,
@@ -339,25 +341,28 @@ describe('agent wire contract', () => {
     { agent: 'coral:architect', expectedName: 'architect', expectedInstruction: 'CORAL AGENT CONTENT' },
     { agent: 'project:my-local', expectedName: 'my-local', expectedInstruction: 'LOCAL AGENT CONTENT' },
     { agent: 'architect.md', expectedName: 'architect', expectedInstruction: 'CORAL AGENT CONTENT' },
-  ])('accepts $agent through the real client -> http -> service path', async ({ agent, expectedName, expectedInstruction }) => {
-    const response = await client.createSession('stub', 'hello from integration', { agent });
+  ])(
+    'accepts $agent through the real client -> http -> service path',
+    async ({ agent, expectedName, expectedInstruction }) => {
+      const response = await client.createSession('stub', 'hello from integration', { agent });
 
-    expect(response).toEqual({
-      session: expect.any(String),
-      job: expect.any(String),
-      launchState: 'running',
-    });
-    expect(providerExecute).toHaveBeenCalledTimes(1);
+      expect(response).toEqual({
+        session: expect.any(String),
+        job: expect.any(String),
+        launchState: 'running',
+      });
+      expect(providerExecute).toHaveBeenCalledTimes(1);
 
-    const request = await waitForLaunchRequest(launchRequests);
-    expect(request.action).toBe('exec');
-    expect(request.prompt).toBe('hello from integration');
-    expect(request.name).toBe(expectedName);
-    expect(request.instruction).toEqual({
-      channel: 'system',
-      content: expectedInstruction,
-    });
-  });
+      const request = await waitForLaunchRequest(launchRequests);
+      expect(request.action).toBe('exec');
+      expect(request.prompt).toBe('hello from integration');
+      expect(request.name).toBe(expectedName);
+      expect(request.instruction).toEqual({
+        channel: 'system',
+        content: expectedInstruction,
+      });
+    },
+  );
 
   it('rejects INVALID! with HTTP 400 at the schema boundary', async () => {
     let caught: unknown;

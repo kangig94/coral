@@ -13,7 +13,7 @@ import {
   type TerminalResult,
   type WorkflowCheckpoint,
 } from '../shared/types.js';
-import { isNoEntryError, nowIsoString } from '../shared/utils.js';
+import { isNoEntryError, isRecord, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
@@ -45,16 +45,17 @@ export function createReplayCursor(): ReplayCursor {
 
 export { formatElapsed } from '../shared/format-progress.js';
 
-function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'paths' | 'time'> {
+export function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
   return (
-    value !== null &&
-    typeof value === 'object' &&
-    'storage' in value &&
-    'paths' in value &&
-    'time' in value &&
-    value.storage !== null &&
-    value.paths !== null &&
-    value.time !== null
+    isRecord(value) &&
+    typeof value.jobId === 'string' &&
+    typeof value.sessionId === 'string' &&
+    typeof value.provider === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.phase === 'string' &&
+    isRecord(value.launch) &&
+    typeof value.launch.state === 'string' &&
+    typeof value.launch.updatedAt === 'string'
   );
 }
 
@@ -84,30 +85,12 @@ export class ProgressStore {
    * store operates on a namespace-bounded view by construction — no
    * downstream filter is required to avoid cross-namespace contamination.
    */
-  // Overloads: (ns, runtime, eventBus?) is canonical; (ns, eventBus, runtime) is supported for migration compatibility.
-  constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>, eventBus?: TypedEventBus);
-  constructor(namespace: string, eventBus: TypedEventBus, runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>);
-  constructor(
-    namespace: string,
-    arg2: TypedEventBus | Pick<Runtime, 'storage' | 'paths' | 'time'>,
-    arg3?: TypedEventBus | Pick<Runtime, 'storage' | 'paths' | 'time'>,
-  ) {
+  constructor(namespace: string, runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>, eventBus = new TypedEventBus()) {
     this.namespace = namespace;
-    if (isRuntimeLike(arg2)) {
-      this.storage = arg2.storage;
-      this.paths = arg2.paths;
-      this.time = arg2.time;
-      this.eventBus = arg3 instanceof TypedEventBus ? arg3 : new TypedEventBus();
-      return;
-    }
-
-    if (!isRuntimeLike(arg3)) {
-      throw new Error('ProgressStore requires runtime-backed storage/time');
-    }
-    this.eventBus = arg2;
-    this.storage = arg3.storage;
-    this.paths = arg3.paths;
-    this.time = arg3.time;
+    this.storage = runtime.storage;
+    this.paths = runtime.paths;
+    this.time = runtime.time;
+    this.eventBus = eventBus;
   }
 
   /** Returns the backend namespace this store is bound to. */
@@ -698,7 +681,9 @@ export class ProgressStore {
   private readStatusFromDisk(jobId: string): PersistedStatusRecord | null {
     try {
       const data = this.storage.readFileSync(this.statusPath(jobId), 'utf-8');
-      return JSON.parse(data) as PersistedStatusRecord;
+      const parsed = JSON.parse(data);
+      if (!isPersistedStatusRecordLike(parsed)) return null;
+      return parsed;
     } catch {
       return null;
     }

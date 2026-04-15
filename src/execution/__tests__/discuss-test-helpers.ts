@@ -1,9 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
-import { resolveProjectSource, sourceToSlug } from '../../infra/paths.js';
+import { readStatusRecordWithStorage } from '../../client/readers.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -14,6 +12,7 @@ import type { DiscussCreateInput } from '../../discuss/types.js';
 import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
+  type DiscussContextConstructionOptions,
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
 import type { DiscussContext } from '../discuss/context.js';
@@ -23,6 +22,8 @@ import { attachSession, detachSession, listSessions } from '../discuss/registry.
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
+import type { Runtime } from '../runtime.js';
+import { SimulationRuntime } from '../simulation/core/index.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -77,13 +78,11 @@ export type DiscussHarness = {
   context: DiscussContext;
   registry: DiscussContextRegistry;
   service: ExecutionService;
+  runtime: Runtime;
   cleanup: () => void;
 };
 
 const activeHarnesses = new Set<DiscussHarness>();
-const discussTestHomeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
-const originalHome = process.env.HOME;
-let usingDiscussTestHome = false;
 
 function cleanupLiveSessions(context: DiscussContext): void {
   for (const [sessionId, session] of listSessions(context)) {
@@ -92,43 +91,50 @@ function cleanupLiveSessions(context: DiscussContext): void {
   }
 }
 
-function enableDiscussTestHome(): void {
-  if (usingDiscussTestHome) {
-    return;
-  }
-  process.env.HOME = discussTestHomeRoot;
-  mkdirSync(join(discussTestHomeRoot, '.coral'), { recursive: true });
-  usingDiscussTestHome = true;
-}
-
-function disableDiscussTestHome(): void {
-  if (!usingDiscussTestHome || activeHarnesses.size > 0) {
-    return;
-  }
-  // Restore HOME before cleanup so rmSync targets are deterministic
-  if (originalHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = originalHome;
-  }
-  rmSync(discussTestHomeRoot, { recursive: true, force: true });
-  usingDiscussTestHome = false;
-}
-
 let harnessCounter = 0;
 
-export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
-  enableDiscussTestHome();
-  const tmpRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-'));
-  const projectRoot = join(tmpRoot, `project-${++harnessCounter}`);
-  const pluginRoot = join(tmpRoot, 'plugin');
-  mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(pluginRoot, { recursive: true });
+export function createDiscussContextOptions(
+  runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
+): DiscussContextConstructionOptions {
+  return {
+    runtime: {
+      ids: runtime.ids,
+      env: runtime.env,
+      time: runtime.time,
+    },
+    jobStatusReader: {
+      read: (jobId) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+    },
+  };
+}
 
-  const source = sourceOverride ?? resolveProjectSource(projectRoot);
-  const store = new DiscussSessionStore(source);
+export function discussContextOptions(harness: Pick<DiscussHarness, 'runtime'>): DiscussContextConstructionOptions {
+  return createDiscussContextOptions(harness.runtime);
+}
+
+export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
+  const harnessId = ++harnessCounter;
+  const tmpRoot = `/tmp/sim/coral-discuss-${harnessId}`;
+  const projectRoot = join(tmpRoot, `project-${harnessId}`);
+  const pluginRoot = join(tmpRoot, 'plugin');
+
+  const runtime = new SimulationRuntime();
+  runtime.storage.mkdirSync(projectRoot, { recursive: true });
+  runtime.storage.mkdirSync(pluginRoot, { recursive: true });
+  const source = sourceOverride ?? runtime.paths.projectSource(projectRoot);
+  const store = new DiscussSessionStore(source, {
+    storage: runtime.storage,
+    time: runtime.time,
+    paths: runtime.paths,
+  });
   const registry = createDiscussContextRegistry();
-  const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
+  const context = getOrCreateDiscussContext(
+    registry,
+    projectRoot,
+    service,
+    store,
+    createDiscussContextOptions(runtime),
+  );
   const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
 
@@ -140,6 +146,7 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
     context,
     registry,
     service,
+    runtime,
     cleanup: () => {
       if (cleaned) {
         return;
@@ -147,15 +154,8 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
       cleaned = true;
       store.dispose();
       cleanupLiveSessions(context);
-      rmSync(tmpRoot, { recursive: true, force: true });
-      // Clean project data dir under both fake and real home (threads pool HOME pollution)
-      const slug = sourceToSlug(source);
-      rmSync(join(discussTestHomeRoot, '.coral', 'projects', slug), { recursive: true, force: true });
-      if (originalHome) {
-        rmSync(join(originalHome, '.coral', 'projects', slug), { recursive: true, force: true });
-      }
+      runtime.storage.rmSync(tmpRoot, { recursive: true, force: true });
       activeHarnesses.delete(harness);
-      disableDiscussTestHome();
     },
   };
   activeHarnesses.add(harness);
@@ -167,7 +167,17 @@ export function cleanupDiscussHarnesses(): void {
   for (const harness of [...activeHarnesses]) {
     harness.cleanup();
   }
-  disableDiscussTestHome();
+}
+
+export async function advanceDiscussRuntime(harness: Pick<DiscussHarness, 'runtime'>, ms: number): Promise<void> {
+  const tick = (harness.runtime.time as { tick?: (durationMs: number) => void }).tick;
+  if (typeof tick !== 'function') {
+    throw new Error('advanceDiscussRuntime requires a virtual-time runtime');
+  }
+  tick.call(harness.runtime.time, ms);
+  for (let index = 0; index < 50; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 export function attachPersistedSession(
@@ -208,9 +218,15 @@ export async function persistSession(
     agents,
     min_bid_delay_ms: options.minBidDelayMs ?? 0,
   };
-  const created = decideSessionCreate(input, sessionId, harness.projectRoot, topic, 1, createdAt, {
-    agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
-  });
+  const created = decideSessionCreate(
+    input,
+    { sessionId: sessionId, projectRoot: harness.projectRoot, topic: topic },
+    1,
+    createdAt,
+    {
+      agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
+    },
+  );
   if (!created.ok) {
     const createError = created.error;
     throw new Error(createError);

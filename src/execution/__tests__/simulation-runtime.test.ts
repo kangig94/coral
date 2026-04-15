@@ -65,6 +65,53 @@ describe('simulation runtime', () => {
     expect(events).toEqual(['interval:105', 'timeout:a', 'timeout:b', 'interval:110', 'sleep']);
   });
 
+  it('defers recursive delay-zero timeouts to the next tick', () => {
+    const time = new VirtualTime(100);
+    let calls = 0;
+
+    const recursive = () => {
+      calls += 1;
+      if (calls < 3) {
+        time.setTimeout(recursive, 0);
+      }
+    };
+
+    time.setTimeout(recursive, 0);
+
+    time.tick(0);
+    expect(time.now()).toBe(100);
+    expect(calls).toBe(0);
+
+    time.tick(1);
+    expect(time.now()).toBe(101);
+    expect(calls).toBe(1);
+
+    time.tick(1);
+    expect(time.now()).toBe(102);
+    expect(calls).toBe(2);
+  });
+
+  it('finishes due timers and advances to the target before rethrowing callback errors', () => {
+    const time = new VirtualTime(100);
+    const error = new Error('timer failed');
+    const events: string[] = [];
+
+    time.setTimeout(() => {
+      events.push(`first:${time.now()}`);
+    }, 5);
+    time.setTimeout(() => {
+      events.push(`throw:${time.now()}`);
+      throw error;
+    }, 5);
+    time.setTimeout(() => {
+      events.push(`after:${time.now()}`);
+    }, 10);
+
+    expect(() => time.tick(10)).toThrow(error);
+    expect(time.now()).toBe(110);
+    expect(events).toEqual(['first:105', 'throw:105', 'after:110']);
+  });
+
   it('provides in-memory storage with atomic writes, exclusive writes, snapshot/restore, and deterministic paths', () => {
     const time = new VirtualTime(1_000);
     const storage = new InMemoryStorage(time);
@@ -84,13 +131,17 @@ describe('simulation runtime', () => {
     expect(storage.tryExclusiveWriteSync(exclusivePath, 'one')).toBe(true);
     expect(storage.tryExclusiveWriteSync(exclusivePath, 'two')).toBe(false);
     expect(storage.writeAtomicSync(atomicPath, '{"ok":true}', { encoding: 'utf-8' })).toBe(true);
+    expect(storage.writeAtomicDurableSync(atomicPath, '{"ok":"durable"}', { encoding: 'utf-8' })).toBe(true);
+    expect(storage.appendFileDurableSync(filePath, '\ngamma')).toBe(true);
+    expect(storage.writeAtomicDurableSync(join('/tmp/sim/missing', 'state.json'), '{}')).toBe(false);
+    expect(storage.appendFileDurableSync(join('/tmp/sim/missing', 'events.jsonl'), 'event\n')).toBe(false);
     storage.renameSync(atomicPath, join(workDir, 'renamed.json'));
 
     const entries = storage.readdirSync(workDir, { withFileTypes: true }).map((entry) => entry.name);
     const namespace = paths.pluginRootNamespace('/tmp/sim/plugin');
     const projectSource = paths.projectSource('/tmp/sim/project');
     expect(entries).toEqual(['alpha.txt', 'lock.json', 'renamed.json']);
-    expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta'));
+    expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta\ngamma'));
     expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
     expect(paths.sessionBase()).toBe('/tmp/sim/sessions');
     expect(paths.backendInfoPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.json`);
@@ -104,6 +155,43 @@ describe('simulation runtime', () => {
     expect(storage.readFileSync(filePath, 'utf-8')).toBe('alpha\nbeta');
     expect(storage.existsSync(exclusivePath)).toBe(false);
     expect(storage.existsSync(join(workDir, 'renamed.json'))).toBe(false);
+  });
+
+  it('keeps in-memory storage directory listings updated across indexed mutations', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const root = '/tmp/indexed';
+    const appendedPath = join(root, 'append.txt');
+    const alphaPath = join(root, 'alpha.txt');
+    const nestedPath = join(root, 'nested');
+    const leafPath = join(nestedPath, 'leaf');
+
+    const list = (path: string) => storage.readdirSync(path, { withFileTypes: true }).map((entry) => entry.name);
+
+    storage.mkdirSync(leafPath, { recursive: true });
+    storage.writeFileSync(alphaPath, 'alpha');
+    storage.appendFileSync(appendedPath, 'append');
+    storage.tryExclusiveWriteSync(join(nestedPath, 'lock.json'), 'lock');
+    storage.writeAtomicSync(join(leafPath, 'state.json'), '{"ok":true}', { encoding: 'utf-8' });
+
+    expect(list(root)).toEqual(['alpha.txt', 'append.txt', 'nested']);
+    expect(list(nestedPath)).toEqual(['leaf', 'lock.json']);
+    expect(list(leafPath)).toEqual(['state.json']);
+
+    const snapshot = storage.snapshot();
+
+    storage.renameSync(alphaPath, join(nestedPath, 'alpha.txt'));
+    storage.unlinkSync(appendedPath);
+    storage.renameSync(nestedPath, join(root, 'renamed'));
+
+    expect(list(root)).toEqual(['renamed']);
+    expect(list(join(root, 'renamed'))).toEqual(['alpha.txt', 'leaf', 'lock.json']);
+
+    storage.rmSync(join(root, 'renamed'), { recursive: true });
+    expect(list(root)).toEqual([]);
+
+    storage.restore(snapshot);
+    expect(list(root)).toEqual(['alpha.txt', 'append.txt', 'nested']);
+    expect(list(nestedPath)).toEqual(['leaf', 'lock.json']);
   });
 
   it('scripts spawn and durable processes with deterministic kill and liveness behavior', async () => {
@@ -247,8 +335,8 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
-    expect(worldA.storage.existsSync(worldA.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
-    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
 
     worldA.progressStore.initJob({
       jobId: 'job-a',
@@ -269,12 +357,12 @@ describe('simulation runtime', () => {
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);
     expect(worldB.progressStore.listJobIds()).toEqual([]);
     expect(new SessionManager(worldB.projectRoot, worldB.runtime).get('fake-provider', sessionA.sessionId)).toBeNull();
-    expect(worldA.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
-    expect(worldB.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
+    expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
+    expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
 
     await worldA.backend.shutdown('done');
     await worldA.backend.waitForShutdown();
-    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 });

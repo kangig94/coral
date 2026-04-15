@@ -8,7 +8,12 @@ import {
   type SimulationBackend,
   type SimulationHookLog,
 } from './core/index.js';
-import { acquireNoRealIoMonitor, cloneNoRealIoReport, type NoRealIoRegistration, type NoRealIoReport } from './no-real-io.js';
+import {
+  acquireNoRealIoMonitor,
+  cloneNoRealIoReport,
+  type NoRealIoRegistration,
+  type NoRealIoReport,
+} from './no-real-io.js';
 import { normalizeWorldConfig } from './normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
 import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
@@ -258,9 +263,7 @@ export class SimulationWorld {
       }
 
       const advanceBy =
-        limits.timeoutMs === undefined
-          ? stepMs
-          : Math.min(stepMs, Math.max(0, limits.timeoutMs - elapsedMs));
+        limits.timeoutMs === undefined ? stepMs : Math.min(stepMs, Math.max(0, limits.timeoutMs - elapsedMs));
       if (advanceBy <= 0) {
         return {
           ok: false,
@@ -295,7 +298,9 @@ export class SimulationWorld {
 
   getProgress(jobId: string): string[] {
     return this.replay(jobId)
-      .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
+      .filter(
+        (event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress',
+      )
       .map((event) => event.message);
   }
 
@@ -317,7 +322,9 @@ export class SimulationWorld {
   async kill(target: { pid?: number; jobId?: string }): Promise<void> {
     this.assertUsable();
     this.assertBooted('kill');
-    const pid = target.pid ?? (target.jobId ? extractRuntimePid(this.readArtifact(target.jobId, 'runtime', { freshness: 'cached' })) : null);
+    const pid =
+      target.pid ??
+      (target.jobId ? extractRuntimePid(this.readArtifact(target.jobId, 'runtime', { freshness: 'cached' })) : null);
     if (pid === null || pid === undefined) {
       if (target.jobId) {
         throw new Error(`Cannot resolve a runtime pid for job ${target.jobId}`);
@@ -334,13 +341,13 @@ export class SimulationWorld {
     this.assertUsable();
     const jobDir = this.current.backend.progressStore.jobDir(jobId);
     const filePath = this.resolveArtifactPath(jobId, target);
-    this.current.backend.storage.mkdirSync(jobDir, { recursive: true });
-    this.current.backend.storage.writeFileSync(filePath, '{invalid-json');
+    this.current.backend.runtime.storage.mkdirSync(jobDir, { recursive: true });
+    this.current.backend.runtime.storage.writeFileSync(filePath, '{invalid-json');
   }
 
   enqueueHang(delayMs?: number): void {
     this.assertUsable();
-    this.current.backend.spawner.enqueueDurable({
+    this.current.backend.runtime.spawner.enqueueDurable({
       runtimeDelayMs: delayMs,
       exit: null,
     });
@@ -348,7 +355,7 @@ export class SimulationWorld {
 
   enqueueCrash(exitCode?: number, signal?: string, delayMs?: number): void {
     this.assertUsable();
-    this.current.backend.spawner.enqueueDurable({
+    this.current.backend.runtime.spawner.enqueueDurable({
       exit: {
         delayMs,
         exitCode: exitCode ?? (signal === undefined ? 1 : null),
@@ -464,26 +471,26 @@ export class SimulationWorld {
   }
 
   getVirtualElapsedMs(): number {
-    return this.elapsedOffsetMs + (this.current.backend.time.now() - this.epochMs);
+    return this.elapsedOffsetMs + (this.current.backend.runtime.time.now() - this.epochMs);
   }
 
   backendInfoExists(): boolean {
     this.assertUsable();
-    return this.current.backend.storage.existsSync(
-      this.current.backend.paths.backendInfoPath(this.current.backend.pluginRoot),
+    return this.current.backend.runtime.storage.existsSync(
+      this.current.backend.runtime.paths.backendInfoPath(this.current.backend.pluginRoot),
     );
   }
 
   hasProjectSourceCache(projectRoot: string): boolean {
     this.assertUsable();
-    return this.current.backend.paths
+    return this.current.backend.runtime.paths
       .snapshot()
       .projectSourceCache.some(([cachedProjectRoot]) => cachedProjectRoot === projectRoot);
   }
 
   getKillLog(): Array<{ pid: number; signal: NodeJS.Signals | 0 }> {
     this.assertUsable();
-    return this.current.backend.spawner.killCalls.map((entry) => ({ ...entry }));
+    return this.current.backend.runtime.spawner.killCalls.map((entry) => ({ ...entry }));
   }
 
   isPidAlive(pid: number): boolean {
@@ -555,17 +562,16 @@ export class SimulationWorld {
         Boolean(status?.result) ||
         (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
       progress: replay
-        .filter((event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress')
+        .filter(
+          (event): event is PersistedProgressRecord & { type: 'progress'; message: string } =>
+            event.type === 'progress',
+        )
         .map((event) => event.message),
       result: status?.result ?? null,
     };
   }
 
-  private observeJobIncremental(
-    jobId: string,
-    cursor: ReplayCursor,
-    accumulatedProgress: string[],
-  ): WaitObservation {
+  private observeJobIncremental(jobId: string, cursor: ReplayCursor, accumulatedProgress: string[]): WaitObservation {
     const status = this.current.backend.progressStore.readStatus(jobId);
     const newEvents = this.current.backend.progressStore.replayFrom(jobId, 0, cursor);
     let terminalSeen = false;
@@ -624,11 +630,7 @@ export class SimulationWorld {
     }
   }
 
-  private resolveStreamArtifactPath(
-    jobId: string,
-    kind: 'stdout' | 'stderr',
-    freshness: 'cached' | 'fresh',
-  ): string {
+  private resolveStreamArtifactPath(jobId: string, kind: 'stdout' | 'stderr', freshness: 'cached' | 'fresh'): string {
     const runtimeRecord =
       freshness === 'cached'
         ? this.current.backend.progressStore.readRuntimeRecord(jobId)
@@ -646,7 +648,7 @@ export class SimulationWorld {
 
   private readTextArtifact(path: string): string | null {
     try {
-      return this.current.backend.storage.readFileSync(path, 'utf-8');
+      return this.current.backend.runtime.storage.readFileSync(path, 'utf-8');
     } catch {
       return null;
     }

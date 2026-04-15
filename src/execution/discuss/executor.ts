@@ -7,7 +7,6 @@ import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import { isLivePhase } from '../../shared/types.js';
 import { errorMessage } from '../../shared/utils.js';
-import { readStatusRecord } from '../../client/readers.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { AgentConfig, DiscussContext } from './context.js';
@@ -29,6 +28,13 @@ export const PURPOSE_SPEECH = 'speech';
 export const PURPOSE_EPOCH_EVALUATION = 'epoch_evaluation';
 export const PURPOSE_FOLLOW_UP = 'follow_up';
 export const PURPOSE_SYNTHESIS = 'synthesis';
+
+export type DiscussPurpose =
+  | typeof PURPOSE_BID
+  | typeof PURPOSE_SPEECH
+  | typeof PURPOSE_EPOCH_EVALUATION
+  | typeof PURPOSE_FOLLOW_UP
+  | typeof PURPOSE_SYNTHESIS;
 
 export type AttemptSuccess = {
   ok: true;
@@ -56,7 +62,7 @@ export type ExecuteAgentAttemptParams = {
   instruction: string;
   cwd: string;
   callerCtx: CallerContext;
-  purpose: string;
+  purpose: DiscussPurpose;
   timeoutMs?: number;
 };
 
@@ -68,13 +74,13 @@ export type RunFacilitatorTurnParams = {
   instruction: string;
   callerCtx: CallerContext;
   timeoutMs: number;
-  purpose: string;
+  purpose: DiscussPurpose;
 };
 
 export type RecordJobFinishedParams = {
   sessionId: string;
   agentName: string;
-  purpose: string;
+  purpose: DiscussPurpose;
   jobId: string;
   attempt: number;
   outcome: string;
@@ -123,7 +129,7 @@ export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string,
   ) as Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
-export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: string): number {
+export function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussPurpose): number {
   if (!run) {
     return 1;
   }
@@ -208,7 +214,7 @@ export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFi
         current.state.topic,
         current.lastAppliedSeq + 1,
         'agent.job.finished',
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
         {
           agent: agentName,
           jobId,
@@ -240,7 +246,7 @@ export async function executeAgentAttempt(
   let activeJobId = activeRun.currentJobPurpose === purpose ? activeRun.currentJobId : undefined;
 
   while (activeJobId) {
-    const status = readStatusRecord(activeJobId);
+    const status = ctx.jobStatusReader.read(activeJobId);
     if (status === null) {
       await recordJobFinished(ctx, {
         sessionId,
@@ -363,7 +369,7 @@ export async function executeAgentAttempt(
           current.state.topic,
           current.lastAppliedSeq + 1,
           'agent.run.bound',
-          nowIsoString(),
+          nowIsoString(ctx.runtime.time),
           {
             agent: agentName,
             executionSessionId: launch.session,
@@ -390,7 +396,7 @@ export async function executeAgentAttempt(
         current.state.topic,
         current.lastAppliedSeq + 1,
         'agent.job.started',
-        nowIsoString(),
+        nowIsoString(ctx.runtime.time),
         {
           agent: agentName,
           jobId: launch.job,

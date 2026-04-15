@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
 import { makeEvent } from '../../discuss/events.js';
@@ -14,6 +13,7 @@ import { attachSession } from '../discuss/registry.js';
 import { submitManualSpeech } from '../discuss/operations.js';
 import type { BackendServerController } from '../server.js';
 import { createBackendServer } from '../server.js';
+import type { Runtime } from '../runtime.js';
 import {
   appendPersistedEvents,
   cleanupDiscussHarnesses,
@@ -122,12 +122,38 @@ describe('server discuss API', () => {
     vi.restoreAllMocks();
   });
 
+  function createServerRuntime(runtime: Runtime): Runtime {
+    return {
+      ...runtime,
+      time: {
+        now: () => runtime.time.now(),
+        sleep: (ms) =>
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, ms);
+            timer.unref?.();
+          }),
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: (handle) => {
+          if (handle) clearTimeout(handle as NodeJS.Timeout);
+        },
+        setInterval: (fn, ms) => setInterval(fn, ms),
+        clearInterval: (handle) => {
+          if (handle) clearInterval(handle as NodeJS.Timeout);
+        },
+      },
+    };
+  }
+
   async function startServer(
     projectRoot: string,
     registry: DiscussContextRegistry,
     service = createExecutionServiceStub(),
+    runtime?: Runtime,
+    resolveProjectSourceFn?: (projectRoot: string) => string,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createBackendServer({
+      runtime: runtime ? createServerRuntime(runtime) : undefined,
+      resolveProjectSourceFn,
       bootSnapshot: {
         instanceId: 'server-discuss-api-test',
         token: 'test-token',
@@ -295,7 +321,7 @@ describe('server discuss API', () => {
       ],
     });
 
-    const backend = await startServer(harness.projectRoot, createDiscussContextRegistry(), harness.service);
+    const backend = await startServer(harness.projectRoot, createDiscussContextRegistry(), harness.service, harness.runtime);
 
     const controlResponse = await fetch(
       `${backend.baseUrl}/discuss/sessions/ended-session?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
@@ -346,19 +372,19 @@ describe('server discuss API', () => {
 
   it('loads discuss detail from another checkout of the same source', async () => {
     const sharedSource = 'test-org/shared-repo';
-    const sharedRemote = 'https://github.com/test-org/shared-repo.git';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
     const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
-    // Init git repos so server's resolveProjectSource returns the same source
-    execFileSync('git', ['init', '-q'], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['init', '-q'], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
     await persistSession(firstHarness, {
       sessionId: 'shared-session',
     });
 
-    const backend = await startServer(secondHarness.projectRoot, createDiscussContextRegistry(), secondHarness.service);
+    const backend = await startServer(
+      secondHarness.projectRoot,
+      createDiscussContextRegistry(),
+      secondHarness.service,
+      firstHarness.runtime,
+      () => sharedSource,
+    );
 
     const response = await fetch(
       `${backend.baseUrl}/discuss/sessions/shared-session?projectRoot=${encodeURIComponent(secondHarness.projectRoot)}`,
@@ -374,17 +400,12 @@ describe('server discuss API', () => {
 
   it('dedupes same-source sessions across different project roots in GET /discuss/sessions', async () => {
     const sharedSource = 'test-org/shared-repo';
-    const sharedRemote = 'https://github.com/test-org/shared-repo.git';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
     const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
-    execFileSync('git', ['init', '-q'], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: firstHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['init', '-q'], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
-    execFileSync('git', ['remote', 'add', 'origin', sharedRemote], { cwd: secondHarness.projectRoot, stdio: 'ignore' });
     const firstSnapshot = await persistSession(firstHarness, {
       sessionId: 'shared-session',
     });
-    const secondSnapshot = await appendPersistedEvents(secondHarness, 'shared-session', (current) => [
+    const secondSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
       makeEvent(
         current.sessionId,
         secondHarness.projectRoot,
@@ -400,11 +421,18 @@ describe('server discuss API', () => {
       ),
     ]);
 
+    const registry = createDiscussContextRegistry();
+    const backend = await startServer(
+      firstHarness.projectRoot,
+      registry,
+      firstHarness.service,
+      firstHarness.runtime,
+      () => sharedSource,
+    );
     attachSession(firstHarness.context, firstSnapshot);
     attachSession(secondHarness.context, secondSnapshot);
-    firstHarness.registry.contexts.set(secondHarness.projectRoot, secondHarness.context);
-
-    const backend = await startServer(firstHarness.projectRoot, firstHarness.registry, firstHarness.service);
+    registry.contexts.set(firstHarness.projectRoot, firstHarness.context);
+    registry.contexts.set(secondHarness.projectRoot, secondHarness.context);
 
     const response = await fetch(`${backend.baseUrl}/discuss/sessions`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -475,7 +503,7 @@ describe('server discuss API', () => {
     });
 
     const registry = createDiscussContextRegistry();
-    const backend = await startServer(harness.projectRoot, registry, harness.service);
+    const backend = await startServer(harness.projectRoot, registry, harness.service, harness.runtime);
     const context = getDiscussContext(registry, harness.projectRoot);
     if (!context) {
       throw new Error('Expected recovered discuss context');

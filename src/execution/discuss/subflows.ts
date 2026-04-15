@@ -88,9 +88,29 @@ type BidOutcome = {
   answeredCarryForward: boolean;
 };
 
+function failedBidOutcome(
+  agentName: string,
+  options: {
+    executionFailure: boolean;
+    shouldExpel?: boolean;
+    answeredCarryForward?: boolean;
+  },
+): BidOutcome {
+  return {
+    agentName,
+    score: 0,
+    thought: '',
+    executionFailure: options.executionFailure,
+    shouldExpel: options.shouldExpel ?? false,
+    answeredCarryForward: options.answeredCarryForward ?? false,
+  };
+}
+
 export type SubflowResult = {
   shouldResume: boolean;
 };
+
+const ctxTs = (ctx: DiscussContext): string => nowIsoString(ctx.runtime.time);
 
 function emptyEpochEvaluation(): EpochEvaluation {
   return {
@@ -263,7 +283,11 @@ function buildFollowUpPrompt(state: DiscussState, agentName: string, question: s
   ].join('\n\n');
 }
 
-function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[]): DiscussDomainEvent[] {
+function buildBidBatch(
+  ctx: DiscussContext,
+  snapshot: PersistedDiscussSnapshot,
+  outcomes: BidOutcome[],
+): DiscussDomainEvent[] {
   if (snapshot.state.status !== 'bidding') {
     return [];
   }
@@ -280,11 +304,9 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
       outcome.agentName,
       outcome.score,
       outcome.thought,
-      snapshot.sessionId,
-      snapshot.projectRoot,
-      snapshot.state.topic,
+      { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
       nextSeq,
-      nowIsoString(),
+      ctxTs(ctx),
     );
 
     if (!bidDecision.ok) {
@@ -311,11 +333,9 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
       decideExpel(
         working.state,
         expelAgents,
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
+        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
         nextSeq,
-        nowIsoString(),
+        ctxTs(ctx),
       ),
     );
     events.push(...expelEvents);
@@ -336,7 +356,7 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
         snapshot.state.topic,
         nextSeq,
         'must_answer.carry_forward.set',
-        nowIsoString(),
+        ctxTs(ctx),
         { items: remaining },
       );
       events.push(clearEvent);
@@ -353,11 +373,9 @@ function buildBidBatch(snapshot: PersistedDiscussSnapshot, outcomes: BidOutcome[
       decideEnd(
         working.state,
         { endReason: 'no_participants' },
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
+        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
         nextSeq,
-        nowIsoString(),
+        ctxTs(ctx),
       ),
     );
     events.push(...endEvents);
@@ -399,14 +417,7 @@ async function collectBidOutcome(
     latestRun.lastAttemptOutcome === 'retryable_parse_error' &&
     (latestRun.currentAttempt ?? 0) >= MAX_BID_ATTEMPTS
   ) {
-    return {
-      agentName,
-      score: 0,
-      thought: '',
-      executionFailure: false,
-      shouldExpel: false,
-      answeredCarryForward: false,
-    };
+    return failedBidOutcome(agentName, { executionFailure: false });
   }
 
   let prompt = basePrompt;
@@ -426,15 +437,11 @@ async function collectBidOutcome(
     });
 
     if (!isAttemptSuccess(attempt)) {
-      return {
-        agentName,
-        score: 0,
-        thought: '',
+      return failedBidOutcome(agentName, {
         executionFailure: true,
         shouldExpel:
           loadAttachedOrPersistedSnapshot(ctx, sessionId)?.state.agents[agentName]?.participation === 'required',
-        answeredCarryForward: false,
-      };
+      });
     }
 
     if (attempt.nonResumable) {
@@ -446,14 +453,10 @@ async function collectBidOutcome(
         attempt: attempt.attempt,
         outcome: 'non_resumable',
       });
-      return {
-        agentName,
-        score: 0,
-        thought: '',
+      return failedBidOutcome(agentName, {
         executionFailure: true,
         shouldExpel: snapshot.state.agents[agentName]?.participation === 'required',
-        answeredCarryForward: false,
-      };
+      });
     }
 
     try {
@@ -485,14 +488,7 @@ async function collectBidOutcome(
       });
 
       if (attempt.attempt >= MAX_BID_ATTEMPTS) {
-        return {
-          agentName,
-          score: 0,
-          thought: '',
-          executionFailure: false,
-          shouldExpel: false,
-          answeredCarryForward: false,
-        };
+        return failedBidOutcome(agentName, { executionFailure: false });
       }
 
       const failure = errorMessage(error);
@@ -610,7 +606,7 @@ export async function collectBids(
 
   const committed = await commitDecision(ctx, sessionId, (current) => ({
     ok: true,
-    value: buildBidBatch(current, outcomes),
+    value: buildBidBatch(ctx, current, outcomes),
   }));
   if (!committed.ok && committed.error !== 'session_not_found') {
     throw new DiscussManagerError(committed.error, committed.detail);
@@ -664,11 +660,9 @@ export async function collectSpeech(
     const committed = await commitDecision(ctx, sessionId, (current) =>
       decideSpeechTimeout(
         current.state,
-        sessionId,
-        ctx.projectRoot,
-        current.state.topic,
+        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
         current.lastAppliedSeq + 1,
-        nowIsoString(),
+        ctxTs(ctx),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {
@@ -690,11 +684,9 @@ export async function collectSpeech(
       current.state,
       winnerName,
       attempt.content,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      ctxTs(ctx),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {
@@ -759,15 +751,13 @@ export async function handleEpochTransition(
     }
 
     const nextSeq = current.lastAppliedSeq + 1;
-    const ts = nowIsoString();
+    const ts = ctxTs(ctx);
     if (evaluation.convergence < CONVERGENCE_THRESHOLD) {
       const summaryEvents = unwrapResult(
         decideEpochSummary(
           current.state,
           evaluation.summary,
-          sessionId,
-          ctx.projectRoot,
-          current.state.topic,
+          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
           nextSeq,
           ts,
         ),
@@ -809,9 +799,7 @@ export async function handleEpochTransition(
     return decideEnd(
       current.state,
       { force: true, reason: 'Discussion converged.' },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       nextSeq,
       ts,
     );
@@ -840,11 +828,9 @@ export async function runFollowUpTurns(
         decideEnd(
           current.state,
           { force: true, reason: 'Discussion converged after follow-ups.' },
-          sessionId,
-          ctx.projectRoot,
-          current.state.topic,
+          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
           current.lastAppliedSeq + 1,
-          nowIsoString(),
+          ctxTs(ctx),
         ),
       );
       if (!ended.ok && ended.error !== 'session_not_found') {
@@ -863,7 +849,7 @@ export async function runFollowUpTurns(
           current.state.topic,
           current.lastAppliedSeq + 1,
           'follow_up.answered',
-          nowIsoString(),
+          ctxTs(ctx),
           {
             agent: item.agent,
             question: item.question,
@@ -922,11 +908,9 @@ export async function handleSynthesis(
       decideSynthesis(
         current.state,
         result.content,
-        sessionId,
-        ctx.projectRoot,
-        current.state.topic,
+        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
         current.lastAppliedSeq + 1,
-        nowIsoString(),
+        ctxTs(ctx),
       ),
     );
     if (!committed.ok && committed.error !== 'session_not_found') {

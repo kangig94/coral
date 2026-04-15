@@ -8,6 +8,10 @@ export function jobsDir(): string {
   return join(tmpdir(), 'coral-jobs');
 }
 
+export function jobStatusPath(jobId: string): string {
+  return join(jobsDir(), jobId, 'status.json');
+}
+
 function coralHome(): string {
   return join(homedir(), '.claude', 'coral');
 }
@@ -120,8 +124,12 @@ export function pluginRootNamespace(pluginRoot: string): string {
   return ns;
 }
 
+export function installationDirForNamespace(namespace: string): string {
+  return join(coralHome(), 'installations', namespace);
+}
+
 export function installationDir(pluginRoot: string): string {
-  return join(coralHome(), 'installations', pluginRootNamespace(pluginRoot));
+  return installationDirForNamespace(pluginRootNamespace(pluginRoot));
 }
 
 export function backendInfoPath(pluginRoot: string): string {
@@ -138,6 +146,10 @@ export function sessionBase(): string {
 
 export function discussSourcesPath(): string {
   return join(coralRoot(), 'discuss-sources.json');
+}
+
+export function discussSourcesLockPath(): string {
+  return `${discussSourcesPath()}.lock`;
 }
 
 /**
@@ -159,6 +171,10 @@ export function discussBaseDir(projectRoot: string): string {
  */
 export function discussDiscoveryPathForSource(source: string): string {
   return join(discussBaseDirForSource(source), 'discovery.json');
+}
+
+export function discussDiscoveryLockPathForSource(source: string): string {
+  return join(discussBaseDirForSource(source), '.lock');
 }
 
 /**

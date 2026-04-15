@@ -28,22 +28,30 @@ import {
   createDiscussHarness,
   createExecutionServiceStub,
   defaultAgents,
+  discussContextOptions,
   persistSession,
+  type DiscussHarness,
 } from './discuss-test-helpers.js';
 
 function createHelpers(
   registry: DiscussContextRegistry,
-  stores: Map<string, ReturnType<typeof createDiscussHarness>['store']>,
+  stores: Map<string, DiscussHarness>,
   service: ExecutionService,
 ) {
   return {
     getExecutionService: (_ctx: CallerContext) => service,
     getDiscussContext: (ctx: CallerContext) => {
-      const store = stores.get(ctx.projectRoot);
-      if (!store) {
+      const harness = stores.get(ctx.projectRoot);
+      if (!harness) {
         throw new Error(`Missing discuss store for ${ctx.projectRoot}`);
       }
-      return getOrCreateDiscussContext(registry, ctx.projectRoot, service, store);
+      return getOrCreateDiscussContext(
+        registry,
+        ctx.projectRoot,
+        service,
+        harness.store,
+        discussContextOptions(harness),
+      );
     },
     abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
     scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
@@ -97,8 +105,14 @@ async function callDiscussTool(
 async function createWatchToolFixture(sessionId = 'discuss-1') {
   const harness = createDiscussHarness();
   const registry = createDiscussContextRegistry();
-  const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
-  const stores = new Map([[harness.projectRoot, harness.store]]);
+  const context = getOrCreateDiscussContext(
+    registry,
+    harness.projectRoot,
+    harness.service,
+    harness.store,
+    discussContextOptions(harness),
+  );
+  const stores = new Map([[harness.projectRoot, harness]]);
   await persistSession(
     { ...harness, context },
     {
@@ -180,9 +194,15 @@ describe('execution discuss tools', () => {
       }),
     );
     const registry = createDiscussContextRegistry();
-    getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+    getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const stores = new Map([[harness.projectRoot, harness]]);
 
     const result = await callDiscussTool(
       {
@@ -210,8 +230,14 @@ describe('execution discuss tools', () => {
   it('discuss_abort appends a terminal state and detaches the live session', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+    const stores = new Map([[harness.projectRoot, harness]]);
     await persistSession({ ...harness, context }, { sessionId: 'discuss-1', recover: true });
 
     const result = await callDiscussTool(
@@ -282,8 +308,14 @@ describe('execution discuss tools', () => {
   it('discuss_watch preserves immediate epoch_transition ordering from committed batches', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+    const stores = new Map([[harness.projectRoot, harness]]);
     await persistSession(
       { ...harness, context },
       {
@@ -553,8 +585,14 @@ describe('execution discuss tools', () => {
   it('discuss_bid records a manual observer bid through the store-backed manager', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+    const stores = new Map([[harness.projectRoot, harness]]);
     await persistSession(
       { ...harness, context },
       {
@@ -611,8 +649,14 @@ describe('execution discuss tools', () => {
   it('discuss_speech records speech and enforces turn ownership', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+    const stores = new Map([[harness.projectRoot, harness]]);
     await persistSession(
       { ...harness, context },
       {
@@ -739,7 +783,7 @@ describe('execution discuss tools', () => {
   it('returns session_not_found when a discuss tool targets an unknown session', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const stores = new Map([[harness.projectRoot, harness.store]]);
+    const stores = new Map([[harness.projectRoot, harness]]);
 
     const result = await callDiscussTool(
       {
@@ -763,13 +807,18 @@ describe('execution discuss tools', () => {
     it('discuss_abort returns discuss_error for non-DiscussManagerError', async () => {
       const harness = createDiscussHarness();
       const registry = createDiscussContextRegistry();
-      const stores = new Map([[harness.projectRoot, harness.store]]);
+      const stores = new Map([[harness.projectRoot, harness]]);
       vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
-      const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+      const context = getOrCreateDiscussContext(
+        registry,
+        harness.projectRoot,
+        harness.service,
+        harness.store,
+        discussContextOptions(harness),
+      );
       await persistSession({ ...harness, context }, { sessionId: 'sess-err' });
 
       // Make getSession throw a plain Error (simulates unexpected failure inside the operation)
-      const origGet = getSession;
       vi.spyOn(await import('../discuss/registry.js'), 'getSession').mockImplementationOnce(() => {
         throw new Error('disk full');
       });

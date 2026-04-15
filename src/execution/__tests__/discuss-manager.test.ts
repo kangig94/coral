@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
-import * as discussReaders from '../../client/readers.js';
 import * as discussLoop from '../discuss/loop.js';
 import * as discussSubflows from '../discuss/subflows.js';
 import {
@@ -10,7 +9,7 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
 } from '../discuss/context-registry.js';
-import { runPlainTurn } from '../discuss/executor.js';
+import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../discuss/executor.js';
 import {
   abortDiscussSession,
   getWatchState,
@@ -20,11 +19,13 @@ import {
 import { detachSession, getSession } from '../discuss/registry.js';
 import {
   DEFAULT_TOPIC,
+  advanceDiscussRuntime,
   attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
   defaultAgents,
+  discussContextOptions,
   persistSession,
   type DiscussHarness,
 } from './discuss-test-helpers.js';
@@ -61,8 +62,20 @@ describe('Discuss context registry', () => {
     const harnessOne = createDiscussHarness(serviceOne);
     const harnessTwo = createDiscussHarness(serviceTwo);
     const registry = createDiscussContextRegistry();
-    const contextOne = getOrCreateDiscussContext(registry, harnessOne.projectRoot, serviceOne, harnessOne.store);
-    const contextTwo = getOrCreateDiscussContext(registry, harnessTwo.projectRoot, serviceTwo, harnessTwo.store);
+    const contextOne = getOrCreateDiscussContext(
+      registry,
+      harnessOne.projectRoot,
+      serviceOne,
+      harnessOne.store,
+      discussContextOptions(harnessOne),
+    );
+    const contextTwo = getOrCreateDiscussContext(
+      registry,
+      harnessTwo.projectRoot,
+      serviceTwo,
+      harnessTwo.store,
+      discussContextOptions(harnessTwo),
+    );
 
     const snapshotOne = await persistSession(harnessOne, { sessionId: 'shared', recover: false });
     const snapshotTwo = await persistSession(harnessTwo, { sessionId: 'shared', topic: 'topic two', recover: false });
@@ -107,7 +120,7 @@ describe('Discuss executor and operations', () => {
       instruction: 'System turn contract',
       cwd: '/repo',
       callerCtx: harness.ctx,
-      purpose: 'turn',
+      purpose: PURPOSE_BID,
     });
 
     expect(start).toHaveBeenCalledWith(
@@ -174,7 +187,7 @@ describe('Discuss executor and operations', () => {
       instruction: 'Resume turn contract',
       cwd: '/repo',
       callerCtx: harness.ctx,
-      purpose: 'turn',
+      purpose: PURPOSE_SPEECH,
     });
 
     expect(resume).toHaveBeenCalledWith(
@@ -201,7 +214,6 @@ describe('Discuss executor and operations', () => {
   });
 
   it('schedules the loop after start completes initial bid collection', async () => {
-    vi.useFakeTimers();
     const start = vi
       .fn()
       .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
@@ -223,7 +235,7 @@ describe('Discuss executor and operations', () => {
 
     expect(session.snapshot.state.current_bids).toEqual({ alpha: 61, beta: 37 });
     expect(session.snapshot.state.status).toBe('bidding');
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
     expect(getSession(harness.context, 'discuss-1')?.snapshot.state.status).not.toBe('bidding');
 
     harness.cleanup();
@@ -275,10 +287,10 @@ describe('Discuss executor and operations', () => {
         ),
       ],
     });
-    const readDiscussEventLogSpy = vi.spyOn(discussReaders, 'readDiscussEventLog');
+    const readSessionEventsSpy = vi.spyOn(harness.store, 'readSessionEvents');
 
     const recovered = await recoverSessions(harness);
-    const recoveryReadCount = readDiscussEventLogSpy.mock.calls.length;
+    const recoveryReadCount = readSessionEventsSpy.mock.calls.length;
 
     expect(recovered).toHaveLength(0);
     expect(recoveryReadCount).toBeGreaterThan(0);
@@ -289,13 +301,12 @@ describe('Discuss executor and operations', () => {
     expect(getWatchState(harness.context, 'discuss-recovery', 1)).toMatchObject({
       cursor: 2,
     });
-    expect(readDiscussEventLogSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
+    expect(readSessionEventsSpy).toHaveBeenCalledTimes(recoveryReadCount + 2);
 
     harness.cleanup();
   });
 
   it('recovered observer_wait sessions restart the full bid delay from startup time', async () => {
-    vi.useFakeTimers();
     const harness = createDiscussHarness();
     vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
@@ -324,13 +335,13 @@ describe('Discuss executor and operations', () => {
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
 
-    await vi.advanceTimersByTimeAsync(4_999);
+    await advanceDiscussRuntime(harness, 4_999);
     expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
       status: 'bidding',
       current_speaker: null,
     });
 
-    await vi.advanceTimersByTimeAsync(1);
+    await advanceDiscussRuntime(harness, 1);
     expect(harness.store.load('discuss-observer-wait')?.state).toMatchObject({
       status: 'speaking',
       current_speaker: 'alpha',
@@ -338,7 +349,6 @@ describe('Discuss executor and operations', () => {
   });
 
   it('recovered bidding sessions with no pending auto work still resume into round-close', async () => {
-    vi.useFakeTimers();
     const harness = createDiscussHarness();
     vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
@@ -362,7 +372,7 @@ describe('Discuss executor and operations', () => {
 
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
 
     expect(harness.store.load('discuss-round-close')?.state).toMatchObject({
       status: 'speaking',

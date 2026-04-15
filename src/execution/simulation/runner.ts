@@ -1,5 +1,6 @@
 import { extractRuntimePid, SimulationWorld, type WaitDetail } from './world.js';
 import type { ExpectStep, KillStep, SimulationDocument, Step } from './schema.js';
+import { errorMessage } from '../../shared/utils.js';
 
 export type StepResult = {
   stepIndex: number;
@@ -36,9 +37,7 @@ type RunnerCursor = {
   launchedJobIds: Set<string>;
 };
 
-type ResolvedJobTarget =
-  | { ok: true; jobId: string }
-  | { ok: false; detail: FailureDetail };
+type ResolvedJobTarget = { ok: true; jobId: string } | { ok: false; detail: FailureDetail };
 
 function createRunnerCursor(): RunnerCursor {
   return {
@@ -46,13 +45,6 @@ function createRunnerCursor(): RunnerCursor {
     currentJobId: null,
     launchedJobIds: new Set<string>(),
   };
-}
-
-function asErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 function resolveJobTarget(jobId: string | undefined, cursor: RunnerCursor, action: string): ResolvedJobTarget {
@@ -139,7 +131,12 @@ async function runExpectStep(
   world: SimulationWorld,
   step: ExpectStep,
   cursor: RunnerCursor,
-): Promise<{ ok: boolean; expected: Record<string, unknown>; actual: Record<string, unknown>; detail?: FailureDetail }> {
+): Promise<{
+  ok: boolean;
+  expected: Record<string, unknown>;
+  actual: Record<string, unknown>;
+  detail?: FailureDetail;
+}> {
   const expected = captureExpectedAssertions(step);
   const actual: Record<string, unknown> = {};
   const mismatches: string[] = [];
@@ -227,8 +224,7 @@ async function runExpectStep(
 
   if (step.noRealIO !== undefined) {
     const report = world.getNoRealIoReport();
-    const noRealIo =
-      report.realFetchCalls === 0 && report.realKillCalls === 0 && report.violations.length === 0;
+    const noRealIo = report.realFetchCalls === 0 && report.realKillCalls === 0 && report.violations.length === 0;
     actual.noRealIO = report;
     if (noRealIo !== step.noRealIO) {
       mismatches.push(`expected noRealIO=${step.noRealIO}`);
@@ -414,14 +410,22 @@ async function executeStep(
 
       case 'kill': {
         const outcome = await runKillStep(world, step, cursor);
-        return buildStepResult(world, step, stepIndex, startedAt, outcome.ok ? {
-          ok: true,
-          actual: outcome.actual,
-        } : {
-          ok: false,
-          actual: outcome.actual,
-          detail: outcome.detail,
-        });
+        return buildStepResult(
+          world,
+          step,
+          stepIndex,
+          startedAt,
+          outcome.ok
+            ? {
+                ok: true,
+                actual: outcome.actual,
+              }
+            : {
+                ok: false,
+                actual: outcome.actual,
+                detail: outcome.detail,
+              },
+        );
       }
 
       case 'cycle':
@@ -444,17 +448,25 @@ async function executeStep(
 
       case 'expect': {
         const outcome = await runExpectStep(world, step, cursor);
-        return buildStepResult(world, step, stepIndex, startedAt, outcome.ok ? {
-          ok: true,
-          expected: outcome.expected,
-          actual: outcome.actual,
-          detail: { actual: outcome.actual },
-        } : {
-          ok: false,
-          expected: outcome.expected,
-          actual: outcome.actual,
-          detail: outcome.detail,
-        });
+        return buildStepResult(
+          world,
+          step,
+          stepIndex,
+          startedAt,
+          outcome.ok
+            ? {
+                ok: true,
+                expected: outcome.expected,
+                actual: outcome.actual,
+                detail: { actual: outcome.actual },
+              }
+            : {
+                ok: false,
+                expected: outcome.expected,
+                actual: outcome.actual,
+                detail: outcome.detail,
+              },
+        );
       }
 
       case 'hang': {
@@ -509,7 +521,7 @@ async function executeStep(
       ok: false,
       detail: {
         failureKind: 'exception',
-        message: asErrorMessage(error),
+        message: errorMessage(error),
         actual: error instanceof Error ? { name: error.name, message: error.message } : error,
       },
     });

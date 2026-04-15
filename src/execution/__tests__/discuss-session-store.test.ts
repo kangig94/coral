@@ -29,6 +29,7 @@ import { replayDiscussEvents } from '../../discuss/reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '../../discuss/types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '../discuss/session-store.js';
+import { createRealRuntime } from '../runtime.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';
@@ -41,7 +42,12 @@ const originalHome = process.env.HOME;
 const activeStores: DiscussSessionStore[] = [];
 
 function createStore(src: string): DiscussSessionStore {
-  const store = new DiscussSessionStore(src);
+  const runtime = createRealRuntime();
+  const store = new DiscussSessionStore(src, {
+    storage: runtime.storage,
+    time: runtime.time,
+    paths: runtime.paths,
+  });
   activeStores.push(store);
   return store;
 }
@@ -77,7 +83,14 @@ async function appendRoundTripHistory(
   finalSnapshot: Awaited<ReturnType<DiscussSessionStore['append']>>;
 }> {
   const input = makeInput();
-  const createEvents = unwrap(decideSessionCreate(input, sessionId, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'));
+  const createEvents = unwrap(
+    decideSessionCreate(
+      input,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      1,
+      '2026-03-11T00:00:00.000Z',
+    ),
+  );
   const created = await store.append(sessionId, 0, createEvents);
 
   const bidAlpha = unwrap(
@@ -86,9 +99,7 @@ async function appendRoundTripHistory(
       'alpha',
       60,
       'I should open the discussion.',
-      sessionId,
-      projectRoot,
-      TOPIC,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
       3,
       '2026-03-11T00:00:01.000Z',
     ),
@@ -101,9 +112,7 @@ async function appendRoundTripHistory(
       'beta',
       75,
       'I should take the first turn.',
-      sessionId,
-      projectRoot,
-      TOPIC,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
       4,
       '2026-03-11T00:00:02.000Z',
     ),
@@ -111,7 +120,12 @@ async function appendRoundTripHistory(
   const afterBeta = await store.append(sessionId, afterAlpha.lastAppliedSeq, bidBeta);
 
   const closeRound = unwrap(
-    decideBidRoundClose(afterBeta.state, sessionId, projectRoot, TOPIC, 5, '2026-03-11T00:00:03.000Z'),
+    decideBidRoundClose(
+      afterBeta.state,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      5,
+      '2026-03-11T00:00:03.000Z',
+    ),
   );
   const afterClose = await store.append(sessionId, afterBeta.lastAppliedSeq, closeRound);
 
@@ -120,9 +134,7 @@ async function appendRoundTripHistory(
       afterClose.state,
       'beta',
       'I will open with the transportation impact.',
-      sessionId,
-      projectRoot,
-      TOPIC,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
       6,
       '2026-03-11T00:00:04.000Z',
     ),
@@ -282,7 +294,12 @@ describe('DiscussSessionStore', () => {
     const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
-      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
     );
     const created = await store.append(SESSION_ID, 0, createEvents);
 
@@ -292,9 +309,7 @@ describe('DiscussSessionStore', () => {
         'alpha',
         60,
         'Still fresh.',
-        SESSION_ID,
-        projectRoot,
-        TOPIC,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
         3,
         '2026-03-11T00:00:01.000Z',
       ),
@@ -311,7 +326,14 @@ describe('DiscussSessionStore', () => {
     const store = createStore(source);
     const lockDir = join(discussSessionDir(projectRoot, SESSION_ID), '.lock');
     mkdirSync(lockDir, { recursive: true });
-    const createEvents = unwrap(decideSessionCreate(makeInput(), SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'));
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
 
     const appendPromise = store.append(SESSION_ID, 0, createEvents);
 
@@ -335,7 +357,12 @@ describe('DiscussSessionStore', () => {
     const store = createStore(source);
     const input = makeInput();
     const createEvents = unwrap(
-      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
     );
     const created = await store.append(SESSION_ID, 0, createEvents);
     store.flushDirtyIndexes();
@@ -360,9 +387,7 @@ describe('DiscussSessionStore', () => {
         'alpha',
         60,
         'Discovery should advance on this append.',
-        SESSION_ID,
-        projectRoot,
-        TOPIC,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
         3,
         '2026-03-11T00:00:01.000Z',
       ),
@@ -386,10 +411,20 @@ describe('DiscussSessionStore', () => {
     const input = makeInput();
 
     const firstCreate = unwrap(
-      decideSessionCreate(input, SESSION_ID, projectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z'),
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
     );
     const secondCreate = unwrap(
-      decideSessionCreate(input, SECOND_SESSION_ID, projectRoot, `${TOPIC} (session 2)`, 1, '2026-03-11T00:00:00.500Z'),
+      decideSessionCreate(
+        input,
+        { sessionId: SECOND_SESSION_ID, projectRoot: projectRoot, topic: `${TOPIC} (session 2)` },
+        1,
+        '2026-03-11T00:00:00.500Z',
+      ),
     );
 
     await Promise.all([
@@ -425,7 +460,14 @@ describe('DiscussSessionStore', () => {
     const created = await firstStore.append(
       SESSION_ID,
       0,
-      unwrap(decideSessionCreate(makeInput(), SESSION_ID, firstProjectRoot, TOPIC, 1, '2026-03-11T00:00:00.000Z')),
+      unwrap(
+        decideSessionCreate(
+          makeInput(),
+          { sessionId: SESSION_ID, projectRoot: firstProjectRoot, topic: TOPIC },
+          1,
+          '2026-03-11T00:00:00.000Z',
+        ),
+      ),
     );
 
     expect(secondStore.load(SESSION_ID)).toMatchObject({
@@ -443,9 +485,7 @@ describe('DiscussSessionStore', () => {
           'alpha',
           60,
           'Alternate checkout append.',
-          SESSION_ID,
-          secondProjectRoot,
-          TOPIC,
+          { sessionId: SESSION_ID, projectRoot: secondProjectRoot, topic: TOPIC },
           created.lastAppliedSeq + 1,
           '2026-03-11T00:00:01.000Z',
         ),

@@ -998,7 +998,16 @@ async function handleKbNoteReadRoute(
     return;
   }
 
-  sendToolResult(res, handleKbNoteRead(slug, buildReadOnlyCallerContext(deps.identity.pluginRoot, deps.coralEnvSnapshot)), 200);
+  sendToolResult(
+    res,
+    handleKbNoteRead(
+      slug,
+      buildReadOnlyCallerContext(deps.identity.pluginRoot, deps.coralEnvSnapshot),
+      deps.runtime,
+      deps.runtimeState.getKbSubsystem() ?? undefined,
+    ),
+    200,
+  );
 }
 
 async function handleKbSourceReadRoute(
@@ -1018,7 +1027,7 @@ async function handleKbSourceReadRoute(
     return;
   }
 
-  sendToolResult(res, handleKbSourceRead(slug, kbSubsystem), 200);
+  sendToolResult(res, handleKbSourceRead(slug, kbSubsystem, deps.runtime), 200);
 }
 
 async function handleKbSourceListRoute(
@@ -1051,7 +1060,7 @@ async function handleKbCommunityReadRoute(
     return;
   }
 
-  sendToolResult(res, handleKbCommunityRead(slug, kbSubsystem), 200);
+  sendToolResult(res, handleKbCommunityRead(slug, kbSubsystem, deps.runtime), 200);
 }
 
 async function handleKbMemoReadRoute(
@@ -1082,6 +1091,7 @@ async function handleKbMemoReadRoute(
     handleKbMemoRead(
       slug,
       buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
+      deps.runtime,
     ),
     200,
   );
@@ -1161,7 +1171,7 @@ async function handleKbPrincipleReadRoute(
     return;
   }
 
-  sendToolResult(res, handleKbPrincipleRead(slug, kbSubsystem), 200);
+  sendToolResult(res, handleKbPrincipleRead(slug, kbSubsystem, deps.runtime), 200);
 }
 
 async function handleKbNoteCreate(

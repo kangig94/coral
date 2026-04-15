@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { isDurableCliRuntime } from '../../shared/types.js';
 import { runScenario } from '../simulation/runner.js';
 import { simulationDocumentSchema } from '../simulation/schema.js';
 import type { SimulationWorld } from '../simulation/world.js';
@@ -14,15 +13,6 @@ const SECOND_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000005';
 const EXAMPLE_SCENARIOS = ['lifecycle-complete.yaml', 'lifecycle-abort.yaml', 'lifecycle-reset.yaml'];
 
 const worlds: SimulationWorld[] = [];
-
-function getDurableRuntime(world: SimulationWorld, jobId: string) {
-  const runtime = world.readArtifact(jobId, 'runtime', { freshness: 'cached' });
-  const candidate = runtime as Parameters<typeof isDurableCliRuntime>[0];
-  if (!isDurableCliRuntime(candidate)) {
-    throw new Error(`Expected a durable runtime record for ${jobId}`);
-  }
-  return candidate;
-}
 
 afterEach(async () => {
   while (worlds.length > 0) {
@@ -246,7 +236,6 @@ describe('scenario runner', () => {
       },
     });
 
-    const cachedRuntime = getDurableRuntime(run.world, FIRST_BOOTED_JOB_ID);
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)).toMatchObject({
       phase: 'completed',
       result: {

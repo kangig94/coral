@@ -75,7 +75,7 @@ export type ScopeCheckResult = {
 export interface HttpHandlerDeps {
   // Identity / config
   readonly identity: BackendIdentity;
-  readonly runtime: Pick<Runtime, 'ids' | 'time'>;
+  readonly runtime: Pick<Runtime, 'ids' | 'time' | 'storage'>;
 
   // Shared runtime state (read-only from HTTP perspective)
   readonly runtimeState: ReadonlyBackendRuntimeState;

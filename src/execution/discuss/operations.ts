@@ -28,8 +28,8 @@ import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { collectBids } from './subflows.js';
 
-function readDiscussMaxEpochs(): number {
-  const raw = Number.parseInt(process.env.CORAL_DISCUSS_MAX_EPOCHS ?? '', 10);
+function readDiscussMaxEpochs(ctx: DiscussContext): number {
+  const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);
   if (!Number.isFinite(raw) || raw < 1 || raw > 10) {
     return DEFAULT_MAX_EPOCHS;
   }
@@ -44,17 +44,13 @@ function requireLiveSession(ctx: DiscussContext, sessionId: string): LiveDiscuss
   return session;
 }
 
-function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
+export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot): boolean {
   return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';
 }
 
 function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
   const { controlPhase } = snapshot.runtime;
-  if (
-    controlPhase === 'synthesize' ||
-    controlPhase === 'evaluate_epoch' ||
-    controlPhase === 'collect_follow_up'
-  ) {
+  if (controlPhase === 'synthesize' || controlPhase === 'evaluate_epoch' || controlPhase === 'collect_follow_up') {
     return true;
   }
 
@@ -92,7 +88,7 @@ function buildAbortEndEventsForShutdown(
       snapshot.state.topic,
       snapshot.lastAppliedSeq + 1,
       'session.ended',
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
       {
         endReasonContent: ABORT_REASON,
         force: true,
@@ -125,10 +121,16 @@ export async function startDiscussSession(
   };
 
   const created = unwrapResult(
-    decideSessionCreate(input, sessionId, ctx.projectRoot, topic, 1, nowIsoString(), {
-      maxEpochs: readDiscussMaxEpochs(),
-      agentExecution: buildAgentExecutionConfig(agents),
-    }),
+    decideSessionCreate(
+      input,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: topic },
+      1,
+      nowIsoString(ctx.runtime.time),
+      {
+        maxEpochs: readDiscussMaxEpochs(ctx),
+        agentExecution: buildAgentExecutionConfig(agents),
+      },
+    ),
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
@@ -165,11 +167,9 @@ export async function submitManualBid(
       agentName,
       score,
       thought,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok) {
@@ -214,11 +214,9 @@ export async function submitManualSpeech(
       current.state,
       agentName,
       content,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok) {
@@ -236,11 +234,9 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
     decideEnd(
       current.state,
       { force: true, reason: ABORT_REASON },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {

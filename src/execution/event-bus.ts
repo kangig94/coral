@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { backendLog } from '../shared/backend-log.js';
 import type { JobPhase, TerminalResult } from '../shared/types.js';
 
 /** Events emitted by the execution-layer event bus. */
@@ -40,7 +41,23 @@ export class TypedEventBus {
   }
 
   emit<K extends keyof EventBusEvents>(event: K, payload: EventBusEvents[K]): boolean {
-    return this.emitter.emit(event, payload);
+    const listeners = this.emitter.listeners(event) as Array<(payload: EventBusEvents[K]) => unknown>;
+    if (listeners.length === 0) return false;
+
+    for (const listener of listeners) {
+      try {
+        const result = listener(payload);
+        if (result instanceof Promise) {
+          void result.catch((error: unknown) => {
+            backendLog.error(`EventBus listener for ${String(event)} failed`, error);
+          });
+        }
+      } catch (error: unknown) {
+        backendLog.error(`EventBus listener for ${String(event)} failed`, error);
+      }
+    }
+
+    return true;
   }
 
   removeAllListeners(): this {
@@ -48,11 +65,9 @@ export class TypedEventBus {
     return this;
   }
 
-  /** Remove all listeners and reset max listener count. For test isolation. */
+  /** Remove all listeners. For test isolation. */
   reset(): this {
-    this.emitter.removeAllListeners();
-    this.emitter.setMaxListeners(MAX_EVENT_BUS_LISTENERS);
-    return this;
+    return this.removeAllListeners();
   }
 }
 

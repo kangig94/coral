@@ -1,6 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
-import { removeBackendInfoIfOwner, writeBackendInfo, type BackendInfo } from '../../../infra/backend-info.js';
+import {
+  readBackendInfo,
+  removeBackendInfoIfOwner,
+  writeBackendInfo,
+  type BackendInfo,
+} from '../../../infra/backend-info.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
@@ -14,11 +19,8 @@ import { TypedEventBus } from '../../event-bus.js';
 import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, RuntimeProcess, RuntimeStorage } from '../../runtime.js';
-import {
-  createBackendCore,
-  type BackendCoreResult,
-  type CreateServerFn,
-} from '../../backend-core.js';
+import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
+import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
 import {
@@ -30,9 +32,15 @@ import {
 } from './mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
+import { toError } from './constants.js';
 
-export { createDeferred, type Deferred } from './deferred.js';
-export { InMemoryStorage, normalizePathForStorage, type InMemoryStorageSnapshot, type InMemoryRoots } from './memory-storage.js';
+export { createDeferred, type Deferred } from '../../../shared/test-deferred.js';
+export {
+  InMemoryStorage,
+  normalizePathForStorage,
+  type InMemoryStorageSnapshot,
+  type InMemoryRoots,
+} from './memory-storage.js';
 export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app.js';
 export {
   MockChildProcess,
@@ -86,11 +94,13 @@ export type SimulationScenario = {
   spawn?: MockSpawnScript[];
   durable?: MockDurableScript[];
   fakeProvider?: FakeProviderScenario;
+  recoverPersistedDiscuss?: 'default' | 'stub';
 };
 
 export type SimulationRuntimeOptions = {
   epochMs?: number;
   env?: Record<string, string>;
+  roots?: InMemoryRoots;
 };
 
 export class SimulationRuntime implements Runtime {
@@ -104,7 +114,7 @@ export class SimulationRuntime implements Runtime {
   readonly process: RuntimeProcess;
 
   constructor(options: SimulationRuntimeOptions = {}) {
-    const roots: InMemoryRoots = {};
+    const roots: InMemoryRoots = options.roots ?? {};
     this.time = new VirtualTime(options.epochMs ?? DEFAULT_EPOCH_MS);
     this.env = new SealedEnv(options.env);
     this.paths = new InMemoryPaths(roots);
@@ -114,12 +124,7 @@ export class SimulationRuntime implements Runtime {
     const inheritedEnv = this.env.fullSnapshot();
     this.spawner = new MockProcessSpawner(this.time, this.storage, {
       buildDurableEnv: (envAdditions) =>
-        composeChildEnv(
-          { ...inheritedEnv },
-          envAdditions ?? {},
-          SIMULATION_ENV_BUDGET_BYTES,
-          new Set<string>(),
-        ),
+        composeChildEnv({ ...inheritedEnv }, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
     });
     this.process = {
       spawn: (spawnOptions) => {
@@ -160,8 +165,57 @@ function createMockKbSubsystem() {
   };
 }
 
-function toError(value: Error | string): Error {
-  return value instanceof Error ? value : new Error(value);
+function headerValue(headers: HeadersInit | undefined, name: string): string | null {
+  if (!headers) {
+    return null;
+  }
+
+  if (headers instanceof Headers) {
+    return headers.get(name);
+  }
+
+  const normalizedName = name.toLowerCase();
+  if (Array.isArray(headers)) {
+    return headers.find(([key]) => key.toLowerCase() === normalizedName)?.[1] ?? null;
+  }
+
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === normalizedName);
+  return entry?.[1] ?? null;
+}
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: string): FetchFn {
+  return async (url, init) => {
+    const parsed = new URL(url);
+    const info = readBackendInfo(pluginRoot, runtime);
+    const port = parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
+
+    if (!info || parsed.pathname !== '/health' || parsed.hostname !== info.host || port !== info.port) {
+      return jsonResponse({ error: 'not_found' }, 404);
+    }
+
+    if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
+      return jsonResponse({ error: 'unauthorized' }, 401);
+    }
+
+    return jsonResponse(
+      {
+        status: 'ok',
+        version: info.version,
+        bundleHash: info.bundleHash,
+        flavor: info.flavor,
+        namespace: info.namespace,
+        instanceId: info.instanceId,
+      },
+      200,
+    );
+  };
 }
 
 export function createFakeProvider(runtime: SimulationRuntime, scenario: FakeProviderScenario | undefined): Provider {
@@ -218,7 +272,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
         const result: ProviderResult = {
           content: scenario?.result?.content ?? stdout,
           exitCode: scenario?.result?.exitCode ?? exitCode,
-          aborted: scenario?.result?.aborted ?? (signal !== null),
+          aborted: scenario?.result?.aborted ?? signal !== null,
           notice: scenario?.result?.notice ?? (stderr.length > 0 ? stderr : undefined),
           ...scenario?.result,
         };
@@ -262,12 +316,6 @@ export type SimulationController = {
 export type SimulationBackend = {
   backend: SimulationController;
   runtime: SimulationRuntime;
-  time: VirtualTime;
-  storage: InMemoryStorage;
-  paths: InMemoryPaths;
-  spawner: MockProcessSpawner;
-  ids: SequentialIds;
-  env: SealedEnv;
   eventBus: TypedEventBus;
   progressStore: ProgressStore;
   launchCoordinator: LaunchCoordinator;
@@ -299,7 +347,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const progressStore = new ProgressStore(namespace, eventBus, runtime);
+  const progressStore = new ProgressStore(namespace, runtime, eventBus);
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
@@ -358,6 +406,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     },
     createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
     createServerFn,
+    fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
     listenFn: async () => {
       hooks.listenCalls.push({ host: listenHost, port: listenPort });
       return { host: listenHost, port: listenPort };
@@ -388,8 +437,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       return createMockKbSubsystem();
     },
     registerBuiltInProvidersFn: () => {},
-    recoverPersistedDiscussFn: async () => {
+    recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;
+      if (scenario.recoverPersistedDiscuss === 'default') {
+        return defaultRecoverPersistedDiscuss(deps);
+      }
       return [];
     },
   });
@@ -420,12 +472,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   return {
     backend,
     runtime,
-    time: runtime.time,
-    storage: runtime.storage,
-    paths: runtime.paths,
-    spawner: runtime.spawner,
-    ids: runtime.ids,
-    env: runtime.env,
     eventBus,
     progressStore,
     launchCoordinator,

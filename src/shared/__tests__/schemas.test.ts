@@ -45,9 +45,6 @@ describe('agentIdentSchema', () => {
     },
   );
 
-  it.skip('TODO(AC2): cross-check agentIdentSchema and parseAgentRef against the shared table', () => {
-    // Enable once src/execution/agent-resolution.ts exports parseAgentRef/formatAgentRef.
-  });
 });
 
 describe('sessionCreateSchema', () => {

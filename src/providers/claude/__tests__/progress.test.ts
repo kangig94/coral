@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { formatToolProgress } from '../../../shared/format-progress.js';
 import { extractClaudeProgressMessage } from '../progress.js';
 import type { ClaudeStreamEvent } from '../types.js';
 
@@ -31,47 +32,12 @@ function expectNullMessage(event: ClaudeStreamEvent, projectRoot?: string): void
   expect(extractClaudeProgressMessage(event, projectRoot)).toBeNull();
 }
 
-function expectNoThrow(event: ClaudeStreamEvent, projectRoot?: string): void {
-  expect(() => extractClaudeProgressMessage(event, projectRoot)).not.toThrow();
-}
-
 describe('extractClaudeProgressMessage', () => {
-  it('formats Read tool_use with filename and range', () => {
-    const event = assistantToolEvent('Read', { file_path: '/repo/src/main.ts', offset: 10, limit: 20 });
+  it('extracts valid tool_use blocks and delegates formatting with projectRoot', () => {
+    const input = { file_path: '/repo/src/main.ts', offset: 10, limit: 20 };
+    const event = assistantToolEvent('Read', input);
 
-    expect(extractClaudeProgressMessage(event)).toBe('Read(/repo/src/main.ts:10-30)');
-  });
-
-  it('formats Read tool_use relative to explicit projectRoot', () => {
-    const event = assistantToolEvent('Read', { file_path: '/repo/src/main.ts', offset: 10, limit: 20 });
-
-    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Read(src/main.ts:10-30)');
-  });
-
-  it('formats Edit tool_use with contextual preview', () => {
-    const event = assistantToolEvent('Edit', {
-      file_path: '/repo/src/main.ts',
-      old_string: 'before\nextra',
-      new_string: 'after\nextra',
-    });
-
-    expect(extractClaudeProgressMessage(event)).toBe('Update(/repo/src/main.ts, "before" → "after")');
-  });
-
-  it('formats Edit tool_use relative to explicit projectRoot', () => {
-    const event = assistantToolEvent('Edit', {
-      file_path: '/repo/src/main.ts',
-      old_string: 'before\nextra',
-      new_string: 'after\nextra',
-    });
-
-    expect(extractClaudeProgressMessage(event, '/repo')).toBe('Update(src/main.ts, "before" → "after")');
-  });
-
-  it('formats Bash tool_use using description fallback', () => {
-    const event = assistantToolEvent('Bash', { description: 'List repository files' });
-
-    expect(extractClaudeProgressMessage(event)).toBe('Bash(List repository files)');
+    expect(extractClaudeProgressMessage(event, '/repo')).toBe(formatToolProgress('Read', input, '/repo'));
   });
 
   it('returns generating message for assistant text blocks', () => {
@@ -91,33 +57,30 @@ describe('extractClaudeProgressMessage', () => {
 });
 
 describe('extractClaudeProgressMessage — adversarial', () => {
-  describe('multiple content blocks: first tool_use wins', () => {
+  describe('multiple content blocks', () => {
     it('returns message for first block when both are tool_use', () => {
       const event = assistantEvent([
         toolUseBlock('Read', { file_path: 'first.ts' }),
         toolUseBlock('Edit', { file_path: 'second.ts', old_string: 'x', new_string: 'y' }),
       ]);
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toMatch(/^Read\(/);
+      expect(extractClaudeProgressMessage(event)).toBe(formatToolProgress('Read', { file_path: 'first.ts' }));
     });
 
-    it('returns tool_use message even when a text block appears first', () => {
+    it('returns generating message when a text block appears first', () => {
       const event = assistantEvent([
         textBlock('I will now read the file.'),
         toolUseBlock('Read', { file_path: 'target.ts' }),
       ]);
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).not.toBeNull();
-      expect(typeof msg).toBe('string');
+      expect(extractClaudeProgressMessage(event)).toBe('Generating response...');
     });
 
     it('returns tool_use message when text block comes AFTER tool_use in same event', () => {
+      const input = { command: 'ls -la', description: 'List files' };
       const event = assistantEvent([
-        toolUseBlock('Bash', { command: 'ls -la', description: 'List files' }),
+        toolUseBlock('Bash', input),
         textBlock('Listing directory contents...'),
       ]);
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toMatch(/^Bash\(/);
+      expect(extractClaudeProgressMessage(event)).toBe(formatToolProgress('Bash', input));
     });
   });
 
@@ -129,12 +92,12 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', id: 'tu-x', input: { file_path: 'f.ts' } }],
         },
       };
-      expectNoThrow(event);
+      expectNullMessage(event);
     });
 
     it('handles tool_use block where name is empty string', () => {
       const event = assistantEvent([toolUseBlock('', { file_path: 'f.ts' })]);
-      expectNoThrow(event);
+      expectNullMessage(event);
     });
   });
 
@@ -146,7 +109,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', name: 'Read', id: 'tu-2' }],
         },
       };
-      expectNoThrow(event);
+      expectNullMessage(event);
     });
 
     it('handles tool_use block where input is a string (malformed)', () => {
@@ -158,7 +121,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           ],
         },
       };
-      expectNoThrow(event);
+      expectNullMessage(event);
     });
 
     it('handles tool_use block where input is null', () => {
@@ -168,7 +131,7 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_use', name: 'Bash', id: 'tu-4', input: null as unknown as Record<string, unknown> }],
         },
       };
-      expectNoThrow(event);
+      expectNullMessage(event);
     });
   });
 
@@ -212,7 +175,6 @@ describe('extractClaudeProgressMessage — adversarial', () => {
           content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' }],
         },
       };
-      expectNoThrow(event);
       expectNullMessage(event);
     });
   });
@@ -227,38 +189,6 @@ describe('extractClaudeProgressMessage — adversarial', () => {
         },
       };
       expectNullMessage(event);
-    });
-  });
-
-  describe('Write tool routing', () => {
-    it('formats Write tool with file path', () => {
-      const event = assistantToolEvent('Write', { file_path: '/deep/nested/path/output.ts', content: 'hello' });
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBe('Write(/deep/nested/path/output.ts)');
-    });
-  });
-
-  describe('Glob tool routing', () => {
-    it('formats Glob tool as Glob(pattern)', () => {
-      const event = assistantToolEvent('Glob', { pattern: '**/*.test.ts', path: '/src' });
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toBe('Glob(**/*.test.ts)');
-    });
-  });
-
-  describe('Agent tool routing', () => {
-    it('formats Agent tool with description', () => {
-      const event = assistantToolEvent('Agent', { description: 'Run code analysis subagent', input: {} });
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toMatch(/^Agent\(/);
-    });
-  });
-
-  describe('unknown tool name fallback', () => {
-    it('formats unrecognized tool name as "Using: <name>"', () => {
-      const event = assistantToolEvent('UnknownCustomTool', { arg1: 'value' });
-      const msg = extractClaudeProgressMessage(event);
-      expect(msg).toMatch(/UnknownCustomTool/);
     });
   });
 

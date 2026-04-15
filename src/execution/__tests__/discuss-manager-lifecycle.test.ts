@@ -15,6 +15,7 @@ import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
+  discussContextOptions,
   persistSession,
 } from './discuss-test-helpers.js';
 
@@ -28,7 +29,13 @@ describe('DiscussContext lifecycle boundaries', () => {
   it('keeps attached-session iteration separate from persisted store summaries', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
 
     const liveSnapshot = await persistSession(
       { ...harness, context },
@@ -82,7 +89,13 @@ describe('DiscussContext lifecycle boundaries', () => {
   it('persisted ended sessions do not count as running sessions', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+    getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
     await persistSession(harness, {
       sessionId: 'ended-session',
       recover: false,
@@ -116,7 +129,13 @@ describe('DiscussContext lifecycle boundaries', () => {
   it('hard shutdown persists abort markers for recoverable attached sessions and skips terminal attached history', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
 
     const liveSnapshot = await persistSession(
       { ...harness, context },
@@ -216,7 +235,13 @@ describe('DiscussContext lifecycle boundaries', () => {
   it('handoff shutdown aborts attached sessions without persisting abort markers', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(registry, harness.projectRoot, harness.service, harness.store);
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
 
     const liveSnapshot = await persistSession(
       { ...harness, context },

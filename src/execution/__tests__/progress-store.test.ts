@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as fs from 'node:fs';
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type * as NodeOs from 'node:os';
-import type * as NodeFs from 'node:fs';
 import type {
   PersistedExitRecord,
   PersistedLaunchRecord,
@@ -15,59 +10,76 @@ import type {
 } from '../../shared/types.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
-import { createRealRuntime } from '../runtime.js';
+import { SimulationRuntime } from '../simulation/core/index.js';
 
-const jobIdsToClean = new Set<string>();
-const installDirsToClean = new Set<string>();
 const projectRoot = '/tmp/project';
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
-const renameCalls = vi.hoisted(() => [] as Array<[unknown, unknown]>);
-const mockState = vi.hoisted(() => ({
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-progress-store-test-tmp`,
-}));
+const renameCalls: Array<[unknown, unknown]> = [];
 let eventBus: TypedEventBus;
-const runtime = createRealRuntime();
-const JOBS_DIR = runtime.paths.jobsDir();
+let runtime: SimulationRuntime;
+let JOBS_DIR: string;
 
 function createStore(bus: TypedEventBus = eventBus): ProgressStore {
-  return new ProgressStore(TEST_BACKEND_NAMESPACE, bus, runtime);
+  return new ProgressStore(TEST_BACKEND_NAMESPACE, runtime, bus);
 }
 
-vi.mock('node:os', async () => {
-  const actual = await vi.importActual<typeof NodeOs>('node:os');
-  return {
-    ...actual,
-    tmpdir: () => mockState.tmpRoot,
-  };
-});
+function existsSync(path: string): boolean {
+  return runtime.storage.existsSync(path);
+}
 
-vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof NodeFs>('node:fs');
-  return {
-    ...actual,
-    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
-      renameCalls.push([args[0], args[1]]);
-      return actual.renameSync(...args);
-    },
-  };
-});
+function mkdirSync(path: string, options?: { recursive?: boolean }): void {
+  runtime.storage.mkdirSync(path, options);
+}
+
+function readFileSync(path: string, _encoding: BufferEncoding): string {
+  return runtime.storage.readFileSync(path, 'utf-8');
+}
+
+function writeFileSync(
+  path: string,
+  data: string,
+  options?: BufferEncoding | { encoding?: BufferEncoding; mode?: number },
+): void {
+  runtime.storage.writeFileSync(path, data, typeof options === 'string' ? { encoding: options } : options);
+}
+
+function nextJobId(prefix: string): string {
+  return `${prefix}-${runtime.ids.uuid()}`;
+}
+
+function nowMs(): number {
+  return runtime.time.now();
+}
+
+function isoNow(): string {
+  return new Date(nowMs()).toISOString();
+}
+
+function startAliveProcess(pid: number): number {
+  runtime.spawner.enqueueSpawn({ pid, close: null });
+  const child = runtime.process.spawn({
+    command: 'mock-backend',
+    args: [],
+    mode: 'ignored',
+  });
+  if (child.pid === undefined) {
+    throw new Error('simulation spawn did not allocate a pid');
+  }
+  return child.pid;
+}
 
 beforeEach(() => {
-  rmSync(mockState.tmpRoot, { recursive: true, force: true });
-  mkdirSync(mockState.tmpRoot, { recursive: true });
+  runtime = new SimulationRuntime();
+  JOBS_DIR = runtime.paths.jobsDir();
+  const renameSync = runtime.storage.renameSync.bind(runtime.storage);
+  vi.spyOn(runtime.storage, 'renameSync').mockImplementation((oldPath, newPath) => {
+    renameCalls.push([oldPath, newPath]);
+    renameSync(oldPath, newPath);
+  });
   eventBus = new TypedEventBus();
 });
 
 afterEach(() => {
-  for (const jobId of jobIdsToClean) {
-    rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
-  }
-  jobIdsToClean.clear();
-  for (const installDir of installDirsToClean) {
-    rmSync(installDir, { recursive: true, force: true });
-  }
-  installDirsToClean.clear();
-  rmSync(mockState.tmpRoot, { recursive: true, force: true });
   renameCalls.length = 0;
   eventBus.reset();
   vi.restoreAllMocks();
@@ -76,8 +88,7 @@ afterEach(() => {
 describe('execution ProgressStore', () => {
   it('initJob creates directory and status.json with phase launching', () => {
     const store = createStore(eventBus);
-    const jobId = `progress-init-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-init');
 
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
@@ -92,10 +103,41 @@ describe('execution ProgressStore', () => {
     });
   });
 
+  it.each([
+    [
+      'missing phase',
+      (jobId: string) => ({
+        jobId,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        launch: { state: 'ready', updatedAt: isoNow() },
+      }),
+    ],
+    [
+      'missing launch',
+      (jobId: string) => ({
+        jobId,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        phase: 'running',
+      }),
+    ],
+  ])('readStatus returns null for malformed status.json with %s', (_name, createRecord) => {
+    const store = createStore(eventBus);
+    const jobId = nextJobId('progress-corrupt-status');
+    mkdirSync(store.jobDir(jobId), { recursive: true });
+    writeFileSync(join(store.jobDir(jobId), 'status.json'), JSON.stringify(createRecord(jobId)), 'utf-8');
+
+    expect(store.readStatus(jobId)).toBeNull();
+  });
+
   it('appendProgress returns incrementing eventId starting at 1', () => {
     const store = createStore(eventBus);
-    const jobId = `progress-events-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-events');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     const first = store.appendProgress(jobId, 'session-1', 'first');
@@ -107,13 +149,12 @@ describe('execution ProgressStore', () => {
 
   it('emits event bus job lifecycle events', () => {
     const store = createStore(eventBus);
-    const jobId = `progress-bus-${randomUUID()}`;
+    const jobId = nextJobId('progress-bus');
     const result = { content: 'done' } satisfies TerminalResult;
     const created = vi.fn();
     const phaseChanged = vi.fn();
     const progress = vi.fn();
     const completed = vi.fn();
-    jobIdsToClean.add(jobId);
 
     eventBus.on('job:created', created);
     eventBus.on('job:phase_changed', phaseChanged);
@@ -145,8 +186,7 @@ describe('execution ProgressStore', () => {
 
   it('replayFrom returns only events with eventId greater than fromEventId', () => {
     const store = createStore();
-    const jobId = `progress-replay-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-replay');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
@@ -160,9 +200,8 @@ describe('execution ProgressStore', () => {
 
   it('appendTerminal updates status.json result', () => {
     const store = createStore();
-    const jobId = `progress-terminal-${randomUUID()}`;
+    const jobId = nextJobId('progress-terminal');
     const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
-    jobIdsToClean.add(jobId);
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     store.appendTerminal(jobId, 'session-1', result, 'completed');
@@ -175,10 +214,9 @@ describe('execution ProgressStore', () => {
 
   it('appendTerminal throws when progress.jsonl append fails', () => {
     const store = createStore();
-    const jobId = `progress-terminal-throw-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-terminal-throw');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
-    vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
+    vi.spyOn(runtime.storage, 'appendFileSync').mockImplementation(() => {
       throw new Error('disk full');
     });
 
@@ -190,8 +228,7 @@ describe('execution ProgressStore', () => {
 
   it('writeStatus non-terminal writes sync (same as terminal)', () => {
     const store = createStore();
-    const jobId = `progress-atomic-nonterminal-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-atomic-nonterminal');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     renameCalls.length = 0;
@@ -215,8 +252,7 @@ describe('execution ProgressStore', () => {
 
   it('writeStatus terminal is atomic (sync renameSync before cache)', () => {
     const store = createStore();
-    const jobId = `progress-atomic-terminal-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-atomic-terminal');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     renameCalls.length = 0;
@@ -244,8 +280,7 @@ describe('execution ProgressStore', () => {
 
   it('replayFrom from eventId=0 on a job with only a terminal event returns that terminal', () => {
     const store = createStore();
-    const jobId = `progress-terminal-only-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-terminal-only');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendTerminal(jobId, 'session-1', { content: 'result text' }, 'completed');
 
@@ -258,8 +293,7 @@ describe('execution ProgressStore', () => {
 
   it('appendTerminal is safe when status.json does not exist (no unhandled throw)', () => {
     const store = createStore();
-    const jobId = `progress-nostatus-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-nostatus');
     mkdirSync(store.jobDir(jobId), { recursive: true });
     writeFileSync(join(store.jobDir(jobId), 'progress.jsonl'), '', 'utf-8');
 
@@ -270,8 +304,7 @@ describe('execution ProgressStore', () => {
 
   it('markTerminalStatus updates status only, cleans terminal state, and notifies waiters', async () => {
     const store = createStore();
-    const jobId = `progress-terminal-fallback-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-terminal-fallback');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'before terminal');
     const progressPath = join(store.jobDir(jobId), 'progress.jsonl');
@@ -297,10 +330,9 @@ describe('execution ProgressStore', () => {
 
   it('markTerminalStatus emits job:completed', () => {
     const store = createStore(eventBus);
-    const jobId = `progress-terminal-event-${randomUUID()}`;
+    const jobId = nextJobId('progress-terminal-event');
     const result = { content: 'done' } satisfies TerminalResult;
     const completed = vi.fn();
-    jobIdsToClean.add(jobId);
     eventBus.on('job:completed', completed);
 
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
@@ -312,8 +344,7 @@ describe('execution ProgressStore', () => {
   // @flaky — formatElapsed timestamp depends on sub-second execution; retry under parallel suite
   it('consecutive replayFrom calls on the same cursor only return newly appended events', { retry: 2 }, () => {
     const store = createStore();
-    const jobId = `progress-cursor-advance-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-cursor-advance');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
     store.appendProgress(jobId, 'session-1', 'first');
     store.appendProgress(jobId, 'session-1', 'second');
@@ -331,13 +362,12 @@ describe('execution ProgressStore', () => {
 
   it('scopedLookup distinguishes found, missing, and mismatch', () => {
     const store = createStore();
-    const jobId = `progress-scope-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('progress-scope');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     expect(store.scopedLookup(jobId, projectRoot)).toBe('found');
     expect(store.scopedLookup(jobId, '/tmp/other-project')).toBe('mismatch');
-    expect(store.scopedLookup(`missing-${randomUUID()}`, projectRoot)).toBe('missing');
+    expect(store.scopedLookup(nextJobId('missing'), projectRoot)).toBe('missing');
   });
 });
 
@@ -368,7 +398,7 @@ describe('legacy backendNamespace bridge', () => {
       provider: 'codex',
       projectRoot: '/tmp/project',
       phase: 'running',
-      launch: { state: 'ready', updatedAt: new Date().toISOString() },
+      launch: { state: 'ready', updatedAt: isoNow() },
       ...overrides,
     };
     writeFileSync(join(jobDir, 'status.json'), JSON.stringify(record), 'utf-8');
@@ -377,8 +407,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('readStatus returns the record when backendNamespace key is completely absent (legacy format)', () => {
     const store = createStore();
-    const jobId = `legacy-absent-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('legacy-absent');
 
     seedLegacyStatus(store, jobId);
 
@@ -389,8 +418,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('scopedLookup still finds a legacy job (no backendNamespace) by projectRoot', () => {
     const store = createStore();
-    const jobId = `legacy-scoped-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('legacy-scoped');
 
     seedLegacyStatus(store, jobId, { projectRoot: '/tmp/project' });
 
@@ -399,8 +427,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('a job with backendNamespace set to empty string is distinguishable from absent', () => {
     const store = createStore();
-    const jobId = `empty-ns-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('empty-ns');
 
     seedLegacyStatus(store, jobId, { backendNamespace: '' } as never);
 
@@ -414,8 +441,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('a job with a foreign backendNamespace is excluded from this store view', () => {
     const store = createStore();
-    const jobId = `foreign-ns-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('foreign-ns');
 
     const foreignNamespace = 'aabbccdd1122';
     seedLegacyStatus(store, jobId, { backendNamespace: foreignNamespace } as never);
@@ -426,8 +452,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('legacy job without backendNamespace is still listed by readStatus (not silently dropped)', () => {
     const store = createStore();
-    const jobId = `legacy-list-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('legacy-list');
 
     seedLegacyStatus(store, jobId, { phase: 'queued' });
 
@@ -437,8 +462,7 @@ describe('legacy backendNamespace bridge', () => {
 
   it('initJob stores the provided backendNamespace in the persisted status record', () => {
     const store = createStore();
-    const jobId = `init-with-ns-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('init-with-ns');
 
     const namespace = 'my-plugin-namespace';
     store.initJob({
@@ -458,8 +482,7 @@ describe('legacy backendNamespace bridge', () => {
 describe('durable snapshot artifacts', () => {
   it('writes and reads launch.json', () => {
     const store = createStore();
-    const jobId = `test-launch-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-launch');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const record: PersistedLaunchRecord = {
@@ -477,7 +500,7 @@ describe('durable snapshot artifacts', () => {
         bypassPermissions: false,
         coralEnv: {},
       },
-      createdAt: new Date().toISOString(),
+      createdAt: isoNow(),
     };
     store.writeLaunchRecord(jobId, record);
 
@@ -487,15 +510,14 @@ describe('durable snapshot artifacts', () => {
 
   it('writes and reads runtime.json', () => {
     const store = createStore();
-    const jobId = `test-runtime-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-runtime');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const record: PersistedRuntimeRecord = {
       pid: 12345,
       stdoutPath: join(store.jobDir(jobId), 'stdout'),
       stderrPath: join(store.jobDir(jobId), 'stderr'),
-      startTime: new Date().toISOString(),
+      startTime: isoNow(),
     };
     store.writeRuntimeRecord(jobId, record);
 
@@ -505,8 +527,7 @@ describe('durable snapshot artifacts', () => {
 
   it('caches runtime.json reads until cleanup clears the cache', () => {
     const store = createStore();
-    const jobId = `test-runtime-cache-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-runtime-cache');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const runtimePath = join(store.jobDir(jobId), 'runtime.json');
@@ -535,8 +556,7 @@ describe('durable snapshot artifacts', () => {
 
   it('does not negative-cache a missing runtime.json record', () => {
     const store = createStore();
-    const jobId = `test-runtime-cache-miss-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-runtime-cache-miss');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const runtimePath = join(store.jobDir(jobId), 'runtime.json');
@@ -555,14 +575,13 @@ describe('durable snapshot artifacts', () => {
 
   it('writes and reads exit.json', () => {
     const store = createStore();
-    const jobId = `test-exit-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-exit');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const record: PersistedExitRecord = {
       exitCode: 0,
       signal: null,
-      endTime: new Date().toISOString(),
+      endTime: isoNow(),
     };
     store.writeExitRecord(jobId, record);
 
@@ -572,8 +591,7 @@ describe('durable snapshot artifacts', () => {
 
   it('writes and reads workflow-state.json', () => {
     const store = createStore();
-    const jobId = `test-workflow-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-workflow');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const checkpoint: WorkflowCheckpoint = {
@@ -589,7 +607,7 @@ describe('durable snapshot artifacts', () => {
       lastActivityAt: {},
       staleRetries: {},
       expectedStaleAborts: [],
-      updatedAt: new Date().toISOString(),
+      updatedAt: isoNow(),
     };
     store.writeWorkflowCheckpoint(jobId, checkpoint);
 
@@ -614,8 +632,7 @@ describe('durable snapshot artifacts', () => {
 
   it('hasLaunchRecord/hasRuntimeRecord/hasExitRecord return true after write', () => {
     const store = createStore();
-    const jobId = `test-has-records-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('test-has-records');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     store.writeLaunchRecord(jobId, {
@@ -628,7 +645,7 @@ describe('durable snapshot artifacts', () => {
       enqueueSequence: 1,
       providerAction: 'exec',
       request: { prompt: 'test', cwd: '/tmp/test', bypassPermissions: false, coralEnv: {} },
-      createdAt: new Date().toISOString(),
+      createdAt: isoNow(),
     });
     expect(store.hasLaunchRecord(jobId)).toBe(true);
 
@@ -636,14 +653,14 @@ describe('durable snapshot artifacts', () => {
       pid: 999,
       stdoutPath: '/tmp/out',
       stderrPath: '/tmp/err',
-      startTime: new Date().toISOString(),
+      startTime: isoNow(),
     });
     expect(store.hasRuntimeRecord(jobId)).toBe(true);
 
     store.writeExitRecord(jobId, {
       exitCode: 0,
       signal: null,
-      endTime: new Date().toISOString(),
+      endTime: isoNow(),
     });
     expect(store.hasExitRecord(jobId)).toBe(true);
   });
@@ -652,8 +669,7 @@ describe('durable snapshot artifacts', () => {
 describe('rebindNamespace', () => {
   it('changes backendNamespace on an existing job', () => {
     const store = createStore();
-    const jobId = `rebind-ns-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('rebind-ns');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'old-ns' });
 
     store.rebindNamespace(jobId, 'new-ns');
@@ -664,8 +680,7 @@ describe('rebindNamespace', () => {
 
   it('optionally updates bundleHash along with namespace', () => {
     const store = createStore();
-    const jobId = `rebind-hash-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('rebind-hash');
     store.initJob({
       jobId,
       sessionId: 's1',
@@ -691,12 +706,9 @@ describe('rebindNamespace', () => {
 describe('liveJobCountByNamespace', () => {
   it('counts live jobs matching the given namespace', () => {
     const store = createStore();
-    const jobA = `live-ns-a-${randomUUID()}`;
-    const jobB = `live-ns-b-${randomUUID()}`;
-    const jobC = `live-ns-c-${randomUUID()}`;
-    jobIdsToClean.add(jobA);
-    jobIdsToClean.add(jobB);
-    jobIdsToClean.add(jobC);
+    const jobA = nextJobId('live-ns-a');
+    const jobB = nextJobId('live-ns-b');
+    const jobC = nextJobId('live-ns-c');
 
     store.initJob({ jobId: jobA, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns-target' });
     store.initJob({ jobId: jobB, sessionId: 's2', provider: 'codex', projectRoot, backendNamespace: 'ns-target' });
@@ -709,8 +721,7 @@ describe('liveJobCountByNamespace', () => {
 
   it('excludes terminated jobs from the count', () => {
     const store = createStore();
-    const jobId = `live-ns-term-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('live-ns-term');
 
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns-x' });
     expect(store.liveJobCountByNamespace('ns-x')).toBe(1);
@@ -723,8 +734,7 @@ describe('liveJobCountByNamespace', () => {
 describe('hydrateEventCounter', () => {
   it('restores counter from progress.jsonl so next append is lastEventId + 1', () => {
     const store = createStore();
-    const jobId = `hydrate-counter-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('hydrate-counter');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
 
     // Append 3 progress events (eventIds 1, 2, 3)
@@ -743,8 +753,7 @@ describe('hydrateEventCounter', () => {
 
   it('is a no-op when progress.jsonl is empty', () => {
     const store = createStore();
-    const jobId = `hydrate-empty-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('hydrate-empty');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
 
     const store2 = createStore();
@@ -759,12 +768,11 @@ describe('hydrateEventCounter', () => {
 describe('hydrateJobStartedAt', () => {
   it('sets the started time from a timestamp string', () => {
     const store = createStore();
-    const jobId = `hydrate-started-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('hydrate-started');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
 
     // Hydrate with a known past time so elapsed formatting is predictable
-    const pastTime = new Date(Date.now() - 62_000).toISOString();
+    const pastTime = new Date(nowMs() - 62_000).toISOString();
     store.hydrateJobStartedAt(jobId, pastTime);
 
     // Append a progress event — the elapsed prefix should reflect ~62s, not ~0s
@@ -778,8 +786,7 @@ describe('hydrateJobStartedAt', () => {
 
   it('ignores an invalid timestamp', () => {
     const store = createStore();
-    const jobId = `hydrate-invalid-${randomUUID()}`;
-    jobIdsToClean.add(jobId);
+    const jobId = nextJobId('hydrate-invalid');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns1' });
 
     // Should not throw for invalid input
@@ -805,14 +812,10 @@ describe('namespace-bound discovery scan', () => {
     // sibling store. The sibling is only a tool for constructing on-disk
     // state — its knownJobIds is irrelevant to the assertion.
     const seeder = new ProgressStore('ns-alpha', runtime);
-    const ownedId = `owned-${randomUUID()}`;
-    const foreignId = `foreign-${randomUUID()}`;
-    const legacyId = `legacy-${randomUUID()}`;
-    const corruptId = `corrupt-${randomUUID()}`;
-    jobIdsToClean.add(ownedId);
-    jobIdsToClean.add(foreignId);
-    jobIdsToClean.add(legacyId);
-    jobIdsToClean.add(corruptId);
+    const ownedId = nextJobId('owned');
+    const foreignId = nextJobId('foreign');
+    const legacyId = nextJobId('legacy');
+    const corruptId = nextJobId('corrupt');
 
     seeder.initJob({ jobId: ownedId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns-alpha' });
     seeder.initJob({ jobId: foreignId, sessionId: 's2', provider: 'codex', projectRoot, backendNamespace: 'ns-beta' });
@@ -828,7 +831,7 @@ describe('namespace-bound discovery scan', () => {
         provider: 'codex',
         projectRoot,
         phase: 'completed',
-        launch: { state: 'ready', updatedAt: new Date().toISOString() },
+        launch: { state: 'ready', updatedAt: isoNow() },
       }),
       'utf-8',
     );
@@ -865,10 +868,8 @@ describe('cross-namespace orphan adoption', () => {
 
     // Create a job under foreign namespace 'ns-old' with running phase
     const seeder = new ProgressStore('ns-old', runtime);
-    const orphanId = `orphan-${randomUUID()}`;
-    const aliveId = `alive-${randomUUID()}`;
-    jobIdsToClean.add(orphanId);
-    jobIdsToClean.add(aliveId);
+    const orphanId = nextJobId('orphan');
+    const aliveId = nextJobId('alive');
 
     seeder.initJob({
       jobId: orphanId,
@@ -888,11 +889,8 @@ describe('cross-namespace orphan adoption', () => {
       initialPhase: 'running',
     });
 
-    const installRoot = join(require('node:os').homedir(), '.claude', 'coral', 'installations');
-    const orphanInstallDir = join(installRoot, 'ns-old');
-    const aliveInstallDir = join(installRoot, 'ns-alive');
-    installDirsToClean.add(orphanInstallDir);
-    installDirsToClean.add(aliveInstallDir);
+    const orphanInstallDir = runtime.paths.installationDirForNamespace('ns-old');
+    const aliveInstallDir = runtime.paths.installationDirForNamespace('ns-alive');
     mkdirSync(orphanInstallDir, { recursive: true });
     mkdirSync(aliveInstallDir, { recursive: true });
 
@@ -900,30 +898,41 @@ describe('cross-namespace orphan adoption', () => {
       join(orphanInstallDir, 'backend.lock'),
       JSON.stringify({
         instanceId: 'orphan-stale-instance',
-        pid: process.pid,
+        pid: 41_000,
         version: '0.1.0',
         bundleHash: 'x',
         flavor: 'prod',
-        startedAt: Date.now() - 60_000,
+        startedAt: nowMs(),
       }),
       'utf-8',
     );
-    const staleAt = new Date(Date.now() - 60_000);
-    utimesSync(join(orphanInstallDir, 'backend.lock'), staleAt, staleAt);
+    runtime.time.tick(60_000);
 
+    const alivePid = startAliveProcess(42_000);
     writeFileSync(
       join(aliveInstallDir, 'backend.json'),
-      JSON.stringify({ pid: process.pid, port: 9999, host: '127.0.0.1', token: 'x', version: '0.1.0', bundleHash: 'x', flavor: 'dev', instanceId: 'alive-instance', namespace: 'ns-alive', startedAt: Date.now() }),
+      JSON.stringify({
+        pid: alivePid,
+        port: 9999,
+        host: '127.0.0.1',
+        token: 'x',
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'dev',
+        instanceId: 'alive-instance',
+        namespace: 'ns-alive',
+        startedAt: nowMs(),
+      }),
     );
     writeFileSync(
       join(aliveInstallDir, 'backend.lock'),
       JSON.stringify({
         instanceId: 'alive-instance',
-        pid: process.pid,
+        pid: alivePid,
         version: '0.1.0',
         bundleHash: 'x',
         flavor: 'dev',
-        startedAt: Date.now(),
+        startedAt: nowMs(),
       }),
     );
 
@@ -947,8 +956,7 @@ describe('cross-namespace orphan adoption', () => {
     const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
 
     const seeder = new ProgressStore('ns-starting', runtime);
-    const startupId = `startup-${randomUUID()}`;
-    jobIdsToClean.add(startupId);
+    const startupId = nextJobId('startup');
 
     seeder.initJob({
       jobId: startupId,
@@ -959,18 +967,17 @@ describe('cross-namespace orphan adoption', () => {
       initialPhase: 'running',
     });
 
-    const installDir = join(require('node:os').homedir(), '.claude', 'coral', 'installations', 'ns-starting');
-    installDirsToClean.add(installDir);
+    const installDir = runtime.paths.installationDirForNamespace('ns-starting');
     mkdirSync(installDir, { recursive: true });
     writeFileSync(
       join(installDir, 'backend.lock'),
       JSON.stringify({
         instanceId: 'startup-instance',
-        pid: process.pid,
+        pid: runtime.env.pid(),
         version: '0.1.0',
         bundleHash: 'x',
         flavor: 'prod',
-        startedAt: Date.now(),
+        startedAt: nowMs(),
       }),
       'utf-8',
     );
@@ -986,8 +993,7 @@ describe('cross-namespace orphan adoption', () => {
     const { adoptOrphanedCrossNamespaceJobs } = await import('../lifecycle.js');
 
     const seeder = new ProgressStore('ns-reused-pid', runtime);
-    const reusedId = `reused-${randomUUID()}`;
-    jobIdsToClean.add(reusedId);
+    const reusedId = nextJobId('reused');
 
     seeder.initJob({
       jobId: reusedId,
@@ -998,13 +1004,13 @@ describe('cross-namespace orphan adoption', () => {
       initialPhase: 'running',
     });
 
-    const installDir = join(require('node:os').homedir(), '.claude', 'coral', 'installations', 'ns-reused-pid');
-    installDirsToClean.add(installDir);
+    const installDir = runtime.paths.installationDirForNamespace('ns-reused-pid');
     mkdirSync(installDir, { recursive: true });
+    const reusedPid = startAliveProcess(43_000);
     writeFileSync(
       join(installDir, 'backend.json'),
       JSON.stringify({
-        pid: process.pid,
+        pid: reusedPid,
         port: 9999,
         host: '127.0.0.1',
         token: 'x',
@@ -1013,7 +1019,7 @@ describe('cross-namespace orphan adoption', () => {
         flavor: 'prod',
         instanceId: 'stale-instance',
         namespace: 'ns-reused-pid',
-        startedAt: Date.now(),
+        startedAt: nowMs(),
       }),
       'utf-8',
     );
@@ -1021,11 +1027,11 @@ describe('cross-namespace orphan adoption', () => {
       join(installDir, 'backend.lock'),
       JSON.stringify({
         instanceId: 'other-instance',
-        pid: process.pid,
+        pid: reusedPid,
         version: '0.1.0',
         bundleHash: 'x',
         flavor: 'prod',
-        startedAt: Date.now(),
+        startedAt: nowMs(),
       }),
       'utf-8',
     );

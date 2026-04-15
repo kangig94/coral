@@ -28,12 +28,7 @@ import {
   InvalidAgentRefError,
   type AgentRef,
 } from '../agent-resolution.js';
-import {
-  LaunchCoordinator,
-  getMaxWorkers,
-  type ProviderServerHandle,
-  type SpawnProviderServerFn,
-} from '../engine.js';
+import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../engine.js';
 import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore } from '../progress-store.js';
@@ -130,7 +125,7 @@ function createService(
 ): ExecutionService {
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? new ProgressStore('test-ns', eventBus, runtime),
+    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -552,6 +547,36 @@ describe('ExecutionService', () => {
     expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-1');
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
+  });
+
+  it('releases the session claim when provider session finalization throws after completion', async () => {
+    const { provider } = makeProvider({
+      execute: async (): Promise<ProviderResult> => ({
+        content: 'ok',
+        conversationRef: 'thread-1',
+      }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    vi.spyOn(sessionManager, 'setConversationRef').mockImplementation(() => {
+      throw new Error('finalize failed');
+    });
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    expect(terminal.result.content).toBe('ok');
+    expect(progressStore.readStatus(decision.job)).toMatchObject({ phase: 'completed' });
+    await vi.waitFor(() => {
+      expect(sessionManager.get('codex', decision.session)?.activeJobId).toBeUndefined();
+    });
   });
 
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
@@ -1119,10 +1144,7 @@ describe('ExecutionService', () => {
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
-      createResolvedAgent(
-        { namespace: 'coral', name: 'scanner' },
-        '---\nmodel: gpt-5.4\n---\nScanner instruction',
-      ),
+      createResolvedAgent({ namespace: 'coral', name: 'scanner' }, '---\nmodel: gpt-5.4\n---\nScanner instruction'),
     );
     const service = createService(ctx);
 
@@ -1145,10 +1167,7 @@ describe('ExecutionService', () => {
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
-      createResolvedAgent(
-        { namespace: 'coral', name: 'scanner' },
-        '---\nmodel: gpt-5.4\n---\nScanner instruction',
-      ),
+      createResolvedAgent({ namespace: 'coral', name: 'scanner' }, '---\nmodel: gpt-5.4\n---\nScanner instruction'),
     );
     const service = createService(ctx);
 

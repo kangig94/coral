@@ -6,6 +6,7 @@ import * as discussSubflows from '../discuss/subflows.js';
 import { recoverPersistedSessionsFromStore } from '../discuss/operations.js';
 import { getSession } from '../discuss/registry.js';
 import {
+  advanceDiscussRuntime,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
@@ -223,11 +224,10 @@ describe('Discuss faults and retry recovery', () => {
         ),
       ],
     });
-    vi.useFakeTimers();
     const recovered = await recoverSessions(harness);
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith(

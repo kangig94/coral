@@ -1,10 +1,12 @@
 import { spawn as spawnChild } from 'node:child_process';
-import { randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
+import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   closeSync,
   chmodSync,
   existsSync,
+  fdatasyncSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -14,6 +16,7 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -25,13 +28,67 @@ import {
 import {
   backendInfoPath,
   backendLockPath,
+  discussBaseDirForSource,
+  discussDiscoveryLockPathForSource,
+  discussDiscoveryPathForSource,
+  discussEventLogPath,
+  discussSessionDirForSource,
+  discussSourcesLockPath,
+  discussSourcesPath,
+  discussStatePath,
+  discussSummaryIndexPathForSource,
   jobsDir,
+  jobStatusPath,
+  installationDirForNamespace,
   pluginRootNamespace,
   resolveProjectSource,
   sessionBase,
 } from '../infra/paths.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
-import type { LaunchPool } from './engine.js';
+import type {
+  ChildProcessLike,
+  DurableExecutionTransport,
+  Runtime,
+  RuntimeEnv,
+  RuntimeIds,
+  RuntimePaths,
+  RuntimeProcess,
+  RuntimeSpawnMode,
+  RuntimeStorage,
+  RuntimeTime,
+} from '../shared/runtime-ports.js';
+export type {
+  ChildProcessLike,
+  ChildReadableLike,
+  ChildStdinLike,
+  DiscussPathResolver,
+  Disposable,
+  DurableExecutionTransport,
+  DurableLaunchOptions,
+  DurableLaunchResult,
+  DurableTransportLike,
+  LaunchPool,
+  Runtime,
+  RuntimeDirentLike,
+  RuntimeEnv,
+  RuntimeEnvPort,
+  RuntimeIds,
+  RuntimeIdsPort,
+  RuntimeObserver,
+  RuntimePaths,
+  RuntimePathsPort,
+  RuntimeProcess,
+  RuntimeProcessPort,
+  RuntimeSpawnMode,
+  RuntimeSpawnOptions,
+  RuntimeStorage,
+  RuntimeStoragePort,
+  RuntimeTime,
+  RuntimeTimePort,
+  RuntimeTimerHandle,
+  SpawnEvent,
+  SpawnListener,
+} from '../shared/runtime-ports.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -93,166 +150,6 @@ child.on('close', (code, signal) => writeExit(code, signal, 0));
 child.on('error', () => writeExit(null, null, 1));
 `.trim();
 
-export interface RuntimeTimerHandle {
-  unref?(): void;
-}
-
-export interface RuntimeTime {
-  now(): number;
-  sleep(ms: number): Promise<void>;
-  setTimeout(fn: () => void, ms: number): RuntimeTimerHandle;
-  clearTimeout(handle: RuntimeTimerHandle | null): void;
-  setInterval(fn: () => void, ms: number): RuntimeTimerHandle;
-  clearInterval(handle: RuntimeTimerHandle | null): void;
-}
-
-export interface RuntimeDirentLike {
-  name: string;
-  isDirectory(): boolean;
-  isFile(): boolean;
-}
-
-export interface RuntimeStorage {
-  readFileSync(path: string, encoding: 'utf-8'): string;
-  writeFileSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): void;
-  renameSync(oldPath: string, newPath: string): void;
-  mkdirSync(path: string, options?: { recursive?: boolean }): void;
-  rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
-  readdirSync(path: string, options: { withFileTypes: true }): RuntimeDirentLike[];
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  existsSync(path: string): boolean;
-  openSync(path: string, flags: string): number;
-  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
-  closeSync(fd: number): void;
-  appendFileSync(path: string, data: string): void;
-  unlinkSync(path: string): void;
-  tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  chmodSync(path: string, mode: number): void;
-}
-
-export interface RuntimePaths {
-  jobsDir(): string;
-  sessionBase(): string;
-  backendInfoPath(pluginRoot: string): string;
-  backendLockPath(pluginRoot: string): string;
-  pluginRootNamespace(pluginRoot: string): string;
-  projectSource(projectRoot: string): string;
-}
-
-export interface ChildStdinLike {
-  readonly destroyed: boolean;
-  write(chunk: string | Uint8Array): boolean;
-  end(chunk?: string | Uint8Array): void;
-  on(event: 'error', listener: (error: Error) => void): this;
-}
-
-export interface ChildReadableLike {
-  setEncoding(encoding: BufferEncoding): this;
-  on(event: 'data', listener: (chunk: string | Buffer) => void): this;
-  on(event: 'end', listener: () => void): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  [Symbol.asyncIterator]?(): AsyncIterableIterator<string | Buffer>;
-}
-
-export interface ChildProcessLike {
-  readonly pid: number | undefined;
-  readonly stdin: ChildStdinLike | null;
-  readonly stdout: ChildReadableLike | null;
-  readonly stderr: ChildReadableLike | null;
-  on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  kill(signal?: NodeJS.Signals): boolean;
-  unref?(): void;
-}
-
-export interface Disposable {
-  dispose(): void;
-}
-
-export interface SpawnEvent {
-  child: ChildProcessLike;
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-}
-
-export type SpawnListener = (event: SpawnEvent) => void;
-
-export interface RuntimeObserver {
-  onSpawn(listener: SpawnListener): Disposable;
-}
-
-export type RuntimeSpawnMode = 'piped' | 'ignored' | 'detached';
-
-export type RuntimeSpawnOptions = {
-  command: string;
-  args: string[];
-  cwd?: string;
-  envAdditions?: Record<string, string>;
-  shell?: boolean;
-  mode: RuntimeSpawnMode;
-};
-
-export type DurableLaunchOptions = {
-  provider: string;
-  command: string;
-  args: string[];
-  prompt?: string;
-  cwd?: string;
-  jobDir: string;
-  pool?: LaunchPool;
-  envAdditions?: Record<string, string>;
-};
-
-export type DurableLaunchResult = {
-  pid: number;
-  stdoutPath: string;
-  stderrPath: string;
-  runtimeRecord: DurableCliRuntimeRecord;
-};
-
-export interface DurableExecutionTransport {
-  launch(options: DurableLaunchOptions): Promise<DurableLaunchResult>;
-  waitForExit(handle: DurableLaunchResult): Promise<PersistedExitRecord>;
-}
-
-export interface RuntimeProcess {
-  spawn(options: RuntimeSpawnOptions): ChildProcessLike;
-  kill(pid: number, signal: NodeJS.Signals | 0): void;
-  isAlive(pid: number): boolean;
-  durable: DurableExecutionTransport;
-}
-
-export interface RuntimeIds {
-  uuid(): string;
-  randomBytes(size: number): Buffer;
-}
-
-export interface RuntimeEnv {
-  get(key: string): string | undefined;
-  pid(): number;
-  platform(): string;
-  cwd(): string;
-  coralSnapshot(): Readonly<Record<string, string>>;
-}
-
-export interface Runtime {
-  time: RuntimeTime;
-  storage: RuntimeStorage;
-  process: RuntimeProcess;
-  ids: RuntimeIds;
-  env: RuntimeEnv;
-  paths: RuntimePaths;
-}
-
-export type RuntimeTimePort = Runtime['time'];
-export type RuntimeStoragePort = Runtime['storage'];
-export type RuntimePathsPort = Runtime['paths'];
-export type RuntimeProcessPort = Runtime['process'];
-export type RuntimeIdsPort = Runtime['ids'];
-export type RuntimeEnvPort = Runtime['env'];
-
 type CapturedEnvState = {
   fullEnv: Readonly<Record<string, string>>;
   coralEnv: Readonly<Record<string, string>>;
@@ -303,19 +200,32 @@ export function createRealRuntime(): Runtime {
     readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
     closeSync: (fd) => closeSync(fd),
     appendFileSync: (path, data) => appendFileSync(path, data),
+    appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
     unlinkSync: (path) => unlinkSync(path),
     tryExclusiveWriteSync: (path, data, options) => tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
+    writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
   const paths: RuntimePaths = {
     jobsDir,
+    jobStatusPath,
     sessionBase,
+    installationDirForNamespace,
     backendInfoPath,
     backendLockPath,
     pluginRootNamespace,
     projectSource: resolveProjectSource,
+    discussSourcesPath,
+    discussSourcesLockPath,
+    discussBaseDirForSource,
+    discussDiscoveryPathForSource,
+    discussDiscoveryLockPathForSource,
+    discussSummaryIndexPathForSource,
+    discussSessionDirForSource,
+    discussStatePath,
+    discussEventLogPath,
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
@@ -410,6 +320,7 @@ export function createRealRuntime(): Runtime {
   const ids: RuntimeIds = {
     uuid: () => randomUUID(),
     randomBytes: (size) => randomBytesNode(size),
+    sha256: (input) => createHash('sha256').update(input).digest('hex'),
   };
 
   const env: RuntimeEnv = {
@@ -417,6 +328,7 @@ export function createRealRuntime(): Runtime {
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,
     cwd: () => capturedEnv.cwd,
+    fullSnapshot: () => capturedEnv.fullEnv,
     coralSnapshot: () => capturedEnv.coralEnv,
   };
 
@@ -490,9 +402,6 @@ async function waitForRuntimeRecord(options: {
 }
 
 function readJsonIfPresent<T>(storage: RuntimeStorage, path: string): T | null {
-  if (!storage.existsSync(path)) {
-    return null;
-  }
   try {
     return JSON.parse(storage.readFileSync(path, 'utf-8')) as T;
   } catch {
@@ -557,5 +466,91 @@ function writeAtomicSyncNode(
       return false;
     }
     throw error;
+  }
+}
+
+function writeAtomicDurableSyncNode(
+  path: string,
+  data: string,
+  options?: { encoding?: BufferEncoding; mode?: number },
+): boolean {
+  const encoding = options?.encoding ?? 'utf-8';
+  const mode = options?.mode;
+  const parent = dirname(path);
+  const tempPath = `${path}.tmp`;
+  mkdirSync(parent, { recursive: true });
+
+  let fd: number | null = null;
+  try {
+    fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
+    writeAllSync(fd, Buffer.from(data, encoding));
+    fdatasyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tempPath, path);
+    syncParentDirectoryBestEffort(parent);
+    return true;
+  } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      /* best effort */
+    }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function appendFileDurableSyncNode(path: string, data: string): boolean {
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true });
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'a');
+    writeAllSync(fd, Buffer.from(data, 'utf-8'));
+    fdatasyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    return true;
+  } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function writeAllSync(fd: number, buffer: Buffer): void {
+  let offset = 0;
+  while (offset < buffer.length) {
+    offset += writeSync(fd, buffer, offset, buffer.length - offset);
+  }
+}
+
+// Directory fsync after rename is best-effort because not every platform/filesystem supports opening directories.
+function syncParentDirectoryBestEffort(parent: string): void {
+  let dirFd: number | null = null;
+  try {
+    dirFd = openSync(parent, 'r');
+    fsyncSync(dirFd);
+  } catch {
+    /* best effort */
+  } finally {
+    if (dirFd !== null) {
+      try {
+        closeSync(dirFd);
+      } catch {
+        /* best effort */
+      }
+    }
   }
 }

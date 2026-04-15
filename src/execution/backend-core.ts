@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import { setBuildFlavor } from '../infra/paths.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../client/readers.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -90,6 +91,7 @@ export type BackendBootSnapshot = {
 };
 
 export type CreateServerFn = (handler: (req: IncomingMessage, res: ServerResponse) => void) => Server;
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 type RemoveLockIfOwnerFn = (pluginRoot: string, instanceId: string) => void;
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
@@ -102,12 +104,10 @@ export type BackendCoreOptions = {
   backendNamespace?: string;
   resolveProjectSourceFn?: (projectRoot: string) => string;
   createServerFn?: CreateServerFn;
+  fetchFn?: FetchFn;
   listenFn?: LifecycleDeps['listenFn'];
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (
-    ctx: CallerContext,
-    deps: ExecutionServiceDeps,
-  ) => ExecutionServiceLike;
+  createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ExecutionServiceLike;
   verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
   acquireLockFn?: (
     pluginRoot: string,
@@ -168,6 +168,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   pluginRoot: string,
   record: LockRecord,
   runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
   const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const info = readBackendInfo(pluginRoot, runtime);
@@ -191,7 +192,7 @@ async function verifyBackendOwnershipWithHealthcheck(
   const timeout = runtime.time.setTimeout(() => controller.abort(), LOCK_HEALTHCHECK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    const response = await fetchFn(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
       headers: { 'X-Coral-Backend-Token': info.token },
       signal: controller.signal,
@@ -220,8 +221,11 @@ async function verifyBackendOwnershipWithHealthcheck(
   }
 }
 
-function createDefaultBackendOwnershipVerifier(runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>): VerifyBackendOwnershipFn {
-  return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime);
+function createDefaultBackendOwnershipVerifier(
+  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  fetchFn: FetchFn,
+): VerifyBackendOwnershipFn {
+  return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime, fetchFn);
 }
 
 export function listInstantiatedExecutionServices(
@@ -235,7 +239,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   const bootSnapshot = options.bootSnapshot ?? {};
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
-  const resolveProjectSourceFn = options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
+  const resolveProjectSourceFn =
+    options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(resolvedPluginRoot);
@@ -260,7 +265,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore = options.progressStore ?? new ProgressStore(namespace, eventBus, runtime);
+  const progressStore = options.progressStore ?? new ProgressStore(namespace, runtime, eventBus);
   const coralEnvSnapshot = runtime.env.coralSnapshot();
   const providerHostManager =
     options.providerHostManager ??
@@ -277,11 +282,13 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       backendLog.raw(message);
     });
   const createExecutionService =
-    options.createExecutionService ??
-    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
-  const verifyBackendOwnershipFn = options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime);
+    options.createExecutionService ?? ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
+  const fetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
+  const verifyBackendOwnershipFn =
+    options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);
   const acquireLockFn =
-    options.acquireLockFn ?? ((pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
+    options.acquireLockFn ??
+    ((pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
       acquireLock(pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor, {
         env: runtime.env,
         storage: runtime.storage,
@@ -382,6 +389,9 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     const existing = discussStores.get(source);
     if (existing) return existing;
     const created = new DiscussSessionStore(source, {
+      storage: runtime.storage,
+      time: runtime.time,
+      paths: runtime.paths,
       onCommit: (snapshot) => {
         eventBus.emit('discuss:updated', {
           projectRoot: snapshot.projectRoot,
@@ -401,11 +411,22 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
 
   function getDiscussContext(ctx: CallerContext): DiscussContext {
     const store = getDiscussStore(ctx.projectRoot);
+    const jobStatusReader = {
+      read: (jobId: string) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+    };
     return getOrCreateDiscussContext(
       discussRegistry,
       ctx.projectRoot,
       getExecutionService(ctx) as ExecutionService,
       store,
+      {
+        runtime: {
+          ids: runtime.ids,
+          env: runtime.env,
+          time: runtime.time,
+        },
+        jobStatusReader,
+      },
     );
   }
 
@@ -413,6 +434,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     discussRegistry,
     getDiscussStoreForSource,
     resolveProjectSource: resolveProjectSourceFn,
+    readDiscussSources: () => readDiscussSourcesWithStorage(runtime.storage, runtime.paths),
   };
 
   const hooks: LifecycleHooks = {

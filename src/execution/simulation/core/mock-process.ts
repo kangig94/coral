@@ -14,7 +14,8 @@ import type {
   RuntimeSpawnOptions,
   RuntimeTimerHandle,
 } from '../../runtime.js';
-import { createDeferred, type Deferred } from './deferred.js';
+import { createDeferred, type Deferred } from '../../../shared/test-deferred.js';
+import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { VirtualTime } from './virtual-time.js';
 
@@ -98,10 +99,6 @@ function asChunks(value: string | ChildOutputChunk[] | undefined): ChildOutputCh
     return [{ delayMs: 0, data: value }];
   }
   return value.map((chunk) => ({ delayMs: chunk.delayMs ?? 0, data: chunk.data }));
-}
-
-function toError(value: Error | string): Error {
-  return value instanceof Error ? value : new Error(value);
 }
 
 export class MockStdin extends EventEmitter implements ChildStdinLike {

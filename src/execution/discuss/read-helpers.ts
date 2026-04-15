@@ -5,7 +5,6 @@
  * lookup, while this module owns the read-side helper behavior.
  */
 
-import { readDiscussSources } from '../../client/readers.js';
 import {
   buildDiscussDetail,
   buildDiscussSummary,
@@ -20,13 +19,14 @@ export type DiscussReadHelpersDeps = {
   readonly discussRegistry: DiscussContextRegistry;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly resolveProjectSource: (projectRoot: string) => string;
+  readonly readDiscussSources: () => string[];
 };
 
 function collectDiscussSources(
   deps: DiscussReadHelpersDeps,
   liveSessions: ReturnType<typeof listAttachedSessions>,
 ): Set<string> {
-  const sources = new Set(readDiscussSources());
+  const sources = new Set(deps.readDiscussSources());
   for (const liveSession of liveSessions) {
     sources.add(deps.resolveProjectSource(liveSession.projectRoot));
   }

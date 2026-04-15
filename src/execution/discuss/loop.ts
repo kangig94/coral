@@ -9,21 +9,30 @@ import { commitDecision } from './persistence.js';
 import { collectBids, collectSpeech, handleEpochTransition, handleSynthesis, runFollowUpTurns } from './subflows.js';
 import { getSession } from './registry.js';
 
-async function waitForObserverBidWindow(delayMs: number, signal: AbortSignal): Promise<void> {
+async function waitForObserverBidWindow(
+  time: DiscussContext['runtime']['time'],
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
   if (delayMs <= 0) {
+    return;
+  }
+  if (signal.aborted) {
     return;
   }
 
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, delayMs);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    let timer: ReturnType<typeof time.setTimeout> | null = null;
+    const finish = () => {
+      if (timer !== null) {
+        time.clearTimeout(timer);
+        timer = null;
+      }
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    timer = time.setTimeout(finish, delayMs);
+    signal.addEventListener('abort', finish, { once: true });
   });
 }
 
@@ -35,11 +44,9 @@ async function handleBidRoundClose(
   const resolved = await commitDecision(ctx, sessionId, (latest) =>
     decideBidRoundClose(
       latest.state,
-      latest.sessionId,
-      ctx.projectRoot,
-      latest.state.topic,
+      { sessionId: latest.sessionId, projectRoot: ctx.projectRoot, topic: latest.state.topic },
       latest.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (resolved.ok) {
@@ -65,11 +72,9 @@ async function forceEndAfterLoopFailure(ctx: DiscussContext, sessionId: string, 
     decideEnd(
       current.state,
       { force: true, reason: detail },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
-      nowIsoString(),
+      nowIsoString(ctx.runtime.time),
     ),
   );
   if (!committed.ok && committed.error !== 'session_not_found') {
@@ -83,22 +88,30 @@ export function resumeLoop(ctx: DiscussContext, sessionId: string, callerCtx: Ca
     return;
   }
 
-  setTimeout(() => {
-    void continueLoop(ctx, sessionId, callerCtx).catch((error: unknown) => {
+  const resumeScheduledAt = ctx.runtime.time.now();
+  const timer = ctx.runtime.time.setTimeout(() => {
+    void continueLoop(ctx, sessionId, callerCtx, resumeScheduledAt).catch((error: unknown) => {
       void forceEndAfterLoopFailure(ctx, sessionId, error).catch((endErr: unknown) => {
         backendLog.error(`Discuss session ${sessionId} force-end also failed`, endErr);
       });
     });
-  }, 0);
+  }, 1);
+  timer.unref?.();
 }
 
-export async function continueLoop(ctx: DiscussContext, sessionId: string, callerCtx: CallerContext): Promise<void> {
+export async function continueLoop(
+  ctx: DiscussContext,
+  sessionId: string,
+  callerCtx: CallerContext,
+  resumeScheduledAt?: number,
+): Promise<void> {
   const session = getSession(ctx, sessionId);
   if (!session || session.loopState.running) {
     return;
   }
 
   session.loopState.running = true;
+  let observerWaitResumeScheduledAt = resumeScheduledAt;
 
   try {
     while (true) {
@@ -108,6 +121,9 @@ export async function continueLoop(ctx: DiscussContext, sessionId: string, calle
       }
 
       const snapshot = current.snapshot;
+      if (snapshot.runtime.controlPhase !== 'observer_wait') {
+        observerWaitResumeScheduledAt = undefined;
+      }
 
       if (snapshot.runtime.controlPhase === 'synthesize') {
         const result = await handleSynthesis(ctx, sessionId, callerCtx);
@@ -152,7 +168,16 @@ export async function continueLoop(ctx: DiscussContext, sessionId: string, calle
       }
 
       if (snapshot.runtime.controlPhase === 'observer_wait') {
-        await waitForObserverBidWindow(snapshot.state.min_bid_delay_ms, current.controller.signal);
+        const resumeElapsedMs =
+          observerWaitResumeScheduledAt === undefined
+            ? 0
+            : Math.max(0, ctx.runtime.time.now() - observerWaitResumeScheduledAt);
+        observerWaitResumeScheduledAt = undefined;
+        await waitForObserverBidWindow(
+          ctx.runtime.time,
+          Math.max(0, snapshot.state.min_bid_delay_ms - resumeElapsedMs),
+          current.controller.signal,
+        );
         const result = await handleBidRoundClose(ctx, sessionId, callerCtx);
         if (!result.shouldResume) {
           return;

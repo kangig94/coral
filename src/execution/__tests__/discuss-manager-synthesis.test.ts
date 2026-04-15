@@ -6,6 +6,7 @@ import { recoverPersistedSessionsFromStore } from '../discuss/operations.js';
 import { getSession } from '../discuss/registry.js';
 import { handleSynthesis } from '../discuss/subflows.js';
 import {
+  advanceDiscussRuntime,
   cleanupDiscussHarnesses,
   createDiscussHarness,
   createExecutionServiceStub,
@@ -94,12 +95,10 @@ describe('Discuss synthesis', () => {
         ),
       ],
     });
-
-    vi.useFakeTimers();
     const recovered = await recoverSessions(harness);
     expect(recovered).toHaveLength(1);
     resumeRecoveredSessions(recovered);
-    await vi.runAllTimersAsync();
+    await advanceDiscussRuntime(harness, 1);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.transcript.at(-1)).toMatchObject({

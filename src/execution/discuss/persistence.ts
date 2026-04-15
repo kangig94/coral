@@ -1,5 +1,3 @@
-import { discussEventLogPath } from '../../infra/paths.js';
-import { readDiscussEventLog } from '../../client/readers.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import type { Result } from '../../discuss/types.js';
@@ -49,12 +47,7 @@ export function loadAttachedOrPersistedSnapshot(
 }
 
 export function readSessionEvents(ctx: DiscussContext, sessionId: string): DiscussDomainEvent[] {
-  try {
-    const sessionDir = ctx.store.resolveSessionDir(sessionId);
-    return readDiscussEventLog(discussEventLogPath(sessionDir)).filter((event) => event.sessionId === sessionId);
-  } catch {
-    return [];
-  }
+  return ctx.store.readSessionEvents(sessionId);
 }
 
 export function isAbortEnded(events: DiscussDomainEvent[]): boolean {

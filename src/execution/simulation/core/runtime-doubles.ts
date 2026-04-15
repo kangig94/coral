@@ -9,16 +9,15 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../runtime.js';
+import { cloneSpawnEvent } from '../../../shared/runtime-ports.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
+import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 const DEFAULT_HOME = '/tmp/sim/home';
 const DEFAULT_PATH = '/usr/bin';
 const DEFAULT_CWD = '/tmp/sim';
 const DEFAULT_PID = 12_345;
 const DEFAULT_PLATFORM = 'linux';
-const DEFAULT_JOBS_DIR = '/tmp/sim/jobs';
-const DEFAULT_SESSION_BASE = '/tmp/sim/sessions';
-const DEFAULT_INSTALLATIONS_DIR = '/tmp/sim/installations';
 
 export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
@@ -27,15 +26,6 @@ export type InMemoryPathsSnapshot = {
 
 function hashToken(input: string, length: number): string {
   return createHash('sha256').update(input).digest('hex').slice(0, length);
-}
-
-function cloneSpawnEvent(event: SpawnEvent): SpawnEvent {
-  return {
-    child: event.child,
-    command: event.command,
-    args: [...event.args],
-    ...(event.env ? { env: { ...event.env } } : {}),
-  };
 }
 
 export class InMemoryObserver implements RuntimeObserver {
@@ -88,16 +78,24 @@ export class InMemoryPaths implements RuntimePaths {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
 
+  jobStatusPath(jobId: string): string {
+    return join(this.jobsDir(), jobId, 'status.json');
+  }
+
   sessionBase(): string {
     return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
   }
 
   backendInfoPath(pluginRoot: string): string {
-    return join(this.installationsDir(), this.pluginRootNamespace(pluginRoot), 'backend.json');
+    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.json');
   }
 
   backendLockPath(pluginRoot: string): string {
-    return join(this.installationsDir(), this.pluginRootNamespace(pluginRoot), 'backend.lock');
+    return join(this.installationDirForNamespace(this.pluginRootNamespace(pluginRoot)), 'backend.lock');
+  }
+
+  installationDirForNamespace(namespace: string): string {
+    return join(this.installationsDir(), namespace);
   }
 
   pluginRootNamespace(pluginRoot: string): string {
@@ -122,8 +120,52 @@ export class InMemoryPaths implements RuntimePaths {
     return source;
   }
 
+  discussSourcesPath(): string {
+    return join(this.coralRoot(), 'discuss-sources.json');
+  }
+
+  discussSourcesLockPath(): string {
+    return `${this.discussSourcesPath()}.lock`;
+  }
+
+  discussBaseDirForSource(source: string): string {
+    return join(this.projectDataDirForSource(source), 'discuss');
+  }
+
+  discussDiscoveryPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), 'discovery.json');
+  }
+
+  discussDiscoveryLockPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), '.lock');
+  }
+
+  discussSummaryIndexPathForSource(source: string): string {
+    return join(this.discussBaseDirForSource(source), 'summary-index.json');
+  }
+
+  discussSessionDirForSource(source: string, sessionId: string): string {
+    return join(this.discussBaseDirForSource(source), sessionId);
+  }
+
+  discussStatePath(sessionDir: string): string {
+    return join(sessionDir, 'state.json');
+  }
+
+  discussEventLogPath(sessionDir: string): string {
+    return join(sessionDir, 'event-log.jsonl');
+  }
+
   private installationsDir(): string {
     return this.roots.installationsDir ?? DEFAULT_INSTALLATIONS_DIR;
+  }
+
+  private coralRoot(): string {
+    return this.roots.coralRoot ?? DEFAULT_CORAL_ROOT;
+  }
+
+  private projectDataDirForSource(source: string): string {
+    return join(this.coralRoot(), 'projects', source.replace(/\//g, '-'));
   }
 }
 
@@ -143,6 +185,10 @@ export class SequentialIds implements RuntimeIds {
       this.byteCounter += 1;
     }
     return bytes;
+  }
+
+  sha256(input: string): string {
+    return hashToken(input, 64);
   }
 }
 
