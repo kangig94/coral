@@ -131,13 +131,17 @@ describe('simulation runtime', () => {
     expect(storage.tryExclusiveWriteSync(exclusivePath, 'one')).toBe(true);
     expect(storage.tryExclusiveWriteSync(exclusivePath, 'two')).toBe(false);
     expect(storage.writeAtomicSync(atomicPath, '{"ok":true}', { encoding: 'utf-8' })).toBe(true);
+    expect(storage.writeAtomicDurableSync(atomicPath, '{"ok":"durable"}', { encoding: 'utf-8' })).toBe(true);
+    expect(storage.appendFileDurableSync(filePath, '\ngamma')).toBe(true);
+    expect(storage.writeAtomicDurableSync(join('/tmp/sim/missing', 'state.json'), '{}')).toBe(false);
+    expect(storage.appendFileDurableSync(join('/tmp/sim/missing', 'events.jsonl'), 'event\n')).toBe(false);
     storage.renameSync(atomicPath, join(workDir, 'renamed.json'));
 
     const entries = storage.readdirSync(workDir, { withFileTypes: true }).map((entry) => entry.name);
     const namespace = paths.pluginRootNamespace('/tmp/sim/plugin');
     const projectSource = paths.projectSource('/tmp/sim/project');
     expect(entries).toEqual(['alpha.txt', 'lock.json', 'renamed.json']);
-    expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta'));
+    expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta\ngamma'));
     expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
     expect(paths.sessionBase()).toBe('/tmp/sim/sessions');
     expect(paths.backendInfoPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.json`);

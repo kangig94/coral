@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +9,7 @@ const createdDirs: string[] = [];
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   for (const dir of createdDirs.splice(0, createdDirs.length)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -174,5 +176,146 @@ describe('createRealRuntime', () => {
     expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
     expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toContain('step-one');
     expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toContain('warn');
+  });
+
+  it('writes and appends through durable storage operations', () => {
+    const runtime = createRealRuntime();
+    const rootDir = createTempDir('coral-runtime-durable-');
+    const statePath = join(rootDir, 'nested', 'state.json');
+    const logPath = join(rootDir, 'events', 'events.jsonl');
+
+    expect(runtime.storage.writeAtomicDurableSync(statePath, '{"ok":true}', { encoding: 'utf-8', mode: 0o600 })).toBe(
+      true,
+    );
+    expect(runtime.storage.readFileSync(statePath, 'utf-8')).toBe('{"ok":true}');
+
+    expect(runtime.storage.appendFileDurableSync(logPath, 'one\n')).toBe(true);
+    expect(runtime.storage.appendFileDurableSync(logPath, 'two\n')).toBe(true);
+    expect(runtime.storage.readFileSync(logPath, 'utf-8')).toBe('one\ntwo\n');
+  });
+
+  it('returns false when durable atomic writes hit an ENOENT directory race', async () => {
+    const rootDir = createTempDir('coral-runtime-durable-race-');
+    const statePath = join(rootDir, 'nested', 'state.json');
+    const openSyncMock = vi.fn<typeof NodeFs.openSync>(() => {
+      const error = new Error('directory raced with durable open') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    });
+
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof NodeFs>('node:fs');
+      return {
+        ...actual,
+        openSync: openSyncMock,
+      };
+    });
+
+    try {
+      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const runtime = createMockedRuntime();
+
+      expect(runtime.storage.writeAtomicDurableSync(statePath, '{}')).toBe(false);
+      expect(openSyncMock).toHaveBeenCalledWith(`${statePath}.tmp`, 'w');
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+
+  it('returns false when durable appends hit an ENOENT directory race', async () => {
+    const rootDir = createTempDir('coral-runtime-durable-append-race-');
+    const logPath = join(rootDir, 'nested', 'events.jsonl');
+    const openSyncMock = vi.fn<typeof NodeFs.openSync>(() => {
+      const error = new Error('directory raced with durable append') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    });
+
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof NodeFs>('node:fs');
+      return {
+        ...actual,
+        openSync: openSyncMock,
+      };
+    });
+
+    try {
+      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const runtime = createMockedRuntime();
+
+      expect(runtime.storage.appendFileDurableSync(logPath, 'event\n')).toBe(false);
+      expect(openSyncMock).toHaveBeenCalledWith(logPath, 'a');
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+
+  it('best-effort fsyncs the parent directory after a durable atomic rename', async () => {
+    const statePath = '/tmp/coral-runtime-parent-sync/state.json';
+    const tempFd = 41;
+    const parentFd = 42;
+    const openSyncMock = vi.fn<typeof NodeFs.openSync>((path, flags) => {
+      if (path === `${statePath}.tmp` && flags === 'w') {
+        return tempFd;
+      }
+      if (path === '/tmp/coral-runtime-parent-sync' && flags === 'r') {
+        return parentFd;
+      }
+      throw new Error(`unexpected openSync(${String(path)}, ${String(flags)})`);
+    });
+    const writeSyncMock = vi.fn((...args: unknown[]): number => {
+      const buffer = args[1];
+      const length = args[3];
+      if (typeof length === 'number') {
+        return length;
+      }
+      if (typeof buffer === 'string') {
+        return Buffer.byteLength(buffer);
+      }
+      if (ArrayBuffer.isView(buffer)) {
+        return buffer.byteLength;
+      }
+      return 0;
+    });
+    const fdatasyncSyncMock = vi.fn<typeof NodeFs.fdatasyncSync>();
+    const fsyncSyncMock = vi.fn<typeof NodeFs.fsyncSync>();
+    const closeSyncMock = vi.fn<typeof NodeFs.closeSync>();
+    const renameSyncMock = vi.fn<typeof NodeFs.renameSync>();
+
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof NodeFs>('node:fs');
+      return {
+        ...actual,
+        closeSync: closeSyncMock,
+        fdatasyncSync: fdatasyncSyncMock,
+        fsyncSync: fsyncSyncMock,
+        openSync: openSyncMock,
+        renameSync: renameSyncMock,
+        writeSync: writeSyncMock,
+      };
+    });
+
+    try {
+      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const runtime = createMockedRuntime();
+
+      expect(runtime.storage.writeAtomicDurableSync(statePath, '{"ok":true}')).toBe(true);
+      expect(fdatasyncSyncMock).toHaveBeenCalledWith(tempFd);
+      expect(renameSyncMock).toHaveBeenCalledWith(`${statePath}.tmp`, statePath);
+      expect(openSyncMock).toHaveBeenCalledWith('/tmp/coral-runtime-parent-sync', 'r');
+      expect(fsyncSyncMock).toHaveBeenCalledWith(parentFd);
+      expect(closeSyncMock).toHaveBeenCalledWith(tempFd);
+      expect(closeSyncMock).toHaveBeenCalledWith(parentFd);
+      expect(renameSyncMock.mock.invocationCallOrder[0]).toBeLessThan(openSyncMock.mock.invocationCallOrder[1]);
+      expect(openSyncMock.mock.invocationCallOrder[1]).toBeLessThan(fsyncSyncMock.mock.invocationCallOrder[0]);
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
   });
 });

@@ -444,6 +444,18 @@ export class InMemoryStorage implements RuntimeStorage {
     this.touchAncestors(parent);
   }
 
+  appendFileDurableSync(path: string, data: string): boolean {
+    try {
+      this.appendFileSync(path, data);
+      return true;
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   unlinkSync(path: string): void {
     const normalized = normalizePathForStorage(path);
     if (!this.files.has(normalized)) {
@@ -488,6 +500,10 @@ export class InMemoryStorage implements RuntimeStorage {
     });
     this.renameSync(tempPath, normalized);
     return true;
+  }
+
+  writeAtomicDurableSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+    return this.writeAtomicSync(path, data, options);
   }
 
   chmodSync(path: string, mode: number): void {

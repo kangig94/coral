@@ -14,6 +14,10 @@ function waitSync(ms: number): void {
   Atomics.wait(syncWaitState, 0, 0, ms);
 }
 
+function isDirectoryLockDeps(value: DirectoryLockDeps | number | undefined): value is DirectoryLockDeps {
+  return typeof value === 'object' && value !== null && 'storage' in value && 'time' in value;
+}
+
 function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'EEXIST';
 }
@@ -73,31 +77,9 @@ export async function acquireDirectoryLock(
   depsOrTimeout: DirectoryLockDeps | number = 5000,
   timeoutMs = 5000,
 ): Promise<() => void> {
-  if (typeof depsOrTimeout === 'number') {
-    const deps = resolveDirectoryLockDeps();
-    const deadline = deps.time.now() + depsOrTimeout;
-
-    while (deps.time.now() < deadline) {
-      try {
-        deps.storage.mkdirSync(lockDir);
-        return releaseDirectoryLock(lockDir, deps.storage);
-      } catch (error: unknown) {
-        if (!isAlreadyExistsError(error)) throw error;
-      }
-
-      if (isStaleLock(lockDir, deps)) {
-        tryRemoveLockDirectory(lockDir, deps.storage);
-        continue;
-      }
-
-      await deps.time.sleep(LOCK_RETRY_INTERVAL_MS);
-    }
-
-    throw new Error(`Directory lock timeout: ${lockDir}`);
-  }
-
-  const deps = resolveDirectoryLockDeps(depsOrTimeout);
-  const deadline = deps.time.now() + timeoutMs;
+  const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
+  const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
+  const deadline = deps.time.now() + effectiveTimeoutMs;
 
   while (deps.time.now() < deadline) {
     try {
@@ -118,9 +100,20 @@ export async function acquireDirectoryLock(
   throw new Error(`Directory lock timeout: ${lockDir}`);
 }
 
-export function acquireDirectoryLockSync(lockDir: string, timeoutMs = 5000): () => void {
-  const deps = resolveDirectoryLockDeps();
-  const deadline = deps.time.now() + timeoutMs;
+export function acquireDirectoryLockSync(lockDir: string, timeoutMs?: number): () => void;
+export function acquireDirectoryLockSync(
+  lockDir: string,
+  deps: DirectoryLockDeps,
+  timeoutMs?: number,
+): () => void;
+export function acquireDirectoryLockSync(
+  lockDir: string,
+  depsOrTimeout: DirectoryLockDeps | number = 5000,
+  timeoutMs = 5000,
+): () => void {
+  const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
+  const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
+  const deadline = deps.time.now() + effectiveTimeoutMs;
 
   while (deps.time.now() < deadline) {
     try {
@@ -135,6 +128,8 @@ export function acquireDirectoryLockSync(lockDir: string, timeoutMs = 5000): () 
       continue;
     }
 
+    // Sync retry sleeping intentionally stays on Atomics.wait. DirectoryLockDeps
+    // only provides async sleep until a sync time abstraction is introduced.
     waitSync(LOCK_RETRY_INTERVAL_MS);
   }
 

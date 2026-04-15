@@ -382,6 +382,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     const existing = discussStores.get(source);
     if (existing) return existing;
     const created = new DiscussSessionStore(source, {
+      storage: runtime.storage,
+      time: runtime.time,
       onCommit: (snapshot) => {
         eventBus.emit('discuss:updated', {
           projectRoot: snapshot.projectRoot,

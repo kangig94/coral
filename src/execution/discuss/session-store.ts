@@ -1,4 +1,4 @@
-import { closeSync, fdatasyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fdatasyncSync, mkdirSync, openSync, renameSync, rmSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   readDiscussSources,
@@ -24,13 +24,15 @@ import {
 import { type DiscussSummaryDto } from '../../discuss/views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../../discuss/reducer.js';
-import { acquireDirectoryLock, acquireDirectoryLockSync } from '../../shared/fs-lock.js';
+import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
 
 const sessionAppendLocks = new Map<string, Promise<void>>();
 const projectDiscoveryLocks = new Map<string, Promise<void>>();
 const discussSourcesRegistryLocks = new Map<string, Promise<void>>();
 
 type DiscussSessionStoreOptions = {
+  storage?: DirectoryLockDeps['storage'];
+  time?: DirectoryLockDeps['time'];
   onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
 };
 
@@ -67,9 +69,39 @@ function discussSourcesRegistryLockPath(): string {
   return `${discussSourcesPath()}.lock`;
 }
 
-async function withFilesystemLock<T>(lockDir: string, work: () => Promise<T>): Promise<T> {
-  mkdirSync(dirname(lockDir), { recursive: true });
-  const release = await acquireDirectoryLock(lockDir);
+function defaultDirectoryLockDeps(): DirectoryLockDeps {
+  return {
+    storage: {
+      mkdirSync,
+      rmSync,
+      statSync,
+    },
+    time: {
+      now: () => new Date().getTime(),
+      sleep: (ms) =>
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, ms);
+          timer.unref?.();
+        }),
+    },
+  };
+}
+
+function directoryLockDepsFromOptions(options: DiscussSessionStoreOptions): DirectoryLockDeps {
+  const defaults = defaultDirectoryLockDeps();
+  return {
+    storage: options.storage ?? defaults.storage,
+    time: options.time ?? defaults.time,
+  };
+}
+
+async function withFilesystemLock<T>(
+  lockDir: string,
+  deps: DirectoryLockDeps,
+  work: () => Promise<T>,
+): Promise<T> {
+  deps.storage.mkdirSync(dirname(lockDir), { recursive: true });
+  const release = await acquireDirectoryLock(lockDir, deps);
   try {
     return await work();
   } finally {
@@ -77,9 +109,9 @@ async function withFilesystemLock<T>(lockDir: string, work: () => Promise<T>): P
   }
 }
 
-function withFilesystemLockSync<T>(lockDir: string, work: () => T): T {
-  mkdirSync(dirname(lockDir), { recursive: true });
-  const release = acquireDirectoryLockSync(lockDir);
+function withFilesystemLockSync<T>(lockDir: string, deps: DirectoryLockDeps, work: () => T): T {
+  deps.storage.mkdirSync(dirname(lockDir), { recursive: true });
+  const release = acquireDirectoryLockSync(lockDir, deps);
   try {
     return work();
   } finally {
@@ -297,6 +329,7 @@ function buildPersistedSummary(row: DiscussSummaryIndexRow): DiscussSummaryDto {
 
 export class DiscussSessionStore {
   private readonly source: string;
+  private readonly lockDeps: DirectoryLockDeps;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];
   private coldStartHydrated = false;
   private dirtyDiscovery = false;
@@ -307,6 +340,7 @@ export class DiscussSessionStore {
 
   constructor(source: string, options: DiscussSessionStoreOptions = {}) {
     this.source = source;
+    this.lockDeps = directoryLockDepsFromOptions(options);
     this.onCommit = options.onCommit;
   }
 
@@ -327,7 +361,7 @@ export class DiscussSessionStore {
     mkdirSync(sessionDir, { recursive: true });
 
     return withPromiseChainLock(sessionAppendLocks, sessionLockKey(this.source, sessionId), () =>
-      withFilesystemLock(sessionFilesystemLockPath(sessionDir), async () => {
+      withFilesystemLock(sessionFilesystemLockPath(sessionDir), this.lockDeps, async () => {
         const logPath = discussEventLogPath(sessionDir);
         const statePath = discussStatePath(sessionDir);
 
@@ -428,7 +462,7 @@ export class DiscussSessionStore {
     }
 
     const flushedKeys: string[] = [];
-    withFilesystemLockSync(sourceFilesystemLockPath(this.source), () => {
+    withFilesystemLockSync(sourceFilesystemLockPath(this.source), this.lockDeps, () => {
       const mergedSessions = new Map<string, DiscussDiscoverySession>();
       for (const session of listPersistedDiscussSessionsForSource(this.source)) {
         mergedSessions.set(session.sessionId, session);
@@ -485,7 +519,7 @@ export class DiscussSessionStore {
       { updatedAt: '' } as { updatedAt: string },
     );
     const wroteSources = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
-      return withFilesystemLockSync(discussSourcesRegistryLockPath(), () => {
+      return withFilesystemLockSync(discussSourcesRegistryLockPath(), this.lockDeps, () => {
         const sources = new Set(readDiscussSources());
         sources.add(this.source);
         writeAtomicJson(discussSourcesPath(), {
@@ -593,7 +627,7 @@ export class DiscussSessionStore {
     const currentIndex = readDiscussSummaryIndexForSource(this.source);
     if (!summaryIndexDataEquals(currentIndex, repair.index)) {
       const wroteSummaryIndex = tryWithPromiseChainLockSync(projectDiscoveryLocks, this.source, () => {
-        return withFilesystemLockSync(sourceFilesystemLockPath(this.source), () => {
+        return withFilesystemLockSync(sourceFilesystemLockPath(this.source), this.lockDeps, () => {
           const latestIndex = readDiscussSummaryIndexForSource(this.source);
           if (summaryIndexDataEquals(latestIndex, repair.index)) {
             return true;
@@ -612,7 +646,7 @@ export class DiscussSessionStore {
     }
 
     const updatedRegistry = tryWithPromiseChainLockSync(discussSourcesRegistryLocks, discussSourcesPath(), () => {
-      return withFilesystemLockSync(discussSourcesRegistryLockPath(), () => {
+      return withFilesystemLockSync(discussSourcesRegistryLockPath(), this.lockDeps, () => {
         const sources = new Set(readDiscussSources());
         if (sources.has(this.source)) {
           return true;

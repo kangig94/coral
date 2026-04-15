@@ -5,6 +5,8 @@ import {
   closeSync,
   chmodSync,
   existsSync,
+  fdatasyncSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -14,6 +16,7 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
@@ -125,9 +128,11 @@ export interface RuntimeStorage {
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
   closeSync(fd: number): void;
   appendFileSync(path: string, data: string): void;
+  appendFileDurableSync(path: string, data: string): boolean;
   unlinkSync(path: string): void;
   tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   writeAtomicSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  writeAtomicDurableSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   chmodSync(path: string, mode: number): void;
 }
 
@@ -303,9 +308,11 @@ export function createRealRuntime(): Runtime {
     readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
     closeSync: (fd) => closeSync(fd),
     appendFileSync: (path, data) => appendFileSync(path, data),
+    appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
     unlinkSync: (path) => unlinkSync(path),
     tryExclusiveWriteSync: (path, data, options) => tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
+    writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
@@ -557,5 +564,91 @@ function writeAtomicSyncNode(
       return false;
     }
     throw error;
+  }
+}
+
+function writeAtomicDurableSyncNode(
+  path: string,
+  data: string,
+  options?: { encoding?: BufferEncoding; mode?: number },
+): boolean {
+  const encoding = options?.encoding ?? 'utf-8';
+  const mode = options?.mode;
+  const parent = dirname(path);
+  const tempPath = `${path}.tmp`;
+  mkdirSync(parent, { recursive: true });
+
+  let fd: number | null = null;
+  try {
+    fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
+    writeAllSync(fd, Buffer.from(data, encoding));
+    fdatasyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(tempPath, path);
+    syncParentDirectoryBestEffort(parent);
+    return true;
+  } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+    try {
+      unlinkSync(tempPath);
+    } catch {
+      /* best effort */
+    }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function appendFileDurableSyncNode(path: string, data: string): boolean {
+  const parent = dirname(path);
+  mkdirSync(parent, { recursive: true });
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'a');
+    writeAllSync(fd, Buffer.from(data, 'utf-8'));
+    fdatasyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    return true;
+  } catch (error: unknown) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function writeAllSync(fd: number, buffer: Buffer): void {
+  let offset = 0;
+  while (offset < buffer.length) {
+    offset += writeSync(fd, buffer, offset, buffer.length - offset);
+  }
+}
+
+// Directory fsync after rename is best-effort because not every platform/filesystem supports opening directories.
+function syncParentDirectoryBestEffort(parent: string): void {
+  let dirFd: number | null = null;
+  try {
+    dirFd = openSync(parent, 'r');
+    fsyncSync(dirFd);
+  } catch {
+    /* best effort */
+  } finally {
+    if (dirFd !== null) {
+      try {
+        closeSync(dirFd);
+      } catch {
+        /* best effort */
+      }
+    }
   }
 }
