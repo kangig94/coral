@@ -52,21 +52,10 @@ function parentPath(path: string): string {
   return parent === '.' ? '/' : normalizePathForStorage(parent);
 }
 
-function immediateChildrenOf(path: string, candidates: Iterable<string>): string[] {
+function childName(path: string): string {
   const normalized = normalizePathForStorage(path);
-  const prefix = normalized === '/' ? '/' : `${normalized}/`;
-  const children = new Set<string>();
-  for (const candidate of candidates) {
-    if (candidate === normalized || !candidate.startsWith(prefix)) {
-      continue;
-    }
-    const suffix = candidate.slice(prefix.length);
-    const child = suffix.split('/')[0];
-    if (child) {
-      children.add(child);
-    }
-  }
-  return [...children].sort((left, right) => left.localeCompare(right));
+  const parent = parentPath(normalized);
+  return parent === '/' ? normalized.slice(1) : normalized.slice(parent.length + 1);
 }
 
 function cloneFileNode(node: FileNode): FileNode {
@@ -96,6 +85,7 @@ function createErrnoError(code: string, path: string, message?: string): NodeJS.
 export class InMemoryStorage implements RuntimeStorage {
   private readonly files = new Map<string, FileNode>();
   private readonly directories = new Map<string, DirectoryNode>();
+  private readonly childIndex = new Map<string, Set<string>>();
   private readonly openFiles = new Map<number, OpenFile>();
   private nextFd = 100;
   private lastStamp: number;
@@ -106,6 +96,7 @@ export class InMemoryStorage implements RuntimeStorage {
   ) {
     this.lastStamp = this.time.now();
     this.directories.set('/', { kind: 'dir', mtimeMs: this.nextStamp() });
+    this.childIndex.set('/', new Set());
     this.mkdirSync(this.jobsDirRoot(), { recursive: true });
     this.mkdirSync(this.sessionBaseRoot(), { recursive: true });
     this.mkdirSync(this.installationsDirRoot(), { recursive: true });
@@ -125,6 +116,7 @@ export class InMemoryStorage implements RuntimeStorage {
   restore(snapshot: InMemoryStorageSnapshot): void {
     this.files.clear();
     this.directories.clear();
+    this.childIndex.clear();
     this.openFiles.clear();
 
     for (const [path, node] of snapshot.files) {
@@ -138,6 +130,7 @@ export class InMemoryStorage implements RuntimeStorage {
     }
     this.nextFd = snapshot.nextFd;
     this.lastStamp = snapshot.lastStamp;
+    this.rebuildChildIndex();
   }
 
   readFileSync(path: string, encoding: 'utf-8'): string {
@@ -165,6 +158,7 @@ export class InMemoryStorage implements RuntimeStorage {
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
+    this.registerChild(normalized);
     this.touchAncestors(parent);
   }
 
@@ -186,12 +180,14 @@ export class InMemoryStorage implements RuntimeStorage {
         throw createErrnoError('ENOENT', from);
       }
       this.files.delete(from);
+      this.unregisterChildIfUnreferenced(from);
       this.files.set(to, {
         kind: 'file',
         content: Buffer.from(existing.content),
         mode: existing.mode,
         mtimeMs: this.nextStamp(),
       });
+      this.registerChild(to);
       this.touchAncestors(parentPath(from));
       this.touchAncestors(parent);
       for (const open of this.openFiles.values()) {
@@ -210,6 +206,7 @@ export class InMemoryStorage implements RuntimeStorage {
     this.requireDirectory(targetParent);
     if (this.files.has(to)) {
       this.files.delete(to);
+      this.unregisterChildIfUnreferenced(to);
     }
     if (this.directories.has(to)) {
       this.rmSync(to, { recursive: true, force: true });
@@ -251,6 +248,7 @@ export class InMemoryStorage implements RuntimeStorage {
       }
     }
 
+    this.rebuildChildIndex();
     this.touchAncestors(parentPath(from));
     this.touchAncestors(targetParent);
   }
@@ -282,6 +280,7 @@ export class InMemoryStorage implements RuntimeStorage {
             kind: 'dir',
             mtimeMs: this.nextStamp(),
           });
+          this.registerDirectory(cursor);
           this.touchAncestors(parentPath(cursor));
         }
       }
@@ -292,6 +291,7 @@ export class InMemoryStorage implements RuntimeStorage {
       kind: 'dir',
       mtimeMs: this.nextStamp(),
     });
+    this.registerDirectory(normalized);
     this.touchAncestors(parent);
   }
 
@@ -309,6 +309,7 @@ export class InMemoryStorage implements RuntimeStorage {
 
     if (isFile) {
       this.files.delete(normalized);
+      this.unregisterChildIfUnreferenced(normalized);
       this.touchAncestors(parentPath(normalized));
       return;
     }
@@ -323,11 +324,13 @@ export class InMemoryStorage implements RuntimeStorage {
     for (const candidate of [...this.files.keys()]) {
       if (candidate.startsWith(`${normalized}/`)) {
         this.files.delete(candidate);
+        this.unregisterChildIfUnreferenced(candidate);
       }
     }
     for (const candidate of [...this.directories.keys()]) {
       if (candidate !== '/' && (candidate === normalized || candidate.startsWith(`${normalized}/`))) {
         this.directories.delete(candidate);
+        this.unregisterDirectory(candidate);
       }
     }
     this.touchAncestors(parentPath(normalized));
@@ -340,15 +343,7 @@ export class InMemoryStorage implements RuntimeStorage {
     const normalized = normalizePathForStorage(path);
     this.requireDirectory(normalized);
 
-    const names = new Set<string>();
-    for (const name of immediateChildrenOf(normalized, this.directories.keys())) {
-      names.add(name);
-    }
-    for (const name of immediateChildrenOf(normalized, this.files.keys())) {
-      names.add(name);
-    }
-
-    return [...names]
+    return [...(this.childIndex.get(normalized) ?? [])]
       .sort((left, right) => left.localeCompare(right))
       .map((name) => {
         const childPath = normalized === '/' ? `/${name}` : `${normalized}/${name}`;
@@ -442,6 +437,7 @@ export class InMemoryStorage implements RuntimeStorage {
       mode: current?.mode,
       mtimeMs: this.nextStamp(),
     });
+    this.registerChild(normalized);
     this.touchAncestors(parent);
   }
 
@@ -466,6 +462,7 @@ export class InMemoryStorage implements RuntimeStorage {
       throw createErrnoError('ENOENT', normalized);
     }
     this.files.delete(normalized);
+    this.unregisterChildIfUnreferenced(normalized);
     this.touchAncestors(parentPath(normalized));
   }
 
@@ -481,6 +478,7 @@ export class InMemoryStorage implements RuntimeStorage {
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
+    this.registerChild(normalized);
     this.touchAncestors(parentPath(normalized));
     return true;
   }
@@ -499,6 +497,7 @@ export class InMemoryStorage implements RuntimeStorage {
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
+    this.registerChild(tempPath);
     this.renameSync(tempPath, normalized);
     return true;
   }
@@ -555,6 +554,66 @@ export class InMemoryStorage implements RuntimeStorage {
       throw createErrnoError('ENOTDIR', normalized);
     }
     throw createErrnoError('ENOENT', normalized);
+  }
+
+  private registerDirectory(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    this.ensureChildSet(normalized);
+    this.registerChild(normalized);
+  }
+
+  private unregisterDirectory(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    this.childIndex.delete(normalized);
+    this.unregisterChildIfUnreferenced(normalized);
+  }
+
+  private registerChild(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    if (normalized === '/') {
+      this.ensureChildSet(normalized);
+      return;
+    }
+    this.ensureChildSet(parentPath(normalized)).add(childName(normalized));
+  }
+
+  private unregisterChild(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    if (normalized === '/') {
+      return;
+    }
+    this.childIndex.get(parentPath(normalized))?.delete(childName(normalized));
+  }
+
+  private unregisterChildIfUnreferenced(path: string): void {
+    const normalized = normalizePathForStorage(path);
+    if (!this.files.has(normalized) && !this.directories.has(normalized)) {
+      this.unregisterChild(normalized);
+    }
+  }
+
+  private ensureChildSet(path: string): Set<string> {
+    const normalized = normalizePathForStorage(path);
+    const existing = this.childIndex.get(normalized);
+    if (existing) {
+      return existing;
+    }
+    const children = new Set<string>();
+    this.childIndex.set(normalized, children);
+    return children;
+  }
+
+  private rebuildChildIndex(): void {
+    this.childIndex.clear();
+    for (const path of this.directories.keys()) {
+      this.ensureChildSet(path);
+    }
+    for (const path of this.directories.keys()) {
+      this.registerChild(path);
+    }
+    for (const path of this.files.keys()) {
+      this.registerChild(path);
+    }
   }
 
   private touchAncestors(path: string): void {

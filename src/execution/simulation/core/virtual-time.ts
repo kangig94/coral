@@ -17,6 +17,63 @@ type TimerRecord = {
   active: boolean;
 };
 
+class TimerHeap {
+  private readonly records: TimerRecord[] = [];
+
+  push(record: TimerRecord): void {
+    this.records.push(record);
+    this.bubbleUp(this.records.length - 1);
+  }
+
+  peek(): TimerRecord | undefined {
+    return this.records[0];
+  }
+
+  pop(): TimerRecord | undefined {
+    const first = this.records[0];
+    const last = this.records.pop();
+    if (last && this.records.length > 0) {
+      this.records[0] = last;
+      this.bubbleDown(0);
+    }
+    return first;
+  }
+
+  private bubbleUp(index: number): void {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (compareTimers(this.records[parent], this.records[index]) <= 0) {
+        return;
+      }
+      [this.records[parent], this.records[index]] = [this.records[index], this.records[parent]];
+      index = parent;
+    }
+  }
+
+  private bubbleDown(index: number): void {
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let smallest = index;
+      if (left < this.records.length && compareTimers(this.records[left], this.records[smallest]) < 0) {
+        smallest = left;
+      }
+      if (right < this.records.length && compareTimers(this.records[right], this.records[smallest]) < 0) {
+        smallest = right;
+      }
+      if (smallest === index) {
+        return;
+      }
+      [this.records[index], this.records[smallest]] = [this.records[smallest], this.records[index]];
+      index = smallest;
+    }
+  }
+}
+
+function compareTimers(left: TimerRecord, right: TimerRecord): number {
+  return left.deadline - right.deadline || left.order - right.order;
+}
+
 export class VirtualTimerHandle implements RuntimeTimerHandle {
   constructor(readonly id: number) {}
 
@@ -26,6 +83,7 @@ export class VirtualTimerHandle implements RuntimeTimerHandle {
 export class VirtualTime implements RuntimeTime {
   private currentTime: number;
   private readonly timers = new Map<number, TimerRecord>();
+  private readonly timerHeap = new TimerHeap();
   private nextId = 1;
   private nextOrder = 1;
 
@@ -103,6 +161,7 @@ export class VirtualTime implements RuntimeTime {
       if (next.intervalMs !== null && next.active) {
         next.deadline += next.intervalMs;
         next.order = this.nextOrder++;
+        this.timerHeap.push(next);
       } else {
         this.timers.delete(next.handle.id);
       }
@@ -112,14 +171,16 @@ export class VirtualTime implements RuntimeTime {
   private schedule(fn: () => void, ms: number, intervalMs: number | null): RuntimeTimerHandle {
     const delay = Math.max(1, Math.floor(ms));
     const handle = new VirtualTimerHandle(this.nextId++);
-    this.timers.set(handle.id, {
+    const record = {
       handle,
       deadline: this.currentTime + delay,
       fn,
       intervalMs,
       order: this.nextOrder++,
       active: true,
-    });
+    };
+    this.timers.set(handle.id, record);
+    this.timerHeap.push(record);
     return handle;
   }
 
@@ -136,20 +197,21 @@ export class VirtualTime implements RuntimeTime {
   }
 
   private nextDueTimer(target: number): TimerRecord | null {
-    let next: TimerRecord | null = null;
-    for (const record of this.timers.values()) {
-      if (!record.active || record.deadline > target) {
+    while (true) {
+      const next = this.timerHeap.peek();
+      if (!next) {
+        return null;
+      }
+      if (!next.active) {
+        this.timerHeap.pop();
+        this.timers.delete(next.handle.id);
         continue;
       }
-      if (
-        next === null ||
-        record.deadline < next.deadline ||
-        (record.deadline === next.deadline && record.order < next.order)
-      ) {
-        next = record;
+      if (next.deadline > target) {
+        return null;
       }
+      return this.timerHeap.pop() ?? null;
     }
-    return next;
   }
 }
 

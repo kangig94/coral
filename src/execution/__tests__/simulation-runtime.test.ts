@@ -157,6 +157,43 @@ describe('simulation runtime', () => {
     expect(storage.existsSync(join(workDir, 'renamed.json'))).toBe(false);
   });
 
+  it('keeps in-memory storage directory listings updated across indexed mutations', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const root = '/tmp/indexed';
+    const appendedPath = join(root, 'append.txt');
+    const alphaPath = join(root, 'alpha.txt');
+    const nestedPath = join(root, 'nested');
+    const leafPath = join(nestedPath, 'leaf');
+
+    const list = (path: string) => storage.readdirSync(path, { withFileTypes: true }).map((entry) => entry.name);
+
+    storage.mkdirSync(leafPath, { recursive: true });
+    storage.writeFileSync(alphaPath, 'alpha');
+    storage.appendFileSync(appendedPath, 'append');
+    storage.tryExclusiveWriteSync(join(nestedPath, 'lock.json'), 'lock');
+    storage.writeAtomicSync(join(leafPath, 'state.json'), '{"ok":true}', { encoding: 'utf-8' });
+
+    expect(list(root)).toEqual(['alpha.txt', 'append.txt', 'nested']);
+    expect(list(nestedPath)).toEqual(['leaf', 'lock.json']);
+    expect(list(leafPath)).toEqual(['state.json']);
+
+    const snapshot = storage.snapshot();
+
+    storage.renameSync(alphaPath, join(nestedPath, 'alpha.txt'));
+    storage.unlinkSync(appendedPath);
+    storage.renameSync(nestedPath, join(root, 'renamed'));
+
+    expect(list(root)).toEqual(['renamed']);
+    expect(list(join(root, 'renamed'))).toEqual(['alpha.txt', 'leaf', 'lock.json']);
+
+    storage.rmSync(join(root, 'renamed'), { recursive: true });
+    expect(list(root)).toEqual([]);
+
+    storage.restore(snapshot);
+    expect(list(root)).toEqual(['alpha.txt', 'append.txt', 'nested']);
+    expect(list(nestedPath)).toEqual(['leaf', 'lock.json']);
+  });
+
   it('scripts spawn and durable processes with deterministic kill and liveness behavior', async () => {
     const runtime = new SimulationRuntime();
     runtime.spawner.enqueueSpawn({
