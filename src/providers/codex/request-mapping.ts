@@ -1,5 +1,5 @@
 import type { ProviderRequest } from '../../shared/types.js';
-import { resolveModelTier } from '../../shared/schemas.js';
+import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
 import type { ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
@@ -14,6 +14,8 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
   parts.push(request.prompt);
   return parts.join('\n\n---\n\n');
 }
+
+const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', max: 'xhigh' };
 
 function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
   return bypassPermissions ? 'danger-full-access' : 'workspace-write';
@@ -49,7 +51,7 @@ function resolveCodexModel(requestModel: string | undefined): string {
 
 export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
   return {
-    cwd: request.cwd ?? process.cwd(),
+    cwd: request.cwd,
     model: resolveCodexModel(request.model),
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
@@ -60,7 +62,7 @@ export function mapThreadStartParams(request: ProviderRequest): ThreadStartParam
 export function mapThreadResumeParams(request: ProviderRequest, threadId: string): ThreadResumeParams {
   return {
     threadId,
-    cwd: request.cwd ?? process.cwd(),
+    cwd: request.cwd,
     model: resolveCodexModel(request.model),
     approvalPolicy: 'never',
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
@@ -74,6 +76,6 @@ export function mapTurnStartParams(request: ProviderRequest, threadId: string): 
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
     model: resolveCodexModel(request.model),
-    effort: request.effort,
+    effort: CODEX_EFFORT[request.effort],
   };
 }

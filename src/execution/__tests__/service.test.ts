@@ -1100,7 +1100,7 @@ describe('ExecutionService', () => {
         channel: 'system',
       },
     });
-    expect(request.effort).toBeUndefined();
+    expect(request.effort).toBe('high');
     expect(session).toMatchObject({
       name: 'architect',
       model: 'gpt-5.4',
@@ -2579,6 +2579,7 @@ describe('ExecutionService', () => {
         providerAction: 'exec',
         request: {
           prompt: 'recover me',
+          cwd: '/tmp/project',
           bypassPermissions: false,
           coralEnv: {},
         },
@@ -2951,6 +2952,7 @@ describe('ExecutionService', () => {
           projectRoot: ctx.projectRoot,
           request: {
             prompt: 'recover me',
+            cwd: '/tmp/project',
             bypassPermissions: false,
             conversationRef: 'thread-existing',
             coralEnv: {},
@@ -3089,6 +3091,7 @@ describe('ExecutionService', () => {
             projectRoot: ctx.projectRoot,
             request: {
               prompt: 'recover me',
+              cwd: '/tmp/project',
               bypassPermissions: false,
               conversationRef: 'thread-stale',
               coralEnv: {},
@@ -3165,6 +3168,7 @@ describe('ExecutionService', () => {
             projectRoot: ctx.projectRoot,
             request: {
               prompt: 'recover me',
+              cwd: '/tmp/project',
               bypassPermissions: false,
               conversationRef: 'thread-unverified',
               coralEnv: {},

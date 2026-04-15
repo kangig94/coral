@@ -12,7 +12,7 @@ function makeLaunchRecord(overrides: Partial<PersistedLaunchRecord> = {}): Persi
     pool: 'default',
     enqueueSequence: 1,
     providerAction: 'exec',
-    request: { prompt: 'hello', bypassPermissions: false, coralEnv: {} },
+    request: { prompt: 'hello', cwd: '/tmp/test', bypassPermissions: false, coralEnv: {} },
     createdAt: new Date().toISOString(),
     ...overrides,
   };

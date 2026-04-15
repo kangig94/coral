@@ -94,7 +94,7 @@ export function buildSpeechPrompt(ctx: PromptContext): string {
   ]);
 }
 
-/** First-turn system instruction (used as `instruction` field in ExecInput) */
+/** First-turn system instruction (used as `instruction` field in ExecIntent) */
 export function buildFirstTurnInstruction(ctx: PromptContext): string {
   return joinSections([
     'You are participating in a backend-managed multi-agent discussion. Follow this bidding contract.',

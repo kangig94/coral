@@ -558,7 +558,7 @@ const codexAppServer: ProviderAppServerContract = {
   },
   buildServerSpec(persistedContinuity, request) {
     const { cwd } = toCodexContinuity(persistedContinuity);
-    return buildCodexProviderServerSpec(cwd ?? request.cwd ?? process.cwd(), request.coralEnv);
+    return buildCodexProviderServerSpec(cwd ?? request.cwd, request.coralEnv);
   },
   async interrupt(lease, continuity) {
     const parsed = toCodexContinuity(continuity);
@@ -577,6 +577,7 @@ const codexAppServer: ProviderAppServerContract = {
     try {
       // Probe only checks thread existence — sandbox is intentionally omitted because
       // no commands execute during probe, so the sandbox policy is irrelevant.
+      // Infrastructure: probe uses process.cwd() for orphaned continuity data without request context
       await rpc(lease, 'thread/resume', {
         threadId: parsed.threadId,
         cwd: parsed.cwd ?? process.cwd(),
@@ -620,7 +621,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
 
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Codex');
   const startedAt = Date.now();
-  const cwd = request.cwd ?? process.cwd();
+  const cwd = request.cwd;
   const model = resolveModelTier(request.model);
   const spec = codexAppServer.buildServerSpec(runtime.persistedContinuity, request);
   const lease = await acquireServer(spec);

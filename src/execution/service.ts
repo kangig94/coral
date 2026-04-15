@@ -8,7 +8,7 @@ import type {
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { EffortLevel } from '../shared/schemas.js';
+import { resolveEffort, type EffortLevel } from '../shared/schemas.js';
 import {
   isAppServerRuntime,
   isDurableCliRuntime,
@@ -68,12 +68,10 @@ import {
 import { SessionManager, getSessionById, type SessionAllocateOptions } from './session-manager.js';
 import type { Runtime } from './runtime.js';
 
-interface ExecInput {
+interface LaunchIntentBase {
   prompt: string;
-  agent?: string;
   name?: string;
   model?: string;
-  pool?: LaunchPool;
   cwd?: string;
   /** Set only by coralDispatch (agent metadata). */
   effort?: string;
@@ -84,45 +82,10 @@ interface ExecInput {
   parentWorkflowJobId?: string;
 }
 
-interface ResumeInput {
-  sessionId: string;
-  prompt: string;
-  name?: string;
-  model?: string;
-  pool?: LaunchPool;
-  cwd?: string;
-  /** Set only by coralDispatch (agent metadata). */
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  instruction?: ProviderInstruction;
-  /** Parent workflow job ID for atom launches. */
-  parentWorkflowJobId?: string;
-}
-
-interface ForkInput {
-  sessionId: string;
-  name?: string;
-  prompt?: string;
-  model?: string;
-  cwd?: string;
-  /** Set only by coralDispatch (agent metadata). */
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  instruction?: ProviderInstruction;
-}
-
-interface CoralInput {
-  prompt: string;
-  sessionId?: string;
-  cwd?: string;
-  effort?: EffortLevel;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  /** Parent workflow job ID for atom launches. */
-  parentWorkflowJobId?: string;
-}
+type ExecIntent = LaunchIntentBase & { agent?: string; pool?: LaunchPool };
+type ResumeIntent = LaunchIntentBase & { sessionId: string; agent?: string; pool?: LaunchPool };
+type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; prompt?: string };
+type CoralIntent = Omit<LaunchIntentBase, 'effort'> & { sessionId?: string; effort?: EffortLevel };
 
 interface ListResult {
   sessions: SessionEntry[];
@@ -139,7 +102,7 @@ type ResolvedAgentLaunchProfile = {
 type EffectiveContinuationProfile = {
   model?: string;
   cwd: string;
-  effort?: string;
+  effort: EffortLevel;
   bypassPermissions: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
@@ -757,7 +720,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   private buildContinuationProfile(
-    input: Pick<ResumeInput | ForkInput, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
+    input: Pick<ResumeIntent | ForkIntent, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: SessionEntry,
     ctx: CallerContext,
   ): EffectiveContinuationProfile {
@@ -769,7 +732,7 @@ export class ExecutionService implements RecoveryCapableService {
     return {
       model: input.model ?? session.model,
       cwd: input.cwd ?? session.cwd,
-      effort: coralEnv.CORAL_EFFORT,
+      effort: resolveEffort(input.effort, coralEnv),
       bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt ?? session.systemPrompt,
       instruction: input.instruction ?? session.instruction,
@@ -783,7 +746,7 @@ export class ExecutionService implements RecoveryCapableService {
     providerName: string,
     provider: Provider,
     session: SessionEntry,
-    input: ResumeInput,
+    input: ResumeIntent,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -838,7 +801,7 @@ export class ExecutionService implements RecoveryCapableService {
     providerName: string,
     provider: Provider,
     sourceSession: SessionEntry,
-    input: ForkInput,
+    input: ForkIntent,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
@@ -939,7 +902,7 @@ export class ExecutionService implements RecoveryCapableService {
     return this.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }
 
-  async start(providerName: string, input: ExecInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -1001,7 +964,7 @@ export class ExecutionService implements RecoveryCapableService {
       prompt: input.prompt,
       model,
       cwd,
-      effort: effectiveCoralEnv.CORAL_EFFORT,
+      effort: resolveEffort(input.effort, effectiveCoralEnv),
       bypassPermissions,
       systemPrompt: input.systemPrompt,
       instruction,
@@ -1015,7 +978,7 @@ export class ExecutionService implements RecoveryCapableService {
     });
   }
 
-  async resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -1025,10 +988,35 @@ export class ExecutionService implements RecoveryCapableService {
         'session_not_found',
         `Session not found: ${input.sessionId}. Use exec to start a new session.`,
       );
-    return this.resumeResolved(providerName, provider, session, input, ctx);
+
+    // Resolve agent profile before continuation so instruction/model are available
+    let effectiveInput = input;
+    if (input.agent) {
+      let resolvedAgent: ResolvedAgentLaunchProfile;
+      try {
+        resolvedAgent = resolveAgentLaunchProfile(input.agent, {
+          projectRoot: ctx.projectRoot,
+          coralPluginRoot: ctx.pluginRoot,
+          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+          storage: this.runtime.storage,
+        });
+      } catch (err) {
+        const rejection = mapResolverError(err);
+        if (rejection) return rejection;
+        throw err;
+      }
+      effectiveInput = {
+        ...input,
+        name: resolvedAgent.name,
+        model: input.model ?? resolvedAgent.model,
+        instruction: input.instruction ?? resolvedAgent.instruction,
+      };
+    }
+
+    return this.resumeResolved(providerName, provider, session, effectiveInput, ctx);
   }
 
-  async fork(providerName: string, input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -1041,7 +1029,7 @@ export class ExecutionService implements RecoveryCapableService {
     return this.forkResolved(providerName, provider, sourceSession, input, ctx);
   }
 
-  async resumeBySessionId(input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
     if ('status' in resolved) return resolved;
 
@@ -1051,7 +1039,7 @@ export class ExecutionService implements RecoveryCapableService {
     return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
   }
 
-  async forkBySessionId(input: ForkInput, ctx: CallerContext): Promise<LaunchDecision> {
+  async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
     if ('status' in resolved) return resolved;
 
@@ -1064,41 +1052,25 @@ export class ExecutionService implements RecoveryCapableService {
   async coralDispatch(
     providerName: string,
     coralName: string,
-    input: CoralInput,
+    input: CoralIntent,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
     // CRITICAL: force the coral namespace to preserve workflow atom identity
     // against project overrides when internal coral workflows dispatch agents.
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
-    const effort = input.effort;
-    const cwd = input.cwd ?? ctx.projectRoot;
+    const bypassPermissions = input.bypassPermissions ?? true;
 
     if (input.sessionId) {
-      let resolvedAgent: ResolvedAgentLaunchProfile;
-      try {
-        resolvedAgent = resolveAgentLaunchProfile(forcedIdent, {
-          projectRoot: ctx.projectRoot,
-          coralPluginRoot: ctx.pluginRoot,
-          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
-          storage: this.runtime.storage,
-        });
-      } catch (err) {
-        const rejection = mapResolverError(err);
-        if (rejection) return rejection;
-        throw err;
-      }
       return this.resume(
         providerName,
         {
           sessionId: input.sessionId,
           prompt: input.prompt,
-          name: resolvedAgent.name,
-          model: resolvedAgent.model,
-          cwd,
-          effort,
-          bypassPermissions: input.bypassPermissions ?? true,
+          agent: forcedIdent,
+          cwd: input.cwd,
+          effort: input.effort,
+          bypassPermissions,
           systemPrompt: input.systemPrompt,
-          instruction: resolvedAgent.instruction,
           parentWorkflowJobId: input.parentWorkflowJobId,
         },
         ctx,
@@ -1110,9 +1082,9 @@ export class ExecutionService implements RecoveryCapableService {
       {
         prompt: input.prompt,
         agent: forcedIdent,
-        cwd,
-        effort,
-        bypassPermissions: input.bypassPermissions ?? true,
+        cwd: input.cwd,
+        effort: input.effort,
+        bypassPermissions,
         systemPrompt: input.systemPrompt,
         parentWorkflowJobId: input.parentWorkflowJobId,
       },

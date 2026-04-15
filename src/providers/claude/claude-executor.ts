@@ -1,4 +1,4 @@
-import { resolveEffort, type EffortLevel } from '../../shared/schemas.js';
+import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
 import type { ProviderCliRunner } from '../runner-port.js';
@@ -58,8 +58,7 @@ function appendSharedArgs(args: string[], options: ClaudeExecOptions): void {
   if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   if (options.model) args.push('--model', options.model);
-  const effort = resolveEffort(options.effort, options.environment);
-  args.push('--effort', effort);
+  if (options.effort) args.push('--effort', options.effort);
 }
 
 async function executeClaude(args: string[], prompt: string, options: ClaudeExecOptions): Promise<ClaudeExecResult> {
