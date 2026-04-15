@@ -51,7 +51,7 @@ describe('agentIdentSchema', () => {
 });
 
 describe('sessionCreateSchema', () => {
-  it('parses the minimal session create body and defaults bypassPermissions to false', () => {
+  it('parses the minimal session create body without a bypassPermissions default', () => {
     const parsed = sessionCreateSchema.parse({
       provider: 'codex',
       prompt: 'Analyze this change',
@@ -62,8 +62,8 @@ describe('sessionCreateSchema', () => {
       provider: 'codex',
       prompt: 'Analyze this change',
       projectRoot: '/tmp/project',
-      bypassPermissions: false,
     });
+    expect(parsed).not.toHaveProperty('bypassPermissions');
   });
 
   it('accepts all optional fields', () => {
