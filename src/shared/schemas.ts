@@ -62,7 +62,7 @@ export const sessionCreateSchema = z
     owner: ownerSchema.optional(),
     effort: effortLevelSchema.optional(),
     claudeModelCap: claudeModelCapSchema,
-    bypassPermissions: z.boolean().default(false),
+    bypassPermissions: z.boolean().optional(),
     systemPrompt: z.string().optional(),
   })
   .strict();
