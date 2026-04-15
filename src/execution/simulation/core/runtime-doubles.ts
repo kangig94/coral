@@ -9,17 +9,15 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../runtime.js';
+import { cloneSpawnEvent } from '../../../shared/runtime-ports.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
+import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 const DEFAULT_HOME = '/tmp/sim/home';
 const DEFAULT_PATH = '/usr/bin';
 const DEFAULT_CWD = '/tmp/sim';
 const DEFAULT_PID = 12_345;
 const DEFAULT_PLATFORM = 'linux';
-const DEFAULT_JOBS_DIR = '/tmp/sim/jobs';
-const DEFAULT_SESSION_BASE = '/tmp/sim/sessions';
-const DEFAULT_INSTALLATIONS_DIR = '/tmp/sim/installations';
-const DEFAULT_CORAL_ROOT = '/tmp/sim/coral';
 
 export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
@@ -28,15 +26,6 @@ export type InMemoryPathsSnapshot = {
 
 function hashToken(input: string, length: number): string {
   return createHash('sha256').update(input).digest('hex').slice(0, length);
-}
-
-function cloneSpawnEvent(event: SpawnEvent): SpawnEvent {
-  return {
-    child: event.child,
-    command: event.command,
-    args: [...event.args],
-    ...(event.env ? { env: { ...event.env } } : {}),
-  };
 }
 
 export class InMemoryObserver implements RuntimeObserver {

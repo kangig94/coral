@@ -1,6 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
-import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo, type BackendInfo } from '../../../infra/backend-info.js';
+import {
+  readBackendInfo,
+  removeBackendInfoIfOwner,
+  writeBackendInfo,
+  type BackendInfo,
+} from '../../../infra/backend-info.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
@@ -14,12 +19,7 @@ import { TypedEventBus } from '../../event-bus.js';
 import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, RuntimeProcess, RuntimeStorage } from '../../runtime.js';
-import {
-  createBackendCore,
-  type BackendCoreResult,
-  type CreateServerFn,
-  type FetchFn,
-} from '../../backend-core.js';
+import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
@@ -32,9 +32,15 @@ import {
 } from './mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime, flushMicrotasks } from './virtual-time.js';
+import { toError } from './constants.js';
 
-export { createDeferred, type Deferred } from './deferred.js';
-export { InMemoryStorage, normalizePathForStorage, type InMemoryStorageSnapshot, type InMemoryRoots } from './memory-storage.js';
+export { createDeferred, type Deferred } from '../../../shared/test-deferred.js';
+export {
+  InMemoryStorage,
+  normalizePathForStorage,
+  type InMemoryStorageSnapshot,
+  type InMemoryRoots,
+} from './memory-storage.js';
 export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock-app.js';
 export {
   MockChildProcess,
@@ -118,12 +124,7 @@ export class SimulationRuntime implements Runtime {
     const inheritedEnv = this.env.fullSnapshot();
     this.spawner = new MockProcessSpawner(this.time, this.storage, {
       buildDurableEnv: (envAdditions) =>
-        composeChildEnv(
-          { ...inheritedEnv },
-          envAdditions ?? {},
-          SIMULATION_ENV_BUDGET_BYTES,
-          new Set<string>(),
-        ),
+        composeChildEnv({ ...inheritedEnv }, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
     });
     this.process = {
       spawn: (spawnOptions) => {
@@ -162,10 +163,6 @@ function createMockKbSubsystem() {
       stop: async () => {},
     },
   };
-}
-
-function toError(value: Error | string): Error {
-  return value instanceof Error ? value : new Error(value);
 }
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | null {
@@ -275,7 +272,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
         const result: ProviderResult = {
           content: scenario?.result?.content ?? stdout,
           exitCode: scenario?.result?.exitCode ?? exitCode,
-          aborted: scenario?.result?.aborted ?? (signal !== null),
+          aborted: scenario?.result?.aborted ?? signal !== null,
           notice: scenario?.result?.notice ?? (stderr.length > 0 ? stderr : undefined),
           ...scenario?.result,
         };
@@ -319,12 +316,6 @@ export type SimulationController = {
 export type SimulationBackend = {
   backend: SimulationController;
   runtime: SimulationRuntime;
-  time: VirtualTime;
-  storage: InMemoryStorage;
-  paths: InMemoryPaths;
-  spawner: MockProcessSpawner;
-  ids: SequentialIds;
-  env: SealedEnv;
   eventBus: TypedEventBus;
   progressStore: ProgressStore;
   launchCoordinator: LaunchCoordinator;
@@ -356,7 +347,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const progressStore = new ProgressStore(namespace, eventBus, runtime);
+  const progressStore = new ProgressStore(namespace, runtime, eventBus);
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
@@ -481,12 +472,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   return {
     backend,
     runtime,
-    time: runtime.time,
-    storage: runtime.storage,
-    paths: runtime.paths,
-    spawner: runtime.spawner,
-    ids: runtime.ids,
-    env: runtime.env,
     eventBus,
     progressStore,
     launchCoordinator,

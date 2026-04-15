@@ -6,14 +6,12 @@ import type {
   MockSpawnScript,
   SimulationScenario,
 } from './core/index.js';
+import { toError } from './core/constants.js';
 import type { ScenarioError, WorldConfig } from './schema.js';
 
 function toRuntimeError(value: ScenarioError | Error | string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    return new Error(value);
+  if (value instanceof Error || typeof value === 'string') {
+    return toError(value);
   }
 
   const error = new Error(value.message);
@@ -54,12 +52,7 @@ export function normalizeSpawnScripts(scripts: WorldConfig['spawn']): MockSpawnS
     pid: script.pid,
     stdout: cloneOutputChunks(script.stdout),
     stderr: cloneOutputChunks(script.stderr),
-    close:
-      script.close === undefined
-        ? undefined
-        : script.close === null
-          ? null
-          : { ...script.close },
+    close: script.close === undefined ? undefined : script.close === null ? null : { ...script.close },
     error:
       script.error === undefined
         ? undefined
@@ -80,15 +73,9 @@ export function normalizeDurableScripts(scripts: WorldConfig['durable']): MockDu
     stdout: cloneOutputChunks(script.stdout),
     stderr: cloneOutputChunks(script.stderr),
     runtimeRecord: script.runtimeRecord ? { ...script.runtimeRecord } : undefined,
-    exit:
-      script.exit === undefined
-        ? undefined
-        : script.exit === null
-          ? null
-          : { ...script.exit },
+    exit: script.exit === undefined ? undefined : script.exit === null ? null : { ...script.exit },
     kills: cloneKillActions(script.kills),
-    waitForExitError:
-      script.waitForExitError === undefined ? undefined : toRuntimeError(script.waitForExitError),
+    waitForExitError: script.waitForExitError === undefined ? undefined : toRuntimeError(script.waitForExitError),
   }));
 }
 

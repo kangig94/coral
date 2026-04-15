@@ -304,9 +304,7 @@ function buildBidBatch(
       outcome.agentName,
       outcome.score,
       outcome.thought,
-      snapshot.sessionId,
-      snapshot.projectRoot,
-      snapshot.state.topic,
+      { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
       nextSeq,
       ctxTs(ctx),
     );
@@ -335,9 +333,7 @@ function buildBidBatch(
       decideExpel(
         working.state,
         expelAgents,
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
+        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
         nextSeq,
         ctxTs(ctx),
       ),
@@ -377,9 +373,7 @@ function buildBidBatch(
       decideEnd(
         working.state,
         { endReason: 'no_participants' },
-        snapshot.sessionId,
-        snapshot.projectRoot,
-        snapshot.state.topic,
+        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
         nextSeq,
         ctxTs(ctx),
       ),
@@ -666,9 +660,7 @@ export async function collectSpeech(
     const committed = await commitDecision(ctx, sessionId, (current) =>
       decideSpeechTimeout(
         current.state,
-        sessionId,
-        ctx.projectRoot,
-        current.state.topic,
+        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
         current.lastAppliedSeq + 1,
         ctxTs(ctx),
       ),
@@ -692,9 +684,7 @@ export async function collectSpeech(
       current.state,
       winnerName,
       attempt.content,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
       ctxTs(ctx),
     ),
@@ -767,9 +757,7 @@ export async function handleEpochTransition(
         decideEpochSummary(
           current.state,
           evaluation.summary,
-          sessionId,
-          ctx.projectRoot,
-          current.state.topic,
+          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
           nextSeq,
           ts,
         ),
@@ -811,9 +799,7 @@ export async function handleEpochTransition(
     return decideEnd(
       current.state,
       { force: true, reason: 'Discussion converged.' },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       nextSeq,
       ts,
     );
@@ -842,9 +828,7 @@ export async function runFollowUpTurns(
         decideEnd(
           current.state,
           { force: true, reason: 'Discussion converged after follow-ups.' },
-          sessionId,
-          ctx.projectRoot,
-          current.state.topic,
+          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
           current.lastAppliedSeq + 1,
           ctxTs(ctx),
         ),
@@ -924,9 +908,7 @@ export async function handleSynthesis(
       decideSynthesis(
         current.state,
         result.content,
-        sessionId,
-        ctx.projectRoot,
-        current.state.topic,
+        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
         current.lastAppliedSeq + 1,
         ctxTs(ctx),
       ),

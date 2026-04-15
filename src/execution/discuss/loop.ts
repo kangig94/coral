@@ -44,9 +44,7 @@ async function handleBidRoundClose(
   const resolved = await commitDecision(ctx, sessionId, (latest) =>
     decideBidRoundClose(
       latest.state,
-      latest.sessionId,
-      ctx.projectRoot,
-      latest.state.topic,
+      { sessionId: latest.sessionId, projectRoot: ctx.projectRoot, topic: latest.state.topic },
       latest.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -74,9 +72,7 @@ async function forceEndAfterLoopFailure(ctx: DiscussContext, sessionId: string, 
     decideEnd(
       current.state,
       { force: true, reason: detail },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),

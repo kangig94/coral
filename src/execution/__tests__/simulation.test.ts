@@ -154,7 +154,9 @@ describe('deterministic simulation lifecycle replay', () => {
     const world = new SimulationWorld({});
 
     try {
-      await expect(world.launchJob('launch before boot')).rejects.toThrow('Simulation world must be booted before launch');
+      await expect(world.launchJob('launch before boot')).rejects.toThrow(
+        'Simulation world must be booted before launch',
+      );
       await expect(world.waitUntil('job-1', { terminal: true }, 5, { maxSteps: 1 })).rejects.toThrow(
         'Simulation world must be booted before wait',
       );
@@ -426,7 +428,7 @@ describe('deterministic simulation lifecycle replay', () => {
     const generation = world.generation();
     const envPath = join(jobDir, 'env.json');
     const runtimePath = join(jobDir, 'runtime.json');
-    const env = JSON.parse(generation.backend.storage.readFileSync(envPath, 'utf-8')) as Record<string, string>;
+    const env = JSON.parse(generation.backend.runtime.storage.readFileSync(envPath, 'utf-8')) as Record<string, string>;
 
     expect(env).toMatchObject({
       KEEP_BASE: 'base-value',
@@ -435,8 +437,8 @@ describe('deterministic simulation lifecycle replay', () => {
       CORAL_CHILD: '1',
     });
     expect(env).not.toHaveProperty('CORAL_BACKEND_IDLE_MS');
-    expect(generation.backend.storage.statSync(envPath).mtimeMs).toBeLessThan(
-      generation.backend.storage.statSync(runtimePath).mtimeMs,
+    expect(generation.backend.runtime.storage.statSync(envPath).mtimeMs).toBeLessThan(
+      generation.backend.runtime.storage.statSync(runtimePath).mtimeMs,
     );
   });
 });

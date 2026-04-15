@@ -28,12 +28,7 @@ import {
   InvalidAgentRefError,
   type AgentRef,
 } from '../agent-resolution.js';
-import {
-  LaunchCoordinator,
-  getMaxWorkers,
-  type ProviderServerHandle,
-  type SpawnProviderServerFn,
-} from '../engine.js';
+import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../engine.js';
 import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore } from '../progress-store.js';
@@ -130,7 +125,7 @@ function createService(
 ): ExecutionService {
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? new ProgressStore('test-ns', eventBus, runtime),
+    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -1149,10 +1144,7 @@ describe('ExecutionService', () => {
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
-      createResolvedAgent(
-        { namespace: 'coral', name: 'scanner' },
-        '---\nmodel: gpt-5.4\n---\nScanner instruction',
-      ),
+      createResolvedAgent({ namespace: 'coral', name: 'scanner' }, '---\nmodel: gpt-5.4\n---\nScanner instruction'),
     );
     const service = createService(ctx);
 
@@ -1175,10 +1167,7 @@ describe('ExecutionService', () => {
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
-      createResolvedAgent(
-        { namespace: 'coral', name: 'scanner' },
-        '---\nmodel: gpt-5.4\n---\nScanner instruction',
-      ),
+      createResolvedAgent({ namespace: 'coral', name: 'scanner' }, '---\nmodel: gpt-5.4\n---\nScanner instruction'),
     );
     const service = createService(ctx);
 

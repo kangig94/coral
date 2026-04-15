@@ -726,9 +726,7 @@ describe('execution backend server', () => {
       .mockResolvedValueOnce(sharedClaudeHandle.handle)
       .mockResolvedValueOnce(codexHandleA.handle)
       .mockResolvedValueOnce(codexHandleB.handle);
-    const providerHostManager = createProviderHostManager({ runtime,
-      spawnProviderServer,
-    });
+    const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
     controller = serverModule.createBackendServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -938,9 +936,11 @@ describe('execution backend server', () => {
           { name: 'beta', persona: '# Beta', participation: 'required' },
         ],
       },
-      'discuss-only-session',
-      projectRoot,
-      'Should the city pedestrianize the downtown core?',
+      {
+        sessionId: 'discuss-only-session',
+        projectRoot: projectRoot,
+        topic: 'Should the city pedestrianize the downtown core?',
+      },
       1,
       '2026-03-11T00:00:00.000Z',
     );
@@ -1144,12 +1144,15 @@ describe('execution backend server', () => {
       count: 1,
     });
 
-    const purgeResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`, {
-      method: 'DELETE',
-      headers: {
-        'X-Coral-Backend-Token': backend.token,
+    const purgeResponse = await fetch(
+      `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
+      {
+        method: 'DELETE',
+        headers: {
+          'X-Coral-Backend-Token': backend.token,
+        },
       },
-    });
+    );
 
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
@@ -1290,9 +1293,7 @@ describe('execution backend server', () => {
         handleKbPrinciples: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:principles', args })),
         handleKbMemo: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo', args })),
         handleKbMemoList: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo-list', args })),
-        handleKbMemoDeleteConsolidated: vi.fn((args: unknown) =>
-          domainSuccess({ route: 'kb:memo-delete', args }),
-        ),
+        handleKbMemoDeleteConsolidated: vi.fn((args: unknown) => domainSuccess({ route: 'kb:memo-delete', args })),
         ...options.kbToolOverrides,
       };
 
@@ -1851,54 +1852,57 @@ describe('execution backend server', () => {
         handlerName: 'handleKbReindex',
         callShape: 'args-kb',
       },
-    ])('routes KB write routes for $name', async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
-      await withBaseCoralEnv(async () => {
-        const started = await startMockedRouteServer();
-        const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+    ])(
+      'routes KB write routes for $name',
+      async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
+        await withBaseCoralEnv(async () => {
+          const started = await startMockedRouteServer();
+          const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
 
-        try {
-          const response = await fetch(`${started.baseUrl}${path}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Coral-Backend-Token': 'test-token',
-            },
-            body: JSON.stringify({
-              ...args,
-              projectRoot: '/tmp/project',
-              owner: 'team-a',
-              effort: 'high',
-              claudeModelCap: 'sonnet',
-            }),
-          });
+          try {
+            const response = await fetch(`${started.baseUrl}${path}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Coral-Backend-Token': 'test-token',
+              },
+              body: JSON.stringify({
+                ...args,
+                projectRoot: '/tmp/project',
+                owner: 'team-a',
+                effort: 'high',
+                claudeModelCap: 'sonnet',
+              }),
+            });
 
-          expect(response.status).toBe(expectedStatus);
-          expect(await response.json()).toEqual(expectedBody);
+            expect(response.status).toBe(expectedStatus);
+            expect(await response.json()).toEqual(expectedBody);
 
-          const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
-          const call = handler.mock.calls[0] as unknown[] | undefined;
-          expect(handler).toHaveBeenCalledTimes(1);
-          expect(call?.[0]).toEqual(expectedBody.args);
-          if (callShape === 'args-kb') {
+            const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
+            const call = handler.mock.calls[0] as unknown[] | undefined;
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(call?.[0]).toEqual(expectedBody.args);
+            if (callShape === 'args-kb') {
+              expect(call?.[1]).toBe(kbSubsystem);
+              return;
+            }
             expect(call?.[1]).toBe(kbSubsystem);
-            return;
+            expect(call?.[2]).toMatchObject({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+              coralEnv: expect.objectContaining({
+                CORAL_TEST_HTTP_BASE: 'daemon-base',
+                CORAL_OWNER: 'team-a',
+                CORAL_EFFORT: 'high',
+                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+              }),
+            });
+          } finally {
+            await _closeHttpServer(started.server);
           }
-          expect(call?.[1]).toBe(kbSubsystem);
-          expect(call?.[2]).toMatchObject({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-            coralEnv: expect.objectContaining({
-              CORAL_TEST_HTTP_BASE: 'daemon-base',
-              CORAL_OWNER: 'team-a',
-              CORAL_EFFORT: 'high',
-              CORAL_CLAUDE_MODEL_CAP: 'sonnet',
-            }),
-          });
-        } finally {
-          await _closeHttpServer(started.server);
-        }
-      });
-    });
+        });
+      },
+    );
 
     it('routes POST /kb/memos with owner preserved for the memo handler', async () => {
       await withBaseCoralEnv(async () => {
@@ -2273,12 +2277,13 @@ describe('execution backend server', () => {
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
           method,
-          headers: body === undefined
-            ? { 'X-Coral-Backend-Token': 'test-token' }
-            : {
-                'Content-Type': 'application/json',
-                'X-Coral-Backend-Token': 'test-token',
-              },
+          headers:
+            body === undefined
+              ? { 'X-Coral-Backend-Token': 'test-token' }
+              : {
+                  'Content-Type': 'application/json',
+                  'X-Coral-Backend-Token': 'test-token',
+                },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
 
@@ -3135,7 +3140,13 @@ describe('execution backend server', () => {
       projectRoot: foreignProjectRoot,
       backendNamespace: testBackendNamespace,
     });
-    const legacy = new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
+    const legacy = new SessionManager(projectRoot, runtime).allocate(
+      'codex',
+      'legacy',
+      'gpt-5',
+      projectRoot,
+      projectRoot,
+    );
 
     const backend = await startBackendServer();
     const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
@@ -3338,7 +3349,12 @@ describe('execution backend server', () => {
     const progressStore = new ProgressStore('test-ns', runtime);
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = new SessionManager(projectRoot, runtime).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
+    const session = new SessionManager(projectRoot, runtime).allocate(
+      'codex',
+      'workflow-session',
+      'gpt-5',
+      projectRoot,
+    );
 
     createdJobIds.add(jobId);
     progressStore.initJob({
@@ -3702,9 +3718,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'startup-candidate',
-        projectRoot,
-        topic,
+        { sessionId: 'startup-candidate', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
       );
@@ -3722,9 +3736,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'terminal-history',
-        projectRoot,
-        topic,
+        { sessionId: 'terminal-history', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:05:00.000Z',
       );
@@ -4109,9 +4121,7 @@ describe('execution backend server', () => {
             { name: 'beta', persona: '# Beta', participation: 'required' },
           ],
         },
-        'recoverable-discuss',
-        pluginRoot,
-        topic,
+        { sessionId: 'recoverable-discuss', projectRoot: pluginRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
       );
@@ -4186,8 +4196,7 @@ describe('execution backend server', () => {
               time: lifecycleRuntime.time,
             },
             jobStatusReader: {
-              read: (jobId) =>
-                readStatusRecordWithStorage(lifecycleRuntime.storage, lifecycleRuntime.paths, jobId),
+              read: (jobId) => readStatusRecordWithStorage(lifecycleRuntime.storage, lifecycleRuntime.paths, jobId),
             },
           }),
         acquireLockFn: async () => {},

@@ -150,7 +150,7 @@ async function appendCreatedSession(
   return harness.store.append(
     sessionId,
     null,
-    unwrap(decideSessionCreate(input, sessionId, harness.projectRoot, TOPIC, 1, ts)),
+    unwrap(decideSessionCreate(input, { sessionId: sessionId, projectRoot: harness.projectRoot, topic: TOPIC }, 1, ts)),
   );
 }
 
@@ -202,9 +202,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     const closed = unwrap(
       decideBidRoundClose(
         afterBid!.state,
-        'sim-discuss-1',
-        harness.projectRoot,
-        TOPIC,
+        { sessionId: 'sim-discuss-1', projectRoot: harness.projectRoot, topic: TOPIC },
         afterBid!.lastAppliedSeq + 1,
         '2035-04-15T01:02:04.000Z',
       ),
@@ -325,11 +323,11 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       pluginRoot: '/virtual/backend/plugin',
     });
     activeBackends.push(world);
-    const source = world.paths.projectSource(world.projectRoot);
+    const source = world.runtime.paths.projectSource(world.projectRoot);
     const seedStore = new DiscussSessionStore(source, {
-      storage: world.storage,
-      time: world.time,
-      paths: world.paths,
+      storage: world.runtime.storage,
+      time: world.runtime.time,
+      paths: world.runtime.paths,
     });
     activeStores.push(seedStore);
     const created = await appendCreatedSession(
@@ -342,9 +340,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
         'alpha',
         91,
         'Recovery should close this in virtual time.',
-        'backend-recovered-discuss',
-        world.projectRoot,
-        TOPIC,
+        { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
         created.lastAppliedSeq + 1,
         '2035-04-15T01:02:04.000Z',
       ),
@@ -352,7 +348,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     await seedStore.append('backend-recovered-discuss', created.lastAppliedSeq, bid);
     seedStore.flushDirtyIndexes();
     const sessionDir = seedStore.resolveSessionDir('backend-recovered-discuss');
-    expect(existsSync(world.paths.discussStatePath(sessionDir))).toBe(false);
+    expect(existsSync(world.runtime.paths.discussStatePath(sessionDir))).toBe(false);
 
     const info = await world.backend.start();
     expect(world.hooks.recoverPersistedDiscussCalls).toBe(1);

@@ -14,7 +14,6 @@ import type {
   ResolveResult,
 } from './types.js';
 
-
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
@@ -117,15 +116,20 @@ export interface SessionCreateOptions {
   agentExecution?: Record<string, SessionCreatedAgentExecutionConfig>;
 }
 
+export type DecisionContext = {
+  sessionId: string;
+  projectRoot: string;
+  topic: string;
+};
+
 export function decideSessionCreate(
   input: DiscussCreateInput,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
   opts: SessionCreateOptions = {},
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   const {
     bidThreshold = DEFAULT_BID_THRESHOLD,
     maxEpochs = DEFAULT_MAX_EPOCHS,
@@ -154,12 +158,11 @@ export function decideSessionCreate(
 
 export function decideBiddingOpen(
   state: DiscussState,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'setup') {
     return { ok: false, error: 'not_in_setup', detail: { current: state.status } };
   }
@@ -175,12 +178,11 @@ export function decideBid(
   agentName: string,
   score: number,
   thought: string,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'bidding') {
     return {
       ok: false,
@@ -220,12 +222,11 @@ export function decideBid(
 
 export function decideBidRoundClose(
   state: DiscussState,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'bidding') {
     return { ok: false, error: 'invalid_status', detail: { current: state.status } };
   }
@@ -233,7 +234,9 @@ export function decideBidRoundClose(
   const requiredAgents = Object.entries(state.agents).filter(
     ([, agent]) => !agent.banned && agent.participation === 'required',
   );
-  const missing = requiredAgents.map(([name]) => name).filter((name) => state.current_bids[name] === null || state.current_bids[name] === undefined);
+  const missing = requiredAgents
+    .map(([name]) => name)
+    .filter((name) => state.current_bids[name] === null || state.current_bids[name] === undefined);
 
   if (missing.length > 0) {
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
@@ -360,12 +363,11 @@ export function decideSpeech(
   state: DiscussState,
   agentName: string,
   content: string,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'speaking') {
     return {
       ok: false,
@@ -398,12 +400,11 @@ export function decideSpeech(
 
 export function decideSpeechTimeout(
   state: DiscussState,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'speaking' || !state.current_speaker) {
     return { ok: false, error: 'not_speaking', detail: { status: state.status } };
   }
@@ -427,12 +428,11 @@ export function decideSpeechTimeout(
 export function decideExpel(
   state: DiscussState,
   pendingAgents: string[],
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status === 'ended') {
     return { ok: false, error: 'session_ended', detail: { hint: 'Cannot expel agents from an ended session.' } };
   }
@@ -456,12 +456,11 @@ export function decideExpel(
 export function decideEpochSummary(
   state: DiscussState,
   summary: string,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status === 'setup') {
     return { ok: false, error: 'session_not_started' };
   }
@@ -488,12 +487,11 @@ export function decideEpochSummary(
 export function decideEnd(
   state: DiscussState,
   opts: { force?: boolean; reason?: string; endReason?: Exclude<EndReason, 'already_ended'> },
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status === 'ended') {
     return { ok: true, value: [] };
   }
@@ -530,12 +528,11 @@ export function decideEnd(
 export function decideSynthesis(
   state: DiscussState,
   synthesis: string,
-  sessionId: string,
-  projectRoot: string,
-  topic: string,
+  context: DecisionContext,
   seq: number,
   ts: string,
 ): Result<DiscussDomainEvent[]> {
+  const { sessionId, projectRoot, topic } = context;
   if (state.status !== 'ended') {
     return { ok: false, error: 'not_ended' };
   }

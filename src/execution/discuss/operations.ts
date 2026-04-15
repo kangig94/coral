@@ -50,11 +50,7 @@ export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot):
 
 function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boolean {
   const { controlPhase } = snapshot.runtime;
-  if (
-    controlPhase === 'synthesize' ||
-    controlPhase === 'evaluate_epoch' ||
-    controlPhase === 'collect_follow_up'
-  ) {
+  if (controlPhase === 'synthesize' || controlPhase === 'evaluate_epoch' || controlPhase === 'collect_follow_up') {
     return true;
   }
 
@@ -125,10 +121,16 @@ export async function startDiscussSession(
   };
 
   const created = unwrapResult(
-    decideSessionCreate(input, sessionId, ctx.projectRoot, topic, 1, nowIsoString(ctx.runtime.time), {
-      maxEpochs: readDiscussMaxEpochs(ctx),
-      agentExecution: buildAgentExecutionConfig(agents),
-    }),
+    decideSessionCreate(
+      input,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: topic },
+      1,
+      nowIsoString(ctx.runtime.time),
+      {
+        maxEpochs: readDiscussMaxEpochs(ctx),
+        agentExecution: buildAgentExecutionConfig(agents),
+      },
+    ),
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
@@ -165,9 +167,7 @@ export async function submitManualBid(
       agentName,
       score,
       thought,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -214,9 +214,7 @@ export async function submitManualSpeech(
       current.state,
       agentName,
       content,
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -236,9 +234,7 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
     decideEnd(
       current.state,
       { force: true, reason: ABORT_REASON },
-      sessionId,
-      ctx.projectRoot,
-      current.state.topic,
+      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),

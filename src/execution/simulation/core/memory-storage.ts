@@ -1,5 +1,6 @@
 import { dirname, normalize } from 'node:path';
 import type { RuntimeDirentLike, RuntimeStorage, RuntimeTime } from '../../runtime.js';
+import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 type FileNode = {
   kind: 'file';
@@ -33,11 +34,6 @@ export type InMemoryRoots = {
   installationsDir?: string;
   coralRoot?: string;
 };
-
-const DEFAULT_JOBS_DIR = '/tmp/sim/jobs';
-const DEFAULT_SESSION_BASE = '/tmp/sim/sessions';
-const DEFAULT_INSTALLATIONS_DIR = '/tmp/sim/installations';
-const DEFAULT_CORAL_ROOT = '/tmp/sim/coral';
 
 export function normalizePathForStorage(path: string): string {
   const normalized = normalize(path.replace(/\\/g, '/'));
@@ -219,7 +215,9 @@ export class InMemoryStorage implements RuntimeStorage {
       this.rmSync(to, { recursive: true, force: true });
     }
 
-    const movedDirectories = [...this.directories.entries()].filter(([path]) => path === from || path.startsWith(`${from}/`));
+    const movedDirectories = [...this.directories.entries()].filter(
+      ([path]) => path === from || path.startsWith(`${from}/`),
+    );
     const movedFiles = [...this.files.entries()].filter(([path]) => path.startsWith(`${from}/`));
 
     for (const [path] of movedDirectories) {

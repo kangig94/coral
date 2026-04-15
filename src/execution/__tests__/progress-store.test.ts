@@ -30,7 +30,7 @@ const runtime = createRealRuntime();
 const JOBS_DIR = runtime.paths.jobsDir();
 
 function createStore(bus: TypedEventBus = eventBus): ProgressStore {
-  return new ProgressStore(TEST_BACKEND_NAMESPACE, bus, runtime);
+  return new ProgressStore(TEST_BACKEND_NAMESPACE, runtime, bus);
 }
 
 vi.mock('node:os', async () => {
@@ -946,7 +946,18 @@ describe('cross-namespace orphan adoption', () => {
 
     writeFileSync(
       join(aliveInstallDir, 'backend.json'),
-      JSON.stringify({ pid: process.pid, port: 9999, host: '127.0.0.1', token: 'x', version: '0.1.0', bundleHash: 'x', flavor: 'dev', instanceId: 'alive-instance', namespace: 'ns-alive', startedAt: Date.now() }),
+      JSON.stringify({
+        pid: process.pid,
+        port: 9999,
+        host: '127.0.0.1',
+        token: 'x',
+        version: '0.1.0',
+        bundleHash: 'x',
+        flavor: 'dev',
+        instanceId: 'alive-instance',
+        namespace: 'ns-alive',
+        startedAt: Date.now(),
+      }),
     );
     writeFileSync(
       join(aliveInstallDir, 'backend.lock'),

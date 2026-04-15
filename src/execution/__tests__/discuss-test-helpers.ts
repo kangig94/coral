@@ -156,7 +156,13 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
     paths: runtime.paths,
   });
   const registry = createDiscussContextRegistry();
-  const context = getOrCreateDiscussContext(registry, projectRoot, service, store, createDiscussContextOptions(runtime));
+  const context = getOrCreateDiscussContext(
+    registry,
+    projectRoot,
+    service,
+    store,
+    createDiscussContextOptions(runtime),
+  );
   const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
 
@@ -237,9 +243,15 @@ export async function persistSession(
     agents,
     min_bid_delay_ms: options.minBidDelayMs ?? 0,
   };
-  const created = decideSessionCreate(input, sessionId, harness.projectRoot, topic, 1, createdAt, {
-    agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
-  });
+  const created = decideSessionCreate(
+    input,
+    { sessionId: sessionId, projectRoot: harness.projectRoot, topic: topic },
+    1,
+    createdAt,
+    {
+      agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
+    },
+  );
   if (!created.ok) {
     const createError = created.error;
     throw new Error(createError);

@@ -298,8 +298,8 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
-    expect(worldA.storage.existsSync(worldA.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
-    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
 
     worldA.progressStore.initJob({
       jobId: 'job-a',
@@ -320,12 +320,12 @@ describe('simulation runtime', () => {
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);
     expect(worldB.progressStore.listJobIds()).toEqual([]);
     expect(new SessionManager(worldB.projectRoot, worldB.runtime).get('fake-provider', sessionA.sessionId)).toBeNull();
-    expect(worldA.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
-    expect(worldB.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
+    expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
+    expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
 
     await worldA.backend.shutdown('done');
     await worldA.backend.waitForShutdown();
-    expect(worldA.storage.existsSync(worldA.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 });

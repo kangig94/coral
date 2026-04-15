@@ -40,9 +40,7 @@ function createBiddingSnapshot(): PersistedDiscussSnapshot {
           ],
           min_bid_delay_ms: 0,
         },
-        SESSION_ID,
-        PROJECT_ROOT,
-        'Should the city pedestrianize the downtown core?',
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'Should the city pedestrianize the downtown core?' },
         1,
         NOW,
       ),
@@ -67,9 +65,7 @@ describe('state-machine deciders', () => {
         'alpha',
         10,
         'I can go later.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        snapshot.state.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -81,9 +77,7 @@ describe('state-machine deciders', () => {
         'beta',
         20,
         'I should break the tie now.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        snapshot.state.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -91,9 +85,7 @@ describe('state-machine deciders', () => {
 
     const decided = decideBidRoundClose(
       snapshot.state,
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
       nextSeq(snapshot),
       NOW,
     );
@@ -128,9 +120,7 @@ describe('state-machine deciders', () => {
         'alpha',
         10,
         'I should handle this round.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        snapshot.state.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -138,9 +128,7 @@ describe('state-machine deciders', () => {
 
     const decided = decideBidRoundClose(
       snapshot.state,
-      SESSION_ID,
-      PROJECT_ROOT,
-      snapshot.state.topic,
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
       nextSeq(snapshot),
       NOW,
     );
@@ -161,9 +149,7 @@ describe('state-machine deciders', () => {
       createBiddingSnapshot().state,
       'alpha',
       'Not yet.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      'topic',
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'topic' },
       5,
       NOW,
     );
@@ -182,9 +168,7 @@ describe('state-machine deciders', () => {
     const result = decideEpochSummary(
       createBiddingSnapshot().state,
       'Still discussing.',
-      SESSION_ID,
-      PROJECT_ROOT,
-      'topic',
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'topic' },
       5,
       NOW,
     );
@@ -207,7 +191,7 @@ describe('state-machine deciders', () => {
     };
 
     const events = unwrap(
-      decideSessionCreate(input, SESSION_ID, PROJECT_ROOT, 'Topic', 12, NOW, {
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'Topic' }, 12, NOW, {
         bidThreshold: 30,
         maxEpochs: 2,
         quotaPerEpoch: 3,
@@ -256,9 +240,7 @@ describe('state-machine deciders', () => {
         'alpha',
         10,
         'Low urgency.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        snapshot.state.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -270,16 +252,19 @@ describe('state-machine deciders', () => {
         'beta',
         20,
         'Still low urgency.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        snapshot.state.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
         nextSeq(snapshot),
         NOW,
       ),
     );
 
     const events = unwrap(
-      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, snapshot.state.topic, nextSeq(snapshot), NOW),
+      decideBidRoundClose(
+        snapshot.state,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
     );
 
     expect(events.map((event) => event.kind)).toEqual(['bid.round.closed', 'session.ended']);
@@ -302,7 +287,13 @@ describe('state-machine deciders', () => {
     };
 
     expect(
-      decideEnd(endedState, { endReason: 'all_blocked' }, SESSION_ID, PROJECT_ROOT, endedState.topic, 30, NOW),
+      decideEnd(
+        endedState,
+        { endReason: 'all_blocked' },
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: endedState.topic },
+        30,
+        NOW,
+      ),
     ).toEqual({
       ok: true,
       value: [],

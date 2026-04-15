@@ -1,11 +1,6 @@
 import { join } from 'node:path';
-import type {
-  Disposable,
-  Runtime,
-  RuntimeObserver,
-  SpawnEvent,
-  SpawnListener,
-} from './runtime.js';
+import type { Disposable, Runtime, RuntimeObserver, SpawnEvent, SpawnListener } from './runtime.js';
+import { cloneSpawnEvent } from '../shared/runtime-ports.js';
 import {
   attachSpawnRecordingMetadata,
   buildRecordingFilePath,
@@ -16,15 +11,6 @@ import {
 export type EmittingRuntimeObserver = RuntimeObserver & {
   emit(event: SpawnEvent): void;
 };
-
-function cloneSpawnEvent(event: SpawnEvent): SpawnEvent {
-  return {
-    child: event.child,
-    command: event.command,
-    args: [...event.args],
-    ...(event.env ? { env: { ...event.env } } : {}),
-  };
-}
 
 export class EventEmitterObserver implements EmittingRuntimeObserver {
   private readonly listeners = new Set<SpawnListener>();
@@ -92,11 +78,7 @@ export function attachRecordingObserver(options: {
     attachSpawnRecordingMetadata(event.child, event);
 
     const recording = recordSpawn(event.child, () => options.runtime.time.now());
-    const filePath = buildRecordingFilePath(
-      options.recordingDir,
-      event.command,
-      options.runtime.time.now(),
-    );
+    const filePath = buildRecordingFilePath(options.recordingDir, event.command, options.runtime.time.now());
 
     let closed = false;
     let saved = false;

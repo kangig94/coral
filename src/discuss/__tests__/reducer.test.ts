@@ -53,9 +53,7 @@ function createSnapshot(
     unwrap(
       decideSessionCreate(
         input,
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
         1,
         NOW,
         agentExecution ? { agentExecution } : {},
@@ -74,7 +72,9 @@ describe('discuss reducer', () => {
     const history: DiscussDomainEvent[] = [];
     let snapshot = makeEmptySnapshot(SESSION_ID, PROJECT_ROOT);
 
-    const created = unwrap(decideSessionCreate(input, SESSION_ID, PROJECT_ROOT, input.topic, 1, NOW));
+    const created = unwrap(
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW),
+    );
     history.push(...created);
     snapshot = replay(snapshot, created);
 
@@ -84,9 +84,7 @@ describe('discuss reducer', () => {
         'alpha',
         10,
         'I can go later.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -100,9 +98,7 @@ describe('discuss reducer', () => {
         'beta',
         20,
         'I should break the tie now.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -111,7 +107,12 @@ describe('discuss reducer', () => {
     snapshot = replay(snapshot, betaBid);
 
     const closed = unwrap(
-      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, input.topic, nextSeq(snapshot), NOW),
+      decideBidRoundClose(
+        snapshot.state,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
     );
     history.push(...closed);
     snapshot = replay(snapshot, closed);
@@ -121,9 +122,7 @@ describe('discuss reducer', () => {
         snapshot.state,
         'beta',
         'I will open the discussion.',
-        SESSION_ID,
-        PROJECT_ROOT,
-        input.topic,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
         nextSeq(snapshot),
         NOW,
       ),
@@ -166,9 +165,7 @@ describe('discuss reducer', () => {
           'alpha',
           10,
           'Not enough urgency.',
-          SESSION_ID,
-          PROJECT_ROOT,
-          input.topic,
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
           nextSeq(snapshot),
           NOW,
         ),
@@ -182,9 +179,7 @@ describe('discuss reducer', () => {
           'beta',
           20,
           'Still below threshold.',
-          SESSION_ID,
-          PROJECT_ROOT,
-          input.topic,
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
           nextSeq(snapshot),
           NOW,
         ),
@@ -192,7 +187,12 @@ describe('discuss reducer', () => {
     );
 
     const terminalBatch = unwrap(
-      decideBidRoundClose(snapshot.state, SESSION_ID, PROJECT_ROOT, input.topic, nextSeq(snapshot), NOW),
+      decideBidRoundClose(
+        snapshot.state,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
     );
     const ended = replay(snapshot, terminalBatch);
 
@@ -234,7 +234,14 @@ describe('discuss reducer', () => {
         ...baseSnapshot,
         state: biddingState,
       },
-      unwrap(decideBidRoundClose(biddingState, SESSION_ID, PROJECT_ROOT, input.topic, 3, NOW)),
+      unwrap(
+        decideBidRoundClose(
+          biddingState,
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+          3,
+          NOW,
+        ),
+      ),
     );
 
     expect(snapshot.state.status).toBe('bidding');

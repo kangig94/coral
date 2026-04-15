@@ -107,10 +107,7 @@ export type BackendCoreOptions = {
   fetchFn?: FetchFn;
   listenFn?: LifecycleDeps['listenFn'];
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (
-    ctx: CallerContext,
-    deps: ExecutionServiceDeps,
-  ) => ExecutionServiceLike;
+  createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ExecutionServiceLike;
   verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
   acquireLockFn?: (
     pluginRoot: string,
@@ -242,7 +239,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   const bootSnapshot = options.bootSnapshot ?? {};
   const resolvedPluginRoot = options.pluginRoot ?? resolveDefaultPluginRoot();
   const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(resolvedPluginRoot);
-  const resolveProjectSourceFn = options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
+  const resolveProjectSourceFn =
+    options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');
   const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(resolvedPluginRoot);
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(resolvedPluginRoot);
@@ -267,7 +265,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore = options.progressStore ?? new ProgressStore(namespace, eventBus, runtime);
+  const progressStore = options.progressStore ?? new ProgressStore(namespace, runtime, eventBus);
   const coralEnvSnapshot = runtime.env.coralSnapshot();
   const providerHostManager =
     options.providerHostManager ??
@@ -284,12 +282,13 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       backendLog.raw(message);
     });
   const createExecutionService =
-    options.createExecutionService ??
-    ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
+    options.createExecutionService ?? ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
   const fetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
-  const verifyBackendOwnershipFn = options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);
+  const verifyBackendOwnershipFn =
+    options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);
   const acquireLockFn =
-    options.acquireLockFn ?? ((pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
+    options.acquireLockFn ??
+    ((pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
       acquireLock(pluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor, {
         env: runtime.env,
         storage: runtime.storage,
