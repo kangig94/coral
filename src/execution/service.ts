@@ -969,7 +969,7 @@ export class ExecutionService implements RecoveryCapableService {
     const pool = input.pool ?? 'default';
     const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
     const instruction = resolvedAgent?.instruction ?? input.instruction;
-    const bypassPermissions = input.bypassPermissions ?? false;
+    const bypassPermissions = input.bypassPermissions ?? (resolvedAgent !== null);
 
     const session = this.sessionManager.allocate({
       provider: providerName,

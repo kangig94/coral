@@ -1105,12 +1105,81 @@ describe('ExecutionService', () => {
       name: 'architect',
       model: 'gpt-5.4',
       agentName: 'architect',
-      bypassPermissions: false,
+      bypassPermissions: true,
       instruction: {
         content: 'Architect instruction',
         channel: 'system',
       },
     });
+  });
+
+  it('start defaults bypassPermissions to true when an agent is resolved', async () => {
+    realizePluginRoot(ctx);
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent(
+        { namespace: 'coral', name: 'scanner' },
+        '---\nmodel: gpt-5.4\n---\nScanner instruction',
+      ),
+    );
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'scan project', agent: 'scanner' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.job);
+
+    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+
+    expect(request.bypassPermissions).toBe(true);
+    expect(session!.bypassPermissions).toBe(true);
+  });
+
+  it('start preserves explicit bypassPermissions=false even with an agent', async () => {
+    realizePluginRoot(ctx);
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockReturnValue(
+      createResolvedAgent(
+        { namespace: 'coral', name: 'scanner' },
+        '---\nmodel: gpt-5.4\n---\nScanner instruction',
+      ),
+    );
+    const service = createService(ctx);
+
+    const decision = await service.start(
+      'codex',
+      { prompt: 'scan project', agent: 'scanner', bypassPermissions: false },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.job);
+
+    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+    expect(request.bypassPermissions).toBe(false);
+  });
+
+  it('start defaults bypassPermissions to false without an agent', async () => {
+    const never = new Promise<ProviderResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'raw prompt' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.job);
+
+    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+    expect(request.bypassPermissions).toBe(false);
   });
 
   // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
