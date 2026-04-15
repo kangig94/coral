@@ -19,6 +19,7 @@ import {
   type BackendCoreResult,
   type CreateServerFn,
 } from '../../backend-core.js';
+import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
 import {
@@ -86,6 +87,7 @@ export type SimulationScenario = {
   spawn?: MockSpawnScript[];
   durable?: MockDurableScript[];
   fakeProvider?: FakeProviderScenario;
+  recoverPersistedDiscuss?: 'default' | 'stub';
 };
 
 export type SimulationRuntimeOptions = {
@@ -389,8 +391,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       return createMockKbSubsystem();
     },
     registerBuiltInProvidersFn: () => {},
-    recoverPersistedDiscussFn: async () => {
+    recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;
+      if (scenario.recoverPersistedDiscuss === 'default') {
+        return defaultRecoverPersistedDiscuss(deps);
+      }
       return [];
     },
   });
