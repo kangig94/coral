@@ -3128,6 +3128,7 @@ describe('ExecutionService', () => {
       });
 
       it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         setSpawnProviderServerMock(
           createFakeProviderServerHandle({
@@ -3202,6 +3203,7 @@ describe('ExecutionService', () => {
           state: 'non_resumable',
         });
         expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+        stderrSpy.mockRestore();
       });
     });
   });
