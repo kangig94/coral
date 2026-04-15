@@ -12,6 +12,10 @@ import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
 
+vi.mock('../curate/usage-budget.js', () => ({
+  isUsageBudgetExhausted: () => false,
+}));
+
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_IMPORTED_AT = '2026-03-20T00:00:00.000Z';
@@ -127,9 +131,7 @@ function writeSource(
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    vi.advanceTimersByTime(1);
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1);
     if (!handle.isRunning()) {
       return;
     }

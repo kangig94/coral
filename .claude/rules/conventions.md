@@ -28,7 +28,7 @@ PR procedure (dev → main):
    the rebase places new commits on top of the latest main regardless of divergence.
    On conflict: resolve, `git add`, `git rebase --continue`.
 4. Verify: `git log --oneline origin/main..dev` should show only new commits
-5. `npm run build && npm test` - re-verify after rebase
+5. `npm run build:release && npm test` - re-verify after rebase (updates bridge/)
 6. `git push origin dev --force-with-lease`
 7. `gh pr create --base main --head dev` (or update existing PR)
 8. Squash merge on GitHub

@@ -26,6 +26,10 @@ import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../types.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
+vi.mock('../curate/usage-budget.js', () => ({
+  isUsageBudgetExhausted: () => false,
+}));
+
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 
@@ -207,9 +211,7 @@ function writeNote(
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    vi.advanceTimersByTime(1);
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1);
     if (!handle.isRunning()) {
       return;
     }

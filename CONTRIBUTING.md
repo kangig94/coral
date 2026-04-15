@@ -4,8 +4,9 @@
 
 ```bash
 npm install
-npm run build     # TypeScript compile + esbuild bundle (prod flavor)
-npm run build:dev # TypeScript compile + esbuild bundle (dev flavor)
+npm run build         # TypeScript compile + esbuild bundle to build/ (prod flavor)
+npm run build:dev     # TypeScript compile + esbuild bundle to build/ (dev flavor)
+npm run build:release # Build (prod) + copy build/ to bridge/
 npm test          # Run tests with vitest
 npm run dev       # TypeScript watch mode
 ```

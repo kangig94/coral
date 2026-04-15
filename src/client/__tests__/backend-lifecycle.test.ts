@@ -894,9 +894,10 @@ describe('ensureBackend flavor-aware reuse', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const backendPromise = ensureBackend(root);
+    const rejection = expect(backendPromise).rejects.toThrow('legacy-no-processStartedAt');
     await vi.advanceTimersByTimeAsync(10_200);
+    await rejection;
 
-    await expect(backendPromise).rejects.toThrow('legacy-no-processStartedAt');
     expect(mockState.spawn).not.toHaveBeenCalled();
     expect(killSpy).not.toHaveBeenCalledWith(process.pid, 'SIGKILL');
     expect(existsSync(backendLockPath(root))).toBe(true);
