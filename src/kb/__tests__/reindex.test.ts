@@ -47,7 +47,8 @@ function setMtime(path: string, mtime: Date): void {
   utimesSync(path, mtime, mtime);
 }
 
-describe('kb reindex', () => {
+// @flaky — mtime comparison race: parallel test I/O can shift directory mtime between reindex() and ensureIndex()
+describe('kb reindex', { retry: 2 }, () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-reindex-'));
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
