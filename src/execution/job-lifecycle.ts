@@ -369,7 +369,13 @@ export class LaunchOrchestrator {
     progressStore.writeResultMd(jobId, result.content);
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
-    await this.deps.finalizeProviderSession(providerName, request, sessionId, jobId, result);
+    try {
+      await this.deps.finalizeProviderSession(providerName, request, sessionId, jobId, result);
+    } catch (error: unknown) {
+      this.deps.sessionManager.releaseJob(sessionId, jobId);
+      backendLog.warn(`Provider session finalization failed for ${jobId}: ${errorMessage(error)}`);
+      throw error;
+    }
   }
 
   private handleProviderJobError(jobId: string, sessionId: string, signal: AbortSignal, error: unknown): void {

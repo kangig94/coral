@@ -554,6 +554,36 @@ describe('ExecutionService', () => {
     expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
   });
 
+  it('releases the session claim when provider session finalization throws after completion', async () => {
+    const { provider } = makeProvider({
+      execute: async (): Promise<ProviderResult> => ({
+        content: 'ok',
+        conversationRef: 'thread-1',
+      }),
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    vi.spyOn(sessionManager, 'setConversationRef').mockImplementation(() => {
+      throw new Error('finalize failed');
+    });
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch');
+    }
+    trackJob(decision.job);
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    expect(terminal.result.content).toBe('ok');
+    expect(progressStore.readStatus(decision.job)).toMatchObject({ phase: 'completed' });
+    await vi.waitFor(() => {
+      expect(sessionManager.get('codex', decision.session)?.activeJobId).toBeUndefined();
+    });
+  });
+
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
     const spec = buildCodexProviderServerSpec(ctx.projectRoot);
     const server = createFakeProviderServerHandle({ generation: 41 });

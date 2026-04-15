@@ -65,6 +65,53 @@ describe('simulation runtime', () => {
     expect(events).toEqual(['interval:105', 'timeout:a', 'timeout:b', 'interval:110', 'sleep']);
   });
 
+  it('defers recursive delay-zero timeouts to the next tick', () => {
+    const time = new VirtualTime(100);
+    let calls = 0;
+
+    const recursive = () => {
+      calls += 1;
+      if (calls < 3) {
+        time.setTimeout(recursive, 0);
+      }
+    };
+
+    time.setTimeout(recursive, 0);
+
+    time.tick(0);
+    expect(time.now()).toBe(100);
+    expect(calls).toBe(0);
+
+    time.tick(1);
+    expect(time.now()).toBe(101);
+    expect(calls).toBe(1);
+
+    time.tick(1);
+    expect(time.now()).toBe(102);
+    expect(calls).toBe(2);
+  });
+
+  it('finishes due timers and advances to the target before rethrowing callback errors', () => {
+    const time = new VirtualTime(100);
+    const error = new Error('timer failed');
+    const events: string[] = [];
+
+    time.setTimeout(() => {
+      events.push(`first:${time.now()}`);
+    }, 5);
+    time.setTimeout(() => {
+      events.push(`throw:${time.now()}`);
+      throw error;
+    }, 5);
+    time.setTimeout(() => {
+      events.push(`after:${time.now()}`);
+    }, 10);
+
+    expect(() => time.tick(10)).toThrow(error);
+    expect(time.now()).toBe(110);
+    expect(events).toEqual(['first:105', 'throw:105', 'after:110']);
+  });
+
   it('provides in-memory storage with atomic writes, exclusive writes, snapshot/restore, and deterministic paths', () => {
     const time = new VirtualTime(1_000);
     const storage = new InMemoryStorage(time);

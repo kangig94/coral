@@ -67,11 +67,16 @@ export class VirtualTime implements RuntimeTime {
     assertFiniteNonNegative(ms, 'tick(ms)');
     const delta = Math.max(0, Math.floor(ms));
     const target = this.currentTime + delta;
+    let capturedError: unknown;
+    let hasCapturedError = false;
 
     while (true) {
       const next = this.nextDueTimer(target);
       if (!next) {
         this.currentTime = target;
+        if (hasCapturedError) {
+          throw capturedError;
+        }
         return;
       }
 
@@ -86,7 +91,14 @@ export class VirtualTime implements RuntimeTime {
         this.timers.delete(next.handle.id);
       }
 
-      next.fn();
+      try {
+        next.fn();
+      } catch (error) {
+        if (!hasCapturedError) {
+          capturedError = error;
+          hasCapturedError = true;
+        }
+      }
 
       if (next.intervalMs !== null && next.active) {
         next.deadline += next.intervalMs;
@@ -98,7 +110,7 @@ export class VirtualTime implements RuntimeTime {
   }
 
   private schedule(fn: () => void, ms: number, intervalMs: number | null): RuntimeTimerHandle {
-    const delay = Math.max(0, Math.floor(ms));
+    const delay = Math.max(1, Math.floor(ms));
     const handle = new VirtualTimerHandle(this.nextId++);
     this.timers.set(handle.id, {
       handle,

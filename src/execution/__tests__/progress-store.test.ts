@@ -92,6 +92,39 @@ describe('execution ProgressStore', () => {
     });
   });
 
+  it.each([
+    [
+      'missing phase',
+      (jobId: string) => ({
+        jobId,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        launch: { state: 'ready', updatedAt: new Date().toISOString() },
+      }),
+    ],
+    [
+      'missing launch',
+      (jobId: string) => ({
+        jobId,
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: TEST_BACKEND_NAMESPACE,
+        phase: 'running',
+      }),
+    ],
+  ])('readStatus returns null for malformed status.json with %s', (_name, createRecord) => {
+    const store = createStore(eventBus);
+    const jobId = `progress-corrupt-status-${randomUUID()}`;
+    jobIdsToClean.add(jobId);
+    mkdirSync(store.jobDir(jobId), { recursive: true });
+    writeFileSync(join(store.jobDir(jobId), 'status.json'), JSON.stringify(createRecord(jobId)), 'utf-8');
+
+    expect(store.readStatus(jobId)).toBeNull();
+  });
+
   it('appendProgress returns incrementing eventId starting at 1', () => {
     const store = createStore(eventBus);
     const jobId = `progress-events-${randomUUID()}`;

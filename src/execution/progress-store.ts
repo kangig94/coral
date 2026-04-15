@@ -13,7 +13,7 @@ import {
   type TerminalResult,
   type WorkflowCheckpoint,
 } from '../shared/types.js';
-import { isNoEntryError, nowIsoString } from '../shared/utils.js';
+import { isNoEntryError, isRecord, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
@@ -55,6 +55,20 @@ function isRuntimeLike(value: unknown): value is Pick<Runtime, 'storage' | 'path
     value.storage !== null &&
     value.paths !== null &&
     value.time !== null
+  );
+}
+
+function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
+  return (
+    isRecord(value) &&
+    typeof value.jobId === 'string' &&
+    typeof value.sessionId === 'string' &&
+    typeof value.provider === 'string' &&
+    typeof value.projectRoot === 'string' &&
+    typeof value.phase === 'string' &&
+    isRecord(value.launch) &&
+    typeof value.launch.state === 'string' &&
+    typeof value.launch.updatedAt === 'string'
   );
 }
 
@@ -698,7 +712,9 @@ export class ProgressStore {
   private readStatusFromDisk(jobId: string): PersistedStatusRecord | null {
     try {
       const data = this.storage.readFileSync(this.statusPath(jobId), 'utf-8');
-      return JSON.parse(data) as PersistedStatusRecord;
+      const parsed = JSON.parse(data);
+      if (!isPersistedStatusRecordLike(parsed)) return null;
+      return parsed;
     } catch {
       return null;
     }
