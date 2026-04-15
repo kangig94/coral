@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
+import { readStatusRecordWithStorage } from '../../client/readers.js';
 import { resolveProjectSource, sourceToSlug } from '../../infra/paths.js';
 import type {
   DiscussDomainEvent,
@@ -14,6 +15,7 @@ import type { DiscussCreateInput } from '../../discuss/types.js';
 import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
+  type DiscussContextConstructionOptions,
   type DiscussContextRegistry,
 } from '../discuss/context-registry.js';
 import type { DiscussContext } from '../discuss/context.js';
@@ -23,7 +25,7 @@ import { attachSession, detachSession, listSessions } from '../discuss/registry.
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime, type Runtime } from '../runtime.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -78,6 +80,7 @@ export type DiscussHarness = {
   context: DiscussContext;
   registry: DiscussContextRegistry;
   service: ExecutionService;
+  runtime: Runtime;
   cleanup: () => void;
 };
 
@@ -118,6 +121,25 @@ function disableDiscussTestHome(): void {
 
 let harnessCounter = 0;
 
+export function createDiscussContextOptions(
+  runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
+): DiscussContextConstructionOptions {
+  return {
+    runtime: {
+      ids: runtime.ids,
+      env: runtime.env,
+      time: runtime.time,
+    },
+    jobStatusReader: {
+      read: (jobId) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+    },
+  };
+}
+
+export function discussContextOptions(harness: Pick<DiscussHarness, 'runtime'>): DiscussContextConstructionOptions {
+  return createDiscussContextOptions(harness.runtime);
+}
+
 export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
   enableDiscussTestHome();
   const tmpRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-'));
@@ -134,7 +156,7 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
     paths: runtime.paths,
   });
   const registry = createDiscussContextRegistry();
-  const context = getOrCreateDiscussContext(registry, projectRoot, service, store);
+  const context = getOrCreateDiscussContext(registry, projectRoot, service, store, createDiscussContextOptions(runtime));
   const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
 
@@ -146,6 +168,7 @@ export function createDiscussHarness(service = createExecutionServiceStub(), sou
     context,
     registry,
     service,
+    runtime,
     cleanup: () => {
       if (cleaned) {
         return;

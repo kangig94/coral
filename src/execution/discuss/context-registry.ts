@@ -1,7 +1,7 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import type { ExecutionService } from '../service.js';
-import type { DiscussContext, DiscussJobStatusReader, LiveDiscussSession } from './context.js';
+import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, LiveDiscussSession } from './context.js';
 
 export type AttachedDiscussSession = {
   projectRoot: string;
@@ -11,6 +11,11 @@ export type AttachedDiscussSession = {
 
 export type DiscussContextRegistry = {
   contexts: Map<string, DiscussContext>;
+};
+
+export type DiscussContextConstructionOptions = {
+  runtime: DiscussRuntimePorts;
+  jobStatusReader: DiscussJobStatusReader;
 };
 
 export function createDiscussContextRegistry(): DiscussContextRegistry {
@@ -24,7 +29,7 @@ export function getOrCreate(
   projectRoot: string,
   service: ExecutionService,
   store: DiscussSessionStore,
-  jobStatusReader: DiscussJobStatusReader = { read: () => null },
+  options: DiscussContextConstructionOptions,
 ): DiscussContext {
   const existing = registry.contexts.get(projectRoot);
   if (existing) {
@@ -36,7 +41,8 @@ export function getOrCreate(
     sessions: new Map<string, LiveDiscussSession>(),
     service,
     store,
-    jobStatusReader,
+    runtime: options.runtime,
+    jobStatusReader: options.jobStatusReader,
   };
   registry.contexts.set(projectRoot, context);
   return context;

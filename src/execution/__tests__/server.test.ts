@@ -16,7 +16,7 @@ import type * as LifecycleMod from '../lifecycle.js';
 import type { ProviderServerHandle } from '../engine.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
-import { readDiscussEventLog } from '../../client/readers.js';
+import { readDiscussEventLog, readStatusRecordWithStorage } from '../../client/readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
@@ -4071,6 +4071,7 @@ describe('execution backend server', () => {
       };
       const discussRegistry = createDiscussContextRegistry();
       const writeBackendInfoFn = vi.fn();
+      const lifecycleRuntime = createRealRuntime();
       // eslint-disable-next-line prefer-const -- circular: fakeService closure reads controller, but controller assignment needs fakeService
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
       const providerHostManager = createFakeProviderHostManager();
@@ -4095,7 +4096,7 @@ describe('execution backend server', () => {
           now: () => 1,
           log: () => {},
         },
-        runtime: createRealRuntime(),
+        runtime: lifecycleRuntime,
         backendPid: 1234,
         runtimeState,
         idleTimer: fakeIdleTimer as never,
@@ -4118,7 +4119,17 @@ describe('execution backend server', () => {
         },
         knownDiscussSources: () => new Set([source]),
         getDiscussContext: (ctx) =>
-          getOrCreateDiscussContext(discussRegistry, ctx.projectRoot, fakeService as never, store),
+          getOrCreateDiscussContext(discussRegistry, ctx.projectRoot, fakeService as never, store, {
+            runtime: {
+              ids: lifecycleRuntime.ids,
+              env: lifecycleRuntime.env,
+              time: lifecycleRuntime.time,
+            },
+            jobStatusReader: {
+              read: (jobId) =>
+                readStatusRecordWithStorage(lifecycleRuntime.storage, lifecycleRuntime.paths, jobId),
+            },
+          }),
         acquireLockFn: async () => {},
         writeBackendInfoFn,
         removeBackendInfoIfOwnerFn: () => {},

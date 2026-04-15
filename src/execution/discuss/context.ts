@@ -3,6 +3,7 @@ import type { Result } from '../../discuss/types.js';
 import type { WatchEvent } from '../../discuss/watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { ExecutionService } from '../service.js';
+import type { RuntimeEnv, RuntimeIds, RuntimeTime } from '../runtime.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
 export type { WatchEvent, WatchState } from '../../discuss/watch.js';
@@ -44,11 +45,18 @@ export type DiscussJobStatusReader = {
   read(jobId: string): PersistedStatusRecord | null;
 };
 
+export type DiscussRuntimePorts = {
+  ids: Pick<RuntimeIds, 'uuid'>;
+  env: Pick<RuntimeEnv, 'get'>;
+  time: Pick<RuntimeTime, 'now' | 'setTimeout' | 'clearTimeout'>;
+};
+
 export type DiscussContext = {
   projectRoot: string;
   sessions: Map<string, LiveDiscussSession>;
   service: ExecutionService;
   store: DiscussSessionStore;
+  runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
 };
 

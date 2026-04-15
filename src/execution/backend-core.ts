@@ -413,7 +413,14 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       ctx.projectRoot,
       getExecutionService(ctx) as ExecutionService,
       store,
-      jobStatusReader,
+      {
+        runtime: {
+          ids: runtime.ids,
+          env: runtime.env,
+          time: runtime.time,
+        },
+        jobStatusReader,
+      },
     );
   }
 

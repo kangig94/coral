@@ -24,6 +24,7 @@ import {
   createDiscussHarness,
   createExecutionServiceStub,
   defaultAgents,
+  discussContextOptions,
   persistSession,
   type DiscussHarness,
 } from './discuss-test-helpers.js';
@@ -60,8 +61,20 @@ describe('Discuss context registry', () => {
     const harnessOne = createDiscussHarness(serviceOne);
     const harnessTwo = createDiscussHarness(serviceTwo);
     const registry = createDiscussContextRegistry();
-    const contextOne = getOrCreateDiscussContext(registry, harnessOne.projectRoot, serviceOne, harnessOne.store);
-    const contextTwo = getOrCreateDiscussContext(registry, harnessTwo.projectRoot, serviceTwo, harnessTwo.store);
+    const contextOne = getOrCreateDiscussContext(
+      registry,
+      harnessOne.projectRoot,
+      serviceOne,
+      harnessOne.store,
+      discussContextOptions(harnessOne),
+    );
+    const contextTwo = getOrCreateDiscussContext(
+      registry,
+      harnessTwo.projectRoot,
+      serviceTwo,
+      harnessTwo.store,
+      discussContextOptions(harnessTwo),
+    );
 
     const snapshotOne = await persistSession(harnessOne, { sessionId: 'shared', recover: false });
     const snapshotTwo = await persistSession(harnessTwo, { sessionId: 'shared', topic: 'topic two', recover: false });

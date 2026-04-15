@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { errorMessage } from '../../shared/utils.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
@@ -67,10 +66,11 @@ async function executeDiscussStart(
   context: CallerContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
-  const sessionId = randomUUID();
   try {
+    const ctx = helpers.getDiscussContext(context);
+    const sessionId = ctx.runtime.ids.uuid();
     await discussOperations.startDiscussSession(
-      helpers.getDiscussContext(context),
+      ctx,
       sessionId,
       args.topic,
       args.agents,
