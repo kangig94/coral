@@ -1,3 +1,4 @@
+import type { ProviderCatalog } from './catalog.js';
 import type { Provider } from './types.js';
 
 const RESERVED_TOOL_NAMES = new Set([
@@ -25,7 +26,7 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_participate',
   'discuss_abort',
 ]);
-export class ProviderRegistry {
+export class ProviderRegistry implements ProviderCatalog {
   private providers = new Map<string, Provider>();
 
   register(provider: Provider): void {

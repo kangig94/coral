@@ -1,4 +1,4 @@
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderCatalog } from '../providers/catalog.js';
 import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -82,7 +82,7 @@ function unknownProviderDecision(providers: string[]): LaunchDecision {
   };
 }
 
-function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderRegistry): string[] {
+function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderCatalog): string[] {
   const unknownProviders = new Set<string>();
   if (!providerRegistry.get(defaultProviderName)) {
     unknownProviders.add(defaultProviderName);
@@ -104,7 +104,7 @@ export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
   executionSvc: WorkflowService,
   ctx: CallerContext,
-  providerRegistry: ProviderRegistry,
+  providerRegistry: ProviderCatalog,
 ): Promise<LaunchDecision> {
   const input = workflowCommandSchema.parse(rawArgs);
   let ast: PipelineAST;
