@@ -13,6 +13,7 @@ import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
   makeOnEvent,
+  type PreflightRuntime,
   requireAppServerRuntime,
   requireConversationRef,
   type Provider,
@@ -37,7 +38,7 @@ import {
 import { readBootstrapSignature, readString, sameBootstrapSignature } from './shared-utils.js';
 import type { ClaudeExecResult } from './types.js';
 
-async function preflight(): Promise<void> {
+async function preflight(_runtime: PreflightRuntime): Promise<void> {
   const cli = await detectClaudeCli();
   if (!cli.available) throw new Error(`Claude CLI not available: ${cli.error}`);
   if (cli.authState === 'unauthenticated') throw new Error(`Claude CLI unauthenticated: ${cli.authError}`);

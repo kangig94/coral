@@ -1,24 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../../../shared/types.js';
-import type { ProviderRuntime, ProviderServerLease } from '../../types.js';
+import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../../types.js';
 
-const mockState = vi.hoisted(() => ({
-  spawnSync: vi.fn(),
-  readFile: vi.fn(),
-  homedir: vi.fn(() => '/mock-home'),
-}));
+type CodexPreflightRuntimeFixture = {
+  runtime: PreflightRuntime;
+  exec: ReturnType<typeof vi.fn>;
+  readFileSync: ReturnType<typeof vi.fn>;
+  homedir: ReturnType<typeof vi.fn>;
+};
 
-vi.mock('node:child_process', () => ({
-  spawnSync: mockState.spawnSync,
-}));
+function makePreflightRuntimeFixture(): CodexPreflightRuntimeFixture {
+  const exec = vi.fn(async () => ({
+    status: 0,
+    stdout: 'usage: codex app-server',
+    stderr: '',
+    error: undefined,
+  }));
+  const readFileSync = vi.fn(() => JSON.stringify({ tokens: { access_token: 'token-1' } }));
+  const homedir = vi.fn(() => '/mock-home');
 
-vi.mock('node:fs/promises', () => ({
-  readFile: mockState.readFile,
-}));
-
-vi.mock('node:os', () => ({
-  homedir: mockState.homedir,
-}));
+  return {
+    runtime: {
+      process: { exec } as Pick<PreflightRuntime['process'], 'exec'> as PreflightRuntime['process'],
+      storage: { readFileSync } as Pick<PreflightRuntime['storage'], 'readFileSync'> as PreflightRuntime['storage'],
+      env: { homedir } as Pick<PreflightRuntime['env'], 'homedir'> as PreflightRuntime['env'],
+    },
+    exec,
+    readFileSync,
+    homedir,
+  };
+}
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -94,15 +105,11 @@ async function loadProvider() {
 }
 
 describe('codex adapter app-server flow', () => {
+  let preflightRuntime: CodexPreflightRuntimeFixture;
+
   beforeEach(() => {
     vi.clearAllMocks();
-    mockState.spawnSync.mockReturnValue({
-      status: 0,
-      stdout: 'usage: codex app-server',
-      stderr: '',
-      error: undefined,
-    });
-    mockState.readFile.mockResolvedValue(JSON.stringify({ tokens: { access_token: 'token-1' } }));
+    preflightRuntime = makePreflightRuntimeFixture();
   });
 
   afterEach(() => {
@@ -111,7 +118,7 @@ describe('codex adapter app-server flow', () => {
   });
 
   it('fails preflight when Codex CLI does not support app-server', async () => {
-    mockState.spawnSync.mockReturnValue({
+    preflightRuntime.exec.mockResolvedValue({
       status: 1,
       stdout: '',
       stderr: 'unknown subcommand',
@@ -120,32 +127,33 @@ describe('codex adapter app-server flow', () => {
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI does not support app-server. Update with: npm update -g @openai/codex',
     );
-    expect(mockState.readFile).not.toHaveBeenCalled();
+    expect(preflightRuntime.readFileSync).not.toHaveBeenCalled();
   });
 
   it('fails preflight when ~/.codex/auth.json is missing or has no tokens', async () => {
-    mockState.readFile.mockResolvedValue(JSON.stringify({ tokens: {} }));
+    preflightRuntime.readFileSync.mockReturnValue(JSON.stringify({ tokens: {} }));
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.',
     );
-    expect(mockState.readFile).toHaveBeenCalledWith('/mock-home/.codex/auth.json', 'utf8');
+    expect(preflightRuntime.readFileSync).toHaveBeenCalledWith('/mock-home/.codex/auth.json', 'utf-8');
   });
 
   it('passes preflight when app-server is available and auth.json contains tokens', async () => {
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
-    expect(mockState.spawnSync).toHaveBeenCalledWith('codex', ['app-server', '--help'], {
-      encoding: 'utf8',
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).resolves.toBeUndefined();
+    expect(preflightRuntime.exec).toHaveBeenCalledWith('codex', ['app-server', '--help'], {
+      encoding: 'utf-8',
       timeout: 10_000,
+      inheritEnv: true,
     });
-    expect(mockState.readFile).toHaveBeenCalledWith('/mock-home/.codex/auth.json', 'utf8');
+    expect(preflightRuntime.readFileSync).toHaveBeenCalledWith('/mock-home/.codex/auth.json', 'utf-8');
   });
 
   it('reuses successful preflight checks within the cache TTL', async () => {
@@ -154,12 +162,12 @@ describe('codex adapter app-server flow', () => {
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).resolves.toBeUndefined();
     now += 30_000;
-    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).resolves.toBeUndefined();
 
-    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
-    expect(mockState.readFile).toHaveBeenCalledTimes(1);
+    expect(preflightRuntime.exec).toHaveBeenCalledTimes(1);
+    expect(preflightRuntime.readFileSync).toHaveBeenCalledTimes(1);
   });
 
   it('re-runs preflight checks after the cache TTL expires', async () => {
@@ -168,18 +176,18 @@ describe('codex adapter app-server flow', () => {
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).resolves.toBeUndefined();
     now += 60_001;
-    await expect(codexProvider.preflight?.()).resolves.toBeUndefined();
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).resolves.toBeUndefined();
 
-    expect(mockState.spawnSync).toHaveBeenCalledTimes(2);
-    expect(mockState.readFile).toHaveBeenCalledTimes(2);
+    expect(preflightRuntime.exec).toHaveBeenCalledTimes(2);
+    expect(preflightRuntime.readFileSync).toHaveBeenCalledTimes(2);
   });
 
   it('caches failed app-server availability checks within the cache TTL', async () => {
     let now = 1_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
-    mockState.spawnSync.mockReturnValue({
+    preflightRuntime.exec.mockResolvedValue({
       status: 1,
       stdout: '',
       stderr: 'unknown subcommand',
@@ -188,35 +196,35 @@ describe('codex adapter app-server flow', () => {
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI does not support app-server. Update with: npm update -g @openai/codex',
     );
     now += 30_000;
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI does not support app-server. Update with: npm update -g @openai/codex',
     );
 
-    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
-    expect(mockState.readFile).not.toHaveBeenCalled();
+    expect(preflightRuntime.exec).toHaveBeenCalledTimes(1);
+    expect(preflightRuntime.readFileSync).not.toHaveBeenCalled();
   });
 
   it('caches failed auth token checks within the cache TTL', async () => {
     let now = 1_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
-    mockState.readFile.mockResolvedValue(JSON.stringify({ tokens: {} }));
+    preflightRuntime.readFileSync.mockReturnValue(JSON.stringify({ tokens: {} }));
 
     const { codexProvider } = await loadProvider();
 
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.',
     );
     now += 30_000;
-    await expect(codexProvider.preflight?.()).rejects.toThrow(
+    await expect(codexProvider.preflight?.(preflightRuntime.runtime)).rejects.toThrow(
       'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.',
     );
 
-    expect(mockState.spawnSync).toHaveBeenCalledTimes(1);
-    expect(mockState.readFile).toHaveBeenCalledTimes(1);
+    expect(preflightRuntime.exec).toHaveBeenCalledTimes(1);
+    expect(preflightRuntime.readFileSync).toHaveBeenCalledTimes(1);
   });
 
   it('checkpoints threadId after thread/start and turnId as soon as turn/start responds', async () => {

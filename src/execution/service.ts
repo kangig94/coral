@@ -1,6 +1,7 @@
 import type {
   Provider,
   ProviderContinuityBlob,
+  PreflightRuntime,
   ProviderRecoveryMeta,
   ProviderServerLease,
   ProviderServerSpec,
@@ -282,10 +283,18 @@ function serializeWorkflowResult(details: StepDetail[]): {
   };
 }
 
-async function runProviderPreflight(provider: Provider): Promise<string | null> {
+function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
+  return {
+    process: runtime.process,
+    storage: runtime.storage,
+    env: runtime.env,
+  };
+}
+
+async function runProviderPreflight(provider: Provider, runtime: PreflightRuntime): Promise<string | null> {
   if (!provider.preflight) return null;
   try {
-    await provider.preflight();
+    await provider.preflight(runtime);
     return null;
   } catch (error: unknown) {
     return errorMessage(error);
@@ -761,7 +770,7 @@ export class ExecutionService implements RecoveryCapableService {
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const admitted = await this.claimAndAdmitJob(
@@ -809,7 +818,7 @@ export class ExecutionService implements RecoveryCapableService {
     }
     const sourceExpectedVersion = sourceSession.version;
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const sourceClaimId = this.runtime.ids.uuid();
@@ -905,7 +914,7 @@ export class ExecutionService implements RecoveryCapableService {
     const provider = this.providerRegistry.get(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     let resolvedAgent: ResolvedAgentLaunchProfile | null = null;

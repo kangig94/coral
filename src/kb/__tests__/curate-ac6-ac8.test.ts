@@ -11,6 +11,7 @@ import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
+import { createRealRuntime } from '../../execution/runtime.js';
 
 vi.mock('../curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
@@ -145,11 +146,15 @@ describe('curate AC6/AC8', () => {
   let runtime: KbRuntime;
   let scheduler: CurateHandle;
   let internals: NonNullable<CurateHandle['_testInternals']>;
+  let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
   function useScheduler(spawnCli: SpawnCliFn): void {
     scheduler = createCurateScheduler({
       kb: runtime,
       spawnCli,
+      processPort: gitSyncRuntime.process,
+      storagePort: gitSyncRuntime.storage,
+      envPort: gitSyncRuntime.env,
       scheduleDebounceMs: 0,
     });
     internals = scheduler._testInternals!;
@@ -161,6 +166,7 @@ describe('curate AC6/AC8', () => {
       markdownRoot: tempDir,
       runtimeDir: tempDir,
     });
+    gitSyncRuntime = createRealRuntime();
     useScheduler(async () => ({
       stdout: '[]',
       stderr: '',

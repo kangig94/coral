@@ -1,4 +1,4 @@
-import { spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import { createHash, randomBytes as randomBytesNode, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
@@ -19,12 +19,14 @@ import {
   writeSync,
   writeFileSync,
 } from 'node:fs';
+import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
 import {
   composeChildEnv,
   parsePassthrough,
   resolveEnvBudgetBytes,
 } from '../shared/env-sanitize.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
 import {
   backendInfoPath,
   backendLockPath,
@@ -48,8 +50,10 @@ import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRe
 import type {
   ChildProcessLike,
   DurableExecutionTransport,
+  ExecResult,
   Runtime,
   RuntimeEnv,
+  RuntimeExecOptions,
   RuntimeIds,
   RuntimePaths,
   RuntimeProcess,
@@ -67,11 +71,13 @@ export type {
   DurableLaunchOptions,
   DurableLaunchResult,
   DurableTransportLike,
+  ExecResult,
   LaunchPool,
   Runtime,
   RuntimeDirentLike,
   RuntimeEnv,
   RuntimeEnvPort,
+  RuntimeExecOptions,
   RuntimeIds,
   RuntimeIdsPort,
   RuntimeObserver,
@@ -237,6 +243,16 @@ export function createRealRuntime(): Runtime {
     );
   };
 
+  const resolveExecEnv = (options: RuntimeExecOptions = {}): Record<string, string> => {
+    if (options.inheritEnv) {
+      return {
+        ...capturedEnv.fullEnv,
+        ...(options.env ?? {}),
+      };
+    }
+    return buildSpawnEnv(options.env);
+  };
+
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const runtimePath = `${options.jobDir}/${RUNTIME_RECORD_FILE}`;
@@ -293,9 +309,15 @@ export function createRealRuntime(): Runtime {
     },
   };
 
-  const runtimeProcess: RuntimeProcess = {
+  const runtimeProcess = {
     spawn: (options) => {
-      const spawnEnv = buildSpawnEnv(options.envAdditions);
+      const spawnEnv =
+        options.inheritEnv || options.env
+          ? resolveExecEnv({
+              env: options.env ?? options.envAdditions,
+              inheritEnv: options.inheritEnv,
+            })
+          : buildSpawnEnv(options.envAdditions);
       const child = spawnChild(options.command, options.args, {
         stdio: toNodeStdio(options.mode),
         cwd: options.cwd,
@@ -315,6 +337,223 @@ export function createRealRuntime(): Runtime {
     },
     isAlive: (pid) => processIsAlive(pid),
     durable,
+  } as RuntimeProcess;
+
+  runtimeProcess.exec = (command, args, options = {}) => {
+    const execOptions: RuntimeExecOptions = { ...options };
+    execOptions.maxBuffer ??= MAX_BUFFER;
+    const maxBuffer = execOptions.maxBuffer;
+    const encoding = execOptions.encoding ?? 'utf-8';
+
+    return new Promise<ExecResult>((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      let resolved = false;
+      let timeoutHandle: ReturnType<RuntimeTime['setTimeout']> | null = null;
+      let killTimer: ReturnType<RuntimeTime['setTimeout']> | null = null;
+      let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
+
+      const child = runtimeProcess.spawn({
+        command,
+        args,
+        cwd: execOptions.cwd,
+        env: execOptions.env,
+        inheritEnv: execOptions.inheritEnv,
+        mode: 'piped',
+      });
+
+      child.stdin?.end();
+
+      const clearTimers = (): void => {
+        time.clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+        time.clearTimeout(killTimer);
+        killTimer = null;
+      };
+
+      const finish = (result: ExecResult): void => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        clearTimers();
+        resolve(result);
+      };
+
+      const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
+        if (resolved || wrapperKilled !== null || child.pid === undefined) {
+          return;
+        }
+        wrapperKilled = reason;
+        runtimeProcess.kill(child.pid, 'SIGTERM');
+        killTimer = time.setTimeout(() => {
+          if (resolved || child.pid === undefined) {
+            return;
+          }
+          runtimeProcess.kill(child.pid, 'SIGKILL');
+        }, SIGTERM_GRACE_MS);
+        killTimer.unref?.();
+      };
+
+      const appendOutput = (
+        current: string,
+        chunk: string | Buffer,
+      ): { next: string; overflowed: boolean } => {
+        if (wrapperKilled !== null) {
+          return { next: current, overflowed: false };
+        }
+
+        const text = typeof chunk === 'string' ? chunk : chunk.toString(encoding);
+        const currentBytes = Buffer.byteLength(current, encoding);
+        const chunkBytes = Buffer.byteLength(text, encoding);
+        if (currentBytes + chunkBytes <= maxBuffer) {
+          return { next: current + text, overflowed: false };
+        }
+
+        let next = current;
+        let remainingBytes = maxBuffer - currentBytes;
+        if (remainingBytes > 0) {
+          for (const character of text) {
+            const characterBytes = Buffer.byteLength(character, encoding);
+            if (characterBytes > remainingBytes) {
+              break;
+            }
+            next += character;
+            remainingBytes -= characterBytes;
+          }
+        }
+        return { next, overflowed: true };
+      };
+
+      if (child.stdout) {
+        child.stdout.setEncoding(encoding);
+        child.stdout.on('data', (chunk) => {
+          const result = appendOutput(stdout, chunk);
+          stdout = result.next;
+          if (result.overflowed) {
+            scheduleKill('maxBuffer');
+          }
+        });
+      }
+
+      if (child.stderr) {
+        child.stderr.setEncoding(encoding);
+        child.stderr.on('data', (chunk) => {
+          const result = appendOutput(stderr, chunk);
+          stderr = result.next;
+          if (result.overflowed) {
+            scheduleKill('maxBuffer');
+          }
+        });
+      }
+
+      child.on('close', (status) => {
+        const error =
+          wrapperKilled === 'timeout'
+            ? new Error(`timeout: ${command}`)
+            : wrapperKilled === 'maxBuffer'
+              ? new Error(`maxBuffer exceeded: ${command}`)
+              : undefined;
+        finish({
+          stdout,
+          stderr,
+          status: error ? null : status,
+          ...(error ? { error } : {}),
+        });
+      });
+
+      child.on('error', (error) => {
+        finish({
+          stdout: '',
+          stderr: '',
+          status: null,
+          error,
+        });
+      });
+
+      if (execOptions.timeout !== undefined) {
+        timeoutHandle = time.setTimeout(() => {
+          scheduleKill('timeout');
+        }, execOptions.timeout);
+        timeoutHandle.unref?.();
+      }
+    });
+  };
+
+  runtimeProcess.execSync = (command, args, options = {}) => {
+    const execOptions: RuntimeExecOptions = { ...options };
+    execOptions.maxBuffer ??= MAX_BUFFER;
+    const encoding = execOptions.encoding ?? 'utf-8';
+    const maxBuffer = execOptions.maxBuffer;
+    const spawnOptions = {
+      cwd: execOptions.cwd,
+      env: resolveExecEnv(execOptions),
+      timeout: execOptions.timeout,
+      encoding,
+      maxBuffer,
+      shell: false,
+      stdio: 'pipe' as const,
+    };
+
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      result = spawnSync(command, args, spawnOptions);
+    } catch (error: unknown) {
+      if (isSpawnFailure(error)) {
+        return {
+          stdout: '',
+          stderr: '',
+          status: null,
+          error,
+        };
+      }
+      throw error;
+    }
+
+    const stdout = normalizeSpawnSyncOutput(result.stdout, encoding);
+    const stderr = normalizeSpawnSyncOutput(result.stderr, encoding);
+
+    if (result.error) {
+      const hasOutput = stdout.length > 0 || stderr.length > 0;
+      const errorCode = (result.error as NodeJS.ErrnoException).code;
+      if (errorCode === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || (hasOutput && result.signal === null)) {
+        return {
+          stdout,
+          stderr,
+          status: null,
+          error: new Error(`maxBuffer exceeded: ${command}`),
+        };
+      }
+      if (result.signal) {
+        return {
+          stdout,
+          stderr,
+          status: null,
+          error: new Error(`timeout: ${command}`),
+        };
+      }
+      return {
+        stdout: '',
+        stderr: '',
+        status: null,
+        error: result.error,
+      };
+    }
+
+    if (result.signal) {
+      return {
+        stdout,
+        stderr,
+        status: null,
+        error: new Error(`timeout: ${command}`),
+      };
+    }
+
+    return {
+      stdout,
+      stderr,
+      status: result.status,
+    };
   };
 
   const ids: RuntimeIds = {
@@ -325,6 +564,7 @@ export function createRealRuntime(): Runtime {
 
   const env: RuntimeEnv = {
     get: (key) => capturedEnv.fullEnv[key],
+    homedir: () => osHomedir(),
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,
     cwd: () => capturedEnv.cwd,
@@ -420,6 +660,27 @@ function processIsAlive(pid: number): boolean {
     }
     return false;
   }
+}
+
+function normalizeSpawnSyncOutput(
+  output: string | Buffer | null | undefined,
+  encoding: BufferEncoding,
+): string {
+  if (typeof output === 'string') {
+    return output;
+  }
+  if (!output) {
+    return '';
+  }
+  return output.toString(encoding);
+}
+
+function isSpawnFailure(error: unknown): error is Error & { code?: string } {
+  return (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException).code !== undefined &&
+    (error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+  );
 }
 
 function tryExclusiveWriteSyncNode(

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { KbRuntime } from '../kb/contracts.js';
+import type { GitSyncRuntimePicks } from '../kb/curate/types.js';
 import { z } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
 import {
@@ -54,13 +55,18 @@ export type KbSubsystem = {
   curateScheduler: CurateHandle;
 };
 
+export type CreateKbSubsystemOptions = {
+  pluginRoot: string;
+  spawnCli: SpawnCliFn;
+} & GitSyncRuntimePicks;
+
 export async function createKbSubsystem({
   pluginRoot,
   spawnCli: spawnKbCli,
-}: {
-  pluginRoot: string;
-  spawnCli: SpawnCliFn;
-}): Promise<KbSubsystem> {
+  processPort,
+  storagePort,
+  envPort,
+}: CreateKbSubsystemOptions): Promise<KbSubsystem> {
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
@@ -70,6 +76,9 @@ export async function createKbSubsystem({
   const curateScheduler = createCurateScheduler({
     kb,
     spawnCli: spawnKbCli,
+    processPort,
+    storagePort,
+    envPort,
   });
 
   await curateScheduler.start();

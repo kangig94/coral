@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MAX_BUFFER } from '../../shared/process-constants.js';
 import { SessionManager } from '../session-manager.js';
 import {
   InMemoryPaths,
@@ -9,6 +10,7 @@ import {
   SimulationRuntime,
   VirtualTime,
   createSimulationBackend,
+  flushMicrotasks,
 } from '../simulation/core/index.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
@@ -16,6 +18,10 @@ function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process'
     child.on('close', (code, signal) => resolve({ code, signal }));
     child.on('error', reject);
   });
+}
+
+function pendingTimerCount(time: VirtualTime): number {
+  return ((time as unknown as { timers: Map<number, unknown> }).timers).size;
 }
 
 describe('simulation runtime', () => {
@@ -318,6 +324,123 @@ describe('simulation runtime', () => {
 
     expect(world.runtime.observer.events).toHaveLength(2);
     expect(received).toHaveLength(1);
+  });
+
+  it('reuses the spawn queue for exec and exposes the dispatch through spawnCalls and observer events', async () => {
+    const runtime = new SimulationRuntime();
+    const observed: Array<{ command: string; args: string[] }> = [];
+    runtime.observer.onSpawn((event) => {
+      observed.push({
+        command: event.command,
+        args: [...event.args],
+      });
+    });
+
+    runtime.spawner.enqueueSpawn({
+      stdout: [{ delayMs: 1, data: 'exec-out\n' }],
+      stderr: [{ delayMs: 2, data: 'exec-err\n' }],
+      close: { delayMs: 3, code: 0 },
+    });
+
+    const execPromise = runtime.process.exec('fake-exec', ['--queued'], { timeout: 25 });
+    await flushMicrotasks();
+
+    expect(runtime.spawner.spawnCalls).toEqual([
+      expect.objectContaining({
+        command: 'fake-exec',
+        args: ['--queued'],
+        mode: 'piped',
+      }),
+    ]);
+    expect(observed).toEqual([
+      {
+        command: 'fake-exec',
+        args: ['--queued'],
+      },
+    ]);
+
+    runtime.time.tick(3);
+    await flushMicrotasks();
+
+    await expect(execPromise).resolves.toEqual({
+      stdout: 'exec-out\n',
+      stderr: 'exec-err\n',
+      status: 0,
+    });
+    expect(pendingTimerCount(runtime.time)).toBe(0);
+  });
+
+  it('pins async exec timeouts to the simulation clock', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({
+      close: null,
+      kills: [{ signal: 'SIGTERM', delayMs: 0, exitSignal: 'SIGTERM' }],
+    });
+
+    let settled = false;
+    const execPromise = runtime.process.exec('fake-timeout', ['--clock'], { timeout: 5 }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    runtime.time.tick(4);
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    runtime.time.tick(1);
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    runtime.time.tick(1);
+    await flushMicrotasks();
+
+    await expect(execPromise).resolves.toMatchObject({
+      stdout: '',
+      stderr: '',
+      status: null,
+      error: expect.any(Error),
+    });
+    expect(runtime.spawner.killCalls).toEqual([{ pid: 20_000, signal: 'SIGTERM' }]);
+  });
+
+  it('uses a queued execSync script API with deterministic command matching and recorded calls', () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueExecSync({
+      command: 'git',
+      args: ['status', '--short'],
+      result: {
+        stdout: 'M src/index.ts\n',
+        stderr: '',
+        status: 0,
+      },
+    });
+
+    expect(() => runtime.process.execSync('git', ['diff'])).toThrow(
+      'Expected execSync git ["status","--short"] but received git ["diff"]',
+    );
+
+    const result = runtime.process.execSync('git', ['status', '--short'], { timeout: 15 });
+
+    expect(result).toEqual({
+      stdout: 'M src/index.ts\n',
+      stderr: '',
+      status: 0,
+    });
+    expect(runtime.spawner.execSyncCalls).toEqual([
+      {
+        command: 'git',
+        args: ['diff'],
+        options: { encoding: 'utf-8', maxBuffer: MAX_BUFFER },
+      },
+      {
+        command: 'git',
+        args: ['status', '--short'],
+        options: { timeout: 15, encoding: 'utf-8', maxBuffer: MAX_BUFFER },
+      },
+    ]);
   });
 
   it('creates an isolated simulation backend world with inert boot hooks and a fake provider registry', async () => {

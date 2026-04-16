@@ -12,7 +12,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { errorMessage, formatError, isNoEntryError, isRecord } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { type LaunchCoordinator, type SpawnCliFn } from './engine.js';
+import { type LaunchCoordinator } from './engine.js';
 import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { RecoveryRegistry } from './recovery-registry.js';
 import { type EventBusEvents, type TypedEventBus } from './event-bus.js';
@@ -39,7 +39,7 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
-import type { KbSubsystem } from './kb-tools.js';
+import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
@@ -59,10 +59,7 @@ const ADOPTION_CLAIM_STALE_MS = 30_000;
 import { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE } from './recovery-notices.js';
 export { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE };
 
-export type CreateKbSubsystemFn = (options: {
-  pluginRoot: string;
-  spawnCli: SpawnCliFn;
-}) => Promise<KbSubsystem>;
+export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Promise<KbSubsystem>;
 
 // ---------------------------------------------------------------------------
 // ShutdownMode / RecoveryClass
@@ -1384,6 +1381,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         const kbSub = await createKbSubsystemFn({
           pluginRoot,
           spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+          processPort: runtime.process,
+          storagePort: runtime.storage,
+          envPort: runtime.env,
         });
         runtimeState.setKbSubsystem(kbSub);
       } catch (error: unknown) {

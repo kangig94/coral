@@ -24,6 +24,7 @@ import {
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { createRealRuntime } from '../../execution/runtime.js';
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
@@ -158,6 +159,7 @@ let tempDir: string;
 let runtime: KbRuntime;
 let scheduler: CurateHandle;
 let internals: NonNullable<CurateHandle['_testInternals']>;
+let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
@@ -165,9 +167,13 @@ beforeEach(() => {
     markdownRoot: tempDir,
     runtimeDir: tempDir,
   });
+  gitSyncRuntime = createRealRuntime();
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli: noopSpawnCli,
+    processPort: gitSyncRuntime.process,
+    storagePort: gitSyncRuntime.storage,
+    envPort: gitSyncRuntime.env,
   });
   internals = scheduler._testInternals!;
   vi.useFakeTimers();
@@ -820,6 +826,9 @@ describe('curate state', () => {
     const splitScheduler = createCurateScheduler({
       kb: splitRuntime,
       spawnCli: noopSpawnCli,
+      processPort: gitSyncRuntime.process,
+      storagePort: gitSyncRuntime.storage,
+      envPort: gitSyncRuntime.env,
     });
     const splitInternals = splitScheduler._testInternals!;
 

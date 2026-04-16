@@ -1,10 +1,8 @@
-import { spawnSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { errorMessage, nowIsoString, readString } from '../../shared/utils.js';
 import {
+  type PreflightRuntime,
   requireAppServerRuntime,
   requireConversationRef,
   type ProviderAppServerContract,
@@ -472,7 +470,7 @@ async function captureTurn(
       completeTurn(state, response.turn);
     }
 
-    return await Promise.race([state.completion, transportClosed]);
+  return await Promise.race([state.completion, transportClosed]);
   } finally {
     clearCompletionTimer(state);
     runtime.signal.removeEventListener('abort', onAbort);
@@ -480,12 +478,12 @@ async function captureTurn(
   }
 }
 
-async function preflight(): Promise<void> {
-  assertCodexAppServerAvailable();
-  await assertCodexAuthTokens();
+async function preflight(runtime: PreflightRuntime): Promise<void> {
+  await assertCodexAppServerAvailable(runtime);
+  await assertCodexAuthTokens(runtime);
 }
 
-function assertCodexAppServerAvailable(): void {
+async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise<void> {
   const now = Date.now();
   if (codexAppServerAvailabilityCache && now - codexAppServerAvailabilityCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
     if (!codexAppServerAvailabilityCache.available) {
@@ -494,9 +492,10 @@ function assertCodexAppServerAvailable(): void {
     return;
   }
 
-  const result = spawnSync('codex', ['app-server', '--help'], {
-    encoding: 'utf8',
+  const result = await runtime.process.exec('codex', ['app-server', '--help'], {
+    encoding: 'utf-8',
     timeout: 10_000,
+    inheritEnv: true,
   });
   const available = !result.error && result.status === 0;
   codexAppServerAvailabilityCache = { available, checkedAt: now };
@@ -505,7 +504,7 @@ function assertCodexAppServerAvailable(): void {
   }
 }
 
-async function assertCodexAuthTokens(): Promise<void> {
+async function assertCodexAuthTokens(runtime: PreflightRuntime): Promise<void> {
   const now = Date.now();
   if (codexAuthTokensCache && now - codexAuthTokensCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
     if (!codexAuthTokensCache.available) {
@@ -514,11 +513,11 @@ async function assertCodexAuthTokens(): Promise<void> {
     return;
   }
 
-  const authPath = join(homedir(), '.codex', 'auth.json');
+  const authPath = join(runtime.env.homedir(), '.codex', 'auth.json');
   let parsed: unknown;
 
   try {
-    parsed = JSON.parse(await readFile(authPath, 'utf8')) as unknown;
+    parsed = JSON.parse(runtime.storage.readFileSync(authPath, 'utf-8')) as unknown;
   } catch {
     codexAuthTokensCache = { available: false, checkedAt: now };
     throw new Error(CODEX_AUTH_ERROR_MESSAGE);
@@ -707,9 +706,9 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   }
 }
 
-export const codexProvider: Provider = {
+export const codexProvider = {
   name: 'codex',
   execute,
   preflight,
   appServer: codexAppServer,
-};
+} satisfies Provider;

@@ -31,7 +31,8 @@ import {
   type CurateCursor,
   type CurateState,
 } from './state.js';
-import type { CurateHandle, SpawnCliFn } from './types.js';
+import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './types.js';
+import { createRealRuntime } from '../../execution/runtime.js';
 
 export type {
   ClassificationAssignment,
@@ -81,10 +82,16 @@ class CurateRunError extends Error {
 export function createCurateScheduler({
   kb,
   spawnCli,
+  processPort,
+  storagePort,
+  envPort,
   scheduleDebounceMs = CURATE_SCHEDULE_DEBOUNCE_MS,
 }: {
   kb: KbRuntime;
   spawnCli: SpawnCliFn;
+  processPort?: GitSyncRuntimePicks['processPort'];
+  storagePort?: GitSyncRuntimePicks['storagePort'];
+  envPort?: GitSyncRuntimePicks['envPort'];
   scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
@@ -95,7 +102,22 @@ export function createCurateScheduler({
   let retryWakeTimer: NodeJS.Timeout | null = null;
   let debounceTimer: NodeJS.Timeout | null = null;
 
-  const gitSync = createGitSyncController({ kb, spawnCli });
+  const ports = ((): GitSyncRuntimePicks => {
+    if (processPort && storagePort && envPort) {
+      return { processPort, storagePort, envPort };
+    }
+    const fallback = createRealRuntime();
+    return {
+      processPort: processPort ?? fallback.process,
+      storagePort: storagePort ?? fallback.storage,
+      envPort: envPort ?? fallback.env,
+    };
+  })();
+  const gitSync = createGitSyncController({
+    kb,
+    spawnCli,
+    ...ports,
+  });
 
   function clearRetryWake(): void {
     if (retryWakeTimer !== null) {

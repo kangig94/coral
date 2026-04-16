@@ -18,7 +18,7 @@ import type {
   WaitStreamEvent,
 } from '../../shared/types.js';
 
-import type { Provider } from '../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../providers/types.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
@@ -317,6 +317,14 @@ function makeCodexAppServerProvider(): Provider {
             },
     },
   };
+}
+
+function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
+  expect(preflight).toHaveBeenCalledWith({
+    process: runtime.process,
+    storage: runtime.storage,
+    env: runtime.env,
+  } satisfies PreflightRuntime);
 }
 
 function makeSharedClaudeAppServerProvider(spec: {
@@ -1016,7 +1024,7 @@ describe('ExecutionService', () => {
 
   it('start rejects when preflight throws', async () => {
     const { provider, preflight } = makeProvider({
-      preflight: async () => {
+      preflight: async (_preflightRuntime) => {
         throw new Error('not ready');
       },
     });
@@ -1026,6 +1034,7 @@ describe('ExecutionService', () => {
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
     expect(preflight).toHaveBeenCalledTimes(1);
+    expectRuntimePreflightArg(preflight!);
     expect(decision).toEqual({
       status: 'rejected',
       phase: 'preflight',
@@ -1410,7 +1419,7 @@ describe('ExecutionService', () => {
 
       const gate = createDeferred<void>();
       const racingProvider = makeProvider({
-        preflight: async () => {
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
       });
@@ -1430,6 +1439,7 @@ describe('ExecutionService', () => {
       if (decision.status !== 'rejected') throw new Error('expected rejected');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(racingProvider.preflight!);
       expect(queueDepth()).toBe(0);
       expect(listJobDirs()).toEqual(jobDirsBefore);
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
@@ -3311,8 +3321,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     it('allows exactly one concurrent resume and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
       const never = new Promise<ProviderResult>(() => {});
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
         execute: async () => never,
@@ -3343,6 +3353,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
       expect(loser.code).toBe('session_busy');
       expect(loser.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe(winner.job);
       expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
     });
@@ -3385,8 +3396,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('rejects when the source session becomes busy during preflight without allocating a new fork session', async () => {
       const gate = createDeferred<void>();
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
       });
@@ -3408,6 +3419,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (decision.status !== 'rejected') throw new Error('expected rejected');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.list('codex').length).toBe(sessionsBefore);
       expect(listJobDirs()).toEqual(jobDirsBefore);
     });
@@ -3415,8 +3427,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     it('allows exactly one concurrent fork and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
       const never = new Promise<ProviderResult>(() => {});
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
         execute: async () => never,
@@ -3449,6 +3461,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
       expect(loser.code).toBe('session_busy');
       expect(loser.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.list('codex')).toHaveLength(sessionsBefore + 1);
       expect(mgr.get('codex', source.sessionId)?.activeJobId).toBeUndefined();
       expect(mgr.get('codex', source.sessionId)?.version).toBeGreaterThan(sourceVersionBefore ?? 0);

@@ -11,6 +11,8 @@ import type {
   DurableExecutionTransport,
   DurableLaunchOptions,
   DurableLaunchResult,
+  ExecResult,
+  RuntimeExecOptions,
   RuntimeSpawnOptions,
   RuntimeTimerHandle,
 } from '../../runtime.js';
@@ -61,6 +63,12 @@ export type MockDurableScript = {
   } | null;
   kills?: MockKillAction[];
   waitForExitError?: Error | string;
+};
+
+export type MockExecSyncScript = {
+  command: string;
+  args: string[];
+  result: ExecResult;
 };
 
 export type MockSpawnContext = {
@@ -198,10 +206,12 @@ export class MockDurableTransport implements DurableExecutionTransport {
 
 export class MockProcessSpawner {
   readonly spawnCalls: RuntimeSpawnOptions[] = [];
+  readonly execSyncCalls: Array<{ command: string; args: string[]; options: RuntimeExecOptions }> = [];
   readonly killCalls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
   readonly durable: MockDurableTransport;
   private readonly processes = new Map<number, RegisteredProcess>();
   private readonly spawnScripts: MockSpawnScript[] = [];
+  private readonly execSyncScripts: MockExecSyncScript[] = [];
   private readonly durableScripts: MockDurableScript[] = [];
   private nextPid = 20_000;
 
@@ -219,6 +229,14 @@ export class MockProcessSpawner {
 
   enqueueDurable(script: MockDurableScript): void {
     this.durableScripts.push(script);
+  }
+
+  enqueueExecSync(script: MockExecSyncScript): void {
+    this.execSyncScripts.push({
+      command: script.command,
+      args: [...script.args],
+      result: { ...script.result },
+    });
   }
 
   spawn(options: RuntimeSpawnOptions): ChildProcessLike {
@@ -295,6 +313,28 @@ export class MockProcessSpawner {
     }
 
     return child;
+  }
+
+  execSync(command: string, args: string[], options: RuntimeExecOptions = {}): ExecResult {
+    this.execSyncCalls.push({
+      command,
+      args: [...args],
+      options: { ...options },
+    });
+
+    const script = this.execSyncScripts[0];
+    if (!script) {
+      throw new Error(`No execSync script enqueued for ${command} ${JSON.stringify(args)}`);
+    }
+
+    if (script.command !== command || !areArgsEqual(script.args, args)) {
+      throw new Error(
+        `Expected execSync ${script.command} ${JSON.stringify(script.args)} but received ${command} ${JSON.stringify(args)}`,
+      );
+    }
+
+    this.execSyncScripts.shift();
+    return { ...script.result };
   }
 
   kill(pid: number, signal: NodeJS.Signals | 0): void {
@@ -503,4 +543,8 @@ export class MockProcessSpawner {
       null
     );
   }
+}
+
+function areArgsEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

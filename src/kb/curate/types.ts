@@ -1,3 +1,4 @@
+import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../shared/runtime-ports.js';
 import type { KbIndex, KbEntryId, EntityType, RelationshipType } from '../types.js';
 import type { CurateCursor, PendingDiscovery } from './state.js';
 
@@ -17,6 +18,12 @@ export type SpawnCliFn = (options: {
   pool?: 'default' | 'discuss' | 'curate';
   signal?: AbortSignal;
 }) => Promise<SpawnCliResult>;
+
+export type GitSyncRuntimePicks = {
+  processPort: Pick<RuntimeProcessPort, 'exec' | 'execSync'>;
+  storagePort: Pick<RuntimeStoragePort, 'readFileSync' | 'existsSync' | 'writeAtomicSync'>;
+  envPort: Pick<RuntimeEnvPort, 'get'>;
+};
 
 export type NoteClaimCandidate = {
   kind: 'note';

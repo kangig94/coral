@@ -857,18 +857,27 @@ describe('execution backend server', () => {
 
   it('runs KB initialization during startup before idle watching begins', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
-    const createKbSubsystemFn = vi.fn(async () => ({
-      kb: {
-        closeVectorStores: vi.fn(async () => {}),
-      } as never,
-      curateScheduler: {
-        start: vi.fn(async () => {}),
-        schedule: vi.fn(),
-        scheduleDeferredCommit: vi.fn(),
-        isRunning: () => false,
-        stop: vi.fn(async () => {}),
-      },
-    }));
+    type KbRuntimeThreadOptions = {
+      processPort: { exec: unknown };
+      storagePort: { writeAtomicSync: unknown };
+      envPort: { get: unknown };
+    };
+    let receivedKbOptions: KbRuntimeThreadOptions | null = null;
+    const createKbSubsystemFn = vi.fn(async (options) => {
+      receivedKbOptions = options;
+      return {
+        kb: {
+          closeVectorStores: vi.fn(async () => {}),
+        } as never,
+        curateScheduler: {
+          start: vi.fn(async () => {}),
+          schedule: vi.fn(),
+          scheduleDeferredCommit: vi.fn(),
+          isRunning: () => false,
+          stop: vi.fn(async () => {}),
+        },
+      };
+    });
 
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
@@ -876,6 +885,11 @@ describe('execution backend server', () => {
     });
 
     expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    expect(receivedKbOptions).not.toBeNull();
+    const kbOptions = receivedKbOptions as unknown as KbRuntimeThreadOptions;
+    expect(typeof kbOptions.processPort.exec).toBe('function');
+    expect(typeof kbOptions.storagePort.writeAtomicSync).toBe('function');
+    expect(typeof kbOptions.envPort.get).toBe('function');
     const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
     const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(initOrder).toBeDefined();

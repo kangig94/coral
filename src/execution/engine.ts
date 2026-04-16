@@ -1,13 +1,12 @@
 import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../shared/utils.js';
 import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
 import type { ChildProcessLike, Runtime, RuntimeStorage } from './runtime.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
-const MAX_BUFFER = 10 * 1024 * 1024; // 10MB
-const SIGTERM_GRACE_MS = 5_000; // grace period before escalating to SIGKILL
 
 export type LaunchPool = 'default' | 'discuss' | 'curate';
 export const CURATE_MAX_WORKERS = 1;

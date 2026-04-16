@@ -25,6 +25,7 @@ import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../types.js';
 import { createDeferred } from '../../shared/test-deferred.js';
+import { createRealRuntime } from '../../execution/runtime.js';
 
 vi.mock('../curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
@@ -180,11 +181,15 @@ let tempDir: string;
 let runtime: KbRuntime;
 let scheduler: CurateHandle;
 let internals: NonNullable<CurateHandle['_testInternals']>;
+let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
 function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli): void {
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli,
+    processPort: gitSyncRuntime.process,
+    storagePort: gitSyncRuntime.storage,
+    envPort: gitSyncRuntime.env,
     scheduleDebounceMs: 0,
   });
   internals = scheduler._testInternals!;
@@ -226,6 +231,7 @@ beforeEach(() => {
     markdownRoot: tempDir,
     runtimeDir: tempDir,
   });
+  gitSyncRuntime = createRealRuntime();
   useScheduler();
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
@@ -1874,6 +1880,9 @@ describe('curate', () => {
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,
         spawnCli: noopSpawnCli,
+        processPort: gitSyncRuntime.process,
+        storagePort: gitSyncRuntime.storage,
+        envPort: gitSyncRuntime.env,
         scheduleDebounceMs: 0,
       });
       await secondScheduler.start();

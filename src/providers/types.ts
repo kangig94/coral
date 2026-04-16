@@ -1,4 +1,5 @@
 import type { ProviderContinuityBlob, ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
+import type { Runtime } from '../shared/runtime-ports.js';
 import { nowIsoString } from '../shared/utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
 
@@ -123,11 +124,13 @@ export interface ProviderRuntime {
   }) => void;
 }
 
+export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
+
 export interface Provider {
   name: string;
   execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
-  preflight?(): Promise<void>;
+  preflight?(runtime: PreflightRuntime): Promise<void>;
   /** Recovery contract for durable execution handoff. */
   recovery?: ProviderRecoveryContract;
   appServer?: ProviderAppServerContract;
