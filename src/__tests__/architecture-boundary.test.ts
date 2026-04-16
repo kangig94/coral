@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   createProductionFileIndex,
+  findStronglyConnectedComponents,
   listProductionSourceFiles,
   parseSourceImportEdges,
   toCanonicalSrcPath,
@@ -120,6 +121,63 @@ function assertNoViolations(violations: BoundaryViolation[]): void {
   );
 }
 
+function formatEdgeContribution(edge: ParsedImportEdge): string {
+  const participation = [
+    edge.runtime ? 'runtime' : null,
+    edge.typeOnly ? 'type-only' : null,
+  ].filter((value): value is string => value !== null);
+  return participation.length > 0 ? participation.join(' + ') : 'no contribution flags';
+}
+
+function findCyclePath(component: string[], componentEdges: ParsedImportEdge[]): string[] {
+  const componentMembers = new Set(component);
+  const adjacency = new Map<string, string[]>();
+
+  for (const member of component) {
+    adjacency.set(member, []);
+  }
+
+  for (const edge of componentEdges) {
+    if (!componentMembers.has(edge.source) || !componentMembers.has(edge.target)) {
+      continue;
+    }
+    adjacency.get(edge.source)?.push(edge.target);
+  }
+
+  for (const targets of adjacency.values()) {
+    targets.sort((left, right) => left.localeCompare(right));
+  }
+
+  function visit(start: string, current: string, path: string[], pathMembers: Set<string>): string[] | null {
+    for (const target of adjacency.get(current) ?? []) {
+      if (target === start) {
+        return [...path, start];
+      }
+      if (pathMembers.has(target)) {
+        continue;
+      }
+
+      pathMembers.add(target);
+      const cyclePath = visit(start, target, [...path, target], pathMembers);
+      pathMembers.delete(target);
+      if (cyclePath !== null) {
+        return cyclePath;
+      }
+    }
+
+    return null;
+  }
+
+  for (const start of component) {
+    const cyclePath = visit(start, start, [start], new Set([start]));
+    if (cyclePath !== null) {
+      return cyclePath;
+    }
+  }
+
+  return component;
+}
+
 describe('architecture boundary guard', () => {
   it('execution/ must not import from client/ (production only)', () => {
     // Established by 9fb8faa.
@@ -155,5 +213,65 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+
+  it('src/shared/ must be internally acyclic', () => {
+    const sharedNodes = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, 'src/shared'));
+    const sharedEdges = PARSED_IMPORT_EDGES.filter(
+      (edge) => isWithinPath(edge.source, 'src/shared') && isWithinPath(edge.target, 'src/shared'),
+    );
+    const stronglyConnectedComponents = findStronglyConnectedComponents(sharedNodes, sharedEdges).filter(
+      (component) => component.length > 1,
+    );
+    const selfLoops = sharedEdges
+      .filter((edge) => edge.source === edge.target)
+      .sort((left, right) => left.source.localeCompare(right.source) || left.specifier.localeCompare(right.specifier));
+
+    if (stronglyConnectedComponents.length === 0 && selfLoops.length === 0) {
+      return;
+    }
+
+    const cycleMessages = stronglyConnectedComponents.map((component, index) => {
+      const componentMembers = new Set(component);
+      const componentEdges = component
+        .flatMap((node) => PARSED_IMPORT_EDGES_BY_SOURCE.get(node) ?? [])
+        .filter((edge) => componentMembers.has(edge.target))
+        .sort((left, right) => {
+          if (left.source !== right.source) {
+            return left.source.localeCompare(right.source);
+          }
+          if (left.target !== right.target) {
+            return left.target.localeCompare(right.target);
+          }
+          if (left.specifier !== right.specifier) {
+            return left.specifier.localeCompare(right.specifier);
+          }
+          return left.via.localeCompare(right.via);
+        });
+      const cyclePath = findCyclePath(component, componentEdges);
+
+      return [
+        `Cycle ${index + 1}: ${cyclePath.join(' -> ')}`,
+        `Members: ${component.join(', ')}`,
+        'Edges:',
+        ...componentEdges.map(
+          (edge) =>
+            `- ${edge.source} -> ${edge.target} via ${edge.specifier} (${edge.via}; ${formatEdgeContribution(edge)})`,
+        ),
+      ].join('\n');
+    });
+
+    const selfLoopMessage =
+      selfLoops.length === 0
+        ? []
+        : [
+            'Self-loops:',
+            ...selfLoops.map(
+              (edge) =>
+                `- ${edge.source} -> ${edge.target} via ${edge.specifier} (${edge.via}; ${formatEdgeContribution(edge)})`,
+            ),
+          ];
+
+    expect.fail(['Detected import cycle(s) within src/shared/.', ...cycleMessages, ...selfLoopMessage].join('\n\n'));
   });
 });

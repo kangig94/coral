@@ -1,7 +1,6 @@
 /**
  * Shared type definitions for the Coral plugin.
  */
-import type { EffortLevel } from './schemas.js';
 
 export type SessionControllerProfile = {
   owner?: string;
@@ -118,6 +117,8 @@ export interface ProviderRequest {
    */
   instruction?: ProviderInstruction;
 }
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 /** Result returned by a Provider adapter after execution completes. */
 export interface ProviderResult {

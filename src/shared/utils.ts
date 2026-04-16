@@ -1,6 +1,7 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RuntimeProcessPort, RuntimeStoragePort, RuntimeTimePort } from './runtime-ports.js';
+import { identPattern } from './identifiers.js';
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -56,8 +57,6 @@ export function buildJsonRpcError(code: number, message: string, data?: unknown)
   return data === undefined ? { code, message } : { code, message, data };
 }
 
-export const identPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-
 /** Check whether a value is a valid token-safe owner identifier. */
 export function isOwnerId(value: unknown): value is string {
   return typeof value === 'string' && identPattern.test(value);
@@ -73,9 +72,7 @@ export function assertOwnerId(value: unknown, label = 'owner'): string {
   return value;
 }
 
-export const providerIdentPattern = /^[a-z][a-z0-9-]*$/;
-
-export const AGENT_IDENT_RE = /^(?:[a-z0-9][a-z0-9-]*:)?[a-z0-9][a-z0-9-]*$/;
+export { identPattern, providerIdentPattern, AGENT_IDENT_RE } from './identifiers.js';
 
 /** Parse an optional non-empty string from an unknown value. */
 export function readString(value: unknown): string | undefined {

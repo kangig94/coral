@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from './utils.js';
+import type { EffortLevel } from './types.js';
+import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from './identifiers.js';
 
 const modelNameSchema = z
   .string()
@@ -123,7 +124,7 @@ export const workflowRequestSchema = workflowCommandSchema
   })
   .strict();
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type { EffortLevel } from './types.js';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
 const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
