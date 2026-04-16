@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { readBackendInfo, writeBackendInfo, removeBackendInfoIfOwner } from '../infra/backend-info.js';
 import { createPluginRegistry } from '../infra/plugin-registry.js';
 import { setBuildFlavor } from '../infra/paths.js';
-import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../client/readers.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../shared/persistence-readers.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';

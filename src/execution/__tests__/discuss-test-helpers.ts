@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
-import { readStatusRecordWithStorage } from '../../client/readers.js';
+import { readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,

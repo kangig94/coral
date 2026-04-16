@@ -16,7 +16,8 @@ import type * as LifecycleMod from '../lifecycle.js';
 import type { ProviderServerHandle } from '../engine.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
-import { readDiscussEventLog, readStatusRecordWithStorage } from '../../client/readers.js';
+import { readDiscussEventLog } from '../../client/readers.js';
+import { readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';

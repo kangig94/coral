@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readDiscussSourcesWithStorage, readStatusRecord, readStatusRecordWithStorage } from '../../client/readers.js';
+import { readStatusRecord } from '../../client/readers.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
 import { renderEntries } from '../../discuss/transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../discuss/types.js';

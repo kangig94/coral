@@ -6,13 +6,15 @@ import {
   readDiscussSnapshotWithStorage,
   readDiscussSummaryIndexForSourceWithStorage,
   resolveDiscussSessionDirForSourceWithStorage,
-  type DiscussDiscoveryData,
-  type DiscussDiscoverySession,
-  type DiscussSummaryIndexData,
-  type DiscussSummaryIndexRow,
-} from '../../client/readers.js';
+} from '../../shared/persistence-readers.js';
 import { type DiscussSummaryDto } from '../../discuss/views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
+import type {
+  DiscussDiscoveryData,
+  DiscussDiscoverySession,
+  DiscussSummaryIndexData,
+  DiscussSummaryIndexRow,
+} from '../../shared/persistence-types.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../../discuss/reducer.js';
 import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
 import type { DiscussPathResolver, RuntimeStorage, RuntimeTime, RuntimeTimerHandle } from '../runtime.js';

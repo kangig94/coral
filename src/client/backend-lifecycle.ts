@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process';
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type LockRecord } from '../execution/backend-lock.js';
 import {
   backendInfoPath,
   backendLockPath,
@@ -16,6 +15,7 @@ import {
   probeProcessStartedAtSeconds,
   type BackendInfo,
 } from '../infra/backend-info.js';
+import { type LockRecord } from '../shared/lock-types.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
 import { isNoEntryError, isRecord, readBuildFlavor, readBundleHash } from '../shared/utils.js';
