@@ -341,7 +341,7 @@ describe('server discuss API', () => {
       sessionId: 'shared-session',
       authority: 'live',
     });
-    expect([firstHarness.projectRoot, secondHarness.projectRoot]).toContain(sharedSessions[0]!.projectRoot);
+    expect([firstHarness.projectRoot, secondHarness.projectRoot]).toContain(sharedSessions[0].projectRoot);
   });
 
   it('emits discuss:updated over SSE and detail reads observe the emitted lastSeq', async () => {

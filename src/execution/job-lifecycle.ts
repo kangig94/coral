@@ -23,12 +23,12 @@ import {
   type WaitRequest,
   type WaitStreamEvent,
 } from '../shared/types.js';
-import { AbortRegistry } from './abort-controller-registry.js';
-import { CliBusyError, LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
-import { TypedEventBus } from './event-bus.js';
-import { ProgressStore, createReplayCursor } from './progress-store.js';
+import { type AbortRegistry } from './abort-controller-registry.js';
+import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
+import { type TypedEventBus } from './event-bus.js';
+import { type ProgressStore, createReplayCursor } from './progress-store.js';
 import type { Runtime, RuntimeTimePort } from './runtime.js';
-import { SessionManager } from './session-manager.js';
+import { type SessionManager } from './session-manager.js';
 import {
   QUEUED_ABORT_MESSAGE,
   SessionClaimError,
@@ -514,14 +514,23 @@ export class WaitCoordinator {
 
     const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
-      let timer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
       let settled = false;
+
+      const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
+      if (remainingMs <= 0) {
+        reject(timeoutError);
+        return;
+      }
+
+      const timer = this.deps.time.setTimeout(() => {
+        finish(() => reject(timeoutError));
+      }, remainingMs);
 
       const cleanup = (): void => {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
         this.deps.eventBus.off('session:updated', onSessionUpdated);
-        if (timer) this.deps.time.clearTimeout(timer);
+        this.deps.time.clearTimeout(timer);
       };
 
       const finish = (callback: () => void): void => {
@@ -541,7 +550,7 @@ export class WaitCoordinator {
           }
           finish(resolve);
         } catch (error: unknown) {
-          finish(() => reject(error));
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
       };
 
@@ -571,16 +580,6 @@ export class WaitCoordinator {
       if (settled) {
         return;
       }
-
-      const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
-      if (remainingMs <= 0) {
-        finish(() => reject(timeoutError));
-        return;
-      }
-
-      timer = this.deps.time.setTimeout(() => {
-        finish(() => reject(timeoutError));
-      }, remainingMs);
     });
   }
 

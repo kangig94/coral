@@ -13,7 +13,6 @@ import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,
-  extractDiscoveryProposals,
   parseDiscoveryResponseResult,
   prepareDiscoveryBatch,
   sameDiscoverySelection,

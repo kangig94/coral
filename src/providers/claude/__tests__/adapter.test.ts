@@ -389,7 +389,12 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
 
     expect(firstCall).toBeDefined();
     expect(meta?.bootstrapSignature).toBeDefined();
-    expect(meta?.conversationRef == null || meta?.sessionId == null).toBe(true);
+    expect(
+      meta?.conversationRef === null ||
+        meta?.conversationRef === undefined ||
+        meta?.sessionId === null ||
+        meta?.sessionId === undefined,
+    ).toBe(true);
 
     lease.emit({
       method: 'turn/completed',

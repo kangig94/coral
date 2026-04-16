@@ -193,7 +193,7 @@ function readAdoptionStatusSnapshot(
     if (!isPersistedStatusRecordLike(parsed)) return null;
     return {
       raw,
-      record: parsed as PersistedStatusRecord,
+      record: parsed,
     };
   } catch {
     return null;

@@ -1,6 +1,6 @@
 import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
-import { buildJsonRpcError } from '../shared/utils.js';
+import { buildJsonRpcError, errorMessage } from '../shared/utils.js';
 import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
 import type { ChildProcessLike, Runtime, RuntimeStorage } from './runtime.js';
 
@@ -707,7 +707,7 @@ export class LaunchCoordinator {
         if (durableState.exitError) {
           throw durableState.exitError instanceof Error
             ? durableState.exitError
-            : new Error(String(durableState.exitError));
+            : new Error(errorMessage(durableState.exitError));
         }
 
         // Idle timeout — mirrors spawnCli's 10-minute inactivity kill

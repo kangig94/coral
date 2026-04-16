@@ -182,7 +182,7 @@ describe('deterministic simulation lifecycle replay', () => {
       },
     });
 
-    const launch = getLaunchReceipt(result.steps[1] as StepResult);
+    const launch = getLaunchReceipt(result.steps[1]);
     expect(result.steps[5]).toMatchObject({
       ok: true,
       actual: {
@@ -264,7 +264,7 @@ describe('deterministic simulation lifecycle replay', () => {
 
     expect(result.passed).toBe(true);
 
-    const launch = getLaunchReceipt(result.steps[1] as StepResult);
+    const launch = getLaunchReceipt(result.steps[1]);
     const runtime = getDurableRuntime(world, launch.jobId);
     expect(result.steps[2]).toMatchObject({
       ok: true,
@@ -325,8 +325,8 @@ describe('deterministic simulation lifecycle replay', () => {
       },
     });
 
-    const firstLaunch = getLaunchReceipt(result.steps[1] as StepResult);
-    const secondLaunch = getLaunchReceipt(result.steps[4] as StepResult);
+    const firstLaunch = getLaunchReceipt(result.steps[1]);
+    const secondLaunch = getLaunchReceipt(result.steps[4]);
 
     expect(secondLaunch).toMatchObject({
       jobId: firstLaunch.jobId,

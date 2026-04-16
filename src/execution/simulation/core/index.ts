@@ -25,9 +25,7 @@ import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
 import {
   MockProcessSpawner,
-  type ChildOutputChunk,
   type MockDurableScript,
-  type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';

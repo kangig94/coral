@@ -108,6 +108,16 @@ function writeLockFile(root: string, pid: number, processStartedAt?: number): vo
   writeFileSync(backendLockPath(root), payload, 'utf-8');
 }
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.href;
+  }
+  return input.url;
+}
+
 function makeDesired() {
   return {
     version: '0.0.0',
@@ -208,6 +218,7 @@ describe('backend lock lifecycle', () => {
       process.kill(parsed.pid, 0);
       alive = true;
     } catch {
+      /* alive remains false */
     }
     expect(alive).toBe(true);
   });
@@ -422,7 +433,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4103/health' && token === 'replacement-token') {
         return new Response(
@@ -472,7 +483,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4104/health' && token === 'held-lock-token') {
         expect(existsSync(lockPath)).toBe(true);
@@ -518,7 +529,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4101/health' && token === 'existing-token') {
         return new Response(
@@ -573,7 +584,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
@@ -639,7 +650,7 @@ describe('ensureBackend flavor-aware reuse', () => {
       }),
     );
     expect(
-      fetchMock.mock.calls.filter(([input]) => String(input) === 'http://127.0.0.1:4101/admin/shutdown'),
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
     ).toHaveLength(1);
   });
 
@@ -658,7 +669,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     mockState.spawn.mockImplementation(() => ({ unref: vi.fn() }));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
@@ -742,7 +753,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(
-      fetchMock.mock.calls.filter(([input]) => String(input) === 'http://127.0.0.1:4101/admin/shutdown'),
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
     ).toHaveLength(1);
   });
 
@@ -806,7 +817,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4106/health' && token === 'sick-token') {
@@ -883,7 +894,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     }) as typeof process.kill));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4108/health' && token === 'unverified-token') {
         throw new Error('backend hung');
@@ -926,7 +937,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {

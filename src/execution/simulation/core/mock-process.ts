@@ -17,7 +17,7 @@ import type {
 import { createDeferred, type Deferred } from '../../../shared/test-deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
-import { VirtualTime } from './virtual-time.js';
+import { type VirtualTime } from './virtual-time.js';
 
 export type ChildOutputChunk = {
   delayMs?: number;
@@ -273,13 +273,14 @@ export class MockProcessSpawner {
       });
     }
 
-    if (script.error) {
-      this.schedule(record, script.error.delayMs ?? 0, () => {
+    const scriptError = script.error;
+    if (scriptError) {
+      this.schedule(record, scriptError.delayMs ?? 0, () => {
         if (record.closed) {
           return;
         }
         record.alive = false;
-        child.emitFailure(toError(script.error!.error));
+        child.emitFailure(toError(scriptError.error));
       });
     }
 

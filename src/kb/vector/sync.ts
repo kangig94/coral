@@ -411,10 +411,10 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
   }
 
   const { deletedEntryIds, changedEntries } = diffManifest(entries, currentManifest);
-  let stagedSnapshot: { snapshotId: string; stagingDir: string } | null = null;
+  let snapshotToInstall: { snapshotId: string; stagingDir: string } | null = null;
 
   try {
-    stagedSnapshot = await stageVectorSnapshot({
+    snapshotToInstall = await stageVectorSnapshot({
       kb,
       desiredSpec,
       activeSnapshotId,
@@ -431,7 +431,6 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
     return buildResult(kb.readIndexState(), desiredSpec.specId);
   }
 
-  const snapshotToInstall = stagedSnapshot!;
   try {
     await kb.withMutationLock(async () => {
       if (kb.readIndexState().contentSeq !== startContentSeq) {
@@ -458,8 +457,8 @@ export async function ensureVectorIndex(kb: KbRuntime): Promise<EnsureVectorInde
       activeSnapshotId ?? undefined,
     );
   } finally {
-    if (stagedSnapshot !== null) {
-      rmSync(stagedSnapshot.stagingDir, { recursive: true, force: true });
+    if (snapshotToInstall !== null) {
+      rmSync(snapshotToInstall.stagingDir, { recursive: true, force: true });
     }
   }
 

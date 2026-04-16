@@ -84,7 +84,7 @@ describe('recording observer', () => {
     const files = readdirSync(recordingDir);
     expect(files).toHaveLength(1);
 
-    const recording = loadRecording(runtime.storage, join(recordingDir, files[0]!));
+    const recording = loadRecording(runtime.storage, join(recordingDir, files[0]));
     expect(recording.command).toBe(process.execPath);
     expect(recording.args).toEqual(['-e', "process.stdout.write('recorded\\n');"]);
     expect(recording.events).toEqual(

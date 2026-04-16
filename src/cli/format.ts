@@ -217,12 +217,12 @@ export function formatProviderList(result: SessionListResult, options: { include
 
   if (options.includeProvider === true) {
     const rows = result.sessions.map((session) => [
-      session.provider || '-',
+      session.provider ?? '-',
       session.sessionId,
-      session.state || '-',
-      session.name || '-',
-      session.model || '-',
-      session.cwd || '-',
+      session.state ?? '-',
+      session.name ?? '-',
+      session.model ?? '-',
+      session.cwd ?? '-',
     ]);
 
     return formatTable(['PROVIDER', 'SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
@@ -230,10 +230,10 @@ export function formatProviderList(result: SessionListResult, options: { include
 
   const rows = result.sessions.map((session) => [
     session.sessionId,
-    session.state || '-',
-    session.name || '-',
-    session.model || '-',
-    session.cwd || '-',
+    session.state ?? '-',
+    session.name ?? '-',
+    session.model ?? '-',
+    session.cwd ?? '-',
   ]);
 
   return formatTable(['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);

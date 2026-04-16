@@ -18,7 +18,6 @@ import {
   writeFileAtomic,
 } from '../mutation-helpers.js';
 import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
-import { compareLocale } from '../validation.js';
 import {
   isNoteEntry,
   isSourceEntry,

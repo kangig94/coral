@@ -232,7 +232,7 @@ function readBackendInfoSnapshot(root: string): BackendInfoSnapshot | null {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return { raw, info: null };
     const record = parsed as Record<string, unknown>;
-    if (!record.host) record.host = '127.0.0.1';
+    record.host ??= '127.0.0.1';
     if (!('flavor' in record)) record.flavor = 'prod';
     return { raw, info: isObservedBackendInfo(record) ? record : null };
   } catch (error: unknown) {

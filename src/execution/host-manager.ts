@@ -78,6 +78,10 @@ function waitForCloseWithin(
   return raceTimeout(closed, timeoutMs, time);
 }
 
+function readClosingError(entry: ProviderHostEntry): Error | null {
+  return entry.closingError;
+}
+
 function parseIdleTimeoutMs(raw: string | undefined): number {
   if (!raw) {
     return DEFAULT_BROKER_IDLE_MS;
@@ -272,9 +276,10 @@ export class DefaultProviderHostManager implements ProviderHostManager {
 
     try {
       const handle = await entry.spawnPromise;
-      if (entry.closingError) {
+      const closingError = readClosingError(entry);
+      if (closingError !== null) {
         await this.shutdownHandle(handle, entry.spec).catch(() => {});
-        throw entry.closingError;
+        throw new Error(closingError.message, { cause: closingError });
       }
       entry.handle = handle;
       this.attachHostNotificationListener(entry, handle);
@@ -372,9 +377,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     entry.disposeHostNotifications?.();
     entry.disposeHostNotifications = null;
     entry.hostStats = null;
-    if (!entry.closingError) {
-      entry.closingError = new Error(`Provider server ${entry.spec.provider} ${detail}`);
-    }
+    entry.closingError ??= new Error(`Provider server ${entry.spec.provider} ${detail}`);
     if (this.entries.get(entry.hostKey) === entry) {
       this.entries.delete(entry.hostKey);
     }

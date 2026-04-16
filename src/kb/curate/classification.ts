@@ -8,17 +8,15 @@ import {
   isNoteEntry,
   isSourceEntry,
   parseKbEntryId,
-  type EntityMeta,
   type EntityRelationship,
   type EntityType,
   type KbEntryId,
   type KbIndex,
-  type NoteEntry,
   type RelationshipType,
 } from '../types.js';
 import { isRecord, isStringArray } from '../../shared/utils.js';
 import { type EntityConsolidationDelta } from './entity-consolidation.js';
-import { approximateTokenCount, parseJsonArray, uniqueTrimmedList, type ParsedArrayResult } from './shared.js';
+import { approximateTokenCount, parseJsonArray, uniqueTrimmedList } from './shared.js';
 import type {
   ClassificationAssignment,
   ClassificationNewEntity,
@@ -289,11 +287,6 @@ function renderClassificationPromptVocabulary(vocabulary: ClassificationPromptVo
 
 export function buildPrincipleNames(index: KbIndex): string[] {
   return Object.keys(index.principles).sort(compareLocale);
-}
-
-function getIndexNote(index: KbIndex, note: string): NoteEntry | undefined {
-  const entry = getEntry(index, `note:${note}` as KbEntryId);
-  return entry !== undefined && isNoteEntry(entry) ? entry : undefined;
 }
 
 export function buildClassificationPrompt(
