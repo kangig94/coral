@@ -1,6 +1,6 @@
 import type { ProviderCliRunner } from '../providers/runner-port.js';
 import type {
-  Provider,
+  ProviderExecutor,
   ProviderRecoveryMeta,
   ProviderRuntime,
   ProviderServerLease,
@@ -150,7 +150,7 @@ export class LaunchOrchestrator {
   }
 
   launchProviderJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -197,7 +197,7 @@ export class LaunchOrchestrator {
   }
 
   runAsync(
-    provider: Provider,
+    provider: ProviderExecutor,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -244,7 +244,7 @@ export class LaunchOrchestrator {
   }
 
   runRecoveredQueuedJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     launchRecord: PersistedLaunchRecord,
     admission: QueuedHandle,
     pool: LaunchPool,
@@ -311,7 +311,7 @@ export class LaunchOrchestrator {
   }
 
   private async executeJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     request: ProviderRequest,
     jobId: string,
     sessionId: string,

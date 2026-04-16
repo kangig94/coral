@@ -34,19 +34,19 @@ function makeRuntime(tree: Record<string, RuntimeDirentLike[]>, homedir = '/home
   return { runtime: { storage, env }, unlinkSync, existsSync };
 }
 
-describe('claudeProvider.cleanupSessions', () => {
+describe('claudeProvider.artifactCleanup.cleanupSessions', () => {
   const projectsDir = '/home/user/.claude/projects';
 
   it('is a no-op for an empty ref list', async () => {
     const { runtime, unlinkSync, existsSync } = makeRuntime({});
-    await claudeProvider.cleanupSessions?.(runtime, []);
+    await claudeProvider.artifactCleanup?.cleanupSessions(runtime, []);
     expect(unlinkSync).not.toHaveBeenCalled();
     expect(existsSync).not.toHaveBeenCalled();
   });
 
   it('returns early when the projects directory does not exist', async () => {
     const { runtime, unlinkSync } = makeRuntime({});
-    await claudeProvider.cleanupSessions?.(runtime, ['ref-a']);
+    await claudeProvider.artifactCleanup?.cleanupSessions(runtime, ['ref-a']);
     expect(unlinkSync).not.toHaveBeenCalled();
   });
 
@@ -68,7 +68,7 @@ describe('claudeProvider.cleanupSessions', () => {
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
 
-    await claudeProvider.cleanupSessions?.(runtime, ['ref-a', 'ref-b']);
+    await claudeProvider.artifactCleanup?.cleanupSessions(runtime, ['ref-a', 'ref-b']);
 
     expect(unlinkSync).toHaveBeenCalledTimes(2);
     expect(unlinkSync).toHaveBeenCalledWith(join(projectsDir, '-home-user-proj-a', 'ref-a.jsonl'));
@@ -81,7 +81,7 @@ describe('claudeProvider.cleanupSessions', () => {
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
 
-    await claudeProvider.cleanupSessions?.(runtime, ['ref-a']);
+    await claudeProvider.artifactCleanup?.cleanupSessions(runtime, ['ref-a']);
     expect(unlinkSync).not.toHaveBeenCalled();
   });
 
@@ -95,7 +95,7 @@ describe('claudeProvider.cleanupSessions', () => {
     };
     const { runtime, unlinkSync } = makeRuntime(tree);
 
-    await claudeProvider.cleanupSessions?.(runtime, ['ref-a']);
+    await claudeProvider.artifactCleanup?.cleanupSessions(runtime, ['ref-a']);
     expect(unlinkSync).not.toHaveBeenCalled();
   });
 
@@ -112,7 +112,7 @@ describe('claudeProvider.cleanupSessions', () => {
       throw new Error('EACCES');
     });
 
-    await expect(claudeProvider.cleanupSessions?.(runtime, ['ref-a', 'ref-b'])).resolves.toBeUndefined();
+    await expect(claudeProvider.artifactCleanup?.cleanupSessions(runtime, ['ref-a', 'ref-b'])).resolves.toBeUndefined();
     expect(unlinkSync).toHaveBeenCalledTimes(2);
   });
 });

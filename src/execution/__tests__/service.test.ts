@@ -123,6 +123,7 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
+  const resolveProvider = (name: string) => mockState.getNewProvider(name);
   return new ExecutionService(ctx, {
     runtime,
     progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
@@ -132,7 +133,11 @@ function createService(
     launchCoordinator,
     eventBus,
     providerRegistry: {
-      get: mockState.getNewProvider,
+      get: resolveProvider,
+      getExecutor: resolveProvider,
+      getAppServerLifecycle: (name: string) => resolveProvider(name)?.appServerLifecycle,
+      getArtifactRecovery: (name: string) => resolveProvider(name)?.artifactRecovery,
+      getArtifactCleanup: (name: string) => resolveProvider(name)?.artifactCleanup,
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
@@ -265,7 +270,7 @@ function makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
     execute: vi.fn(async () => ({ content: 'ok' })),
-    appServer: {
+    appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
       interrupt: async (lease, continuity) => {
@@ -337,7 +342,7 @@ function makeSharedClaudeAppServerProvider(spec: {
   return {
     name: 'claude',
     execute: vi.fn(async () => ({ content: 'ok' })),
-    appServer: {
+    appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =

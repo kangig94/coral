@@ -5,7 +5,8 @@ import {
   type PreflightRuntime,
   requireAppServerRuntime,
   requireConversationRef,
-  type ProviderAppServerContract,
+  type ProviderAppServerLifecycle,
+  type ProviderExecutor,
   type ProviderRuntime,
   type ProviderServerLease,
   type Provider,
@@ -541,7 +542,7 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-const codexAppServer: ProviderAppServerContract = {
+const codexAppServerLifecycle: ProviderAppServerLifecycle = {
   migrateLegacyContinuity(meta) {
     const continuity: ProviderContinuityBlob = {};
     if (typeof meta.provider === 'string' && meta.provider.length > 0) {
@@ -622,7 +623,7 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   const startedAt = Date.now();
   const cwd = request.cwd;
   const model = resolveModelTier(request.model);
-  const spec = codexAppServer.buildServerSpec(runtime.persistedContinuity, request);
+  const spec = codexAppServerLifecycle.buildServerSpec(runtime.persistedContinuity, request);
   const lease = await acquireServer(spec);
 
   const checkpoint = (threadId: string, turnId?: string): void => {
@@ -706,9 +707,13 @@ async function execute(request: ProviderRequest, runtime: ProviderRuntime): Prom
   }
 }
 
-export const codexProvider = {
+const codexExecutor: ProviderExecutor = {
   name: 'codex',
   execute,
   preflight,
-  appServer: codexAppServer,
-} satisfies Provider;
+};
+
+export const codexProvider = {
+  ...codexExecutor,
+  appServerLifecycle: codexAppServerLifecycle,
+} satisfies Provider & { appServerLifecycle: ProviderAppServerLifecycle };

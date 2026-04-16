@@ -414,7 +414,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
       };
       return result;
     },
-    recovery: {
+    artifactRecovery: {
       buildRecoveryMeta: () => ({ provider: providerName }),
       finalizeFromArtifacts: async ({ stdoutPath, stderrPath, exitCode, signal }) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();

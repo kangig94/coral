@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ArtifactCleanupRuntime, Provider } from '../../providers/types.js';
+import type { ArtifactCleanupRuntime, Provider, ProviderArtifactCleanup } from '../../providers/types.js';
 import type { WorkflowSessionHandle } from '../../workflow/types.js';
 import { dispatchWorkflowSessionCleanup, type WorkflowSessionCleanupDeps } from '../service.js';
 
@@ -8,7 +8,7 @@ const noopCleanupRuntime = {} as ArtifactCleanupRuntime;
 function makeDeps(overrides: Partial<WorkflowSessionCleanupDeps>): WorkflowSessionCleanupDeps {
   return {
     resolveConversationRef: vi.fn(() => undefined),
-    getProvider: vi.fn(() => undefined),
+    getArtifactCleanup: vi.fn(() => undefined),
     cleanupRuntime: noopCleanupRuntime,
     onError: vi.fn(),
     ...overrides,
@@ -23,25 +23,36 @@ function makeProvider(overrides: Partial<Provider> = {}): Provider {
   };
 }
 
+function makeArtifactCleanup(
+  cleanupSessions?: ProviderArtifactCleanup['cleanupSessions'],
+  name = 'claude',
+): ProviderArtifactCleanup | undefined {
+  if (!cleanupSessions) return undefined;
+  return {
+    name,
+    cleanupSessions,
+  };
+}
+
 describe('dispatchWorkflowSessionCleanup', () => {
   it('is a no-op for an empty session list', () => {
     const deps = makeDeps({});
     dispatchWorkflowSessionCleanup([], deps);
     expect(deps.resolveConversationRef).not.toHaveBeenCalled();
-    expect(deps.getProvider).not.toHaveBeenCalled();
+    expect(deps.getArtifactCleanup).not.toHaveBeenCalled();
   });
 
   it('groups conversation refs by provider and invokes each provider cleanup once', async () => {
     const cleanupClaude = vi.fn(async () => {});
     const cleanupCodex = vi.fn(async () => {});
     const providers = new Map<string, Provider>([
-      ['claude', makeProvider({ name: 'claude', cleanupSessions: cleanupClaude })],
-      ['codex', makeProvider({ name: 'codex', cleanupSessions: cleanupCodex })],
+      ['claude', makeProvider({ name: 'claude', artifactCleanup: makeArtifactCleanup(cleanupClaude, 'claude') })],
+      ['codex', makeProvider({ name: 'codex', artifactCleanup: makeArtifactCleanup(cleanupCodex, 'codex') })],
     ]);
 
     const deps = makeDeps({
       resolveConversationRef: vi.fn((_provider, sessionId) => `ref-${sessionId}`),
-      getProvider: vi.fn((name) => providers.get(name)),
+      getArtifactCleanup: vi.fn((name) => providers.get(name)?.artifactCleanup),
     });
 
     const sessions: WorkflowSessionHandle[] = [
@@ -63,7 +74,7 @@ describe('dispatchWorkflowSessionCleanup', () => {
     const cleanupClaude = vi.fn(async () => {});
     const deps = makeDeps({
       resolveConversationRef: vi.fn((_provider, sessionId) => (sessionId === 'known' ? 'ref-known' : undefined)),
-      getProvider: vi.fn(() => makeProvider({ cleanupSessions: cleanupClaude })),
+      getArtifactCleanup: vi.fn(() => makeArtifactCleanup(cleanupClaude)),
     });
 
     dispatchWorkflowSessionCleanup(
@@ -81,7 +92,7 @@ describe('dispatchWorkflowSessionCleanup', () => {
   it('skips providers without a cleanupSessions implementation', async () => {
     const deps = makeDeps({
       resolveConversationRef: vi.fn(() => 'ref-1'),
-      getProvider: vi.fn(() => makeProvider({ cleanupSessions: undefined })),
+      getArtifactCleanup: vi.fn(() => undefined),
     });
 
     expect(() =>
@@ -102,7 +113,7 @@ describe('dispatchWorkflowSessionCleanup', () => {
       [{ providerName: 'claude', sessionId: 'sess-1' }],
       makeDeps({
         resolveConversationRef: vi.fn(() => 'ref-1'),
-        getProvider: vi.fn(() => makeProvider({ cleanupSessions: cleanupClaude })),
+        getArtifactCleanup: vi.fn(() => makeArtifactCleanup(cleanupClaude)),
         onError,
       }),
     );
@@ -117,7 +128,7 @@ describe('dispatchWorkflowSessionCleanup', () => {
     const cleanupClaude = vi.fn(async () => {});
     const deps = makeDeps({
       resolveConversationRef: vi.fn(() => 'ref-shared'),
-      getProvider: vi.fn(() => makeProvider({ cleanupSessions: cleanupClaude })),
+      getArtifactCleanup: vi.fn(() => makeArtifactCleanup(cleanupClaude)),
     });
 
     dispatchWorkflowSessionCleanup(

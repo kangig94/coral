@@ -1,5 +1,11 @@
 import type { ProviderCatalog } from './catalog.js';
-import type { Provider } from './types.js';
+import type {
+  Provider,
+  ProviderAppServerLifecycle,
+  ProviderArtifactCleanup,
+  ProviderArtifactRecovery,
+  ProviderExecutor,
+} from './types.js';
 
 const RESERVED_TOOL_NAMES = new Set([
   'wait',
@@ -41,6 +47,22 @@ export class ProviderRegistry implements ProviderCatalog {
 
   get(name: string): Provider | undefined {
     return this.providers.get(name);
+  }
+
+  getExecutor(name: string): ProviderExecutor | undefined {
+    return this.providers.get(name);
+  }
+
+  getAppServerLifecycle(name: string): ProviderAppServerLifecycle | undefined {
+    return this.providers.get(name)?.appServerLifecycle;
+  }
+
+  getArtifactRecovery(name: string): ProviderArtifactRecovery | undefined {
+    return this.providers.get(name)?.artifactRecovery;
+  }
+
+  getArtifactCleanup(name: string): ProviderArtifactCleanup | undefined {
+    return this.providers.get(name)?.artifactCleanup;
   }
 
   getAll(): Provider[] {

@@ -260,7 +260,7 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
 
   it('treats a live brokerSessionKey without conversationRef as resumable and preserves continuity', async () => {
     const { claudeProvider } = await loadProvider();
-    const appServer = claudeProvider.appServer!;
+    const appServer = claudeProvider.appServerLifecycle;
     const continuity = {
       brokerSessionKey: BROKER_SESSION_KEY,
       bootstrapSignature: {
@@ -300,7 +300,7 @@ describe('claude adapter: app-server recovery preserves live broker continuity b
 
   it('treats a missing broker session on a fresh broker as resumable when continuity has a conversationRef', async () => {
     const { claudeProvider } = await loadProvider();
-    const appServer = claudeProvider.appServer!;
+    const appServer = claudeProvider.appServerLifecycle;
     const continuity = {
       brokerSessionKey: BROKER_SESSION_KEY,
       bootstrapSignature: {
@@ -588,8 +588,8 @@ describe('claude adapter: provider export only keeps the app-server contract', (
   it('does not export a recovery contract', async () => {
     const { claudeProvider } = await loadProvider();
 
-    expect(claudeProvider.recovery).toBeUndefined();
-    expect(claudeProvider.appServer).toBeDefined();
+    expect('artifactRecovery' in claudeProvider ? claudeProvider.artifactRecovery : undefined).toBeUndefined();
+    expect(claudeProvider.appServerLifecycle).toBeDefined();
   });
 });
 

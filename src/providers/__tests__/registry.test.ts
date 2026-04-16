@@ -1,12 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { registerBuiltInProviders } from '../bootstrap.js';
 import { ProviderRegistry } from '../registry.js';
-import type { Provider } from '../types.js';
+import type { Provider, ProviderArtifactCleanup } from '../types.js';
 
 function makeProvider(name: string): Provider {
   return {
     name,
     execute: async () => ({ content: `${name} response` }),
+  };
+}
+
+function makeCleanupRole(name: string): ProviderArtifactCleanup {
+  return {
+    name,
+    cleanupSessions: async () => {},
   };
 }
 
@@ -22,7 +29,36 @@ describe('ProviderRegistry', () => {
     registry.register(provider);
 
     expect(registry.get('codex-like')).toBe(provider);
+    expect(registry.getExecutor('codex-like')).toBe(provider);
     expect(providerNames(registry.getAll())).toEqual(['codex-like']);
+  });
+
+  it('exposes role views from the registry', () => {
+    const registry = new ProviderRegistry();
+    const appServerLifecycle = {
+      buildServerSpec: () => ({ provider: 'claude', command: 'claude', args: [], cwd: process.cwd() }),
+      interrupt: async () => {},
+      probe: async () => ({ resumable: true }),
+      finalizeInterrupted: () => ({}),
+    };
+    const artifactRecovery = {
+      finalizeFromArtifacts: async () => ({ content: 'recovered' }),
+    };
+    const artifactCleanup = makeCleanupRole('claude');
+    const provider: Provider = {
+      name: 'claude',
+      execute: async () => ({ content: 'ok' }),
+      appServerLifecycle,
+      artifactRecovery,
+      artifactCleanup,
+    };
+
+    registry.register(provider);
+
+    expect(registry.getExecutor('claude')).toBe(provider);
+    expect(registry.getAppServerLifecycle('claude')).toBe(appServerLifecycle);
+    expect(registry.getArtifactRecovery('claude')).toBe(artifactRecovery);
+    expect(registry.getArtifactCleanup('claude')).toBe(artifactCleanup);
   });
 
   it('rejects reserved provider names', () => {

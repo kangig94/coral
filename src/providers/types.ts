@@ -129,16 +129,37 @@ export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
 /** Minimal runtime surface for post-workflow artifact cleanup. */
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
 
-export interface Provider {
-  name: string;
+export interface ProviderExecutor {
+  readonly name: string;
   execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(runtime: PreflightRuntime): Promise<void>;
-  /** Recovery contract for durable execution handoff. */
-  recovery?: ProviderRecoveryContract;
-  appServer?: ProviderAppServerContract;
-  /** Optional cleanup of provider-owned session artifacts invoked after a workflow completes. */
-  cleanupSessions?(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void>;
+}
+
+/**
+ * Alias of ProviderAppServerContract, named for the consumer seam (app-server lifecycle).
+ * Intentionally a plain alias, not an extension: no consumer reads a `role.name` field
+ * because callers already have `providerName` in scope via `launchRecord.provider` or a
+ * parameter. Aliasing avoids a drift surface where `role.name` could disagree with the
+ * registry key.
+ */
+export type ProviderAppServerLifecycle = ProviderAppServerContract;
+
+/**
+ * Alias of ProviderRecoveryContract, named for the consumer seam (durable-artifact recovery).
+ * See ProviderAppServerLifecycle for the rationale behind aliasing instead of extending.
+ */
+export type ProviderArtifactRecovery = ProviderRecoveryContract;
+
+export interface ProviderArtifactCleanup {
+  readonly name: string;
+  cleanupSessions(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void>;
+}
+
+export interface Provider extends ProviderExecutor {
+  appServerLifecycle?: ProviderAppServerLifecycle;
+  artifactRecovery?: ProviderArtifactRecovery;
+  artifactCleanup?: ProviderArtifactCleanup;
 }
 
 export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {

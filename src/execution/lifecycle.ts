@@ -24,6 +24,7 @@ import { listSessionShards, SessionManager } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import type { RecoveredDiscussResume } from './discuss/operations.js';
+import type { ProviderArtifactRecovery } from '../providers/types.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { type RecoveryCapableService } from './service.js';
 import {
@@ -803,7 +804,7 @@ type LifecycleControlState = {
   recoveryPollIntervals: Set<RuntimeTimerHandle>;
 };
 
-type ProviderLike = NonNullable<ReturnType<ProviderRegistry['get']>>;
+type ProviderLike = ProviderArtifactRecovery | undefined;
 
 export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const {
@@ -1083,8 +1084,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     const exitRecord = progressStore.readExitRecord(jobId);
     if (exitRecord) {
       // Finalize from durable artifacts via provider recovery
-      if (provider?.recovery) {
-        void provider.recovery
+      if (provider) {
+        void provider
           .finalizeFromArtifacts({
             stdoutPath: runtimeRecord.stdoutPath,
             stderrPath: runtimeRecord.stderrPath,
@@ -1188,8 +1189,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       try {
         const ctx: CallerContext = { projectRoot: launchRecord.projectRoot, pluginRoot, coralEnv: {} };
         const service = getRecoveryService(ctx);
-        const provider = providerRegistry.get(launchRecord.provider);
-        const recovery = provider?.recovery;
+        const recovery = providerRegistry.getArtifactRecovery(launchRecord.provider);
         if (isAppServerRuntime(runtimeRecord)) {
           assertStartupStillActive();
           await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
@@ -1254,7 +1254,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
             state.adoptedRunningPids.delete(jobId);
 
             drainRecoveredProgress();
-            finalizeDeadAdoptedJob(jobId, launchRecord, runtimeRecord, service, provider);
+            finalizeDeadAdoptedJob(jobId, launchRecord, runtimeRecord, service, recovery);
             cleanup?.();
           }
         }, RECOVERY_POLL_MS);

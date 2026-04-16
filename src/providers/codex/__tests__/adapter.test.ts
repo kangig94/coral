@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { codexProvider } from '../adapter.js';
 import type { ProviderRequest } from '../../../shared/types.js';
 import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../../types.js';
 
@@ -417,5 +418,16 @@ describe('codex adapter app-server flow', () => {
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
     expect(lease.releaseMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('codex adapter: provider export role contract', () => {
+  it('exposes appServerLifecycle as a required role', () => {
+    expect(codexProvider.appServerLifecycle).toBeDefined();
+  });
+
+  it('does not declare artifactRecovery or artifactCleanup', () => {
+    expect(codexProvider).not.toHaveProperty('artifactRecovery');
+    expect(codexProvider).not.toHaveProperty('artifactCleanup');
   });
 });

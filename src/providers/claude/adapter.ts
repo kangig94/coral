@@ -19,7 +19,9 @@ import {
   requireAppServerRuntime,
   requireConversationRef,
   type Provider,
-  type ProviderAppServerContract,
+  type ProviderAppServerLifecycle,
+  type ProviderArtifactCleanup,
+  type ProviderExecutor,
   type ProviderRuntime,
   type ProviderServerLease,
 } from '../types.js';
@@ -437,7 +439,7 @@ async function executePersistent(
   }
 }
 
-const claudeAppServer: ProviderAppServerContract = {
+const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
   buildServerSpec(_persistedContinuity, _request) {
     return buildClaudeProviderServerSpec();
   },
@@ -578,10 +580,22 @@ async function cleanupSessions(
   }
 }
 
-export const claudeProvider: Provider = {
+const claudeExecutor: ProviderExecutor = {
   name: 'claude',
   execute,
   preflight,
-  appServer: claudeAppServer,
+};
+
+const claudeArtifactCleanup: ProviderArtifactCleanup = {
+  name: 'claude',
   cleanupSessions,
+};
+
+export const claudeProvider = {
+  ...claudeExecutor,
+  appServerLifecycle: claudeAppServerLifecycle,
+  artifactCleanup: claudeArtifactCleanup,
+} satisfies Provider & {
+  appServerLifecycle: ProviderAppServerLifecycle;
+  artifactCleanup: ProviderArtifactCleanup;
 };
