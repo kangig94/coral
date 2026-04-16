@@ -103,15 +103,22 @@ export const jobAbortSchema = z
   })
   .strict();
 
-export const workflowRequestSchema = z
+export const workflowCommandSchema = z
   .object({
     expression: z.string().min(1, 'Expression required'),
     startPrompt: z.string().min(1, 'Prompt required'),
     context: z.string().optional(),
-    provider: providerNameSchema.optional(),
+    provider: providerNameSchema.default('claude'),
     workDir: cwdSchema,
-    projectRoot: projectRootSchema,
     owner: ownerSchema.optional(),
+  })
+  .strict();
+
+export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
+
+export const workflowRequestSchema = workflowCommandSchema
+  .extend({
+    projectRoot: projectRootSchema,
     claudeModelCap: claudeModelCapSchema,
   })
   .strict();

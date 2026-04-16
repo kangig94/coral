@@ -2049,7 +2049,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2126,7 +2126,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2167,7 +2167,7 @@ describe('ExecutionService', () => {
       parseExpression('architect'),
       {
         expression: 'architect',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2209,7 +2209,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2272,7 +2272,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,

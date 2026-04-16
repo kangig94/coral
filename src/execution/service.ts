@@ -8,7 +8,7 @@ import type {
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import { resolveEffort, type EffortLevel } from '../shared/schemas.js';
+import { resolveEffort, type EffortLevel, type WorkflowCommand } from '../shared/schemas.js';
 import {
   isAppServerRuntime,
   isDurableCliRuntime,
@@ -31,7 +31,6 @@ import {
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { PipelineAST } from '../workflow/types.js';
-import type { WorkflowInput } from '../workflow/schemas.js';
 import {
   executePipeline,
   resumePipeline,
@@ -1095,7 +1094,7 @@ export class ExecutionService implements RecoveryCapableService {
   async executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
@@ -1428,14 +1427,14 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): void {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void executePipeline(ast, input.start_prompt, providerName, this, ctx, {
+    void executePipeline(ast, input.startPrompt, providerName, this, ctx, {
       context: input.context,
       workDir,
       signal,

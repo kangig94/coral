@@ -44,7 +44,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect -> resolver',
-        start_prompt: 'hello',
+        startPrompt: 'hello',
       },
       executionSvc,
       ctx,
@@ -60,7 +60,7 @@ describe('workflow handler', () => {
       ],
       expect.objectContaining({
         expression: 'architect -> resolver',
-        start_prompt: 'hello',
+        startPrompt: 'hello',
         provider: 'claude',
       }),
       ctx,
@@ -68,7 +68,7 @@ describe('workflow handler', () => {
     );
   });
 
-  it('passes work_dir separately without mutating projectRoot', async () => {
+  it('passes workDir separately without mutating projectRoot', async () => {
     const { handleWorkflow } = await loadWorkflowHandler();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
@@ -76,8 +76,8 @@ describe('workflow handler', () => {
     await handleWorkflow(
       {
         expression: 'architect',
-        start_prompt: 'hello',
-        work_dir: '/tmp/coral-workflow-cwd',
+        startPrompt: 'hello',
+        workDir: '/tmp/coral-workflow-cwd',
       },
       executionSvc,
       ctx,
@@ -89,8 +89,8 @@ describe('workflow handler', () => {
       [[{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: 'claude' }]],
       expect.objectContaining({
         expression: 'architect',
-        start_prompt: 'hello',
-        work_dir: '/tmp/coral-workflow-cwd',
+        startPrompt: 'hello',
+        workDir: '/tmp/coral-workflow-cwd',
         provider: 'claude',
       }),
       ctx,
@@ -107,7 +107,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@missing-provider',
-        start_prompt: 'hello',
+        startPrompt: 'hello',
         provider: 'codex',
       },
       executionSvc,
@@ -140,7 +140,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@nonexistent-provider',
-        start_prompt: 'test',
+        startPrompt: 'test',
         provider: 'codex',
       },
       executionSvc,
@@ -163,7 +163,7 @@ describe('workflow handler', () => {
       handleWorkflow(
         {
           expression: '(architect, architect)',
-          start_prompt: 'test',
+          startPrompt: 'test',
           provider: 'claude',
         },
         executionSvc,
@@ -180,7 +180,7 @@ describe('workflow handler', () => {
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
 
-    await expect(handleWorkflow({ start_prompt: 'no expression' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
+    await expect(handleWorkflow({ startPrompt: 'no expression' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
   });
 
   it('rejected message names multiple unknown providers', async () => {
@@ -191,7 +191,7 @@ describe('workflow handler', () => {
     const decision = await handleWorkflow(
       {
         expression: 'architect@ghost1 -> resolver@ghost2',
-        start_prompt: 'test',
+        startPrompt: 'test',
         provider: 'codex',
       },
       executionSvc,

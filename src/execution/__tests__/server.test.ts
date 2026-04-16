@@ -13,6 +13,8 @@ import type * as ServerMod from '../server.js';
 import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
+import type * as InfraPathsMod from '../../infra/paths.js';
+import type * as HttpHandlerMod from '../http-handler.js';
 import type { ProviderServerHandle } from '../engine.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
@@ -293,7 +295,7 @@ async function loadExecutionModules(): Promise<{
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
-  infraPaths: typeof import('../../infra/paths.js');
+  infraPaths: typeof InfraPathsMod;
 }> {
   vi.resetModules();
   const [serverModule, backendInfo, backendLock, lifecycleModule, infraPaths] = await Promise.all([
@@ -620,7 +622,7 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect((body as Record<string, unknown>).subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
+    expect(body.subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -1224,7 +1226,7 @@ describe('execution backend server', () => {
 
     async function startHttpHandlerServer(
       deps: HttpHandlerDeps,
-      createHttpHandlerFn?: typeof import('../http-handler.js').createHttpHandler,
+      createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler,
     ) {
       const importedCreateHttpHandler = createHttpHandlerFn ?? (await import('../http-handler.js')).createHttpHandler;
       const handler = importedCreateHttpHandler(deps);
@@ -2603,7 +2605,7 @@ describe('execution backend server', () => {
       }
     });
 
-    it('maps workflow camelCase request fields before calling executeWorkflow', async () => {
+    it('passes canonical workflow camelCase fields to executeWorkflow', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
           executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
@@ -2640,9 +2642,9 @@ describe('execution backend server', () => {
             expect.any(Array),
             {
               expression: 'architect',
-              start_prompt: 'Begin',
+              startPrompt: 'Begin',
               provider: 'codex',
-              work_dir: '/tmp/workflow',
+              workDir: '/tmp/workflow',
               owner: 'team-a',
             },
             expect.objectContaining({
@@ -2653,6 +2655,56 @@ describe('execution backend server', () => {
                 CORAL_OWNER: 'team-a',
                 CORAL_CLAUDE_MODEL_CAP: 'sonnet',
               }),
+            }),
+            '/tmp/workflow',
+          );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it("defaults omitted workflow provider to 'claude' for both executeWorkflow arguments", async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        deps.providerRegistry.register({
+          name: 'claude',
+          execute: vi.fn(async () => ({ content: 'ok' })),
+        });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              workDir: '/tmp/workflow',
+              projectRoot: '/tmp/project',
+              claudeModelCap: 'sonnet',
+            }),
+          });
+
+          expect(response.status).toBe(202);
+          expect(fakeService.executeWorkflow).toHaveBeenCalledWith(
+            'claude',
+            expect.any(Array),
+            {
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'claude',
+              workDir: '/tmp/workflow',
+            },
+            expect.objectContaining({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
             }),
             '/tmp/workflow',
           );

@@ -685,15 +685,9 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
   }
 
   try {
+    const command = (({ projectRoot, claudeModelCap, ...workflowCommand }) => workflowCommand)(parsed);
     const decision = await launchWorkflow(
-      {
-        expression: parsed.expression,
-        start_prompt: parsed.startPrompt,
-        ...(parsed.context !== undefined ? { context: parsed.context } : {}),
-        ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
-        ...(parsed.workDir !== undefined ? { work_dir: parsed.workDir } : {}),
-        ...(parsed.owner !== undefined ? { owner: parsed.owner } : {}),
-      },
+      command,
       deps.getExecutionService(ctx),
       ctx,
       deps.providerRegistry,

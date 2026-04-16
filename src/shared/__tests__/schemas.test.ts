@@ -8,6 +8,7 @@ import {
   sessionForkSchema,
   sessionMessageSchema,
   waitInputSchema,
+  workflowCommandSchema,
   workflowRequestSchema,
 } from '../schemas.js';
 
@@ -331,7 +332,7 @@ describe('jobAbortSchema', () => {
 });
 
 describe('workflowRequestSchema', () => {
-  it('parses a minimal workflow request without defaulting provider', () => {
+  it("applies provider default of 'claude' when omitted", () => {
     const parsed = workflowRequestSchema.parse({
       expression: 'architect -> resolver',
       startPrompt: 'hello',
@@ -341,9 +342,10 @@ describe('workflowRequestSchema', () => {
     expect(parsed).toEqual({
       expression: 'architect -> resolver',
       startPrompt: 'hello',
+      provider: 'claude',
       projectRoot: '/tmp/project',
     });
-    expect(parsed).not.toHaveProperty('provider');
+    expect(parsed.provider).toBe('claude');
   });
 
   it('accepts supported optional fields', () => {
@@ -365,6 +367,54 @@ describe('workflowRequestSchema', () => {
       owner: 'owner-1',
       claudeModelCap: 'haiku',
     });
+  });
+
+  it('re-parses canonical workflow commands idempotently', () => {
+    const parsed = workflowCommandSchema.parse({
+      expression: 'architect',
+      startPrompt: 'hello',
+      workDir: '/tmp/work',
+    });
+
+    expect(workflowCommandSchema.parse(parsed)).toEqual(parsed);
+  });
+
+  it('rejects legacy start_prompt under strict mode', () => {
+    const parsed = workflowRequestSchema.safeParse({
+      expression: 'architect',
+      start_prompt: 'hello',
+      startPrompt: 'hello',
+      projectRoot: '/tmp/project',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected parse failure');
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Unrecognized key(s) in object: 'start_prompt'",
+        }),
+      ]),
+    );
+  });
+
+  it('rejects legacy work_dir under strict mode', () => {
+    const parsed = workflowRequestSchema.safeParse({
+      expression: 'architect',
+      startPrompt: 'hello',
+      work_dir: '/tmp/legacy',
+      projectRoot: '/tmp/project',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected parse failure');
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Unrecognized key(s) in object: 'work_dir'",
+        }),
+      ]),
+    );
   });
 
   it('rejects effort and other unknown keys via strict mode', () => {

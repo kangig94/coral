@@ -2,9 +2,9 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../shared/request-context.js';
+import { workflowCommandSchema, type WorkflowCommand } from '../shared/schemas.js';
 import { ZodError } from 'zod';
 import { parseExpression } from './pipe-parser.js';
-import { workflowInputSchema, type WorkflowInput } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
 export class WorkflowInputError extends Error {
@@ -23,7 +23,7 @@ interface WorkflowService {
   executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision>;
@@ -106,7 +106,7 @@ export async function handleWorkflow(
   ctx: CallerContext,
   providerRegistry: ProviderRegistry,
 ): Promise<LaunchDecision> {
-  const input = workflowInputSchema.parse(rawArgs);
+  const input = workflowCommandSchema.parse(rawArgs);
   let ast: PipelineAST;
   try {
     ast = normalizeAst(parseExpression(input.expression), input.provider);
@@ -123,9 +123,9 @@ export async function handleWorkflow(
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
   if (!owner) {
-    return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.work_dir);
+    return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.workDir);
   }
 
   const effectiveContext = { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } };
-  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.work_dir);
+  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.workDir);
 }
