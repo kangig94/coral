@@ -126,6 +126,9 @@ export interface ProviderRuntime {
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
 
+/** Minimal runtime surface for post-workflow artifact cleanup. */
+export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
+
 export interface Provider {
   name: string;
   execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult>;
@@ -134,6 +137,8 @@ export interface Provider {
   /** Recovery contract for durable execution handoff. */
   recovery?: ProviderRecoveryContract;
   appServer?: ProviderAppServerContract;
+  /** Optional cleanup of provider-owned session artifacts invoked after a workflow completes. */
+  cleanupSessions?(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void>;
 }
 
 export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {

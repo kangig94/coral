@@ -4,6 +4,7 @@
 export const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
 
+import { join } from 'node:path';
 import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
@@ -12,6 +13,7 @@ import { errorMessage, isRecord, nowIsoString } from '../../shared/utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
+  type ArtifactCleanupRuntime,
   makeOnEvent,
   type PreflightRuntime,
   requireAppServerRuntime,
@@ -551,9 +553,35 @@ function readErrors(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
+async function cleanupSessions(
+  runtime: ArtifactCleanupRuntime,
+  conversationRefs: readonly string[],
+): Promise<void> {
+  if (conversationRefs.length === 0) return;
+  const projectsDir = join(runtime.env.homedir(), '.claude', 'projects');
+  if (!runtime.storage.existsSync(projectsDir)) return;
+
+  const targets = new Set(conversationRefs.map((id) => `${id}.jsonl`));
+  const dirs = runtime.storage.readdirSync(projectsDir, { withFileTypes: true });
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const dirPath = join(projectsDir, dir.name);
+    const entries = runtime.storage.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !targets.has(entry.name)) continue;
+      try {
+        runtime.storage.unlinkSync(join(dirPath, entry.name));
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+}
+
 export const claudeProvider: Provider = {
   name: 'claude',
   execute,
   preflight,
   appServer: claudeAppServer,
+  cleanupSessions,
 };

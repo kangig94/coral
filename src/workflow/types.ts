@@ -45,12 +45,21 @@ export interface ResumeInput {
   parentWorkflowJobId?: string;
 }
 
+export interface WorkflowSessionHandle {
+  providerName: string;
+  sessionId: string;
+}
+
 export interface WorkflowExecutionPort {
   coralDispatch(providerName: string, coralName: string, input: CoralDispatchInput, ctx: CallerContext): Promise<LaunchDecision>;
   resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
   waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent>;
-  getConversationRef(providerName: string, sessionId: string): string | undefined;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
+  /**
+   * Dispatch post-workflow cleanup to each provider's `cleanupSessions` hook.
+   * Fire-and-forget: cleanup runs asynchronously and failures surface only via `backendLog.warn`.
+   */
+  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void;
 }

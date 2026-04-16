@@ -1,4 +1,5 @@
 import type {
+  ArtifactCleanupRuntime,
   Provider,
   ProviderContinuityBlob,
   PreflightRuntime,
@@ -31,7 +32,7 @@ import {
 } from '../shared/types.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import type { PipelineAST } from '../workflow/types.js';
+import type { PipelineAST, WorkflowSessionHandle } from '../workflow/types.js';
 import {
   executePipeline,
   resumePipeline,
@@ -289,6 +290,51 @@ function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
     storage: runtime.storage,
     env: runtime.env,
   };
+}
+
+function toArtifactCleanupRuntime(runtime: Runtime): ArtifactCleanupRuntime {
+  return {
+    storage: runtime.storage,
+    env: runtime.env,
+  };
+}
+
+export interface WorkflowSessionCleanupDeps {
+  resolveConversationRef(providerName: string, sessionId: string): string | undefined;
+  getProvider(providerName: string): Provider | undefined;
+  cleanupRuntime: ArtifactCleanupRuntime;
+  onError(message: string): void;
+}
+
+/**
+ * Pure dispatch core for `ExecutionService.cleanupWorkflowSessions`.
+ * Groups handles by provider, resolves conversation refs, and fires cleanup
+ * per-provider. Exported so tests can exercise grouping and error surfacing
+ * without standing up a full ExecutionService.
+ */
+export function dispatchWorkflowSessionCleanup(
+  sessions: readonly WorkflowSessionHandle[],
+  deps: WorkflowSessionCleanupDeps,
+): void {
+  if (sessions.length === 0) return;
+
+  const refsByProvider = new Map<string, Set<string>>();
+  for (const handle of sessions) {
+    const ref = deps.resolveConversationRef(handle.providerName, handle.sessionId);
+    if (!ref) continue;
+    const bucket = refsByProvider.get(handle.providerName) ?? new Set<string>();
+    bucket.add(ref);
+    refsByProvider.set(handle.providerName, bucket);
+  }
+  if (refsByProvider.size === 0) return;
+
+  for (const [providerName, refs] of refsByProvider) {
+    const provider = deps.getProvider(providerName);
+    if (!provider?.cleanupSessions) continue;
+    void provider.cleanupSessions(deps.cleanupRuntime, [...refs]).catch((error: unknown) => {
+      deps.onError(`Provider ${providerName} session cleanup failed: ${errorMessage(error)}`);
+    });
+  }
 }
 
 async function runProviderPreflight(provider: Provider, runtime: PreflightRuntime): Promise<string | null> {
@@ -1148,8 +1194,14 @@ export class ExecutionService implements RecoveryCapableService {
     return { sessions: this.sessionManager.list(providerName) };
   }
 
-  getConversationRef(providerName: string, sessionId: string): string | undefined {
-    return this.sessionManager.get(providerName, sessionId)?.conversationRef;
+  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void {
+    dispatchWorkflowSessionCleanup(sessions, {
+      resolveConversationRef: (providerName, sessionId) =>
+        this.sessionManager.get(providerName, sessionId)?.conversationRef,
+      getProvider: (providerName) => this.providerRegistry.get(providerName),
+      cleanupRuntime: toArtifactCleanupRuntime(this.runtime),
+      onError: (message) => backendLog.warn(message),
+    });
   }
 
   abort(jobIds: string[]): AbortResult {
