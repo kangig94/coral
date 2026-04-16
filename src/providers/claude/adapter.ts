@@ -1,22 +1,21 @@
 /** Claude provider adapter for the execution service. */
 
-/** Appended to every spawned Claude subprocess to neutralize output-style hooks. */
-export const OUTPUT_STYLE_OVERRIDE =
-  'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
+export { OUTPUT_STYLE_OVERRIDE } from './session-driver.js';
 
 import { join } from 'node:path';
 import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
+import { claudeSessionDriver, OUTPUT_STYLE_OVERRIDE } from './session-driver.js';
 import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
-import { errorMessage, isRecord, nowIsoString } from '../../shared/utils.js';
+import { isRecord } from '../../shared/utils.js';
 import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
+import { runAppServerTurn } from '../app-server/runner.js';
 import { mapProviderResultBase } from '../result-mapping.js';
 import {
   type ArtifactCleanupRuntime,
   makeOnEvent,
   type PreflightRuntime,
-  requireAppServerRuntime,
   requireConversationRef,
   type Provider,
   type ProviderAppServerLifecycle,
@@ -26,20 +25,17 @@ import {
   type ProviderServerLease,
 } from '../types.js';
 import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
-import { brokerNotificationMethods, type SessionProbeResult } from '../claude-appserver/protocol.js';
+import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeBootstrapSignature,
-  buildClaudeEnvHash,
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
   mapInterruptParams,
-  mapSessionEnsureParams,
-  mapTurnStartParams,
   readClaudePersistedContinuity,
   withClaudeContinuity,
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
-import { readBootstrapSignature, readString, sameBootstrapSignature } from './shared-utils.js';
+import { readString, sameBootstrapSignature } from './shared-utils.js';
 import type { ClaudeExecResult } from './types.js';
 
 async function preflight(_runtime: PreflightRuntime): Promise<void> {
@@ -201,242 +197,10 @@ async function executeFork(
 async function executePersistent(
   request: ProviderRequest,
   runtime: ProviderRuntime,
-  prepared: { prompt: string; systemPrompt?: string; model?: string },
-  persistedContinuity: ClaudePersistedContinuity,
+  _prepared: { prompt: string; systemPrompt?: string; model?: string },
+  _persistedContinuity: ClaudePersistedContinuity,
 ): Promise<ProviderResult> {
-  const startedAt = Date.now();
-  const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, 'Claude persistent');
-  const spec = buildClaudeProviderServerSpec();
-  const lease = await acquireServer(spec);
-
-  let brokerSessionKey = persistedContinuity.brokerSessionKey;
-  let bootstrapSignature = persistedContinuity.bootstrapSignature;
-  const envHash = buildClaudeEnvHash(request.coralEnv);
-  let conversationRef = persistedContinuity.conversationRef;
-  let brokerTurnId: string | undefined;
-  let completed = false;
-  let interruptRequested = false;
-  let turnRequested = false;
-  let resolveTerminal!: (result: ProviderResult) => void;
-
-  const resolveOnce = (result: ProviderResult): void => {
-    if (completed) {
-      return;
-    }
-    completed = true;
-    resolveTerminal(result);
-  };
-
-  const failResult = (notice: string): ProviderResult => ({
-    content: '',
-    conversationRef,
-    model: prepared.model,
-    durationMs: Date.now() - startedAt,
-    exitCode: 1,
-    notice,
-    errors: [notice],
-  });
-
-  const terminal = new Promise<ProviderResult>((resolve) => {
-    resolveTerminal = resolve;
-  });
-
-  const checkpoint = (): void => {
-    if (!bootstrapSignature) {
-      return;
-    }
-
-    const providerContinuity = buildClaudeContinuity({
-      ...(brokerSessionKey ? { brokerSessionKey } : {}),
-      bootstrapSignature,
-      envHash,
-      ...(conversationRef ? { conversationRef } : {}),
-      ...(brokerTurnId ? { brokerTurnId } : {}),
-    });
-
-    checkpointRecovery({
-      ...(conversationRef ? { conversationRef } : {}),
-      providerMeta: {
-        ...providerContinuity,
-        ...(conversationRef ? { sessionId: conversationRef } : {}),
-        providerContinuity,
-      },
-    });
-  };
-
-  const requestInterrupt = (): void => {
-    if (!turnRequested || interruptRequested || !brokerSessionKey) {
-      return;
-    }
-    interruptRequested = true;
-    void brokerRpc(lease, 'turn/interrupt', mapInterruptParams(brokerSessionKey, brokerTurnId)).catch(() => {});
-  };
-
-  const onAbort = (): void => {
-    requestInterrupt();
-  };
-
-  const transportClosed = lease.closed.then((outcome) => {
-    if (completed) {
-      return undefined;
-    }
-    const message =
-      outcome instanceof Error
-        ? outcome.message
-        : 'Claude broker transport closed before the turn completed.';
-    resolveOnce(failResult(message));
-    return undefined;
-  });
-  void transportClosed.catch(() => {});
-
-  const unsubscribe = lease.subscribe((message) => {
-    if (!isRecord(message)) {
-      return;
-    }
-
-    const { sessionUpdated, turnProgress, turnCompleted, turnFailed, hostStats } = brokerNotificationMethods;
-
-    // Broker holds our notifications until session/ensure returns — only foreign sessions' events
-    // can arrive before brokerSessionKey is assigned. host/stats has no session routing.
-    if (!brokerSessionKey && message.method !== hostStats) {
-      return;
-    }
-
-    const params = isRecord(message.params) ? message.params : {};
-    if (readString(params.brokerSessionKey) && params.brokerSessionKey !== brokerSessionKey) {
-      return;
-    }
-
-    const isTurnEvent = message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
-    if (isTurnEvent && brokerTurnId && typeof params.brokerTurnId === 'string' && params.brokerTurnId !== brokerTurnId) {
-      return;
-    }
-
-    const updatedConversationRef = readTurnConversationRef(params);
-    if (updatedConversationRef) {
-      conversationRef = updatedConversationRef;
-    }
-
-    if (message.method === sessionUpdated) {
-      const updatedSignature = readBootstrapSignature(params.bootstrapSignature);
-      if (updatedSignature) {
-        bootstrapSignature = updatedSignature;
-      }
-      checkpoint();
-      return;
-    }
-
-    if (message.method === turnProgress) {
-      if (typeof params.message === 'string' && params.message.length > 0) {
-        runtime.onEvent({
-          jobId: request.sessionId,
-          message: params.message,
-          ts: nowIsoString(),
-        });
-      }
-      return;
-    }
-
-    if (message.method === turnCompleted) {
-      brokerTurnId = undefined;
-      checkpoint();
-
-      const costUsd = typeof params.costUsd === 'number' ? params.costUsd : undefined;
-      const content = typeof params.result === 'string' ? params.result : '';
-      const model = typeof params.model === 'string' ? params.model : prepared.model;
-      const isError = params.isError === true;
-      const errors = readErrors(params.errors);
-      resolveOnce({
-        content,
-        conversationRef,
-        model,
-        durationMs: typeof params.durationMs === 'number' ? params.durationMs : Date.now() - startedAt,
-        exitCode: isError ? 1 : 0,
-        notice: isError && errors.length > 0 ? errors.join(' ') : undefined,
-        errors: errors.length > 0 ? errors : undefined,
-        usage: costUsd !== undefined ? { costUsd } : undefined,
-      });
-      return;
-    }
-
-    if (message.method === turnFailed) {
-      brokerTurnId = undefined;
-      checkpoint();
-
-      const failureMessage =
-        typeof params.message === 'string' && params.message.length > 0
-          ? params.message
-          : 'Claude broker turn failed.';
-      resolveOnce(failResult(failureMessage));
-    }
-  });
-
-  runtime.signal.addEventListener('abort', onAbort, { once: true });
-
-  try {
-    const ensureResult = await brokerRpc<Record<string, unknown>>(
-      lease,
-      'session/ensure',
-      mapSessionEnsureParams(request, prepared.systemPrompt, runtime.persistedContinuity),
-    );
-    brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? brokerSessionKey;
-    bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
-    conversationRef = readTurnConversationRef(ensureResult) ?? conversationRef;
-    if (!brokerSessionKey) {
-      throw new Error('Claude broker session key missing from session/ensure response.');
-    }
-    checkpoint();
-
-    if (runtime.signal.aborted) {
-      return {
-        content: '',
-        conversationRef,
-        model: prepared.model,
-        durationMs: Date.now() - startedAt,
-        aborted: true,
-      };
-    }
-
-    turnRequested = true;
-    const startParams = mapTurnStartParams(
-      {
-        ...request,
-        model: prepared.model,
-      },
-      prepared.prompt,
-      brokerSessionKey,
-    );
-    const startResult = await brokerRpc<Record<string, unknown>>(
-      lease,
-      'turn/start',
-      startParams,
-    );
-    brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
-    conversationRef = readTurnConversationRef(startResult) ?? conversationRef;
-    checkpoint();
-
-    if (runtime.signal.aborted) {
-      requestInterrupt();
-    }
-
-    return await Promise.race([terminal, transportClosed.then(() => terminal)]);
-  } catch (error) {
-    if (runtime.signal.aborted) {
-      return {
-        content: '',
-        conversationRef,
-        model: prepared.model,
-        durationMs: Date.now() - startedAt,
-        aborted: true,
-      };
-    }
-
-    return failResult(errorMessage(error));
-  } finally {
-    runtime.signal.removeEventListener('abort', onAbort);
-    unsubscribe();
-    lease.release();
-  }
+  return runAppServerTurn(claudeSessionDriver, request, runtime);
 }
 
 const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
@@ -546,13 +310,6 @@ function readTurnConversationRef(value: unknown): string | undefined {
     return undefined;
   }
   return readString(value.conversationRef) ?? readString(value.sessionId);
-}
-
-function readErrors(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
 async function cleanupSessions(
