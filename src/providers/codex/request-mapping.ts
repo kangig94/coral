@@ -44,6 +44,10 @@ export function buildCodexProviderServerSpec(
     args: ['app-server'],
     cwd: projectRoot,
     env,
+    // codex app-server handles concurrent threads per process — each turn carries its own
+    // threadId, so a shared lease (many concurrent leases on one host) matches reality.
+    // Without this, host-manager forces exclusive leases and serializes concurrent codex jobs.
+    shared: true,
     initializeRequest: {
       method: 'initialize',
       params: { clientInfo: { name: 'coral', version: clientVersion ?? 'unknown' } },
