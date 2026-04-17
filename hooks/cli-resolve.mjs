@@ -34,6 +34,7 @@ import {
 import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
 import {
   detectCoralInvocation,
+  detectWaitTimeoutFallback,
   detectWaitTimeoutSeconds,
   skipGlobalOptions,
 } from './lib/coral-invocation.mjs';
@@ -231,10 +232,11 @@ function wrapUnsafeUnquotedTokens(command) {
 const BARE_CORAL_CLI_RE = /^(\s*)coral-cli(\s|$)(.*)$/s;
 
 function fallbackBareRewrite(segText) {
+  const waitTimeout = detectWaitTimeoutFallback(segText);
   const match = segText.match(BARE_CORAL_CLI_RE);
-  if (match === null) return { text: segText, waitTimeout: null, changed: false };
+  if (match === null) return { text: segText, waitTimeout, changed: false };
   const text = `${match[1]}node "${ACTIVE_BRIDGE}"${match[2]}${match[3]}`;
-  return { text, waitTimeout: null, changed: true };
+  return { text, waitTimeout, changed: true };
 }
 
 function processSegment(segText, input) {
@@ -267,9 +269,12 @@ function processCommand(command, input) {
   const segments = splitTopLevelCommands(command);
   if (segments === null) {
     const fallback = fallbackBareRewrite(command);
-    return fallback.changed
-      ? { command: fallback.text, waitTimeout: null, changed: true }
-      : null;
+    if (!fallback.changed && fallback.waitTimeout === null) return null;
+    return {
+      command: fallback.changed ? fallback.text : command,
+      waitTimeout: fallback.waitTimeout,
+      changed: fallback.changed,
+    };
   }
 
   let result = '';

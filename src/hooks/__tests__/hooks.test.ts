@@ -22,7 +22,7 @@ import {
   runHook,
   writeInjectMd,
 } from './_helpers.js';
-import type { JobStatus } from './_helpers.js';
+import type { HookOutput, JobStatus, SnapshotRecord } from './_helpers.js';
 
 afterEach(cleanupFixtures);
 

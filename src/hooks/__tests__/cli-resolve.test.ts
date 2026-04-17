@@ -398,4 +398,34 @@ describe('cli-resolve.mjs', () => {
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(600_000);
   });
+
+  it('injects Bash timeout for coral-cli wait even when the command has shell redirection', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        command: `node "${cliBundle}" -f json wait --jobs jb-1 --embed > /tmp/out.jsonl 2>&1`,
+      },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
+    expect(updatedInput.timeout).toBe(600_000);
+    expect(updatedInput.run_in_background).toBe(false);
+  });
+
+  it('injects Bash timeout when wait is part of a compound command with $? expansion', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        command: `node "${cliBundle}" wait --jobs jb-1 --timeout 30 > /tmp/out.jsonl 2>&1; echo "exit=$?"`,
+      },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
+    expect(updatedInput.timeout).toBe(40_000);
+    expect(updatedInput.run_in_background).toBe(false);
+  });
 });

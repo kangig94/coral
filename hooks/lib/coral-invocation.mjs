@@ -103,6 +103,23 @@ export function detectWaitTimeoutSeconds(command) {
   return DEFAULT_WAIT_TIMEOUT;
 }
 
+// Regex-based `wait` timeout detection for text that our tokenizer won't
+// parse (redirections, `$?` expansions, etc.). Safe to call on any text —
+// returns null when no coral-cli wait invocation is present. Read-only, so
+// failing to fire leaves behavior unchanged rather than corrupting the
+// command like a blind rewrite would.
+const WAIT_INVOCATION_RE =
+  /(?:^|[\s;|&])(?:coral-cli|node\s+["']?[^\s"']*coral-cli\.cjs["']?)(?:\s+(?:-f\s+\S+|--output-format(?:=|\s+)\S+))*\s+wait\b/;
+const WAIT_TIMEOUT_FLAG_RE = /--timeout(?:=|\s+)(\d+)/;
+
+export function detectWaitTimeoutFallback(text) {
+  if (!WAIT_INVOCATION_RE.test(text)) return null;
+  const match = text.match(WAIT_TIMEOUT_FLAG_RE);
+  if (match === null) return DEFAULT_WAIT_TIMEOUT;
+  const parsed = parseInt(match[1], 10);
+  return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+}
+
 // Returns true when any top-level command segment invokes `coral-cli wait`.
 // Used by cli-wait-guard to deny the command from the Monitor tool.
 export function commandHasCoralWait(command) {
