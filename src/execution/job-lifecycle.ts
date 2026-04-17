@@ -669,7 +669,7 @@ export class WaitCoordinator {
             break;
           }
 
-          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          const remainingJobIds = [...pending].filter((id) => id !== jobId);
           yield {
             type: 'terminal',
             jobId,
@@ -692,7 +692,7 @@ export class WaitCoordinator {
           if (now > deadlineMs) {
             continue;
           }
-          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          const remainingJobIds = [...pending].filter((id) => id !== jobId);
           yield {
             type: 'terminal',
             jobId,
