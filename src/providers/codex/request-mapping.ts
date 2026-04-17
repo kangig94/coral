@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderRequest } from '../../shared/types.js';
-import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
+import { parseEffortLevel, resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
 import type { ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
@@ -18,8 +18,22 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
   return parts.join('\n\n---\n\n');
 }
 
-const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', max: 'xhigh' };
+const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
+const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 type CodexServiceTier = 'fast' | 'flex';
+
+/**
+ * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
+ * Codex default (`xhigh`, matching the official guide).
+ */
+function resolveCodexEffort(request: ProviderRequest): EffortLevel {
+  return (
+    request.effort
+    ?? parseEffortLevel(request.coralEnv.CORAL_CODEX_EFFORT, 'CORAL_CODEX_EFFORT')
+    ?? parseEffortLevel(request.coralEnv.CORAL_EFFORT, 'CORAL_EFFORT')
+    ?? CODEX_DEFAULT_EFFORT
+  );
+}
 
 function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
   return bypassPermissions ? 'danger-full-access' : 'workspace-write';
@@ -137,7 +151,7 @@ export function mapTurnStartParams(request: ProviderRequest, threadId: string): 
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
     model: resolveCodexModel(request),
-    effort: CODEX_EFFORT[request.effort],
+    effort: CODEX_EFFORT[resolveCodexEffort(request)],
     ...(tier && { serviceTier: tier }),
   };
 }

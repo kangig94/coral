@@ -2439,6 +2439,7 @@ describe('execution backend server', () => {
               agent: 'architect',
               model: 'gpt-5',
               cwd: '/tmp/work',
+              effort: 'high',
               bypassPermissions: true,
               systemPrompt: 'system',
             },

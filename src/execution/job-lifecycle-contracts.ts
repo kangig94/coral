@@ -39,7 +39,7 @@ export function toProviderRequest(launchRecord: PersistedLaunchRecord): Provider
     conversationRef: request.conversationRef,
     model: request.model,
     cwd: request.cwd ?? projectRoot,
-    effort: resolveEffort(request.effort, request.coralEnv),
+    effort: resolveEffort(request.effort),
     bypassPermissions: request.bypassPermissions,
     systemPrompt: request.systemPrompt,
     instruction: request.instruction,

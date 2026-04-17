@@ -64,15 +64,57 @@ describe('mapTurnStartParams effort mapping', () => {
     ['low', 'low'],
     ['medium', 'medium'],
     ['high', 'high'],
+    ['xhigh', 'xhigh'],
     ['max', 'xhigh'],
   ] as const)('maps Coral effort %s to Codex %s', (coral, codex) => {
     const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
     expect(params.effort).toBe(codex);
   });
 
-  it.each(['low', 'medium', 'high', 'max'] as const)('Coral %s produces a valid Codex effort value', (coral) => {
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)('Coral %s produces a valid Codex effort value', (coral) => {
     const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
     expect(VALID_CODEX_EFFORT.has(params.effort as string)).toBe(true);
+  });
+
+  it('defaults to xhigh when no explicit or env effort is set', () => {
+    const params = mapTurnStartParams(makeRequest({ effort: undefined }), 'thread-1');
+    expect(params.effort).toBe('xhigh');
+  });
+
+  it('falls back to CORAL_CODEX_EFFORT when request effort is unset', () => {
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'high' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('high');
+  });
+
+  it('lets CORAL_CODEX_EFFORT win over CORAL_EFFORT', () => {
+    const params = mapTurnStartParams(
+      makeRequest({
+        effort: undefined,
+        coralEnv: { CORAL_CODEX_EFFORT: 'low', CORAL_EFFORT: 'high' },
+      }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('low');
+  });
+
+  it('falls back to CORAL_EFFORT when no provider-specific effort is set', () => {
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_EFFORT: 'medium' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('medium');
+  });
+
+  it('throws a user-friendly error when CORAL_CODEX_EFFORT is invalid', () => {
+    expect(() =>
+      mapTurnStartParams(
+        makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }),
+        'thread-1',
+      ),
+    ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
   });
 });
 

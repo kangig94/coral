@@ -1192,7 +1192,7 @@ describe('ExecutionService', () => {
         channel: 'system',
       },
     });
-    expect(request.effort).toBe('high');
+    expect(request.effort).toBeUndefined();
     expect(session).toMatchObject({
       name: 'architect',
       model: 'gpt-5.4',
@@ -1511,7 +1511,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('resume rejects when the session already has an active job', async () => {
@@ -1726,7 +1726,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
@@ -1795,7 +1795,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('forkBySessionId rejects missing sessions', async () => {

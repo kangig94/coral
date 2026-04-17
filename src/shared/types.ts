@@ -109,7 +109,10 @@ export interface ProviderRequest {
   prompt: string;
   model?: string;
   cwd: string;
-  effort: EffortLevel;
+  /** Explicit caller-provided effort level. Adapters apply provider-specific
+   *  env fallbacks (CORAL_{CLAUDE,CODEX}_EFFORT → CORAL_EFFORT → provider default)
+   *  when this is undefined. */
+  effort?: EffortLevel;
   bypassPermissions: boolean;
   /** User-facing system prompt passed through the backend to the provider adapter (Claude: --append-system-prompt). */
   systemPrompt?: string;
@@ -122,7 +125,7 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Result returned by a Provider adapter after execution completes. */
 export interface ProviderResult {

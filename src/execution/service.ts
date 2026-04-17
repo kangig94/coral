@@ -104,7 +104,7 @@ type ResolvedAgentLaunchProfile = {
 type EffectiveContinuationProfile = {
   model?: string;
   cwd: string;
-  effort: EffortLevel;
+  effort?: EffortLevel;
   bypassPermissions: boolean;
   systemPrompt?: string;
   instruction?: ProviderInstruction;
@@ -795,7 +795,7 @@ export class ExecutionService implements RecoveryCapableService {
     return {
       model: input.model ?? session.model,
       cwd: input.cwd ?? session.cwd,
-      effort: resolveEffort(input.effort, coralEnv),
+      effort: resolveEffort(input.effort),
       bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt ?? session.systemPrompt,
       instruction: input.instruction ?? session.instruction,
@@ -1027,7 +1027,7 @@ export class ExecutionService implements RecoveryCapableService {
       prompt: input.prompt,
       model,
       cwd,
-      effort: resolveEffort(input.effort, effectiveCoralEnv),
+      effort: resolveEffort(input.effort),
       bypassPermissions,
       systemPrompt: input.systemPrompt,
       instruction,

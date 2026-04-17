@@ -7,11 +7,11 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | Variable | Default | Description |
 | --- | --- | --- |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
-| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort |
+| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle. `1` = fast (priority), `0` = flex (cost-efficient). Any other non-blank value is rejected. Blank/unset falls back to `service_tier` in top-level `~/.codex/config.toml`, then Codex default. Env takes precedence over config.toml. Profile-scoped `service_tier` under `[profiles.xxx]` is ignored |
-| `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort |
+| `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh` level — the adapter collapses `xhigh` to the provider ceiling (`max`) on those tiers |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
-| `CORAL_EFFORT` | _(none)_ | Global effort override when provider-specific effort is unset |
+| `CORAL_EFFORT` | _(none)_ | Global effort fallback used only when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset. Explicit request-body effort wins over all env vars |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |

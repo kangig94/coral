@@ -138,6 +138,18 @@ describe('claude-executor', () => {
     );
   });
 
+  it('passes xhigh effort to --effort xhigh', async () => {
+    mockCliResult('{"type":"result","result":"ok","session_id":"sess-effort-xhigh"}');
+
+    await executeClaudeOneShot('Use xhigh effort', withRunner({ effort: 'xhigh' }));
+
+    expect(mockRunCli).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: [...baseArgs, '--effort', 'xhigh'],
+      }),
+    );
+  });
+
   it('includes --dangerously-skip-permissions for one-shot when bypassPermissions is true', async () => {
     mockCliResult('{"type":"result","result":"ok","session_id":"sess-5"}');
 
