@@ -606,6 +606,7 @@ export class WaitCoordinator {
     const { jobIds, timeoutSeconds = 600, cursor } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
+    const deadlineMs = startMs + timeoutMs;
 
     const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
     const fileCursors = new Map(jobIds.map((jobId) => [jobId, createReplayCursor()]));
@@ -613,11 +614,6 @@ export class WaitCoordinator {
     const pending = new Set(jobIds);
 
     while (pending.size > 0) {
-      if (this.deps.time.now() - startMs >= timeoutMs) {
-        yield { type: 'waiting', waitingJobIds: [...pending] };
-        return;
-      }
-
       const seq = progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
@@ -641,6 +637,8 @@ export class WaitCoordinator {
           };
         }
 
+        let replaySawTerminal = false;
+
         const events = progressStore.replayFrom(jobId, fromEventId, fileCursor);
         for (const event of events) {
           fromEventIds[jobId] = event.eventId;
@@ -655,6 +653,16 @@ export class WaitCoordinator {
             continue;
           }
 
+          replaySawTerminal = true;
+          const parsedTerminalMs = Date.parse(event.ts ?? '');
+          const replayEligible = Number.isFinite(parsedTerminalMs)
+            ? parsedTerminalMs <= deadlineMs
+            : this.deps.time.now() <= deadlineMs;
+
+          if (!replayEligible) {
+            break;
+          }
+
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
@@ -667,8 +675,13 @@ export class WaitCoordinator {
           break;
         }
 
+        if (!pending.has(jobId) || replaySawTerminal) {
+          continue;
+        }
+
         const currentStatus = progressStore.readStatus(jobId);
-        if (pending.has(jobId) && currentStatus && isTerminalPhase(currentStatus.phase)) {
+        // No per-job first-observation bookkeeping needed: the outer deadline guard (line 703) stops the loop before a second poll can reach this branch under different eligibility.
+        if (currentStatus && isTerminalPhase(currentStatus.phase) && this.deps.time.now() <= deadlineMs) {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
@@ -685,11 +698,12 @@ export class WaitCoordinator {
         return;
       }
 
-      const remainingMs = timeoutMs - (this.deps.time.now() - startMs);
-      if (remainingMs <= 0) {
-        continue;
+      if (this.deps.time.now() > deadlineMs) {
+        yield { type: 'waiting', waitingJobIds: [...pending] };
+        return;
       }
 
+      const remainingMs = deadlineMs - this.deps.time.now();
       await Promise.race([
         progressStore.waitForChange(seq),
         this.deps.time.sleep(remainingMs),

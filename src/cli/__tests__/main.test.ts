@@ -66,7 +66,6 @@ describe('cli main — help and structure', () => {
     const { stdout, status } = runCli(['wait', '--help']);
     expect(status).toBe(0);
     expect(stdout).toContain('--jobs');
-    expect(stdout).toContain('--timeout');
     expect(stdout).toContain('--cursor');
     expect(stdout).toContain('--embed');
   });

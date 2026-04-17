@@ -447,6 +447,59 @@ function createScopedContext(name: string): CallerContext {
   return { projectRoot, pluginRoot, coralEnv: {} };
 }
 
+function isoAt(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+async function flushMicrotasks(count = 5): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function makeStatusRecord(
+  ctx: CallerContext,
+  jobId: string,
+  phase: JobPhase,
+  options: {
+    sessionId?: string;
+    result?: PersistedStatusRecord['result'];
+  } = {},
+): PersistedStatusRecord {
+  return {
+    jobId,
+    sessionId: options.sessionId ?? `${jobId}-session`,
+    provider: 'codex',
+    projectRoot: ctx.projectRoot,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
+    phase,
+    launch: {
+      state: 'ready',
+      updatedAt: '2026-03-06T00:00:00.000Z',
+    },
+    ...(options.result ? { result: options.result } : {}),
+  };
+}
+
+function makeTerminalReplay(
+  jobId: string,
+  options: {
+    eventId?: number;
+    sessionId?: string;
+    ts?: string;
+    result?: PersistedProgressRecord['result'];
+  } = {},
+): PersistedProgressRecord {
+  return {
+    jobId,
+    sessionId: options.sessionId ?? `${jobId}-session`,
+    eventId: options.eventId ?? 1,
+    type: 'terminal',
+    ts: options.ts ?? '2026-03-06T00:00:00.000Z',
+    result: options.result ?? { content: 'done' },
+  };
+}
+
 describe('ExecutionService', () => {
   let ctx: CallerContext;
 
@@ -2173,6 +2226,421 @@ describe('ExecutionService', () => {
     expect(waitForChange).not.toHaveBeenCalled();
   });
 
+  it('waitStream emits a replayed terminal persisted one millisecond before the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([
+        makeTerminalReplay('job-1', { ts: isoAt(deadlineMs - 1) }),
+      ]);
+
+      const events: WaitStreamEvent[] = [];
+      for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done' },
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream emits a replayed terminal persisted exactly at the deadline after a late wake', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom')
+        .mockImplementationOnce(() => [])
+        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done' },
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream yields waiting when no terminal evidence exists on disk at the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 1);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'waiting',
+          waitingJobIds: ['job-1'],
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream stays conservative when a replayed terminal lands after the deadline even if status is terminal on that poll', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+      vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+      const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
+      const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(progressStore, 'readStatus').mockImplementation(() => {
+        return runtime.time.now() > deadlineMs ? terminalStatus : runningStatus;
+      });
+      vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+        return runtime.time.now() > deadlineMs ? [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs + 1) })] : [];
+      });
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'waiting',
+          waitingJobIds: ['job-1'],
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('status-only fallback on the final on-time poll returns terminal for waitStream and waitStreamOnce', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+
+      vi.setSystemTime(startMs);
+      const streamService = createService(ctx);
+      const { progressStore: streamStore } = getInternals(streamService);
+      const streamRunning = makeStatusRecord(ctx, 'job-1', 'running');
+      const streamTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(streamStore, 'readStatus')
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamTerminal);
+      vi.spyOn(streamStore, 'replayFrom').mockReturnValue([]);
+      const streamWaitForChange = vi.spyOn(streamStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const streamIterator = streamService
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const streamNext = streamIterator.next();
+
+      await flushMicrotasks();
+      expect(streamWaitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs);
+
+      await expect(streamNext).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done' },
+        },
+      });
+      await expect(streamIterator.next()).resolves.toEqual({ done: true, value: undefined });
+
+      vi.setSystemTime(startMs);
+      const onceService = createService(ctx);
+      const { progressStore: onceStore } = getInternals(onceService);
+      const onceRunning = makeStatusRecord(ctx, 'job-1', 'running');
+      const onceTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(onceStore, 'readStatus')
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceTerminal);
+      vi.spyOn(onceStore, 'replayFrom').mockReturnValue([]);
+      const onceWaitForChange = vi.spyOn(onceStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const oncePromise = onceService.waitStreamOnce('job-1', timeoutMs);
+
+      await flushMicrotasks();
+      expect(onceWaitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs);
+
+      await expect(oncePromise).resolves.toEqual({
+        content: 'done',
+        nonResumable: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('status-only fallback first observed after the deadline yields waiting', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+    let currentTime = startMs;
+
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
+    const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    vi.spyOn(progressStore, 'readStatus')
+      .mockImplementationOnce(() => runningStatus)
+      .mockImplementationOnce(() => runningStatus)
+      .mockImplementation(() => terminalStatus);
+    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+  });
+
+  it('replayed terminals with invalid or missing ts use the observation-time compatibility rule', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+
+    let currentTime = startMs;
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    const onTimeService = createService(ctx);
+    const { progressStore: onTimeStore } = getInternals(onTimeService);
+
+    vi.spyOn(onTimeStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(onTimeStore, 'replayFrom').mockReturnValue([makeTerminalReplay('job-1', { ts: '' })]);
+
+    const onTimeEvents: WaitStreamEvent[] = [];
+    for await (const event of onTimeService.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      onTimeEvents.push(event);
+    }
+
+    expect(onTimeEvents).toEqual([
+      {
+        type: 'terminal',
+        jobId: 'job-1',
+        remainingJobIds: [],
+        resultPath: jobResultPath('job-1'),
+        result: { content: 'done' },
+      },
+    ]);
+
+    currentTime = startMs;
+    const lateService = createService(ctx);
+    const { progressStore: lateStore } = getInternals(lateService);
+    const missingTsTerminal = {
+      jobId: 'job-1',
+      sessionId: 'job-1-session',
+      eventId: 1,
+      type: 'terminal',
+      result: { content: 'done' },
+    } as PersistedProgressRecord;
+
+    vi.spyOn(lateStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(lateStore, 'replayFrom').mockImplementation(() => {
+      return currentTime > startMs + timeoutMs ? [missingTsTerminal] : [];
+    });
+    vi.spyOn(lateStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const lateEvents: WaitStreamEvent[] = [];
+    for await (const event of lateService.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      lateEvents.push(event);
+    }
+
+    expect(lateEvents).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+  });
+
+  it('a skipped late replayed terminal can be replayed on the next request with the same cursor', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+    const lateTerminalMs = startMs + timeoutMs + 1;
+    const cursor = { jobs: { 'job-1': 0 } };
+    let currentTime = startMs;
+
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+
+    vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+      return currentTime > startMs + timeoutMs ? [makeTerminalReplay('job-1', { ts: isoAt(lateTerminalMs) })] : [];
+    });
+    vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const firstEvents: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({
+      jobIds: ['job-1'],
+      timeoutSeconds: timeoutMs / 1000,
+      cursor,
+    })) {
+      firstEvents.push(event);
+    }
+
+    expect(firstEvents).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+    expect(cursor).toEqual({ jobs: { 'job-1': 0 } });
+
+    const secondEvents: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({
+      jobIds: ['job-1'],
+      timeoutSeconds: timeoutMs / 1000,
+      cursor,
+    })) {
+      secondEvents.push(event);
+    }
+
+    expect(secondEvents).toEqual([
+      {
+        type: 'terminal',
+        jobId: 'job-1',
+        remainingJobIds: [],
+        resultPath: jobResultPath('job-1'),
+        result: { content: 'done' },
+      },
+    ]);
+  });
+
+  it('waitStreamOnce returns content for an exact-boundary replayed terminal instead of throwing', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 180_000;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom')
+        .mockImplementationOnce(() => [])
+        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const waitOnce = service.waitStreamOnce('job-1', timeoutMs);
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(waitOnce).resolves.toEqual({
+        content: 'done',
+        nonResumable: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('waitStream emits a queued event before replaying queued progress records', async () => {
     const never = new Promise<ProviderResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
@@ -3732,6 +4200,56 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       expect(events[0].waitingJobIds).toContain(jobIdA);
       expect(events[0].waitingJobIds).toContain(jobIdB);
       expect(events[0].waitingJobIds).toHaveLength(2);
+    });
+
+    it('late replayed terminals keep every pending job in the waiting set across multiple jobs', async () => {
+      vi.useFakeTimers();
+      try {
+        const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+        const timeoutMs = 100;
+        const deadlineMs = startMs + timeoutMs;
+        const jobIdA = `red-ws-late-a-${randomUUID()}`;
+        const jobIdB = `red-ws-late-b-${randomUUID()}`;
+        createdJobIds.add(jobIdA);
+        createdJobIds.add(jobIdB);
+        vi.setSystemTime(startMs);
+        vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
+
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId: string) => {
+          if (jobId === jobIdA) return makeStatusRecord(ctx, jobIdA, 'running', { sessionId: 'session-a' });
+          if (jobId === jobIdB) return makeStatusRecord(ctx, jobIdB, 'running', { sessionId: 'session-b' });
+          return null;
+        });
+        vi.spyOn(progressStore, 'replayFrom').mockImplementation((jobId: string) => {
+          if (jobId === jobIdA && runtime.time.now() > deadlineMs) {
+            return [makeTerminalReplay(jobIdA, { sessionId: 'session-a', ts: isoAt(deadlineMs + 1) })];
+          }
+          return [];
+        });
+        const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+        const iterator = service
+          .waitStream({ jobIds: [jobIdA, jobIdB], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+        const nextPromise = iterator.next();
+
+        await flushMicrotasks();
+        expect(waitForChange).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+        const firstResult = await nextPromise;
+        expect(firstResult.done).toBe(false);
+        if (firstResult.done || firstResult.value.type !== 'waiting') throw new Error('expected waiting');
+        expect(firstResult.value.waitingJobIds).toHaveLength(2);
+        expect(firstResult.value.waitingJobIds).toContain(jobIdA);
+        expect(firstResult.value.waitingJobIds).toContain(jobIdB);
+        await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('cursor fromEventId skips already-delivered events (only newer events returned)', async () => {
