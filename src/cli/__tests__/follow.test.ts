@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
-import { BackendUnreachableError } from '../../shared/utils.js';
 import type { TerminalResult, WaitStreamEvent } from '../../shared/types.js';
 import type * as FollowMod from '../follow.js';
 import { createDeferred } from '../../shared/test-deferred.js';

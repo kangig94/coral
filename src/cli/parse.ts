@@ -2,7 +2,7 @@ import type { ControversyAxis } from '../discuss/schemas.js';
 
 export type JsonObject = Record<string, unknown>;
 
-export type DiscussStartAgentInput = {
+type DiscussStartAgentInput = {
   name: string;
   persona: string;
   participation?: string;
@@ -175,7 +175,7 @@ export function parseAxisSpec(spec: string): ControversyAxis {
 }
 
 // stdin is single-consumer; commands must not combine this with another "-" stdin flag.
-export async function readStdin(): Promise<string> {
+async function readStdin(): Promise<string> {
   if (process.stdin.readableEnded) {
     return '';
   }

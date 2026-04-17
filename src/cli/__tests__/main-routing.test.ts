@@ -1,6 +1,7 @@
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '../main.js';
 
@@ -101,6 +102,20 @@ async function loadMainModule(): Promise<MainModule> {
   return import('../main.js');
 }
 
+function findCommand(root: Command, ...path: string[]): Command {
+  let current = root;
+
+  for (const name of path) {
+    const next = current.commands.find((command) => command.name() === name);
+    if (!next) {
+      throw new Error(`Expected command path ${path.join(' ')} to exist`);
+    }
+    current = next;
+  }
+
+  return current;
+}
+
 describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
@@ -174,6 +189,29 @@ describe('cli main routing', () => {
     expect(program.name()).toBe('coral-cli');
     expect(program.commands.find((command) => command.name() === 'simulate')).toBeDefined();
     expect(program.commands.find((command) => command.name() === 'list')).toBeDefined();
+  });
+
+  it('preserves top-level help output via snapshot', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    expect(program.helpInformation()).toMatchSnapshot();
+  });
+
+  it.each([
+    { label: 'codex', path: ['codex'] },
+    { label: 'workflow', path: ['workflow'] },
+    { label: 'backend', path: ['backend'] },
+    { label: 'discuss', path: ['discuss'] },
+    { label: 'kb', path: ['kb'] },
+    { label: 'kb source', path: ['kb', 'source'] },
+    { label: 'kb memo', path: ['kb', 'memo'] },
+  ])('preserves help output for $label via snapshot', async ({ path }) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const command = findCommand(program, ...path);
+
+    expect(command.helpInformation()).toMatchSnapshot();
   });
 
   it('routes simulate to the scenario runner command surface', async () => {

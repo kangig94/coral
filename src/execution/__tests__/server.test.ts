@@ -43,6 +43,7 @@ import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
 import { createRealRuntime } from '../runtime.js';
+import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { ZodError, ZodIssueCode } from 'zod';
 
@@ -145,6 +146,11 @@ function createFakeProviderHostManager(overrides: Record<string, unknown> = {}) 
     shutdown: vi.fn(async () => {}),
     ...overrides,
   };
+}
+
+async function advanceSimulationTime(runtime: SimulationRuntime, ms: number): Promise<void> {
+  runtime.time.tick(ms);
+  await flushMicrotasks();
 }
 
 function createFakeProviderServerHandle(options?: {
@@ -4424,6 +4430,164 @@ describe('execution backend server', () => {
         expect(writeBackendInfoFn).not.toHaveBeenCalled();
         expect(setLifecycle).not.toHaveBeenCalledWith('running');
         expect(resumeLoopSpy).not.toHaveBeenCalled();
+      } finally {
+        await controller.waitForShutdown().catch(() => {});
+      }
+    });
+
+    it('cleans up an adopted running job on shutdown after the recovery poller is live and suppresses late completion', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('startup-interrupted-after-poller');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const recoveryPollMs = 500;
+      const runtime = new SimulationRuntime();
+      const progressStore = new ProgressStore('test-ns', runtime);
+      const jobId = 'running-adoption-poller-job';
+      const pid = 41_424;
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'running-poller-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'running-poller-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        pid,
+        stdoutPath: join(runtime.paths.jobsDir(), jobId, 'stdout.log'),
+        stderrPath: join(runtime.paths.jobsDir(), jobId, 'stderr.log'),
+        startTime: '2026-04-17T00:00:00.000Z',
+      });
+
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState, setLifecycle } = createRuntimeStateMock();
+      const sessionIndex = {
+        hydrate: vi.fn(),
+        hasShard: vi.fn(() => true),
+        discoverShard: vi.fn(),
+        invalidate: vi.fn(),
+      };
+      const providerHostManager = createFakeProviderHostManager();
+      const writeBackendInfoFn = vi.fn();
+      const cleanupSpy = vi.fn();
+      let pidAlive = true;
+      let recoveryPollObserved = false;
+      let recoveryPollHandle: ReturnType<typeof runtime.time.setInterval> | null = null;
+      // eslint-disable-next-line prefer-const -- circular: shutdown is triggered from setLaunchFenceActive, which needs the controller instance
+      let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const originalSetInterval = runtime.time.setInterval.bind(runtime.time);
+      const clearIntervalSpy = vi.spyOn(runtime.time, 'clearInterval');
+      vi.spyOn(runtime.time, 'setInterval').mockImplementation((fn, ms) => {
+        const handle = originalSetInterval(fn, ms);
+        if (ms === recoveryPollMs) {
+          recoveryPollHandle = handle;
+          runtime.time.tick(recoveryPollMs + 1);
+          recoveryPollObserved = true;
+        }
+        return handle;
+      });
+      vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+      const setLaunchFenceActive = runtimeState.setLaunchFenceActive as ReturnType<typeof vi.fn>;
+      setLaunchFenceActive.mockImplementation((active: boolean) => {
+        if (!active && recoveryPollObserved) {
+          void controller.shutdown('sigint');
+        }
+      });
+
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => ({ cleanup: cleanupSpy })),
+        recoverQueuedJob: vi.fn(),
+        completeRecoveredJob: vi.fn(),
+      };
+
+      controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          flavor: 'prod',
+          instanceId: 'lifecycle-instance-poller',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtime,
+        backendPid: 1234,
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        sessionIndex: sessionIndex as never,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator({ runtime }),
+        providerRegistry: new ProviderRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn,
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        terminateAllFn: () => {},
+        providerHostManager: providerHostManager as never,
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4104, host: '127.0.0.1' }),
+      });
+
+      try {
+        const startResult = await controller.start().catch((error: unknown) => error);
+        await controller.waitForShutdown();
+
+        expect(startResult).toBeInstanceOf(lifecycleModule.StartupInterruptedError);
+        expect(fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
+        expect(recoveryPollObserved).toBe(true);
+        expect(recoveryPollHandle).not.toBeNull();
+        expect(cleanupSpy).toHaveBeenCalledTimes(1);
+        expect(clearIntervalSpy).toHaveBeenCalledWith(recoveryPollHandle);
+        expect(fakeService.completeRecoveredJob).not.toHaveBeenCalled();
+        expect(writeBackendInfoFn).not.toHaveBeenCalled();
+        expect(setLifecycle).not.toHaveBeenCalledWith('running');
+        expect(controller.getRecoveryRegistry()).toBeNull();
+
+        pidAlive = false;
+        // VirtualTime.clearInterval marks the timer inactive and tick() skips
+        // inactive records without firing fn() — see simulation/core/virtual-time.ts.
+        // So if shutdown properly cleared the poller, these assertions genuinely
+        // prove no late completion fires even when the PID transitions to dead.
+        await advanceSimulationTime(runtime, recoveryPollMs + 1);
+
+        expect(fakeService.completeRecoveredJob).not.toHaveBeenCalled();
+        expect(cleanupSpy).toHaveBeenCalledTimes(1);
+        expect(writeBackendInfoFn).not.toHaveBeenCalled();
+        expect(setLifecycle).not.toHaveBeenCalledWith('running');
       } finally {
         await controller.waitForShutdown().catch(() => {});
       }

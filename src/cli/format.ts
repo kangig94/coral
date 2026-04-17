@@ -28,7 +28,7 @@ import type {
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 
-export type DiscussAbortResult = {
+type DiscussAbortResult = {
   ok: boolean;
   session: string;
 };

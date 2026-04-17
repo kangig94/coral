@@ -24,6 +24,8 @@ const SRC_ROOT = resolve(dirname(__filename), '..');
 const REPO_ROOT = resolve(SRC_ROOT, '..');
 
 const EXECUTION_ROOT = 'src/execution';
+const EXECUTION_LIFECYCLE_ROOT = 'src/execution/lifecycle';
+const EXECUTION_LIFECYCLE_FACADE = 'src/execution/lifecycle.ts';
 const CLIENT_ROOT = 'src/client';
 const WORKFLOW_ROOT = 'src/workflow';
 const PROVIDERS_ROOT = 'src/providers';
@@ -213,6 +215,77 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+
+  it('src/execution/lifecycle/ must not import the lifecycle facade and must stay internally acyclic', () => {
+    const facadeViolations = collectViolations(
+      EXECUTION_LIFECYCLE_ROOT,
+      'src/execution/lifecycle/ must not import src/execution/lifecycle.ts',
+      'move the shared helper or type into src/execution/lifecycle/ or inject it from lifecycle.ts instead.',
+      (target) => target === EXECUTION_LIFECYCLE_FACADE,
+    );
+
+    assertNoViolations(facadeViolations);
+
+    const lifecycleNodes = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, EXECUTION_LIFECYCLE_ROOT));
+    const lifecycleEdges = PARSED_IMPORT_EDGES.filter(
+      (edge) => isWithinPath(edge.source, EXECUTION_LIFECYCLE_ROOT) && isWithinPath(edge.target, EXECUTION_LIFECYCLE_ROOT),
+    );
+    const stronglyConnectedComponents = findStronglyConnectedComponents(lifecycleNodes, lifecycleEdges).filter(
+      (component) => component.length > 1,
+    );
+    const selfLoops = lifecycleEdges
+      .filter((edge) => edge.source === edge.target)
+      .sort((left, right) => left.source.localeCompare(right.source) || left.specifier.localeCompare(right.specifier));
+
+    if (stronglyConnectedComponents.length === 0 && selfLoops.length === 0) {
+      return;
+    }
+
+    const cycleMessages = stronglyConnectedComponents.map((component, index) => {
+      const componentMembers = new Set(component);
+      const componentEdges = component
+        .flatMap((node) => PARSED_IMPORT_EDGES_BY_SOURCE.get(node) ?? [])
+        .filter((edge) => componentMembers.has(edge.target))
+        .sort((left, right) => {
+          if (left.source !== right.source) {
+            return left.source.localeCompare(right.source);
+          }
+          if (left.target !== right.target) {
+            return left.target.localeCompare(right.target);
+          }
+          if (left.specifier !== right.specifier) {
+            return left.specifier.localeCompare(right.specifier);
+          }
+          return left.via.localeCompare(right.via);
+        });
+      const cyclePath = findCyclePath(component, componentEdges);
+
+      return [
+        `Cycle ${index + 1}: ${cyclePath.join(' -> ')}`,
+        `Members: ${component.join(', ')}`,
+        'Edges:',
+        ...componentEdges.map(
+          (edge) =>
+            `- ${edge.source} -> ${edge.target} via ${edge.specifier} (${edge.via}; ${formatEdgeContribution(edge)})`,
+        ),
+      ].join('\n');
+    });
+
+    const selfLoopMessage =
+      selfLoops.length === 0
+        ? []
+        : [
+            'Self-loops:',
+            ...selfLoops.map(
+              (edge) =>
+                `- ${edge.source} -> ${edge.target} via ${edge.specifier} (${edge.via}; ${formatEdgeContribution(edge)})`,
+            ),
+          ];
+
+    expect.fail(
+      ['Detected import cycle(s) within src/execution/lifecycle/.', ...cycleMessages, ...selfLoopMessage].join('\n\n'),
+    );
   });
 
   it('src/shared/ must be internally acyclic', () => {
