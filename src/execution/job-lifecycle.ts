@@ -677,11 +677,10 @@ export class WaitCoordinator {
             resultPath: progressStore.resultPath(jobId),
             result: event.result ?? { content: '', outcome: { kind: 'completed' } },
           };
-          pending.delete(jobId);
-          break;
+          return;
         }
 
-        if (!pending.has(jobId) || replaySawTerminal) {
+        if (replaySawTerminal) {
           continue;
         }
 
@@ -700,12 +699,8 @@ export class WaitCoordinator {
             resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' } },
           };
-          pending.delete(jobId);
+          return;
         }
-      }
-
-      if (pending.size === 0) {
-        return;
       }
 
       const now = this.deps.time.now();
