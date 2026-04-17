@@ -97,7 +97,7 @@ KB stores past decisions and lessons learned. Search it when you're stuck, not a
 4. `CLI kb source list` — list imported source documents with metadata.
 
 <!-- OWNER_ONLY:BEGIN -->
-When calling codex/claude with `op: coral:*` or the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
+When invoking a provider (e.g. `codex`, `claude`) with a coral agent, or calling the `workflow` tool, include `owner: "{{SESSION_ID}}"` to propagate session ownership to child agents.
 
 ## Source Management
 사용자의 명시적 요구가 있을 때에만 실행. 자율적으로 실행 금지.
