@@ -94,27 +94,21 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     Evaluate whether the plan warrants full review. ALL of the following must hold
     to qualify as low-complexity:
-    - Total implementation ≤ ~30 lines changed across all files
-    - No new files created
+    - At most 1 new file created
     - No public API or interface changes
     - No new abstractions, patterns, or architectural decisions
     - Each change is a localized fix (not cross-cutting)
     - Root cause and fix are already confirmed (e.g., from debugger, preplan, or prior analysis)
+    - No apparent domain-specific risk (concurrency, persistence atomicity, state machine transitions, recovery paths, security-sensitive edits)
 
-    If ALL criteria pass:
-    ```
-    AskUserQuestion({ questions: [
-      { question: "Plan is low-complexity (N lines, M files, localized fixes). Skip review?", header: "Review",
-        options: [
-          { label: "Skip review", description: "Proceed directly to implementation" },
-          { label: "Review anyway", description: "Run full review loop" }
-        ], multiSelect: false }
-    ]})
-    ```
-    If "Skip review" → skip to step 4e (Execution Order), then step 5 (Completion).
-    If "Review anyway" → proceed to Review Phases normally.
+    If ALL criteria pass → print a one-line gate decision to conversation output and
+    skip directly to step 4e (Execution Order), then step 5 (Completion):
 
-    If ANY criterion fails → proceed to Review Phases (no prompt).
+    ```
+    Complexity gate passed: {M} files, {localized fix summary} — skipping review.
+    ```
+
+    If ANY criterion fails → proceed to Review Phases.
 
     #### Review Phases
 
