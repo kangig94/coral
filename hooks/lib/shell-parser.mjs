@@ -123,11 +123,12 @@ export function tokenizeShell(command) {
 }
 
 // Splits a command into top-level segments separated by &&, ||, ;, |.
-// Returns null when the command contains grammar that cannot be safely
-// partitioned: unquoted `\`, backgrounding `&`, redirections, subshells,
-// command substitution, brace expansion, or unterminated quotes.
-// Each returned segment is { start, end } (offsets in the original string).
-// The separator text between segments is preserved by the caller via slicing.
+// Returns null only when the grammar cannot be safely partitioned:
+// backgrounding `&`, `|&`, or unterminated quotes. Other shell
+// metacharacters (backslash, `$`, backtick, `<>`, `()`, `{}`) are left
+// in place — the downstream tokenizer decides whether a given segment
+// is parseable. Each returned segment is { start, end } (offsets in the
+// original string); separator text is preserved implicitly by the gap.
 export function splitTopLevelCommands(command) {
   const segments = [];
   let inSQ = false;
@@ -152,11 +153,6 @@ export function splitTopLevelCommands(command) {
 
     if (c === "'") { inSQ = true; i += 1; continue; }
     if (c === '"') { inDQ = true; i += 1; continue; }
-    if (c === '\\') return null;
-
-    if (c === '`' || c === '$' || c === '(' || c === ')' || c === '{' || c === '}' || c === '<' || c === '>') {
-      return null;
-    }
 
     if (c === '&') {
       if (command[i + 1] === '&') {

@@ -13,6 +13,7 @@ const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs
 const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
 const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');
 const CLI_RESOLVE_HOOK = join(process.cwd(), 'hooks', 'cli-resolve.mjs');
+const CLI_MONITOR_GUARD_HOOK = join(process.cwd(), 'hooks', 'cli-monitor-guard.mjs');
 const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
 const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
 const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'hooks', 'coral-skill-vars.mjs');
@@ -579,7 +580,6 @@ describe('cli-resolve.mjs', () => {
 
   it.each([
     ['unquoted expansion', 'coral-cli codex -i $HOME/prompt.md'],
-    ['control operators', 'coral-cli codex -i "prompt" && echo done'],
     ['ambiguous short cluster', 'coral-cli codex -bi "prompt"'],
     ['unquoted backslash-escaped literal', 'coral-cli codex -i hello\\ world'],
     ['unterminated quoting', 'coral-cli codex -i "unterminated'],
@@ -734,7 +734,9 @@ describe('cli-resolve.mjs', () => {
 
     const output = expectCliResolveOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.timeout).toBe(610_000);
+    // The default wait timeout is 600s; with +10s margin the computed value is
+    // 610_000ms, but the Bash tool caps timeout at 600_000ms.
+    expect(updatedInput.timeout).toBe(600_000);
     expect(updatedInput.run_in_background).toBe(false);
   });
 
@@ -749,6 +751,121 @@ describe('cli-resolve.mjs', () => {
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBeUndefined();
     expect(updatedInput.run_in_background).toBeUndefined();
+  });
+
+  it('splits && chains and processes each coral-cli segment independently', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli codex agent -i "hello" && echo done';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(tempPaths).toHaveLength(1);
+    expect(readFileSync(tempPaths[0], 'utf-8')).toBe('hello');
+    expect(rewritten).toContain(`node "${cliBundle}" codex agent -i `);
+    expect(rewritten.endsWith(' && echo done')).toBe(true);
+  });
+
+  it('rewrites the coral-cli stage of a pipeline and leaves the rest intact', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli kb principles | grep foo' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(rewritten).toBe(`node "${cliBundle}" kb principles | grep foo`);
+  });
+
+  it('treats a DQ-contained && as literal and does not split', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli codex agent -i "a && b"';
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      cwd: fixture.projectRoot,
+      tool_input: { command },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+    const tempPaths = rememberTempInputs(rewritten);
+
+    expect(tempPaths).toHaveLength(1);
+    expect(readFileSync(tempPaths[0], 'utf-8')).toBe('a && b');
+  });
+
+  it('rewrites a stale bridge path under the coral plugin cache to the active bridge', () => {
+    const cacheRoot = join(process.cwd(), '..');
+    const stale = join(cacheRoot, '0.0.0-nonexistent', 'bridge', 'coral-cli.cjs');
+    expect(existsSync(stale)).toBe(false);
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: `node "${stale}" kb principles` },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const rewritten = output.hookSpecificOutput.updatedInput.command;
+
+    expect(rewritten).toBe(`node "${cliBundle}" kb principles`);
+  });
+
+  it('leaves an external --plugin-dir bridge path untouched', () => {
+    const external = '/tmp/does-not-exist-xyz-coral/bridge/coral-cli.cjs';
+    expect(existsSync(external)).toBe(false);
+
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: `node "${external}" kb principles` },
+    });
+
+    // Outside the coral cache prefix → no rewrite, no wait policy → silent pass-through.
+    expect(result.status).toBe(0);
+    expect(parseJsonOutput<unknown>(result.stdout)).toBeNull();
+  });
+
+  it('is idempotent: bare coral-cli → node "<active>" has no further change', () => {
+    const first = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli kb principles' },
+    });
+    const rewritten = expectCliResolveOutput(first).hookSpecificOutput.updatedInput.command;
+
+    const second = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: rewritten },
+    });
+
+    expect(second.status).toBe(0);
+    expect(parseJsonOutput<unknown>(second.stdout)).toBeNull();
+  });
+
+  it('caps Bash timeout at 600_000ms even for wait --timeout=600', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli wait --jobs jb-1 --timeout 600' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
+    expect(updatedInput.timeout).toBe(600_000);
   });
 });
 
@@ -795,28 +912,28 @@ describe('session-start.mjs', () => {
     const fixture = createFixture();
     writeInjectMd(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
 
-    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-1' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
 
     expect(result.status).toBe(0);
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toBe(
+    expect(output.hookSpecificOutput.additionalContext).toContain(
       `KB: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}" kb principles`,
     );
   });
 
-  it('outputs INJECT.md only when no session_id', () => {
+  it('exits silently when session_id is missing (CORAL_CHILD guard would also catch this)', () => {
     const fixture = createFixture();
-    const injectMd = 'Only CLAUDE content';
-    writeInjectMd(fixture.pluginRoot, injectMd);
+    writeInjectMd(fixture.pluginRoot, 'Only CLAUDE content');
 
     const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     expect(result.status).toBe(0);
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext.startsWith('SessionStart:')).toBe(false);
-    expect(output.hookSpecificOutput.additionalContext).toBe(injectMd);
+    expect(parseHookOutput(result.stdout)).toBeNull();
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
@@ -824,21 +941,6 @@ describe('session-start.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(parseHookOutput(result.stdout)).toBeNull();
-  });
-
-  it('strips SESSION_ID_ONLY block when session_id is missing', () => {
-    const fixture = createFixture();
-    writeInjectMd(
-      fixture.pluginRoot,
-      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nsecret\n<!-- SESSION_ID_ONLY:END -->\nafter',
-    );
-
-    const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('visible');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('secret');
-    expect(output.hookSpecificOutput.additionalContext).toContain('after');
   });
 
   it('keeps OWNER_ONLY block for top-level sessions', () => {
@@ -877,11 +979,11 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
   });
 
-  it('strips SESSION_ID_ONLY blocks', () => {
+  it('keeps SESSION_ID_ONLY blocks and substitutes the parent session_id', () => {
     const fixture = createFixture();
     writeInjectMd(
       fixture.pluginRoot,
-      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nmemo commands\n<!-- SESSION_ID_ONLY:END -->\nafter',
+      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nowner={{SESSION_ID}}\n<!-- SESSION_ID_ONLY:END -->\nafter',
     );
 
     const result = runHook(
@@ -892,7 +994,7 @@ describe('subagent-start.mjs', () => {
 
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('visible');
-    expect(output.hookSpecificOutput.additionalContext).not.toContain('memo commands');
+    expect(output.hookSpecificOutput.additionalContext).toContain('owner=sess-parent');
     expect(output.hookSpecificOutput.additionalContext).toContain('after');
   });
 
@@ -1598,6 +1700,105 @@ describe('ralph-loop hook', () => {
         CORAL_FLAVOR: 'dev',
       },
     );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('cli-monitor-guard.mjs', () => {
+  const cliBundle = join(process.cwd(), 'bridge', 'coral-cli.cjs');
+
+  function parseDenyOutput(stdout: string): { decision: string; reason: string } | null {
+    const trimmed = stdout.trim();
+    if (trimmed === '') return null;
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        hookSpecificOutput?: {
+          permissionDecision?: string;
+          permissionDecisionReason?: string;
+        };
+      };
+      const dec = parsed.hookSpecificOutput?.permissionDecision;
+      const reason = parsed.hookSpecificOutput?.permissionDecisionReason;
+      if (typeof dec !== 'string' || typeof reason !== 'string') return null;
+      return { decision: dec, reason };
+    } catch {
+      return null;
+    }
+  }
+
+  it('exits silently for non-PreToolUse events', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'UserPromptSubmit',
+      tool_name: 'Monitor',
+      tool_input: {},
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('ignores Bash tool calls (matcher-scoped to Monitor)', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli wait --timeout=30' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('denies Monitor spawning bare coral-cli wait', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      tool_input: { command: 'coral-cli wait --timeout=30' },
+    });
+
+    const out = parseDenyOutput(result.stdout);
+    expect(out?.decision).toBe('deny');
+    expect(out?.reason).toMatch(/Bash/);
+  });
+
+  it('denies Monitor spawning a node <bridge> wait invocation', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      tool_input: { command: `node "${cliBundle}" wait --timeout=30` },
+    });
+
+    expect(parseDenyOutput(result.stdout)?.decision).toBe('deny');
+  });
+
+  it('denies compound commands that include coral-cli wait in any segment', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      tool_input: { command: 'echo start && coral-cli wait --timeout=10' },
+    });
+
+    expect(parseDenyOutput(result.stdout)?.decision).toBe('deny');
+  });
+
+  it('passes through non-coral monitor commands (log tail)', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      tool_input: { command: 'tail -f /var/log/app.log | grep ERROR' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  it('passes through coral-cli non-wait subcommands', () => {
+    const result = runHook(CLI_MONITOR_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      tool_input: { command: 'coral-cli kb search foo' },
+    });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');

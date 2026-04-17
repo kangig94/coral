@@ -120,7 +120,7 @@ function replaceBareCoralCli(segText, tokens) {
   return applyReplacements(segText, [{
     start: first.start,
     end: first.end,
-    text: `node ${shellQuote(ACTIVE_BRIDGE)}`,
+    text: `node "${ACTIVE_BRIDGE}"`,
   }]);
 }
 
@@ -140,7 +140,7 @@ function rewriteStaleBridge(segText, tokens) {
   return applyReplacements(segText, [{
     start: scriptToken.start,
     end: scriptToken.end,
-    text: shellQuote(ACTIVE_BRIDGE),
+    text: `"${ACTIVE_BRIDGE}"`,
   }]);
 }
 
@@ -223,9 +223,23 @@ function wrapUnsafeUnquotedTokens(command) {
 
 // === 5. Top-level orchestration ===
 
+// When the segment contains grammar that our tokenizer won't parse (`$VAR`,
+// `$(...)`, unquoted `\`, ambiguous short cluster, unterminated quote),
+// we still want to rewrite a leading bare `coral-cli` so the command is
+// actually runnable. The flag-aware post-processing (inline text,
+// metachar wrapping, wait timeout) is skipped for these segments.
+const BARE_CORAL_CLI_RE = /^(\s*)coral-cli(\s|$)(.*)$/s;
+
+function fallbackBareRewrite(segText) {
+  const match = segText.match(BARE_CORAL_CLI_RE);
+  if (match === null) return { text: segText, waitTimeout: null, changed: false };
+  const text = `${match[1]}node "${ACTIVE_BRIDGE}"${match[2]}${match[3]}`;
+  return { text, waitTimeout: null, changed: true };
+}
+
 function processSegment(segText, input) {
   const tokens = tokenizeShell(segText);
-  if (tokens === null) return { text: segText, waitTimeout: null, changed: false };
+  if (tokens === null) return fallbackBareRewrite(segText);
 
   const invocation = detectCoralInvocation(tokens);
   if (invocation === null) return { text: segText, waitTimeout: null, changed: false };
@@ -251,7 +265,12 @@ function processSegment(segText, input) {
 
 function processCommand(command, input) {
   const segments = splitTopLevelCommands(command);
-  if (segments === null) return null;
+  if (segments === null) {
+    const fallback = fallbackBareRewrite(command);
+    return fallback.changed
+      ? { command: fallback.text, waitTimeout: null, changed: true }
+      : null;
+  }
 
   let result = '';
   let cursor = 0;
