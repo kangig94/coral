@@ -8,6 +8,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | --- | --- | --- |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort |
+| `CORAL_CODEX_FAST` | _(none)_ | Codex service tier: `fast` (priority) or `flex` (cost-efficient). Accepted: `fast`/`1`/`true` or `flex`/`0`/`false` (case-insensitive). Falls back to `service_tier` in top-level `~/.codex/config.toml`, then Codex default. Takes precedence over config.toml. Profile-scoped `service_tier` under `[profiles.xxx]` is ignored |
 | `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
 | `CORAL_EFFORT` | _(none)_ | Global effort override when provider-specific effort is unset |
@@ -48,12 +49,15 @@ Project-level or global Claude Code settings can persist the same environment va
 {
   "env": {
     "CORAL_CODEX_MODEL": "gpt-5.4",
+    "CORAL_CODEX_FAST": "fast",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
 }
 ```
+
+Changes to `settings.json` env take effect on the next Claude Code session start. `CORAL_CODEX_FAST` is re-read per Codex request via the `coralEnv` pipeline, so Coral backend restart is not required.
 
 ### `~/.coral/.env`
 

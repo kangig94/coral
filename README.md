@@ -222,6 +222,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB markdown root |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CODEX_FAST` | _(none)_ | Codex service tier (`fast` / `flex`, accepts `1/true/0/false`); falls back to `~/.codex/config.toml` top-level `service_tier` |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |

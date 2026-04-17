@@ -24,6 +24,7 @@ export interface ThreadStartParams {
   model: string | null;
   approvalPolicy: string;
   sandbox: string;
+  serviceTier?: 'fast' | 'flex';
   serviceName?: string;
   ephemeral?: boolean;
   experimentalRawEvents?: boolean;
@@ -40,6 +41,7 @@ export interface ThreadResumeParams {
   model: string | null;
   approvalPolicy: string;
   sandbox?: string;
+  serviceTier?: 'fast' | 'flex';
 }
 
 export interface ThreadResumeResponse {
@@ -51,6 +53,7 @@ export interface TurnStartParams {
   input: UserInput[];
   model?: string | null;
   effort?: string | null;
+  serviceTier?: 'fast' | 'flex';
   outputSchema?: unknown;
 }
 
