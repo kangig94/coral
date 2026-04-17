@@ -54,13 +54,9 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
     return undefined;
   }
 
-  const normalized = value.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'fast') {
-    return 'fast';
-  }
-  if (normalized === '0' || normalized === 'false' || normalized === 'flex') {
-    return 'flex';
-  }
+  const normalized = value.trim();
+  if (normalized === '1') return 'fast';
+  if (normalized === '0') return 'flex';
   return undefined;
 }
 

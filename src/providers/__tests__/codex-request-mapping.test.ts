@@ -79,14 +79,7 @@ describe('mapTurnStartParams effort mapping', () => {
 describe('resolveCodexServiceTier precedence', () => {
   it.each([
     ['1', 'fast'],
-    ['true', 'fast'],
-    ['TRUE', 'fast'],
-    ['True', 'fast'],
-    ['fast', 'fast'],
     ['0', 'flex'],
-    ['false', 'flex'],
-    ['FALSE', 'flex'],
-    ['flex', 'flex'],
   ] as const)('maps CORAL_CODEX_FAST=%s to %s before config fallback', (envValue, expected) => {
     useTempCodexConfig('service_tier = "flex"');
 
@@ -157,7 +150,7 @@ describe('mapThreadResumeParams serviceTier', () => {
 describe('mapTurnStartParams serviceTier', () => {
   it('includes serviceTier when resolved from env', () => {
     useTempCodexConfig();
-    const params = mapTurnStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: 'fast' } }), 'thread-1');
+    const params = mapTurnStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } }), 'thread-1');
 
     expect(params.serviceTier).toBe('fast');
   });

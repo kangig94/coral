@@ -8,7 +8,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | --- | --- | --- |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Default Codex model for new sessions |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort |
-| `CORAL_CODEX_FAST` | _(none)_ | Codex service tier: `fast` (priority) or `flex` (cost-efficient). Accepted: `fast`/`1`/`true` or `flex`/`0`/`false` (case-insensitive). Falls back to `service_tier` in top-level `~/.codex/config.toml`, then Codex default. Takes precedence over config.toml. Profile-scoped `service_tier` under `[profiles.xxx]` is ignored |
+| `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle. `1` = fast (priority), `0` = flex (cost-efficient). Any other non-blank value is rejected. Blank/unset falls back to `service_tier` in top-level `~/.codex/config.toml`, then Codex default. Env takes precedence over config.toml. Profile-scoped `service_tier` under `[profiles.xxx]` is ignored |
 | `CORAL_CLAUDE_EFFORT` | `high` | Claude reasoning effort |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
 | `CORAL_EFFORT` | _(none)_ | Global effort override when provider-specific effort is unset |
@@ -49,7 +49,7 @@ Project-level or global Claude Code settings can persist the same environment va
 {
   "env": {
     "CORAL_CODEX_MODEL": "gpt-5.4",
-    "CORAL_CODEX_FAST": "fast",
+    "CORAL_CODEX_FAST": "1",
     "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
