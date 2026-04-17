@@ -115,7 +115,7 @@ async function startHttpHandlerServer(
         res.statusCode = 500;
         res.setHeader('Content-Type', 'application/json');
         res.end(
-          JSON.stringify({ error: 'internal_error', message: error instanceof Error ? error.message : String(error) }),
+          JSON.stringify({ code: 'internal_error', message: error instanceof Error ? error.message : String(error) }),
         );
         return;
       }

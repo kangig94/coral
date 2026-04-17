@@ -18,7 +18,13 @@ import {
 import { type LockRecord } from '../shared/lock-types.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
-import { isNoEntryError, isRecord, readBuildFlavor, readBundleHash } from '../shared/utils.js';
+import {
+  BackendUnreachableError,
+  isNoEntryError,
+  isRecord,
+  readBuildFlavor,
+  readBundleHash,
+} from '../shared/utils.js';
 
 const STARTUP_POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
@@ -657,7 +663,7 @@ async function waitForReplacementBackend(
     await delay(STARTUP_POLL_MS);
   }
 
-  throw new Error(
+  throw new BackendUnreachableError(
     'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
   );
 }
@@ -703,7 +709,7 @@ async function forceReplaceBackend(
   }
 
   if (isProcessAlive(pid)) {
-    throw new Error(`Failed to terminate sick Coral backend pid ${pid}.`);
+    throw new BackendUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
   }
 
   removeFileIfSnapshotMatches(backendLockPath(root), ownership.cleanupSnapshot.lockRaw);
@@ -740,7 +746,7 @@ async function applyAction(
       return null;
 
     case 'failUnsafeReplacement':
-      throw new Error(
+      throw new BackendUnreachableError(
         `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}.`,
       );
 
@@ -789,7 +795,7 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
     if (info) return summarizeBackend(info);
   }
 
-  throw new Error(
+  throw new BackendUnreachableError(
     'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
   );
 }

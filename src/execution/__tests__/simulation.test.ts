@@ -205,7 +205,7 @@ describe('deterministic simulation lifecycle replay', () => {
     );
     expect(detailResponse).toMatchObject({
       statusCode: 404,
-      body: JSON.stringify({ error: 'session_not_found' }),
+      body: JSON.stringify({ code: 'session_not_found', message: 'Session not found' }),
     });
     expect(world.hasProjectSourceCache(COMPLETE_DETAIL_PROJECT_ROOT)).toBe(true);
 

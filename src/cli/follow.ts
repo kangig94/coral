@@ -5,7 +5,6 @@ import type { AcceptedLaunchResponse } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
-  formatError,
   formatLaunch,
   formatWaitProgress,
   formatWaitQueued,
@@ -14,7 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { errorMessage, isTransientStreamError } from '../shared/utils.js';
+import { isTransientStreamError } from '../shared/utils.js';
 import type { CliStreamEvent } from './types.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
@@ -29,6 +28,7 @@ type LaunchAndFollowOptions = {
   pluginRoot: string;
   projectRoot: string;
   outputFormat: 'text' | 'json';
+  emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
   isTTY: boolean;
   columns: number;
 };
@@ -122,16 +122,6 @@ function emitWaitEvent(
   }
 }
 
-function emitFollowError(error: unknown, outputFormat: 'text' | 'json'): void {
-  if (outputFormat === 'json') {
-    const message = errorMessage(error);
-    process.stderr.write(JSON.stringify({ error: true, message }) + '\n');
-    return;
-  }
-
-  process.stderr.write(formatError(error) + '\n');
-}
-
 function toExitCode(result: TerminalResult): number {
   if (result.aborted === true) {
     return 1;
@@ -212,8 +202,8 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           return 1;
         }
 
-        emitFollowError(error, options.outputFormat);
-        return 1;
+        options.emitError(error, options.outputFormat);
+        return typeof process.exitCode === 'number' ? process.exitCode : 1;
       }
 
       if (localAbortRequested) {
@@ -249,16 +239,16 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           continue;
         }
 
-        emitFollowError(new Error('wait stream ended without a terminal event'), options.outputFormat);
-        return 1;
+        options.emitError(new Error('wait stream ended without a terminal event'), options.outputFormat);
+        return typeof process.exitCode === 'number' ? process.exitCode : 1;
       } catch (error) {
         if (localAbortRequested) {
           return 1;
         }
 
         if (!isTransientStreamError(error) || retriesLeft === 0) {
-          emitFollowError(error, options.outputFormat);
-          return 1;
+          options.emitError(error, options.outputFormat);
+          return typeof process.exitCode === 'number' ? process.exitCode : 1;
         }
 
         retriesLeft -= 1;

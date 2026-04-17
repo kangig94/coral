@@ -347,11 +347,11 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
     const port = parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
 
     if (!info || parsed.pathname !== '/health' || parsed.hostname !== info.host || port !== info.port) {
-      return jsonResponse({ error: 'not_found' }, 404);
+      return jsonResponse({ code: 'not_found', message: 'Not found' }, 404);
     }
 
     if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
-      return jsonResponse({ error: 'unauthorized' }, 401);
+      return jsonResponse({ code: 'unauthorized', message: 'Unauthorized' }, 401);
     }
 
     return jsonResponse(
@@ -622,7 +622,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     } catch (error: unknown) {
       core.identity.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, { error: 'internal_error' });
+        sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
         return;
       }
       res.destroy();

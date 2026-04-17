@@ -44,6 +44,7 @@ import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
 import { createRealRuntime } from '../runtime.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import { ZodError, ZodIssueCode } from 'zod';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -2330,13 +2331,64 @@ describe('execution backend server', () => {
 
         expect(discussResponse.status).toBe(404);
         expect(await discussResponse.json()).toEqual({
-          error: 'not_found',
+          code: 'not_found',
+          message: 'Not found',
         });
 
         expect(kbResponse.status).toBe(404);
         expect(await kbResponse.json()).toEqual({
-          error: 'not_found',
+          code: 'not_found',
+          message: 'Not found',
         });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it.each([
+      {
+        name: 'GET /discuss/sessions/:id view',
+        method: 'GET',
+        path: `/discuss/sessions/session-1?projectRoot=${encodeURIComponent('/tmp/project')}&view=bogus`,
+        expectedMessage: "view: Invalid enum value. Expected 'control' | 'audit', received 'bogus'",
+      },
+      {
+        name: 'GET /kb/entries scope',
+        method: 'GET',
+        path: '/kb/entries?q=contracts&scope=bogus',
+        expectedMessage: "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'all', received 'bogus'",
+      },
+      {
+        name: 'GET /kb/memos projectRoot',
+        method: 'GET',
+        path: '/kb/memos?projectRoot=',
+        expectedMessage: 'projectRoot: String must contain at least 1 character(s)',
+      },
+      {
+        name: 'DELETE /kb/memos pattern/all',
+        method: 'DELETE',
+        path: `/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&all=true`,
+        expectedMessage: 'Exactly one of pattern or all=true must be provided',
+      },
+    ])('returns flat invalid_request bodies for safeParse regressions on $name', async ({ method, path, expectedMessage }) => {
+      const started = await startMockedRouteServer();
+
+      try {
+        const response = await fetch(`${started.baseUrl}${path}`, {
+          method,
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+
+        expect(response.status).toBe(400);
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+          detail: { issues: unknown[] };
+        };
+        expect(body.code).toBe('invalid_request');
+        expect(body.message).toBe(expectedMessage);
+        expect(() => JSON.parse(body.message)).toThrow();
+        expect(body.detail.issues.length).toBeGreaterThan(0);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2726,6 +2778,92 @@ describe('execution backend server', () => {
           await _closeHttpServer(started.server);
         }
       });
+    });
+
+    it('keeps WorkflowInputError on the plain invalid_request message path', async () => {
+      vi.resetModules();
+      const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
+      workflowError.name = 'WorkflowInputError';
+      vi.doMock('../../workflow/handler.js', () => ({
+        handleWorkflow: vi.fn(async () => {
+          throw workflowError;
+        }),
+        isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
+      }));
+
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
+      const started = await startHttpHandlerServer(deps, createHttpHandler);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/workflow`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            expression: 'architect',
+            startPrompt: 'Begin',
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: "Step 0, atom 'architect' has unsupported namespace 'other'",
+        });
+      } finally {
+        vi.doUnmock('../../workflow/handler.js');
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('keeps ZodError on the invalid_request + detail.issues path for workflow input failures', async () => {
+      vi.resetModules();
+      const workflowError = new ZodError([
+        {
+          code: ZodIssueCode.custom,
+          path: ['expression'],
+          message: 'Expression required',
+        },
+      ]);
+      vi.doMock('../../workflow/handler.js', () => ({
+        handleWorkflow: vi.fn(async () => {
+          throw workflowError;
+        }),
+        isWorkflowInputFailure: (error: unknown) => error === workflowError,
+      }));
+
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
+      const started = await startHttpHandlerServer(deps, createHttpHandler);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/workflow`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            expression: 'architect',
+            startPrompt: 'Begin',
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: 'expression: Expression required',
+          detail: { issues: workflowError.issues },
+        });
+      } finally {
+        vi.doUnmock('../../workflow/handler.js');
+        await _closeHttpServer(started.server);
+      }
     });
 
     it('returns AbortResult directly from POST /jobs/abort and preserves partial misses', async () => {
@@ -3595,7 +3733,7 @@ describe('execution backend server', () => {
     const response = await fetch(`${backend.baseUrl}/health`);
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
   });
 
   describe('shutdown policy', () => {

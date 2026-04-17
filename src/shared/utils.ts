@@ -36,11 +36,19 @@ export class TransientHttpError extends Error {
   }
 }
 
+export class BackendUnreachableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BackendUnreachableError';
+  }
+}
+
 /** Classify transient SSE/connection errors eligible for cursor-based retry. */
 export function isTransientStreamError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   if (error.message === 'terminated') return true;
   if (error instanceof TransientHttpError) return true;
+  if (error instanceof BackendUnreachableError) return true;
   const code = 'code' in error && typeof error.code === 'string' ? error.code : null;
   return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'ECONNABORTED';
 }

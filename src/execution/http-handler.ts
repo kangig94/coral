@@ -51,7 +51,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from './kb-tools.js';
-import { domainError, domainResultToHttp, launchToHttp, type ToolDomainResult } from './tool-response.js';
+import { domainError, domainResultToHttp, formatZodError, launchToHttp, type ToolDomainResult } from './tool-response.js';
 import { handleWorkflow as launchWorkflow, isWorkflowInputFailure } from '../workflow/handler.js';
 import {
   buildCallerContextFromQuery,
@@ -287,8 +287,8 @@ export function getJobDetail(
 // Discuss read helpers
 // ---------------------------------------------------------------------------
 
-function invalidRequestResult(message = 'invalid request'): ToolDomainResult {
-  return domainError('invalid_request', message);
+function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
+  return domainError('invalid_request', message, detail);
 }
 
 function sendToolResult(res: ServerResponse, result: ToolDomainResult, successStatusCode = 200): void {
@@ -364,7 +364,9 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     parsed = jobWaitSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      sendJson(res, 400, { code: 'invalid_request', message: error.message });
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
+      sendJson(res, response.statusCode, response.body);
       return;
     }
     sendInvalidJson(res);
@@ -530,7 +532,8 @@ async function handleSessionCreate(req: IncomingMessage, res: ServerResponse, de
     parsed = sessionCreateSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      const response = domainResultToHttp(invalidRequestResult(error.message));
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
       sendJson(res, response.statusCode, response.body);
       return;
     }
@@ -577,7 +580,8 @@ async function handleSessionMessage(
     parsed = sessionMessageSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      const response = domainResultToHttp(invalidRequestResult(error.message));
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
       sendJson(res, response.statusCode, response.body);
       return;
     }
@@ -623,7 +627,8 @@ async function handleSessionFork(
     parsed = sessionForkSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      const response = domainResultToHttp(invalidRequestResult(error.message));
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
       sendJson(res, response.statusCode, response.body);
       return;
     }
@@ -664,7 +669,8 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
     parsed = workflowRequestSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      const response = domainResultToHttp(invalidRequestResult(error.message));
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
       sendJson(res, response.statusCode, response.body);
       return;
     }
@@ -697,6 +703,12 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
     return;
   } catch (error: unknown) {
     if (isWorkflowInputFailure(error)) {
+      if (error instanceof ZodError) {
+        const { message, detail } = formatZodError(error);
+        const response = domainResultToHttp(invalidRequestResult(message, detail));
+        sendJson(res, response.statusCode, response.body);
+        return;
+      }
       const response = domainResultToHttp(invalidRequestResult(error.message));
       sendJson(res, response.statusCode, response.body);
       return;
@@ -711,7 +723,8 @@ async function handleAbortRequest(req: IncomingMessage, res: ServerResponse, dep
     args = jobAbortSchema.parse(await readJsonBody(req));
   } catch (error: unknown) {
     if (error instanceof ZodError) {
-      const response = domainResultToHttp(invalidRequestResult(error.message));
+      const { message, detail } = formatZodError(error);
+      const response = domainResultToHttp(invalidRequestResult(message, detail));
       sendJson(res, response.statusCode, response.body);
       return;
     }
@@ -796,7 +809,8 @@ async function handleDiscussSessionDetail(
 ): Promise<void> {
   const parsed = discussDetailQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -804,11 +818,11 @@ async function handleDiscussSessionDetail(
   const view: DiscussView = parsed.data.view ?? 'control';
   const detail = deps.loadDiscussDetail(deps.resolveProjectSource(context.projectRoot), sessionId, view);
   if (!detail) {
-    sendJson(res, 404, { error: 'session_not_found' });
+    sendJson(res, 404, { code: 'session_not_found', message: 'Session not found' });
     return;
   }
   if (detail === 'audit_requires_ended_session') {
-    sendJson(res, 409, { error: 'audit_requires_ended_session' });
+    sendJson(res, 409, { code: 'audit_requires_ended_session', message: 'Audit requires ended session' });
     return;
   }
 
@@ -824,7 +838,8 @@ async function handleDiscussEvents(
 ): Promise<void> {
   const parsed = discussEventsQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -931,7 +946,8 @@ async function handleDiscussSessionDelete(
 ): Promise<void> {
   const parsed = discussDeleteQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -953,7 +969,8 @@ async function handleKbEntries(
 ): Promise<void> {
   const parsed = kbSearchQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -1072,7 +1089,8 @@ async function handleKbMemoReadRoute(
 
   const parsed = kbMemoListQuerySchema.pick({ projectRoot: true }).safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -1099,7 +1117,8 @@ async function handleKbMemoListRoute(
 ): Promise<void> {
   const parsed = kbMemoListQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -1125,7 +1144,8 @@ async function handleKbPrinciplesRoute(
 ): Promise<void> {
   const parsed = kbPrinciplesQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -1357,7 +1377,8 @@ async function handleKbMemoDeleteRoute(
 ): Promise<void> {
   const parsed = kbMemoDeleteQuerySchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
-    sendToolResult(res, invalidRequestResult(parsed.error.message));
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
     return;
   }
 
@@ -1707,7 +1728,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     const authHeader = req.headers['x-coral-backend-token'];
     if (typeof authHeader !== 'string' || authHeader !== identity.token) {
       req.resume();
-      sendJson(res, 401, { error: 'unauthorized' });
+      sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
       return;
     }
 
@@ -1759,7 +1780,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     // even before lifecycle transitions to 'draining'.
     if (runtimeState.getLifecycle() !== 'running' || deps.isDrainRequested()) {
       req.resume();
-      sendJson(res, 503, { error: 'backend_shutting_down' });
+      sendJson(res, 503, { code: 'backend_shutting_down', message: 'Backend shutting down' });
       return;
     }
 
@@ -1776,7 +1797,7 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
 
     if (!req.url) {
       req.resume();
-      sendJson(res, 404, { error: 'not_found' });
+      sendJson(res, 404, { code: 'not_found', message: 'Not found' });
       return;
     }
 
@@ -1798,6 +1819,6 @@ export function createHttpHandler(deps: HttpHandlerDeps): (req: IncomingMessage,
     }
 
     req.resume();
-    sendJson(res, 404, { error: 'not_found' });
+    sendJson(res, 404, { code: 'not_found', message: 'Not found' });
   };
 }

@@ -6,7 +6,6 @@ import { Command, Option } from 'commander';
 
 import {
   BackendClient,
-  BackendToolHttpError,
   type AcceptedLaunchResponse,
   type CallerContext,
 } from '../client/http-client.js';
@@ -57,6 +56,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { prepareSourceImport } from '../kb/ops/source-import.js';
 import { assertSourceSlug } from '../kb/validation.js';
 import { registerSimulateCommand } from './simulate.js';
+import { buildErrorEnvelope, UsageError } from './errors.js';
 
 function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
@@ -199,25 +199,18 @@ function emit<T>(result: T, outputFormat: 'text' | 'json', textFormatter?: (data
 }
 
 export function emitError(error: unknown, outputFormat: 'text' | 'json'): void {
-  let message: string;
-
-  if (outputFormat === 'text') {
-    message = formatError(error);
-  } else if (error instanceof BackendToolHttpError) {
-    message = JSON.stringify({ error: true, statusCode: error.statusCode, body: error.body });
-  } else if (error instanceof Error) {
-    message = JSON.stringify({ error: true, message: error.message });
+  const { envelope, exitCode } = buildErrorEnvelope(error);
+  if (outputFormat === 'json') {
+    process.stderr.write(JSON.stringify(envelope) + '\n');
   } else {
-    message = JSON.stringify({ error: true, message: String(error) });
+    process.stderr.write(formatError(error) + '\n');
   }
-
-  process.stderr.write(message + '\n');
-  process.exitCode = 1;
+  process.exitCode = exitCode;
 }
 
 function parseIntegerFlag(flagName: string, value: string): number {
   if (!/^-?\d+$/.test(value)) {
-    throw new Error(`${flagName} must be an integer`);
+    throw new UsageError(`${flagName} must be an integer`);
   }
 
   return Number.parseInt(value, 10);
@@ -229,7 +222,7 @@ function parseJobIds(raw: string): string[] {
     .map((entry) => entry.trim())
     .filter(Boolean);
   if (jobIds.length === 0) {
-    throw new Error('--jobs must include at least one job ID');
+    throw new UsageError('--jobs must include at least one job ID');
   }
 
   return jobIds;
@@ -278,6 +271,8 @@ async function handleLaunchResult(
     return;
   }
 
+  // Successful follow returns the terminal job exit code (0-255).
+  // Follow-level failures route through emitError and return the envelope exit code instead.
   process.exitCode = await launchAndFollow({
     launchResult: result,
     abortJob: async (jobId) => {
@@ -286,6 +281,7 @@ async function handleLaunchResult(
     pluginRoot,
     projectRoot: process.cwd(),
     outputFormat,
+    emitError,
     ...getTerminalContext(),
   });
 }
@@ -368,12 +364,12 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
 
         try {
           if (agent === 'list') {
-            throw new Error(
+            throw new UsageError(
               `Legacy "coral-cli ${providerName} list" has moved to "coral-cli list --provider ${providerName}"`,
             );
           }
           if (opts.input === undefined) {
-            throw new Error('input is required (-i, --input)');
+            throw new UsageError('input is required (-i, --input)');
           }
 
           const prompt = resolveInput(opts.input);
@@ -401,6 +397,7 @@ function registerProviderCommands(program: Command, providerRegistry: ProviderRe
 
 export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();
+  program.exitOverride();
 
   program
     .name('coral-cli')
@@ -423,7 +420,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
       try {
         const client = makeClient(process.cwd());
         if (opts.provider !== undefined && !getProviderNames(providerRegistry).includes(opts.provider)) {
-          throw new Error(`Unknown provider: ${opts.provider}`);
+          throw new UsageError(`Unknown provider: ${opts.provider}`);
         }
 
         const result = await client.listSessions();
@@ -544,10 +541,10 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
         const { expression } = opts;
 
         if (expression === undefined) {
-          throw new Error('expression is required (-e, --expression)');
+          throw new UsageError('expression is required (-e, --expression)');
         }
         if (opts.startPrompt === undefined) {
-          throw new Error('start prompt is required (-s, --start-prompt)');
+          throw new UsageError('start prompt is required (-s, --start-prompt)');
         }
 
         const payload = {
@@ -861,11 +858,11 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
         const content =
           opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : opts.content;
         if (content === undefined) {
-          throw new Error('Either --content or --content-file is required');
+          throw new UsageError('Either --content or --content-file is required');
         }
         const rawOwner = opts.owner ?? process.env.CORAL_OWNER;
         if (!rawOwner) {
-          throw new Error('--owner is required (or set CORAL_OWNER env var)');
+          throw new UsageError('--owner is required (or set CORAL_OWNER env var)');
         }
         const owner = assertOwnerId(rawOwner, 'owner');
         const client = makeClient(process.cwd());

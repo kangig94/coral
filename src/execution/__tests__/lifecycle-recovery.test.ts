@@ -1746,7 +1746,8 @@ describe('lifecycle recovery characterization', () => {
 
       expect(abortResponse.status).toBe(503)
       expect(await abortResponse.json()).toEqual({
-        error: 'backend_shutting_down',
+        code: 'backend_shutting_down',
+        message: 'Backend shutting down',
       })
 
       const service = getOrCreateService(projectRoot)
@@ -1767,7 +1768,8 @@ describe('lifecycle recovery characterization', () => {
 
       expect(waitResponse.status).toBe(503)
       expect(await waitResponse.json()).toEqual({
-        error: 'backend_shutting_down',
+        code: 'backend_shutting_down',
+        message: 'Backend shutting down',
       })
       expect(service.waitStream).not.toHaveBeenCalled()
 

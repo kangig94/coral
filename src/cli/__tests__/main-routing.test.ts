@@ -262,6 +262,7 @@ describe('cli main routing', () => {
         pluginRoot: expect.any(String),
         projectRoot: process.cwd(),
         outputFormat: 'json',
+        emitError: expect.any(Function),
         isTTY: process.stdout.isTTY === true,
         columns: process.stdout.columns ?? 80,
       });
@@ -435,7 +436,7 @@ describe('cli main routing', () => {
     expect(stderr).not.toContain('input is required');
     expect(mockState.createSession).not.toHaveBeenCalled();
     expect(mockState.sendMessage).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(1);
+    expect(process.exitCode).toBe(2);
   });
 
   it('lists sessions for a single provider via the top-level list command', async () => {
@@ -573,6 +574,7 @@ describe('cli main routing', () => {
         pluginRoot: expect.any(String),
         projectRoot: process.cwd(),
         outputFormat: 'json',
+        emitError: expect.any(Function),
         isTTY: process.stdout.isTTY === true,
         columns: process.stdout.columns ?? 80,
       });
@@ -704,6 +706,63 @@ describe('cli main routing', () => {
     });
   });
 
+  it('keeps successful wait NDJSON on stdout and leaves stderr empty', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.ensureBackend.mockResolvedValueOnce({
+      host: '127.0.0.1',
+      port: 4100,
+      token: 'backend-token',
+    });
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield {
+        type: 'progress',
+        jobId: 'job-1',
+        sessionId: 'session-1',
+        eventId: 1,
+        message: 'working',
+      };
+      yield {
+        type: 'terminal',
+        completedJobId: 'job-1',
+        sessionId: 'session-1',
+        remainingJobIds: [],
+        resultPath: '/tmp/result.md',
+        result: { content: 'done', exitCode: 0 },
+      };
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1', '--output-format', 'json']);
+
+    expect(stdout.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+      {
+        cursor: null,
+        event: {
+          type: 'progress',
+          jobId: 'job-1',
+          sessionId: 'session-1',
+          eventId: 1,
+          message: 'working',
+        },
+      },
+      {
+        cursor: null,
+        event: {
+          type: 'terminal',
+          completedJobId: 'job-1',
+          sessionId: 'session-1',
+          remainingJobIds: [],
+          result: {
+            path: '/tmp/result.md',
+            exitCode: 0,
+          },
+        },
+      },
+    ]);
+    expect(stderr).toBe('');
+  });
+
   it('treats discuss backend_recovering results as command errors without relying on thrown HTTP errors', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
@@ -740,8 +799,8 @@ describe('cli main routing', () => {
       ],
     });
     expect(stdout).toBe('');
-    expect(JSON.parse(stderr.trim())).toEqual({ error: true, statusCode: 503, body: errorBody });
-    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(stderr.trim())).toEqual({ error: true, code: 'backend_recovering', message: 'recovering — retry after 500ms' });
+    expect(process.exitCode).toBe(75);
   });
 
   it('routes discuss participate bid payloads to discussBid', async () => {
@@ -920,8 +979,8 @@ describe('cli main routing', () => {
 
     expect(mockState.kbSearch).toHaveBeenCalledWith({ query: 'accel' });
     expect(stdout).toBe('');
-    expect(JSON.parse(stderr.trim())).toEqual({ error: true, statusCode: 503, body: errorBody });
-    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(stderr.trim())).toEqual({ error: true, code: 'backend_recovering', message: 'recovering — retry after 500ms' });
+    expect(process.exitCode).toBe(75);
   });
 
   it('routes kb search with --top-k and preserves raw json output', async () => {

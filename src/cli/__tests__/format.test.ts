@@ -549,10 +549,10 @@ describe('cli format', () => {
       expect(
         formatError({
           statusCode: 403,
-          body: { error: 'scope_mismatch' },
+          body: { code: 'scope_mismatch', message: 'Scope mismatch' },
           message: 'Backend request failed: 403 Forbidden',
         }),
-      ).toBe('HTTP 403: {"error":"scope_mismatch"}');
+      ).toBe('HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}');
     });
 
     it('formats an Error instance', () => {

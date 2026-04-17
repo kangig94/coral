@@ -956,7 +956,9 @@ describe('client http-client', () => {
       defaultContext,
     });
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503, 'Service Unavailable'));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 'backend_shutting_down', message: 'Backend shutting down' }, 503, 'Service Unavailable'),
+    );
 
     let caught: unknown;
     try {
@@ -966,8 +968,11 @@ describe('client http-client', () => {
     }
 
     expect(caught).toBeInstanceOf(BackendToolHttpError);
-    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down, retry');
+    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down');
     expect((caught as BackendToolHttpError).statusCode).toBe(503);
-    expect((caught as BackendToolHttpError).body).toEqual({ error: 'backend_shutting_down' });
+    expect((caught as BackendToolHttpError).body).toEqual({
+      code: 'backend_shutting_down',
+      message: 'Backend shutting down',
+    });
   });
 });

@@ -106,7 +106,7 @@ describe('cli main — help and structure', () => {
 describe('cli main — output format', () => {
   it('rejects invalid --output-format values before command execution', () => {
     const { stderr, status } = runCli(['backend', 'status', '--output-format', 'yaml']);
-    expect(status).toBe(1);
+    expect(status).toBe(2);
     expect(stderr).toContain('output-format');
     expect(stderr).toContain('text');
     expect(stderr).toContain('json');
@@ -123,9 +123,9 @@ describe('cli main — output format', () => {
 });
 
 describe('cli main — wait --jobs validation', () => {
-  it('exits 1 and emits error when --jobs is empty', () => {
+  it('exits 2 and emits error when --jobs is empty', () => {
     const { stderr, status } = runCli(['wait', '--jobs', '']);
-    expect(status).toBe(1);
+    expect(status).toBe(2);
     expect(stderr).toContain('job');
   });
 });
@@ -169,17 +169,17 @@ describe('cli main — workflow flag surface', () => {
     expect(stdout).not.toContain('[expression]');
   });
 
-  it('exits 1 when -e expression is missing', () => {
+  it('exits 2 when -e expression is missing', () => {
     const { stderr, status } = runCli(['workflow']);
 
-    expect(status).toBe(1);
+    expect(status).toBe(2);
     expect(stderr).toContain('expression is required (-e, --expression)');
   });
 
-  it('exits 1 when -e is provided without -s start prompt', () => {
+  it('exits 2 when -e is provided without -s start prompt', () => {
     const { stderr, status } = runCli(['workflow', '-e', 'architect']);
 
-    expect(status).toBe(1);
+    expect(status).toBe(2);
     expect(stderr).toContain('start prompt is required');
   });
 });
@@ -315,9 +315,10 @@ describe('cli main — backend shutdown routing', () => {
 describe('cli main — abort --jobs parsing', () => {
   it('emits json errors when requested', () => {
     const { stderr, status } = runCli(['abort', '--jobs', '', '--output-format', 'json']);
-    expect(status).toBe(1);
+    expect(status).toBe(2);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.error).toBe(true);
+    expect(parsed.code).toBe('invalid_usage');
     expect(parsed.message).toContain('job');
   });
 });

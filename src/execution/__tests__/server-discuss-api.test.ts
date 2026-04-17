@@ -270,7 +270,10 @@ describe('server discuss API', () => {
     );
 
     expect(liveAuditResponse.status).toBe(409);
-    expect(await liveAuditResponse.json()).toEqual({ error: 'audit_requires_ended_session' });
+    expect(await liveAuditResponse.json()).toEqual({
+      code: 'audit_requires_ended_session',
+      message: 'Audit requires ended session',
+    });
   });
 
   it('loads discuss detail from another checkout of the same source', async () => {

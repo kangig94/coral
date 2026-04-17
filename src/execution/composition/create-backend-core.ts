@@ -114,7 +114,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     void handleRequest(req, res).catch((error) => {
       world.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, { error: 'internal_error' });
+        sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
         return;
       }
       res.destroy();
