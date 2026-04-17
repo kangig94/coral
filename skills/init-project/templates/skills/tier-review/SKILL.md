@@ -1,12 +1,12 @@
 ---
 name: tier-review
-description: "Use after implementation to run tier-ordered review agents and produce a consolidated verdict."
-argument-hint: "[scope description]"
+description: "Use after implementation to run tier-classified review agents and produce a consolidated verdict."
+argument-hint: "[--gated] [scope description]"
 ---
 
 # Review Gate
 
-Run project review agents in tier order, consolidate findings, issue a verdict.
+Run project review agents by tier taxonomy, consolidate findings, issue a verdict.
 
 <Review_Protocol>
   <Role>
@@ -43,8 +43,9 @@ Run project review agents in tier order, consolidate findings, issue a verdict.
     Spawn only agents marked INVOKE in the table.
     For each agent, pass: "Review [scope files] focusing on [focus from plan]."
 
-    **Fast path** (total INVOKE agents ≤ 5): spawn ALL agents in parallel, wait for all.
-    **Standard path** (6+ INVOKE agents): tier-ordered execution:
+    **Default**: spawn ALL INVOKE agents in parallel, wait for all.
+
+    **With `--gated`** (cost-saving short-circuit — use when API budget is tight):
     1. Tier 1 (safety) — spawn in parallel, wait for all to complete
        - If ANY returns BLOCKING findings → output REJECT verdict, STOP here
     2. Tier 2 (domain) + tier 3 (quality) — spawn in parallel, wait for all to complete
