@@ -7,10 +7,11 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { isRecord, nowIsoString } from '../shared/utils.js';
 import {
   jobAbortSchema,
+  providerNameSchema,
   jobWaitSchema,
   sessionCreateSchema,
   sessionForkSchema,
@@ -19,7 +20,7 @@ import {
 } from '../shared/schemas.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
-import { belongsToNamespace } from '../shared/types.js';
+import { belongsToNamespace, isLivePhase, jobPhaseSchema } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
 import type { DiscussView } from '../discuss/views.js';
@@ -271,6 +272,15 @@ export function listAllJobs(
   return results;
 }
 
+const jobListQuerySchema = z
+  .object({
+    projectRoot: z.string().min(1).optional(),
+    phase: jobPhaseSchema.optional(),
+    all: z.literal('1').optional(),
+    provider: providerNameSchema.optional(),
+  })
+  .strict();
+
 export function getJobDetail(
   store: ProgressStore,
   jobId: string,
@@ -495,10 +505,6 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
     onCompleted: (payload) => {
       if (closed || !matchesFilter(payload.jobId)) return;
       writeSseEvent(res, 'job:completed', payload);
-    },
-    onSessionUpdated: (payload) => {
-      if (closed) return;
-      writeSseEvent(res, 'session:updated', payload);
     },
     onDiscussUpdated: (payload) => {
       if (closed) return;
@@ -1408,11 +1414,33 @@ async function handleJobListRoute(
   deps: HttpHandlerDeps,
   parsedUrl: URL,
 ): Promise<void> {
-  const phase = parsedUrl.searchParams.get('phase');
-  let jobs = listAllJobs(deps.progressStore, deps.identity.namespace);
-  if (phase !== null) {
-    jobs = jobs.filter((job) => job.status?.phase === phase);
+  const parsed = jobListQuerySchema.safeParse(queryParamsToObject(parsedUrl.searchParams));
+  if (!parsed.success) {
+    const { message, detail } = formatZodError(parsed.error);
+    sendToolResult(res, invalidRequestResult(message, detail));
+    return;
   }
+
+  const hasQuery = parsedUrl.searchParams.toString().length > 0;
+  let jobs = listAllJobs(deps.progressStore, deps.identity.namespace);
+  if (hasQuery && parsed.data.all !== '1') {
+    jobs = jobs.filter((job) => isLivePhase(job.status.phase));
+  }
+
+  if (parsed.data.projectRoot !== undefined) {
+    jobs = jobs.filter((job) => job.status.projectRoot === parsed.data.projectRoot);
+  }
+
+  if (parsed.data.phase !== undefined) {
+    jobs = jobs.filter((job) => job.status.phase === parsed.data.phase);
+  }
+
+  if (parsed.data.provider !== undefined) {
+    jobs = jobs.filter((job) => job.status.provider === parsed.data.provider);
+  }
+
+  jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
+
   sendJson(res, 200, { jobs });
 }
 
@@ -1428,17 +1456,6 @@ async function handleJobDetailRoute(
     return;
   }
   sendJson(res, 200, detail);
-}
-
-async function handleSessionListRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerDeps,
-): Promise<void> {
-  const sessions = deps.sessionIndex
-    .listForNamespace(deps.identity.namespace, deps.progressStore)
-    .flatMap((row) => row.sessions);
-  sendJson(res, 200, { sessions });
 }
 
 async function handleDiscussSessionListRoute(
@@ -1557,7 +1574,7 @@ const routes: Route[] = [
   },
   {
     method: 'GET',
-    pattern: /^\/api\/jobs$/,
+    pattern: /^\/jobs$/,
     handler: async (req, res, deps, _match, parsedUrl) => {
       req.resume();
       await handleJobListRoute(req, res, deps, parsedUrl);
@@ -1565,18 +1582,10 @@ const routes: Route[] = [
   },
   {
     method: 'GET',
-    pattern: /^\/api\/jobs\/(?<jobId>[^/]+)$/,
+    pattern: /^\/jobs\/(?<jobId>[^/]+)$/,
     handler: async (req, res, deps, match) => {
       req.resume();
       await handleJobDetailRoute(req, res, deps, getRouteParam(match, 'jobId'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/sessions$/,
-    handler: async (req, res, deps) => {
-      req.resume();
-      await handleSessionListRoute(req, res, deps);
     },
   },
   {

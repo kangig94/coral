@@ -37,7 +37,6 @@ import {
   parseKbSelector,
   type KbReadKind,
 } from '../shared/kb-read-contract.js';
-import type { LenientSessionEntry } from '../shared/session-entry.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
@@ -60,12 +59,15 @@ export type SessionMessageResponse = AcceptedLaunchResponse;
 export type SessionForkResponse = AcceptedLaunchResponse;
 export type WorkflowLaunchResponse = AcceptedLaunchResponse;
 
-export type SessionsListResponse = {
-  sessions: LenientSessionEntry[];
-};
-
 export type JobsListResponse = {
   jobs: Array<{ jobId: string; status: PersistedStatusRecord }>;
+};
+
+export type ListJobsOptions = {
+  projectRoot?: string;
+  phase?: string;
+  all?: boolean;
+  provider?: string;
 };
 
 export type JobDetailResponse = {
@@ -228,10 +230,6 @@ export class BackendClient {
     );
   }
 
-  async listSessions(): Promise<SessionsListResponse> {
-    return this.getRoute('/sessions');
-  }
-
   async waitJobs(jobIds: string[], options: WaitJobsOptions = {}): Promise<ReadableStream<WaitStreamEvent>> {
     const { context, ...request } = options;
     const ctx = this.resolveContext(context);
@@ -275,13 +273,21 @@ export class BackendClient {
     return this.postRoute('/jobs/abort', { jobs: jobIds }, this.resolveContext(context));
   }
 
-  async listJobs(phase?: string): Promise<JobsListResponse> {
-    const query = phase ? `?phase=${encodeURIComponent(phase)}` : '';
-    return this.getRoute(`/api/jobs${query}`);
+  async listJobs(options: ListJobsOptions = {}, context?: CallerContext): Promise<JobsListResponse> {
+    const ctx = this.resolveContext(context, 'job list');
+    return this.getRoute(
+      this.buildRoutePath('/jobs', {
+        projectRoot: options.projectRoot ?? ctx.projectRoot,
+        phase: options.phase,
+        all: options.all ? '1' : undefined,
+        provider: options.provider,
+      }),
+      ctx,
+    );
   }
 
   async getJob(jobId: string): Promise<JobDetailResponse> {
-    return this.getRoute(`/api/jobs/${encodeURIComponent(jobId)}`);
+    return this.getRoute(`/jobs/${encodeURIComponent(jobId)}`);
   }
 
   async workflow(expression: string, options: WorkflowOptions): Promise<WorkflowLaunchResponse>;

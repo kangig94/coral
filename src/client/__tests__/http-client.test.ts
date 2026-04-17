@@ -906,14 +906,11 @@ describe('client http-client', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('uses the new job and session read routes', async () => {
+  it('uses the new job read routes', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
-    const sessionsBody = {
-      sessions: [{ sessionId: 'session-1', provider: 'codex', provenanceState: 'authoritative' as const }],
-    };
     const jobsBody = {
       jobs: [
         {
@@ -948,17 +945,15 @@ describe('client http-client', () => {
     };
 
     fetchMock
-      .mockResolvedValueOnce(jsonResponse(sessionsBody))
       .mockResolvedValueOnce(jsonResponse(jobsBody))
       .mockResolvedValueOnce(jsonResponse(detailBody));
 
-    await expect(client.listSessions()).resolves.toEqual(sessionsBody);
-    await expect(client.listJobs('running')).resolves.toEqual(jobsBody);
+    await expect(client.listJobs({ phase: 'running' })).resolves.toEqual(jobsBody);
     await expect(client.getJob('job-1')).resolves.toEqual(detailBody);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://127.0.0.1:4100/sessions',
+      'http://127.0.0.1:4100/jobs?projectRoot=%2Ftmp%2Fproject&phase=running',
       expect.objectContaining({
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': 'backend-token' },
@@ -966,15 +961,7 @@ describe('client http-client', () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://127.0.0.1:4100/api/jobs?phase=running',
-      expect.objectContaining({
-        method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      'http://127.0.0.1:4100/api/jobs/job-1',
+      'http://127.0.0.1:4100/jobs/job-1',
       expect.objectContaining({
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': 'backend-token' },

@@ -73,7 +73,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     runtimeState,
     idleTimer: world.idleTimer,
     progressStore: world.progressStore,
-    sessionIndex: world.sessionIndex,
     activeLaunchCount: () => world.launchCoordinator.active,
     queueDepth: () => world.launchCoordinator.queueDepth(),
     streamResponses,
@@ -91,7 +90,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       world.eventBus.on('job:phase_changed', handlers.onPhaseChanged);
       world.eventBus.on('job:progress', handlers.onProgress);
       world.eventBus.on('job:completed', handlers.onCompleted);
-      world.eventBus.on('session:updated', handlers.onSessionUpdated);
       world.eventBus.on('discuss:updated', handlers.onDiscussUpdated);
     },
     unsubscribeBackendEvents: (handlers: EventStreamHandlers) => {
@@ -99,7 +97,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       world.eventBus.off('job:phase_changed', handlers.onPhaseChanged);
       world.eventBus.off('job:progress', handlers.onProgress);
       world.eventBus.off('job:completed', handlers.onCompleted);
-      world.eventBus.off('session:updated', handlers.onSessionUpdated);
       world.eventBus.off('discuss:updated', handlers.onDiscussUpdated);
     },
     liveDiscussCount: () => listAttachedSessions(world.discussRegistry).length,
@@ -128,7 +125,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     runtimeState,
     idleTimer: world.idleTimer,
     progressStore: world.progressStore,
-    sessionIndex: world.sessionIndex,
     streamResponses,
     discussStores: discuss.discussStores,
     eventBus: world.eventBus,
@@ -167,7 +163,6 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     server,
     handleRequest,
     lifecycleController: resolvedLifecycleController,
-    sessionIndex: world.sessionIndex,
     idleTimer: world.idleTimer,
     discussRegistry: world.discussRegistry,
     runtimeState,

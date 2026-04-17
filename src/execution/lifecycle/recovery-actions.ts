@@ -48,7 +48,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       return;
     case 'markError': {
       markJobAsError(progressStore, action.status, action.notice, log);
-      new SessionManager(action.status.projectRoot, runtime, eventBus).releaseJob(action.status.sessionId, action.status.jobId);
+      new SessionManager(action.status.projectRoot, runtime).releaseJob(action.status.sessionId, action.status.jobId);
       if (action.notice === OLD_FORMAT_NOTICE) {
         log(`Marked incompatible old-format job: ${action.jobId}\n`);
       } else if (action.notice === GHOST_LAUNCH_NOTICE) {
@@ -77,7 +77,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       runningRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord, runtimeRecord: action.runtimeRecord });
       return;
     case 'releaseSessionClaim': {
-      SessionManager.openShard(action.shardDir, runtime, eventBus).releaseJob(action.sessionId, action.jobId);
+      SessionManager.openShard(action.shardDir, runtime).releaseJob(action.sessionId, action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
         log(`Released terminal session claim: ${action.sessionId}\n`);

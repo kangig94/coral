@@ -57,7 +57,7 @@ export function buildRecoverySnapshot(
 
   for (const shardDir of listSessionShards(runtime)) {
     try {
-      const sessionManager = SessionManager.openShard(shardDir, runtime, eventBus);
+      const sessionManager = SessionManager.openShard(shardDir, runtime);
       for (const sessionRef of readSessionRefs(shardDir, runtime.storage)) {
         try {
           sessionRefs.push({ shardDir, ...sessionRef });

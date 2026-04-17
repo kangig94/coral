@@ -25,7 +25,6 @@ import type {
 import type { ProgressStore } from './progress-store.js';
 import type { Runtime } from './runtime.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from './service.js';
-import type { SessionIndex } from './session-index.js';
 
 export type BackendBootSnapshot = {
   version?: string;
@@ -88,7 +87,6 @@ export type BackendCoreResult = {
   server: Server;
   handleRequest: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   lifecycleController: LifecycleController;
-  sessionIndex: SessionIndex;
   idleTimer: IdleTimer;
   discussRegistry: DiscussContextRegistry;
   runtimeState: MutableBackendRuntimeState;

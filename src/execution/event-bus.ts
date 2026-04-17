@@ -16,7 +16,6 @@ export type EventBusEvents = {
       outputTokens?: number;
     };
   };
-  'session:updated': { sessionId: string; shardHash: string; version: number; projectRoot?: string };
   'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
 };
 

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Shared type definitions for the Coral plugin.
  */
@@ -20,7 +22,9 @@ export type SessionId = string;
 export type SessionState = 'pending' | 'ready' | 'non_resumable';
 
 /** Lifecycle phase of a single job. */
-export type JobPhase = 'queued' | 'launching' | 'running' | 'completed' | 'error' | 'aborted';
+export const JOB_PHASES = ['queued', 'launching', 'running', 'completed', 'error', 'aborted'] as const;
+export const jobPhaseSchema = z.enum(JOB_PHASES);
+export type JobPhase = (typeof JOB_PHASES)[number];
 
 export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase, 'queued' | 'launching' | 'running'> {
   return phase === 'queued' || phase === 'launching' || phase === 'running';

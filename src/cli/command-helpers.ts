@@ -33,10 +33,6 @@ export type ProviderRunOptions = {
   detach?: boolean;
 };
 
-export type ProviderListOptions = {
-  provider?: string;
-};
-
 export type WaitOptions = {
   jobs: string;
   timeout: string;
@@ -45,7 +41,10 @@ export type WaitOptions = {
 };
 
 export type AbortOptions = {
-  jobs: string;
+  jobs?: string;
+  all?: boolean;
+  phase?: string;
+  provider?: string;
 };
 
 export type WorkflowOptions = {

@@ -311,12 +311,6 @@ function createLifecycleHarness(
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot)
   const { runtimeState } = createRuntimeStateMock()
   const idleTimer = createFakeIdleTimer()
-  const sessionIndex = {
-    hydrate: vi.fn(),
-    hasShard: vi.fn(() => true),
-    discoverShard: vi.fn(),
-    invalidate: vi.fn(),
-  }
   const providerRegistry = options.providerRegistry ?? new modules.providerRegistryModule.ProviderRegistry()
   const launchCoordinator = options.launchCoordinator ?? createLaunchCoordinator(modules)
   const servicesByProjectRoot = options.servicesByProjectRoot ?? new Map<string, unknown>()
@@ -349,7 +343,6 @@ function createLifecycleHarness(
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
     progressStore: options.progressStore,
-    sessionIndex: sessionIndex as never,
     streamResponses: new Set(),
     discussStores: new Map(),
     eventBus: options.eventBus,
@@ -1556,12 +1549,6 @@ describe('lifecycle recovery characterization', () => {
         runtimeState: runtimeState as never,
         idleTimer: createFakeIdleTimer() as never,
         progressStore,
-        sessionIndex: {
-          hydrate: vi.fn(),
-          hasShard: vi.fn(() => true),
-          discoverShard: vi.fn(),
-          invalidate: vi.fn(),
-        } as never,
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),

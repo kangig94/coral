@@ -32,12 +32,12 @@
 - Excluded:
   - `/tmp/coral-jobs/` orphan 자동 정리 (별도 P1 작업).
   - Scope mismatch 탈출구/cross-project abort (별도 P2 작업).
-  - `/api/jobs` 엔드포인트 자체의 response shape 변경 (이미 안정 contract).
+  - `/jobs` 엔드포인트 자체의 response shape 변경 (이미 안정 contract).
   - UI/Reef dashboard 변경.
 - Legacy: `list`, HTTP `GET /api/sessions`, `client.listSessions()`를 동시에 철거해 단일 primitive(jobs)로 일원화한다. Deprecation alias 없음. CHANGELOG에 마이그레이션 노트 기재. 버전 bump는 별도 사용자 지시 시에만.
 
 ## Assumptions
-- `/api/jobs[?phase]` HTTP 엔드포인트가 이미 namespace 필터링을 수행하며, `server.test.ts`의 `/api/jobs phase filter` 테스트가 계약을 보장한다.
+- `/jobs[?phase]` HTTP 엔드포인트가 이미 namespace 필터링을 수행하며, `server.test.ts`의 `/jobs phase filter` 테스트가 계약을 보장한다.
 - `client.listJobs(phase?)`가 이미 존재하므로 CLI 레이어만 추가하면 됨 (`src/client/http-client.ts:277`).
 - `list`는 CLI 사용자(스킬/에이전트/문서)만 의존하며, 외부 스크립트가 참조한다는 증거 없음.
 - Session resume 경로는 launch 응답의 sessionId만으로 충분하다 — 사용자가 session 목록을 브라우징해야 하는 실제 워크플로 없음.
@@ -67,7 +67,7 @@
 - Orphan job cleanup / scope 탈출구는 별도 P1·P2로 분리.
 
 ## Additional Context
-- 이미 backend에 `GET /api/jobs`, `GET /api/jobs/<jobId>`, `?phase=` 필터가 존재. `server.test.ts:2956-3123`이 contract 보증.
+- 이미 backend에 `GET /jobs`, `GET /jobs/<jobId>`, `?phase=` 필터가 존재. `server.test.ts:2956-3123`이 contract 보증.
 - `listLiveJobs(progressStore, namespace)` 헬퍼가 `lifecycle.ts:567`에 있고 `/health`·idle drain에서 이미 활용.
 - 기존 프리플랜 `active-jobs-bundle-hash-filter.md`가 `/health`의 namespace 필터 문제를 다룸 — 본 작업과는 별개지만 backend가 namespace 경계로 job을 이미 잘 구분한다는 증거.
 - G6 PR(`5094b1c0`) 직후 G1 진행 전 단계. 이 작업은 G1이 다룰 `backend-core.ts` 조합 루트의 command dispatch 주변을 깨끗하게 만들어 준다.

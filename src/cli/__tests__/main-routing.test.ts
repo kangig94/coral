@@ -8,8 +8,8 @@ import type * as MainMod from '../main.js';
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
   sendMessage: vi.fn(),
-  listSessions: vi.fn(),
   workflow: vi.fn(),
+  listJobs: vi.fn(),
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
   ensureBackend: vi.fn(),
@@ -50,8 +50,8 @@ vi.mock('../../client/http-client.js', () => {
   class BackendClient {
     createSession = mockState.createSession;
     sendMessage = mockState.sendMessage;
-    listSessions = mockState.listSessions;
     workflow = mockState.workflow;
+    listJobs = mockState.listJobs;
     abortJobs = mockState.abortJobs;
     discussSeed = mockState.discussSeed;
     discussStart = mockState.discussStart;
@@ -116,6 +116,25 @@ function findCommand(root: Command, ...path: string[]): Command {
   return current;
 }
 
+function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; provider?: string } = {}) {
+  const phase = overrides.phase ?? 'running';
+  const provider = overrides.provider ?? 'codex';
+
+  return {
+    jobs: jobIds.map((jobId, index) => ({
+      jobId,
+      status: {
+        provider,
+        phase,
+        projectRoot: process.cwd(),
+        launch: {
+          updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+        },
+      },
+    })),
+  };
+}
+
 describe('cli main routing', () => {
   let stdout = '';
   let stderr = '';
@@ -136,8 +155,8 @@ describe('cli main routing', () => {
 
     mockState.createSession.mockReset();
     mockState.sendMessage.mockReset();
-    mockState.listSessions.mockReset();
     mockState.workflow.mockReset();
+    mockState.listJobs.mockReset();
     mockState.abortJobs.mockReset();
     mockState.launchAndFollow.mockReset();
     mockState.ensureBackend.mockReset();
@@ -177,6 +196,7 @@ describe('cli main routing', () => {
     process.argv = originalArgv;
     process.exitCode = undefined;
     restoreStdin();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.resetModules();
   });
@@ -188,7 +208,7 @@ describe('cli main routing', () => {
 
     expect(program.name()).toBe('coral-cli');
     expect(program.commands.find((command) => command.name() === 'simulate')).toBeDefined();
-    expect(program.commands.find((command) => command.name() === 'list')).toBeDefined();
+    expect(program.commands.find((command) => command.name() === 'wait')).toBeDefined();
   });
 
   it('preserves top-level help output via snapshot', async () => {
@@ -212,6 +232,465 @@ describe('cli main routing', () => {
     const command = findCommand(program, ...path);
 
     expect(command.helpInformation()).toMatchSnapshot();
+  });
+
+  it('routes jobs --phase through filtered job lookup and projected json output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-03T00:00:00.000Z'));
+    mockState.listJobs.mockResolvedValueOnce(makeJobsListResponse(['job-1'], { phase: 'running' }));
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', '--phase', 'running', '--output-format', 'json']);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      phase: 'running',
+    });
+    expect(JSON.parse(stdout.trim())).toEqual([
+      {
+        jobId: 'job-1',
+        phase: 'running',
+        provider: 'codex',
+        cwd: process.cwd(),
+        age: '2d ago',
+      },
+    ]);
+    expect(stderr).toBe('');
+  });
+
+  it('routes jobs --provider through filtered job lookup and projected json output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-03T00:00:00.000Z'));
+    mockState.listJobs.mockResolvedValueOnce(makeJobsListResponse(['job-2'], { provider: 'claude' }));
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', '--provider', 'claude', '--output-format', 'json']);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      provider: 'claude',
+    });
+    expect(JSON.parse(stdout.trim())).toEqual([
+      {
+        jobId: 'job-2',
+        phase: 'running',
+        provider: 'claude',
+        cwd: process.cwd(),
+        age: '2d ago',
+      },
+    ]);
+    expect(stderr).toBe('');
+  });
+
+  it('routes jobs --all through all-phase job lookup and projected json output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-03T00:00:00.000Z'));
+    mockState.listJobs.mockResolvedValueOnce(
+      makeJobsListResponse(['job-3'], { phase: 'completed', provider: 'claude' }),
+    );
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', '--all', '--output-format', 'json']);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      all: true,
+    });
+    expect(JSON.parse(stdout.trim())).toEqual([
+      {
+        jobId: 'job-3',
+        phase: 'completed',
+        provider: 'claude',
+        cwd: process.cwd(),
+        age: '2d ago',
+      },
+    ]);
+    expect(stderr).toBe('');
+  });
+
+  it('returns a usage error for jobs --phase combined with --all', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'jobs',
+      '--phase',
+      'running',
+      '--all',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--phase cannot be used with --all',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('renders a no-match message when jobs lookup returns zero rows', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.listJobs.mockResolvedValueOnce({ jobs: [] });
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', '--provider', 'codex']);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      provider: 'codex',
+    });
+    expect(stdout).toBe('No jobs match current project, live phases, provider=codex\n');
+    expect(stderr).toBe('');
+  });
+
+  it('routes abort --jobs through exact pass-through targeting', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.abortJobs.mockResolvedValueOnce({
+      aborted: ['job-1', 'job-2'],
+      notFound: [],
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1,job-2', '--output-format', 'json']);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: ['job-1', 'job-2'],
+      notFound: [],
+    });
+    expect(stderr).toBe('');
+  });
+
+  it('routes abort --all through live job lookup for the current project', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.listJobs.mockResolvedValueOnce(makeJobsListResponse(['job-1', 'job-2']));
+    mockState.abortJobs.mockResolvedValueOnce({
+      aborted: ['job-1', 'job-2'],
+      notFound: [],
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'abort', '--all', '--output-format', 'json']);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      all: false,
+    });
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: ['job-1', 'job-2'],
+      notFound: [],
+    });
+    expect(stderr).toBe('');
+  });
+
+  it('routes abort --phase running through live job lookup for the current project', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.listJobs.mockResolvedValueOnce(makeJobsListResponse(['job-1'], { phase: 'running' }));
+    mockState.abortJobs.mockResolvedValueOnce({
+      aborted: ['job-1'],
+      notFound: [],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--phase',
+      'running',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      phase: 'running',
+      all: false,
+    });
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1']);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: ['job-1'],
+      notFound: [],
+    });
+    expect(stderr).toBe('');
+  });
+
+  it('routes abort --phase running --provider codex through intersected live job lookup', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.listJobs.mockResolvedValueOnce(
+      makeJobsListResponse(['job-1'], { phase: 'running', provider: 'codex' }),
+    );
+    mockState.abortJobs.mockResolvedValueOnce({
+      aborted: ['job-1'],
+      notFound: [],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--phase',
+      'running',
+      '--provider',
+      'codex',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      phase: 'running',
+      provider: 'codex',
+      all: false,
+    });
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1']);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: ['job-1'],
+      notFound: [],
+    });
+    expect(stderr).toBe('');
+  });
+
+  it('returns a usage error when abort selector is omitted', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync(['node', 'coral-cli', 'abort', '--output-format', 'json']);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--jobs, --all, --phase, or --provider is required',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort --phase completed', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync(['node', 'coral-cli', 'abort', '--phase', 'completed', '--output-format', 'json']);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--phase must be one of: queued, launching, running',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort with an unregistered provider', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--provider',
+      'unknown',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--provider must be one of: codex, claude',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort --all combined with --provider', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--all',
+      '--provider',
+      'codex',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--all cannot be used with --phase or --provider',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort --jobs combined with --all', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--jobs',
+      'job-1',
+      '--all',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--jobs cannot be used with --all, --phase, or --provider',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort --jobs combined with --phase', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--jobs',
+      'job-1',
+      '--phase',
+      'running',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--jobs cannot be used with --all, --phase, or --provider',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('returns a usage error for abort --jobs combined with --provider', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--jobs',
+      'job-1',
+      '--provider',
+      'codex',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+    expect(JSON.parse(stderr.trim())).toEqual({
+      error: true,
+      code: 'invalid_usage',
+      message: '--jobs cannot be used with --all, --phase, or --provider',
+    });
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('skips backend abort when a query selector matches zero live jobs', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.listJobs.mockResolvedValueOnce({ jobs: [] });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--provider',
+      'codex',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      provider: 'codex',
+      all: false,
+    });
+    expect(mockState.abortJobs).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: [],
+      notFound: [],
+    });
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('preserves exact abort partial misses as a pass-through result', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.abortJobs.mockResolvedValueOnce({
+      aborted: ['job-live'],
+      notFound: ['job-terminal'],
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'abort',
+      '--jobs',
+      'job-live,job-terminal',
+      '--output-format',
+      'json',
+    ]);
+
+    expect(mockState.listJobs).not.toHaveBeenCalled();
+    expect(mockState.abortJobs).toHaveBeenCalledWith(['job-live', 'job-terminal']);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      aborted: ['job-live'],
+      notFound: ['job-terminal'],
+    });
+    expect(stderr).toBe('');
   });
 
   it('routes simulate to the scenario runner command surface', async () => {
@@ -499,101 +978,6 @@ describe('cli main routing', () => {
     expect(stderr).toBe('HTTP 400: {"code":"bad_request","message":"Missing prompt"}\n');
     expect(process.exitCode).toBe(1);
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
-  });
-
-  it('intercepts legacy provider list before input validation', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    await program.parseAsync(['node', 'coral-cli', 'codex', 'list']);
-
-    expect(stderr).toContain('coral-cli list --provider codex');
-    expect(stderr).not.toContain('input is required');
-    expect(mockState.createSession).not.toHaveBeenCalled();
-    expect(mockState.sendMessage).not.toHaveBeenCalled();
-    expect(process.exitCode).toBe(2);
-  });
-
-  it('lists sessions for a single provider via the top-level list command', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    mockState.listSessions.mockResolvedValueOnce({
-      sessions: [
-        {
-          sessionId: 'session-1',
-          provider: 'codex',
-          name: 'alpha',
-          state: 'ready',
-          model: 'gpt-5',
-          cwd: '/tmp/project',
-          createdAt: '2026-03-14T00:00:00.000Z',
-          lastUsedAt: '2026-03-14T00:00:00.000Z',
-          version: 1,
-          provenanceState: 'authoritative',
-        },
-      ],
-    });
-
-    await program.parseAsync(['node', 'coral-cli', 'list', '--provider', 'codex', '-f', 'json']);
-
-    expect(mockState.listSessions).toHaveBeenCalledWith();
-    expect(JSON.parse(stdout.trim())).toEqual({
-      sessions: [
-        {
-          sessionId: 'session-1',
-          provider: 'codex',
-          name: 'alpha',
-          state: 'ready',
-          model: 'gpt-5',
-          cwd: '/tmp/project',
-        },
-      ],
-    });
-  });
-
-  it('aggregates provider sessions at the top level and includes provider labels in text output', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    mockState.listSessions
-      .mockResolvedValueOnce({
-        sessions: [
-          {
-            sessionId: 'session-1',
-            provider: 'codex',
-            name: 'alpha',
-            state: 'ready',
-            model: 'gpt-5',
-            cwd: '/tmp/codex',
-            createdAt: '2026-03-14T00:00:00.000Z',
-            lastUsedAt: '2026-03-14T00:00:00.000Z',
-            version: 1,
-            provenanceState: 'authoritative',
-          },
-          {
-            sessionId: 'session-2',
-            provider: 'claude',
-            name: 'beta',
-            state: 'ready',
-            model: 'sonnet',
-            cwd: '/tmp/claude',
-            createdAt: '2026-03-15T00:00:00.000Z',
-            lastUsedAt: '2026-03-15T00:00:00.000Z',
-            version: 1,
-            provenanceState: 'authoritative',
-          },
-        ],
-      });
-
-    await program.parseAsync(['node', 'coral-cli', 'list']);
-
-    expect(mockState.listSessions).toHaveBeenCalledTimes(1);
-    expect(stdout).toContain('PROVIDER');
-    expect(stdout).toContain('codex');
-    expect(stdout).toContain('claude');
-    expect(stdout).toContain('session-1');
-    expect(stdout).toContain('session-2');
   });
 
   it('routes workflow launches into launchAndFollow by default', async () => {

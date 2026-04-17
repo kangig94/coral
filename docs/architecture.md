@@ -15,7 +15,7 @@ Claude Code
       ▼
 bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
-  ├── Workflow commands (`workflow`, `wait`, `abort`)
+  ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
   ├── Admin commands (`backend status|shutdown`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
@@ -44,8 +44,8 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /sessions` | 201 | Create session (with optional `agent` for coral dispatch) |
 | `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
 | `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
-| `GET /sessions` | 200 | List sessions (flat, namespace-scoped by stored `backendNamespace`) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
+| `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
 | `POST /discuss/persona-sets` | 200 | Compute discuss persona sets from seed input |
@@ -76,7 +76,8 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
 | `GET /events/stream` | 200 | Backend-local event stream for live observers |
-| `GET /api/jobs` / `GET /api/jobs/:id` | 200 | Job summaries and detailed progress history |
+
+`GET /jobs` accepts optional `projectRoot`, `phase`, `provider`, and `all=1` query filters. Without `all=1`, the list stays live-only (`queued`, `launching`, `running`) and remains sorted by `updatedAt` descending.
 
 Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatch), 404 (not found), 409 (conflict / legacy session), 503 (recovering / busy).
 
@@ -99,6 +100,12 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 2. `coral-cli wait --jobs "<ids>" --output-format json [--embed]` calls `streamWait()`
 3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
 4. Terminal events always include `result.path`; `result.content` is optional inline enrichment
+
+### Job inspection and control
+
+1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `GET /jobs` for the current project and projects job summaries into the CLI surface
+2. `coral-cli abort --jobs "<ids>"` posts directly to `POST /jobs/abort`
+3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through `GET /jobs`, then aborts the resulting job IDs
 
 ### Workflow
 

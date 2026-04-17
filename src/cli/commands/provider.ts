@@ -28,11 +28,6 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
         const outputFormat = getOutputFormat(provider);
 
         try {
-          if (agent === 'list') {
-            throw new UsageError(
-              `Legacy "coral-cli ${providerName} list" has moved to "coral-cli list --provider ${providerName}"`,
-            );
-          }
           if (opts.input === undefined) {
             throw new UsageError('input is required (-i, --input)');
           }

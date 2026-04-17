@@ -1,4 +1,5 @@
 import { MAX_INLINE } from '../shared/schemas.js';
+import type { JobsListResponse } from '../client/http-client.js';
 import { isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
 import type {
@@ -26,7 +27,7 @@ import type {
   ReindexResult,
 } from '../kb/types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { PersistedStatusRecord, TerminalResult, WaitStreamEvent } from '../shared/types.js';
 
 type DiscussAbortResult = {
   ok: boolean;
@@ -38,16 +39,18 @@ type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
 type WaitRunningEvent = Extract<WaitStreamEvent, { type: 'running' }>;
 type KbReadDisplayResult = KbReadResult & { age?: string };
+export type JobsListDisplayRow = {
+  jobId: string;
+  phase: string;
+  provider: string;
+  cwd: string;
+  age: string;
+};
 
-export type SessionListResult = {
-  sessions: Array<{
-    provider?: string;
-    sessionId: string;
-    state?: string;
-    name?: string;
-    model?: string;
-    cwd?: string;
-  }>;
+export type JobsListDisplayFilters = {
+  phase?: string;
+  provider?: string;
+  all?: boolean;
 };
 
 export type WaitRenderContext = {
@@ -199,6 +202,57 @@ function pickTerminalPreviewSource(result: TerminalResult): string {
   return '(empty result)';
 }
 
+function formatRelativeAge(updatedAt: string, now = Date.now()): string {
+  const updatedMs = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedMs)) {
+    return 'unknown';
+  }
+
+  const deltaMs = Math.max(0, now - updatedMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (deltaMs < minute) {
+    return 'just now';
+  }
+
+  if (deltaMs < hour) {
+    const minutes = Math.floor(deltaMs / minute);
+    return `${minutes}m ago`;
+  }
+
+  if (deltaMs < day) {
+    const hours = Math.floor(deltaMs / hour);
+    return `${hours}h ago`;
+  }
+
+  const days = Math.floor(deltaMs / day);
+  return `${days}d ago`;
+}
+
+function readJobCwd(status: PersistedStatusRecord): string {
+  return status.projectRoot;
+}
+
+function describeJobsMatch(filters: JobsListDisplayFilters): string {
+  const parts = ['current project'];
+
+  if (filters.all === true) {
+    parts.push('all phases');
+  } else if (filters.phase) {
+    parts.push(`phase=${filters.phase}`);
+  } else {
+    parts.push('live phases');
+  }
+
+  if (filters.provider) {
+    parts.push(`provider=${filters.provider}`);
+  }
+
+  return parts.join(', ');
+}
+
 export function formatLaunch(result: AcceptedLaunchResponse): string {
   return `Job ${result.job} ${result.launchState} (session ${result.session})`;
 }
@@ -210,33 +264,25 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-export function formatProviderList(result: SessionListResult, options: { includeProvider?: boolean } = {}): string {
-  if (result.sessions.length === 0) {
-    return 'No sessions';
+export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListDisplayRow[] {
+  return data.jobs.map(({ jobId, status }) => ({
+    jobId,
+    phase: status.phase,
+    provider: status.provider,
+    cwd: readJobCwd(status),
+    age: formatRelativeAge(status.launch.updatedAt, now),
+  }));
+}
+
+export function renderJobsList(rows: JobsListDisplayRow[], filters: JobsListDisplayFilters = {}): string {
+  if (rows.length === 0) {
+    return `No jobs match ${describeJobsMatch(filters)}`;
   }
 
-  if (options.includeProvider === true) {
-    const rows = result.sessions.map((session) => [
-      session.provider ?? '-',
-      session.sessionId,
-      session.state ?? '-',
-      session.name ?? '-',
-      session.model ?? '-',
-      session.cwd ?? '-',
-    ]);
-
-    return formatTable(['PROVIDER', 'SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
-  }
-
-  const rows = result.sessions.map((session) => [
-    session.sessionId,
-    session.state ?? '-',
-    session.name ?? '-',
-    session.model ?? '-',
-    session.cwd ?? '-',
-  ]);
-
-  return formatTable(['SESSION', 'STATE', 'NAME', 'MODEL', 'CWD'], rows);
+  return formatTable(
+    ['JOB ID', 'PHASE', 'PROVIDER', 'CWD', 'AGE'],
+    rows.map((row) => [row.jobId, row.phase, row.provider, row.cwd, row.age]),
+  );
 }
 
 export function formatPersonaSeed(result: PersonaSeedOutput): string {

@@ -1881,33 +1881,36 @@ describe('ExecutionService', () => {
       await expect(service.waitForJobTerminal('missing-job', 100)).rejects.toThrow('Job not found: missing-job');
     });
 
-    it('waits for both terminal status and session claim release', async () => {
-      const service = createService(ctx);
-      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+    it('waits for both terminal status and session claim release without session events', async () => {
+      vi.useFakeTimers();
+      try {
+        const service = createService(ctx);
+        const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
 
-      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
-      const waiter = service.waitForJobTerminal(jobId, 250);
-      void waiter.then(
-        () => {
-          outcome = 'resolved';
-        },
-        () => {
-          outcome = 'rejected';
-        },
-      );
+        let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+        const waiter = service.waitForJobTerminal(jobId, 250);
+        void waiter.then(
+          () => {
+            outcome = 'resolved';
+          },
+          () => {
+            outcome = 'rejected';
+          },
+        );
 
-      await Promise.resolve();
-      progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
-      await Promise.resolve();
-      expect(outcome).toBe('pending');
+        await Promise.resolve();
+        progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+        await Promise.resolve();
+        expect(outcome).toBe('pending');
 
-      sessionManager.setConversationRef(sessionId, 'thread-1');
-      await Promise.resolve();
-      expect(outcome).toBe('pending');
+        sessionManager.releaseJob(sessionId, jobId);
+        await vi.advanceTimersByTimeAsync(20);
 
-      sessionManager.releaseJob(sessionId, jobId);
-      await expect(waiter).resolves.toBeUndefined();
-      expect(outcome).toBe('resolved');
+        await expect(waiter).resolves.toBeUndefined();
+        expect(outcome).toBe('resolved');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('rechecks persisted state after subscribing so listener-install races cannot miss completion', async () => {
@@ -1924,7 +1927,7 @@ describe('ExecutionService', () => {
       ) => {
         if (
           suppressWakeups &&
-          (event === 'job:completed' || event === 'job:phase_changed' || event === 'session:updated')
+          (event === 'job:completed' || event === 'job:phase_changed' || event === 'job:progress')
         ) {
           return false;
         }

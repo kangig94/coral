@@ -25,8 +25,7 @@ import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { ProgressStore } from '../progress-store.js';
-import { SessionIndex } from '../session-index.js';
-import { SessionManager, listSessionShards } from '../session-manager.js';
+import { SessionManager } from '../session-manager.js';
 import {
   discussEventLogPath,
   discussSourcesPath,
@@ -1222,7 +1221,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
-        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
@@ -3155,16 +3153,8 @@ describe('execution backend server', () => {
         provider: 'codex',
         projectRoot: '/tmp/project',
       });
-      eventBus.emit('session:updated', {
-        sessionId: 'session-1',
-        shardHash: 'abc123',
-        version: 2,
-        projectRoot: '/tmp/project',
-      });
 
-      const eventChunk = await stream.waitForText(
-        (text) => text.includes('event: job:created') && text.includes('event: session:updated'),
-      );
+      const eventChunk = await stream.waitForText((text) => text.includes('event: job:created'));
 
       expect(eventChunk).toContain('"jobId":"job-1"');
       expect(eventChunk).not.toContain('"jobId":"job-2"');
@@ -3209,7 +3199,7 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-2' });
 
-    const jobsResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
+    const jobsResponse = await fetch(`${backend.baseUrl}/jobs`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const jobsBody = (await jobsResponse.json()) as {
@@ -3240,7 +3230,7 @@ describe('execution backend server', () => {
       ]),
     );
 
-    const detailResponse = await fetch(`${backend.baseUrl}/api/jobs/job-1`, {
+    const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-1`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const detailBody = (await detailResponse.json()) as {
@@ -3266,7 +3256,7 @@ describe('execution backend server', () => {
       result: { content: 'done' },
     });
 
-    const missingResponse = await fetch(`${backend.baseUrl}/api/jobs/missing-job`, {
+    const missingResponse = await fetch(`${backend.baseUrl}/jobs/missing-job`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
 
@@ -3277,8 +3267,8 @@ describe('execution backend server', () => {
     });
   });
 
-  describe('/api/jobs phase filter', () => {
-    it('filters collection responses by phase and preserves job detail lookups', async () => {
+  describe('GET /jobs query filters', () => {
+    it('filters collection responses by projectRoot, phase, all, and provider and sorts by updatedAt descending', async () => {
       const fakeService = createFakeExecutionService();
       const progressStore = new ProgressStore('test-ns', runtime);
       const backend = await startBackendServer({
@@ -3289,6 +3279,7 @@ describe('execution backend server', () => {
       createdJobIds.add('job-running');
       createdJobIds.add('job-queued');
       createdJobIds.add('job-completed');
+      createdJobIds.add('job-foreign-project');
 
       progressStore.initJob({
         jobId: 'job-running',
@@ -3324,13 +3315,52 @@ describe('execution backend server', () => {
       progressStore.initJob({
         jobId: 'job-completed',
         sessionId: 'session-completed',
-        provider: 'codex',
+        provider: 'claude',
+        projectRoot: '/tmp/project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubLaunchRecord(progressStore, {
+        jobId: 'job-completed',
+        sessionId: 'session-completed',
+        provider: 'claude',
         projectRoot: '/tmp/project',
         backendNamespace: testBackendNamespace,
       });
       progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
+      progressStore.initJob({
+        jobId: 'job-foreign-project',
+        sessionId: 'session-foreign-project',
+        provider: 'codex',
+        projectRoot: '/tmp/other-project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubLaunchRecord(progressStore, {
+        jobId: 'job-foreign-project',
+        sessionId: 'session-foreign-project',
+        provider: 'codex',
+        projectRoot: '/tmp/other-project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubRuntimeRecord(progressStore, { jobId: 'job-foreign-project' });
 
-      const allResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
+      const setUpdatedAt = (jobId: string, updatedAt: string) => {
+        const status = progressStore.readStatus(jobId);
+        expect(status).not.toBeNull();
+        progressStore.writeStatus(jobId, {
+          ...status!,
+          launch: {
+            ...status!.launch,
+            updatedAt,
+          },
+        });
+      };
+
+      setUpdatedAt('job-running', '2026-04-17T10:00:00.000Z');
+      setUpdatedAt('job-queued', '2026-04-17T12:00:00.000Z');
+      setUpdatedAt('job-completed', '2026-04-17T11:00:00.000Z');
+      setUpdatedAt('job-foreign-project', '2026-04-17T09:00:00.000Z');
+
+      const allResponse = await fetch(`${backend.baseUrl}/jobs`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const allBody = (await allResponse.json()) as {
@@ -3338,9 +3368,27 @@ describe('execution backend server', () => {
       };
 
       expect(allResponse.status).toBe(200);
-      expect(allBody.jobs.map((job) => job.jobId).sort()).toEqual(['job-completed', 'job-queued', 'job-running']);
+      expect(allBody.jobs.map((job) => job.jobId)).toEqual([
+        'job-queued',
+        'job-completed',
+        'job-running',
+        'job-foreign-project',
+      ]);
 
-      const runningResponse = await fetch(`${backend.baseUrl}/api/jobs?phase=running`, {
+      const projectScopedResponse = await fetch(
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
+      const projectScopedBody = (await projectScopedResponse.json()) as {
+        jobs: Array<{ jobId: string; status: { phase: string } }>;
+      };
+
+      expect(projectScopedResponse.status).toBe(200);
+      expect(projectScopedBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-running']);
+
+      const runningResponse = await fetch(`${backend.baseUrl}/jobs?phase=running`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const runningBody = (await runningResponse.json()) as {
@@ -3358,25 +3406,45 @@ describe('execution backend server', () => {
         },
       ]);
 
-      const queuedResponse = await fetch(`${backend.baseUrl}/api/jobs?phase=queued`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
-      });
-      const queuedBody = (await queuedResponse.json()) as {
+      const allProjectsResponse = await fetch(
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}&all=1`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
+      const allProjectsBody = (await allProjectsResponse.json()) as {
         jobs: Array<{ jobId: string; status: { phase: string } }>;
       };
 
-      expect(queuedResponse.status).toBe(200);
-      expect(queuedBody.jobs).toEqual([
+      expect(allProjectsResponse.status).toBe(200);
+      expect(allProjectsBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-completed', 'job-running']);
+
+      const providerResponse = await fetch(`${backend.baseUrl}/jobs?provider=codex&all=1`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+      const providerBody = (await providerResponse.json()) as {
+        jobs: Array<{ jobId: string; status: { phase: string } }>;
+      };
+
+      expect(providerResponse.status).toBe(200);
+      expect(providerBody.jobs).toEqual([
         {
-          jobId: 'job-queued',
+          jobId: 'job-running',
           status: expect.objectContaining({
-            jobId: 'job-queued',
-            phase: 'queued',
+            jobId: 'job-running',
+            phase: 'running',
+          }),
+        },
+        {
+          jobId: 'job-foreign-project',
+          status: expect.objectContaining({
+            jobId: 'job-foreign-project',
+            phase: 'launching',
           }),
         },
       ]);
 
-      const detailResponse = await fetch(`${backend.baseUrl}/api/jobs/job-completed`, {
+      const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-completed`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const detailBody = (await detailResponse.json()) as {
@@ -3398,49 +3466,6 @@ describe('execution backend server', () => {
         }),
       ]);
     });
-  });
-
-  it('lists only authoritative in-namespace sessions from /sessions and skips corrupt entries', async () => {
-    const projectRoot = createProjectRoot('session-project');
-    const foreignProjectRoot = createProjectRoot('foreign-session-project');
-    const visible = new SessionManager(projectRoot, runtime).allocate({
-      provider: 'codex',
-      name: 'alpha',
-      model: 'gpt-5',
-      cwd: projectRoot,
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-    });
-    new SessionManager(foreignProjectRoot, runtime).allocate({
-      provider: 'codex',
-      name: 'foreign',
-      model: 'gpt-5',
-      cwd: foreignProjectRoot,
-      projectRoot: foreignProjectRoot,
-      backendNamespace: foreignBackendNamespace,
-    });
-    new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
-    const [shardDir] = listSessionShards(runtime);
-    writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
-
-    const backend = await startBackendServer();
-    const response = await fetch(`${backend.baseUrl}/sessions`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-    const body = (await response.json()) as {
-      sessions: Array<Record<string, unknown>>;
-    };
-
-    expect(response.status).toBe(200);
-    expect(body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: visible.sessionId,
-        provider: 'codex',
-        state: 'pending',
-        backendNamespace: testBackendNamespace,
-        provenanceState: 'authoritative',
-      }),
-    ]);
   });
 
   it('maps provider-less continuation errors on the new session routes', async () => {
@@ -3933,12 +3958,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: {
-          hydrate: vi.fn(),
-          hasShard: vi.fn(() => true),
-          discoverShard: vi.fn(),
-          invalidate: vi.fn(),
-        } as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4180,12 +4199,6 @@ describe('execution backend server', () => {
       };
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
       const providerHostManager = createFakeProviderHostManager();
       // eslint-disable-next-line prefer-const -- circular: writeBackendInfoFn closure reads controller, but controller assignment needs writeBackendInfoFn
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
@@ -4212,7 +4225,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4312,12 +4324,6 @@ describe('execution backend server', () => {
       const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
 
       const controller = lifecycleModule.createLifecycle({
         identity: {
@@ -4336,7 +4342,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4447,12 +4452,6 @@ describe('execution backend server', () => {
 
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState, setLifecycle } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
       const discussRegistry = createDiscussContextRegistry();
       const writeBackendInfoFn = vi.fn();
       const lifecycleRuntime = createRealRuntime();
@@ -4485,7 +4484,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map([[source, store]]),
         eventBus: new TypedEventBus(),
@@ -4581,12 +4579,6 @@ describe('execution backend server', () => {
 
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState, setLifecycle } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
       const providerHostManager = createFakeProviderHostManager();
       const writeBackendInfoFn = vi.fn();
       const cleanupSpy = vi.fn();
@@ -4637,7 +4629,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4743,7 +4734,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
-        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),

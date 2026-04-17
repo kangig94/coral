@@ -18,7 +18,6 @@ export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
 
 export type LifecycleWiringState = {
-  sessionIndexTeardown: (() => void) | null;
   ownershipCheckerTeardown: (() => void) | null;
 };
 
@@ -149,8 +148,6 @@ export async function runShutdownSequence({
     backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);
-  state.sessionIndexTeardown?.();
-  state.sessionIndexTeardown = null;
   for (const store of discussStores.values()) {
     store.dispose();
   }

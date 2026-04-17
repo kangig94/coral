@@ -40,8 +40,7 @@ Key modules and their roles in the current Coral runtime.
 | `host-manager.ts` | Provider host runtime management (runtime-backed spawn) |
 | `event-bus.ts` | Typed backend event bus |
 | `progress-store.ts` | Namespace-bound job persistence. Constructor: `(namespace, runtime, eventBus?)`. Lazy hydration via `ensureHydrated()`. Instance-scoped `enqueueSequence`. |
-| `session-manager.ts` | Persisted provider sessions. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
-| `session-index.ts` | Namespace-aware session indexing |
+| `session-manager.ts` | Persisted provider sessions on disk. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
 | `agent-resolution.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
 | `instruction.ts` | Converts resolved content into provider instructions |
 | `tool-response.ts` | Shared domain result contract used by HTTP routes |
@@ -54,7 +53,7 @@ Key modules and their roles in the current Coral runtime.
 | --- | --- |
 | `create-backend-core.ts` | Orchestration root. `createBackendCore` sequences `resolveBackendDefaults` → `createBackendWorld` → `finalizeWithWorld(world)` → `createRuntimeState` → `createExecutionServices` → `createDiscussRuntime` → `createBackendControl`, assembles `HttpHandlerDeps` + `LifecycleDeps`, creates the server, and late-binds `lifecycleController`. Owns the single `streamResponses` set and the `scopeCheckJobs` 2-arity curry. |
 | `backend-defaults.ts` | `resolveBackendDefaults(options, runtime)` returns a single-use `BackendDefaultsPlan`: eager defaults plus `finalizeWithWorld(bindings)` that binds `listenFn`, `cleanupStaleJobsFn`, `markJobsAsErrorFn`, and `terminateAllFn` against the world and throws on a second call. Owns `__PLUGIN_ROOT__`, ownership verifier, plugin-root resolution, and the default factory bag. |
-| `backend-world.ts` | `createBackendWorld(options, runtime, defaultsPlan)` resolves identity metadata (version, bundleHash, flavor, instanceId, token, bindHost, advertiseHost, backendPid, coralEnvSnapshot, log, resolveProjectSource, namespace, pluginRoot), runs `setBuildFlavor`/`backendLog.init`, constructs primitive singletons (`IdleTimer`, `LaunchCoordinator`, `TypedEventBus`, `ProviderRegistry`, `PluginRegistry`, `DiscussContextRegistry`, `ProgressStore`, `ProviderHostManager`, `SessionIndex`), and returns the `BackendWorld` bag. Declares `__VERSION__`. |
+| `backend-world.ts` | `createBackendWorld(options, runtime, defaultsPlan)` resolves identity metadata (version, bundleHash, flavor, instanceId, token, bindHost, advertiseHost, backendPid, coralEnvSnapshot, log, resolveProjectSource, namespace, pluginRoot), runs `setBuildFlavor`/`backendLog.init`, constructs primitive singletons (`IdleTimer`, `LaunchCoordinator`, `TypedEventBus`, `ProviderRegistry`, `PluginRegistry`, `DiscussContextRegistry`, `ProgressStore`, `ProviderHostManager`), and returns the `BackendWorld` bag. Declares `__VERSION__`. |
 | `runtime-state.ts` | `createRuntimeState(startedAt)` returns `MutableBackendRuntimeState` (lifecycle, startedAt, kbSubsystem, kbInitError, launchFenceActive). |
 | `execution-services.ts` | `createExecutionServices` exposes per-`CallerContext` `getExecutionService`/`getRecoveryService`/`listExecutionServices` with a private `Map<string, ExecutionServiceLike>`. Also re-exports `listInstantiatedExecutionServices` for façade compatibility. |
 | `discuss-runtime.ts` | `createDiscussRuntime` returns `getDiscussStoreForSource`, `getDiscussContext`, `readHelpersDeps`, `discussStores` (live Map for `LifecycleDeps`), and `hooks` (`onShutdown`, `onIdleCheck`, `onRecoveryComplete`). Hooks live here because every branch pivots on discuss state. |

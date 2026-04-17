@@ -2,8 +2,8 @@
  * Lifecycle management for the backend server.
  *
  * Extracted from `createBackendServer()` in server.ts. Owns startup,
- * shutdown, recovery adoption, session-index subscription, idle-watch setup,
- * and the replacement-backend ownership checker.
+ * shutdown, recovery adoption, idle-watch setup, and the
+ * replacement-backend ownership checker.
  *
  * All dependencies are received through the explicit `LifecycleDeps` contract.
  */
@@ -18,8 +18,6 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { SessionIndex } from './session-index.js';
-import { listSessionShards } from './session-manager.js';
 import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import type { RecoveredDiscussResume } from './discuss/operations.js';
@@ -34,7 +32,6 @@ import { listLiveJobs, markJobAsError } from './lifecycle/job-helpers.js';
 import { resolveClientHost } from './lifecycle/network.js';
 import { createReplacementBackendOwnershipChecker } from './lifecycle/ownership-checker.js';
 import { createRecoveryCoordinator } from './lifecycle/recovery-coordinator.js';
-import { createSessionIndexSubscription } from './lifecycle/session-index-subscription.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './lifecycle/shutdown-sequence.js';
 import { StartupInterruptedError } from './lifecycle/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
@@ -166,7 +163,6 @@ export type LifecycleDeps = {
   readonly runtimeState: MutableBackendRuntimeState;
   readonly idleTimer: IdleTimer;
   readonly progressStore: ProgressStore;
-  readonly sessionIndex: SessionIndex;
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
   readonly eventBus: TypedEventBus;
@@ -220,7 +216,6 @@ type LifecycleStartupContext = {
   state: LifecycleControlState;
   createCallerContext: (projectRoot: string) => CallerContext;
   recoveryCoordinator: ReturnType<typeof createRecoveryCoordinator>;
-  sessionIndexSubscription: ReturnType<typeof createSessionIndexSubscription>;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
   shutdown: (reason: string) => Promise<void>;
 };
@@ -230,7 +225,6 @@ async function runLifecycleStartup({
   state,
   createCallerContext,
   recoveryCoordinator,
-  sessionIndexSubscription,
   ownershipChecker,
   shutdown,
 }: LifecycleStartupContext): Promise<BackendServerInfo> {
@@ -241,7 +235,6 @@ async function runLifecycleStartup({
     runtimeState,
     idleTimer,
     progressStore,
-    sessionIndex,
     eventBus,
     launchCoordinator,
     providerRegistry,
@@ -293,8 +286,6 @@ async function runLifecycleStartup({
       runtimeState.setKbInitError(message);
     }
     assertStartupStillActive();
-    state.sessionIndexTeardown = sessionIndexSubscription.install();
-    sessionIndex.hydrate(listSessionShards(runtime));
 
     const { port, host } = await listenFn(server);
     assertStartupStillActive();
@@ -369,8 +360,6 @@ async function runLifecycleStartup({
     idleTimer.stopWatching();
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
-    state.sessionIndexTeardown?.();
-    state.sessionIndexTeardown = null;
 
     try {
       await closeServerFn(server);
@@ -391,10 +380,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     runtimeState,
     idleTimer,
     progressStore,
-    sessionIndex,
     streamResponses,
     discussStores,
-    eventBus,
     providerRegistry,
     server,
     getRecoveryService,
@@ -414,10 +401,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
   const state: LifecycleControlState = {
     shutdownPromise: null,
     started: false,
-    sessionIndexTeardown: null,
     ownershipCheckerTeardown: null,
   };
-  const sessionIndexSubscription = createSessionIndexSubscription({ eventBus, sessionIndex });
   const ownershipChecker = createReplacementBackendOwnershipChecker({
     runtime,
     runtimeState,
@@ -489,7 +474,6 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         state,
         createCallerContext,
         recoveryCoordinator,
-        sessionIndexSubscription,
         ownershipChecker,
         shutdown,
       });

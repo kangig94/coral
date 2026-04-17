@@ -8,7 +8,6 @@ import type { KbReadResult } from '../../kb/types.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { WaitStreamEvent } from '../../shared/types.js';
 import {
-  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatDiscussAbort,
@@ -29,7 +28,6 @@ import {
   formatKbUpdate,
   formatLaunch,
   formatPersonaSeed,
-  formatProviderList,
   formatShutdown,
   formatWaitProgress,
   formatWaitQueued,
@@ -64,40 +62,6 @@ const mixedAbortResult = {
   aborted: ['job-1'],
   notFound: ['job-9'],
 } satisfies AbortResult;
-
-const listResult = {
-  sessions: [
-    {
-      sessionId: 'session-1',
-      provider: 'codex',
-      name: 'alpha',
-      state: 'ready',
-      model: 'gpt-5',
-      cwd: '/tmp/project',
-    },
-  ],
-} satisfies SessionListResult;
-
-const aggregatedListResult = {
-  sessions: [
-    {
-      sessionId: 'session-1',
-      provider: 'codex',
-      name: 'alpha',
-      state: 'ready',
-      model: 'gpt-5',
-      cwd: '/tmp/codex',
-    },
-    {
-      sessionId: 'session-2',
-      provider: 'claude',
-      name: 'beta',
-      state: 'non_resumable',
-      model: 'sonnet',
-      cwd: '/tmp/claude',
-    },
-  ],
-} satisfies SessionListResult;
 
 const personaSeedResult = {
   seed_used: 7,
@@ -213,32 +177,6 @@ describe('cli format', () => {
 
     it('formats a result with both aborted and missing jobs', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
-    });
-  });
-
-  describe('formatProviderList', () => {
-    it('formats an empty provider list', () => {
-      expect(formatProviderList({ sessions: [] })).toBe('No sessions');
-    });
-
-    it('formats a single session in table form', () => {
-      const formatted = formatProviderList(listResult);
-
-      expect(formatted).toContain('SESSION');
-      expect(formatted).toContain('STATE');
-      expect(formatted).toContain('session-1');
-      expect(formatted).toContain('ready');
-      expect(formatted).toContain('/tmp/project');
-    });
-
-    it('formats aggregated provider output with a provider column', () => {
-      const formatted = formatProviderList(aggregatedListResult, { includeProvider: true });
-
-      expect(formatted).toContain('PROVIDER');
-      expect(formatted).toContain('codex');
-      expect(formatted).toContain('claude');
-      expect(formatted).toContain('session-1');
-      expect(formatted).toContain('session-2');
     });
   });
 

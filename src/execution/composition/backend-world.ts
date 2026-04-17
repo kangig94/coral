@@ -18,7 +18,6 @@ import { createProviderHostManager, type ProviderHostManager } from '../host-man
 import type { IdleTimer } from '../idle-timer.js';
 import { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../runtime.js';
-import { SessionIndex } from '../session-index.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
 
 export interface BackendWorld {
@@ -37,7 +36,6 @@ export interface BackendWorld {
   readonly discussRegistry: DiscussContextRegistry;
   readonly progressStore: ProgressStore;
   readonly providerHostManager: ProviderHostManager;
-  readonly sessionIndex: SessionIndex;
   readonly pluginRoot: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -89,7 +87,6 @@ export function createBackendWorld(
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
-  const sessionIndex = new SessionIndex(runtime);
 
   const identity: BackendIdentity = {
     pluginRoot,
@@ -119,7 +116,6 @@ export function createBackendWorld(
     discussRegistry,
     progressStore,
     providerHostManager,
-    sessionIndex,
     pluginRoot,
     now,
     log,

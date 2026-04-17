@@ -37,7 +37,6 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('codex');
     expect(stdout).toContain('claude');
     expect(stdout).toContain('simulate');
-    expect(stdout).toContain('list');
     expect(stdout).toContain('wait');
     expect(stdout).toContain('abort');
     expect(stdout).toContain('workflow');

@@ -15,18 +15,19 @@ Coral CLI는 현재 `list`로 session만 보여주고 활성 job 발견 경로�
 `session:updated` SSE topic도 `job:terminal` 이벤트에서 파생 가능하므로 제거한다. Reef ChatUI처럼 이 이벤트에 의존하던 consumer는 `job:terminal { sessionId }`로 대체 가능하며, 그건 Reef의 책임 범위다.
 
 핵심 방향:
-1. `GET /api/jobs`에 `projectRoot`/`phase`/`all`/`provider` 쿼리 필터 추가 (raw shape 유지 — Reef의 `syncJobs`는 계속 동작).
+1. Jobs HTTP surface를 `/jobs` 하나로 통일. legacy jobs read path → `GET /jobs`, legacy job detail path → `GET /jobs/{jobId}`로 prefix 정규화 (기존 `POST /jobs/wait`, `POST /jobs/abort`와 동일 prefix). 동시에 `GET /jobs`에 `projectRoot`/`phase`/`all`/`provider` 쿼리 필터 추가. Response shape는 유지 — path 변경이 유일한 breaking change.
 2. `GET /sessions` HTTP 라우트 + `SessionIndex` plumbing + `session-index.ts` 전부 제거. Reef의 `safeFetch('/sessions')`는 null 받고 sync skip — Reef는 자체 cold-scan으로 session 인벤토리 구축 지속.
 3. `session:updated` event bus topic + emit + SSE relay + 관련 internal listener 제거. 내부 consumer(`job-lifecycle.ts`의 waitForJob 등)는 job 이벤트 기반으로 refactor.
 4. `client.listSessions`, `SessionsListResponse`, `LenientSessionEntry`의 client/index.ts 재수출 제거. `src/client/readers.ts`의 filesystem 헬퍼는 유지 (cold-scan 등 파일 소비자용).
 5. `coral-cli list` 제거, `coral-cli jobs` 신설, `coral-cli abort` selector 확장.
 6. Docs/skills/agents/tests 일괄 업데이트.
 
-Reef 저장소는 본 PR scope 밖. Coral `/sessions` 제거 → Reef의 session sync는 자동으로 건너뜀 (safeFetch null). Reef가 여전히 session inventory를 원하면 cold-scan 경로가 이미 존재하므로 별도 housekeeping으로 충분.
+Reef 저장소는 본 PR scope 밖. Coral `/sessions` 제거 → Reef의 session sync는 자동으로 건너뜀 (safeFetch null). legacy jobs read prefix 제거도 Reef 측 path 업데이트가 필요하지만, coral은 legacy path를 남기지 않는다 — dual routing, deprecation shim, CHANGELOG 내 old-path 각주 모두 도입하지 않는다. commit 메시지가 유일한 공지 채널이며, 외부 소비자는 해당 커밋을 기점으로 적응한다. Reef가 여전히 session inventory를 원하면 cold-scan 경로가 이미 존재하므로 별도 housekeeping으로 충분.
 
 ## Acceptance Criteria (testable, verifiable — register each as a Task during implementation)
 
-- **AC1**: `GET /api/jobs`에 쿼리 필터를 추가한다. Response shape는 기존 `{ jobs: [{ jobId, status }] }` 그대로 유지한다.
+- **AC1**: Jobs HTTP path prefix 정규화 + 쿼리 필터 확장. Response shape는 기존 `{ jobs: [{ jobId, status }] }` 그대로 유지한다.
+  - **Path rename (breaking)**: legacy jobs read path → `GET /jobs`, legacy job detail path → `GET /jobs/{jobId}`. `http-handler.ts` 라우트 테이블의 legacy patterns를 `/^\/jobs$/` / `/^\/jobs\/(?<jobId>[^/]+)$/`로 교체. 기존 `POST /jobs/wait`, `POST /jobs/abort`와 prefix 통일 — jobs surface 전체가 `/jobs` 한 트리 아래로 정리됨.
   - `?projectRoot=<path>` (선택) — `status.projectRoot === projectRoot`인 job만
   - `?phase=<phase>` (선택) — 단일 phase 필터. `JobPhase` Zod enum(`src/shared/types.ts`)으로 validation
   - `?all=1` (선택) — 없으면 기본 live(`running|launching|queued`)만, 있으면 전체 phase
@@ -47,11 +48,12 @@ Reef 저장소는 본 PR scope 밖. Coral `/sessions` 제거 → Reef의 session
   - `src/execution/backend-contracts.ts`의 `onSessionUpdated` 타입·옵션 제거
   - `src/execution/job-lifecycle.ts`의 waitForJob re-check listener(기존 `:577`)를 `job` 이벤트 기반으로 refactor — session 이벤트 의존성 제거
   - `TypedEventBus`에서 해당 topic 타입 제거
-- **AC5**: Client/barrel 세션 surface 제거:
+- **AC5**: Client/barrel 세션 surface 제거 + Jobs URL path 업데이트:
   - `src/client/http-client.ts`의 `listSessions()` 메서드 및 `SessionsListResponse` 타입 제거
   - `src/client/index.ts`에서 `SessionsListResponse`, `LenientSessionEntry` 재수출 제거
   - `src/client/readers.ts`의 `readSessionEntryLenient`/`LenientSessionEntry`는 filesystem 소비자용으로 **유지**
-  - `src/client/__tests__/http-client.test.ts`의 `listSessions` 케이스 삭제
+  - `src/client/http-client.ts:280,284`의 legacy jobs fetch path를 `/jobs`, `/jobs/${id}`로 갱신 (AC1의 rename과 sync)
+  - `src/client/__tests__/http-client.test.ts`의 `listSessions` 케이스 삭제, 남은 `listJobs`/`getJob` 테스트의 URL 기대값을 `/jobs` 기준으로 업데이트
 - **AC6**: `coral-cli list` 제거:
   - `src/cli/main.ts:416-449` `list` 커맨드 블록 삭제
   - `src/cli/main.ts:370-374` `coral-cli <provider> list` 레거시 안내 제거
@@ -77,21 +79,23 @@ Reef 저장소는 본 PR scope 밖. Coral `/sessions` 제거 → Reef의 session
   - `src/cli/__tests__/main-routing.test.ts`에 `jobs` parse/action 테스트 (phase/provider/all, 충돌 케이스, zero-match)
   - 같은 파일에 `abort` 새 selector 테스트 (`--all`, `--phase running`, `--phase running --provider codex`, `--phase completed`→error, selector 미지정→error, `--jobs`+`--all`→error, `--jobs`+`--phase`→error, `--jobs`+`--provider`→error, zero-match no-op, `--jobs <live,terminal>` partial miss)
 - **AC10**: Backend 테스트 업데이트:
-  - `src/execution/__tests__/server.test.ts`에 `GET /api/jobs` 쿼리 필터 테스트 (projectRoot scope, phase, all, provider, updatedAt sort)
+  - `src/execution/__tests__/server.test.ts`에 `GET /jobs` 쿼리 필터 테스트 (projectRoot scope, phase, all, provider, updatedAt sort). 기존 legacy jobs read path 사용처(fetch URL 및 `describe('/jobs phase filter', …)` 같은 test 레이블 포함)를 `/jobs`로 일괄 치환.
   - `GET /sessions`, `session:updated` SSE 관련 케이스 전부 삭제
+  - `src/__tests__/integration/flavor-coexistence.test.ts`의 legacy jobs fetch URL을 `/jobs`, `/jobs/${id}`로 갱신
   - `lifecycle-recovery.test.ts`, `agent-wire-contract.test.ts`, `flavor-coexistence.test.ts`에서 SessionIndex/session:updated 관련 fixture·assertion 제거
   - `src/client/__tests__/http-client.test.ts`에서 `listSessions` 케이스 삭제
 - **AC11**: Docs/skills/agents 업데이트:
   - `docs/skills.md:67` — `session list` 매핑 제거, `coral-cli jobs` 안내
   - `skills/codex/SKILL.md:20` — 동일
   - `.claude/agents/ux-critic.md:79,84` — 예시 스니펫을 `coral-cli jobs --provider codex`로 교체
-  - `docs/architecture.md` — `GET /sessions`, `session:updated` SSE 설명 제거, `GET /api/jobs` 쿼리 필터 + CLI `jobs`/`abort` surface 기술
+  - `docs/architecture.md` — `GET /sessions`, `session:updated` SSE 설명 제거, jobs 섹션의 path를 `GET /jobs` / `GET /jobs/:id`로 갱신(legacy jobs path 표기 삭제) + 쿼리 필터 + CLI `jobs`/`abort` surface 기술
   - `docs/core-modules.md` — `session-index.ts` row 삭제, SessionManager 설명에서 `session:updated` 언급 제거
 - **AC12**: `npm run lint`, `npm run build`, `npm test` 모두 clean. 특히 `src/cli/__tests__/`, `src/execution/__tests__/server.test.ts`, `src/execution/__tests__/lifecycle-recovery.test.ts`, `src/__tests__/integration/agent-wire-contract.test.ts`, `src/__tests__/integration/flavor-coexistence.test.ts`, `src/client/__tests__/http-client.test.ts`가 새 contract를 반영한다.
 - **AC13**: Grep 검증:
   - `rg "coral-cli list|client\.listSessions|SessionsListResponse|Legacy \"coral-cli .* list\"" src/ docs/ skills/ .claude/` → 0 active matches
   - `rg "GET /sessions|handleSessionListRoute|pattern: /\^\\/sessions\$/|SessionIndex" src/execution docs/` → 0 active matches
   - `rg "session:updated|onSessionUpdated" src/ docs/` → 0 active matches (테스트 fixture 제외)
+  - `rg "/jobs" src/ docs/ skills/ .claude/`에서 legacy prefix 잔존이 없음을 확인
   - `POST /sessions`, `/discuss/sessions`, `src/client/readers.ts`의 `LenientSessionEntry`는 유지 대상이므로 grep 허용 리스트에서 제외
 
 ## Execution Order
@@ -108,7 +112,7 @@ AC1 ─→ AC7 ─→ AC8 ─→ AC9
 ### Batches
 | Batch | ACs | Dependencies | Parallel | Notes |
 |-------|-----|--------------|----------|-------|
-| 1 | AC1, AC2 | — | 2 | `/api/jobs` 쿼리 확장 + `/sessions` 삭제 (다른 route handlers) |
+| 1 | AC1, AC2 | — | 2 | `/jobs` path rename + 쿼리 확장 + `/sessions` 삭제 (다른 route handlers, 같은 파일이지만 별도 함수·라우트) |
 | 2 | AC3 | AC2 | 1 | SessionIndex plumbing 제거 (backend-core, contracts, lifecycle, file 삭제) |
 | 3 | AC4 | AC3 | 1 | `session:updated` 제거 + `job-lifecycle.ts` waitForJob refactor |
 | 4 | AC5 | AC2 | 1 | Client surface 정리 |
@@ -123,16 +127,16 @@ AC1 ─→ AC7 ─→ AC8 ─→ AC9
 ### File Mapping
 | AC | Files |
 |----|-------|
-| AC1 | `src/execution/http-handler.ts` (handleJobListRoute 쿼리 확장), `src/shared/schemas.ts` (쿼리 schema 필요 시) |
+| AC1 | `src/execution/http-handler.ts` (jobs 라우트 `pattern` rename + handleJobListRoute 쿼리 확장), `src/shared/schemas.ts` (쿼리 schema 필요 시) |
 | AC2 | `src/execution/http-handler.ts` (handleSessionListRoute + route registration 삭제) |
 | AC3 | `src/execution/session-index.ts` (delete), `src/execution/backend-core.ts`, `src/execution/backend-contracts.ts`, `src/execution/lifecycle.ts` |
 | AC4 | `src/execution/session-manager.ts`, `src/execution/http-handler.ts`, `src/execution/backend-contracts.ts`, `src/execution/job-lifecycle.ts`, `src/execution/event-bus.ts` (topic 타입) |
-| AC5 | `src/client/http-client.ts`, `src/client/index.ts`, `src/client/__tests__/http-client.test.ts` |
+| AC5 | `src/client/http-client.ts` (listSessions 삭제 + legacy jobs path → `/jobs` path 갱신), `src/client/index.ts`, `src/client/__tests__/http-client.test.ts` |
 | AC6 | `src/cli/main.ts`, `src/cli/format.ts`, `src/cli/__tests__/format.test.ts` |
 | AC7 | `src/cli/main.ts`, `src/cli/format.ts` (formatJobsList 추가), `src/client/http-client.ts` (listJobs 쿼리 옵션 확장) |
 | AC8 | `src/cli/main.ts` |
 | AC9 | `src/cli/__tests__/main-routing.test.ts` |
-| AC10 | `src/execution/__tests__/server.test.ts`, `src/execution/__tests__/session-index.test.ts` (delete), `src/execution/__tests__/lifecycle-recovery.test.ts`, `src/__tests__/integration/agent-wire-contract.test.ts`, `src/__tests__/integration/flavor-coexistence.test.ts`, `src/client/__tests__/http-client.test.ts` |
+| AC10 | `src/execution/__tests__/server.test.ts` (legacy jobs URL → `/jobs` 일괄 치환 + 쿼리 테스트), `src/execution/__tests__/session-index.test.ts` (delete), `src/execution/__tests__/lifecycle-recovery.test.ts`, `src/__tests__/integration/agent-wire-contract.test.ts`, `src/__tests__/integration/flavor-coexistence.test.ts` (URL 갱신 포함), `src/client/__tests__/http-client.test.ts` |
 | AC11 | `docs/skills.md`, `skills/codex/SKILL.md`, `.claude/agents/ux-critic.md`, `docs/architecture.md`, `docs/core-modules.md` |
 | AC12 | execution gate — `npm run lint && npm run build && npm test` |
 | AC13 | execution gate — targeted `rg` patterns |
@@ -145,10 +149,11 @@ N/A — CLI/HTTP surface 재설계.
 
 ## Implementation Phases (with file:line references)
 
-### Phase A — Backend `/api/jobs` 확장 + `/sessions` 제거
-1. `src/execution/http-handler.ts` `handleJobListRoute`에 `projectRoot`/`phase`/`all`/`provider` 쿼리 파싱. Zod로 `phase` validation. 기본 live-only filter(`all`이 없을 때).
-2. 같은 파일 `handleSessionListRoute` + 라우트 테이블의 `GET /sessions` 삭제.
-3. `src/execution/__tests__/server.test.ts`의 `/api/jobs` 쿼리 테스트 추가, `/sessions` 관련 케이스 삭제.
+### Phase A — Backend `/jobs` 통일 + `/sessions` 제거
+1. `src/execution/http-handler.ts` 라우트 테이블에서 jobs read 경로 rename: legacy jobs patterns를 `/^\/jobs$/`, `/^\/jobs\/(?<jobId>[^/]+)$/`로 교체. legacy jobs read path 흔적은 코드에서 완전히 삭제 (dual routing·redirect 없음).
+2. 같은 파일 `handleJobListRoute`에 `projectRoot`/`phase`/`all`/`provider` 쿼리 파싱 추가. Zod로 `phase` validation. 기본 live-only filter(`all`이 없을 때).
+3. 같은 파일 `handleSessionListRoute` + 라우트 테이블의 `GET /sessions` 삭제.
+4. `src/execution/__tests__/server.test.ts`의 기존 legacy jobs 사용 URL을 `/jobs`로 일괄 치환 + 쿼리 테스트 추가, `/sessions` 관련 케이스 삭제.
 
 ### Phase B — SessionIndex plumbing 제거
 4. `src/execution/session-index.ts` 파일 삭제.
@@ -166,9 +171,10 @@ N/A — CLI/HTTP surface 재설계.
 14. `src/execution/event-bus.ts` 또는 `TypedEventBus` 타입 선언에서 `session:updated` 토픽 제거.
 
 ### Phase D — Client surface 정리
-15. `src/client/http-client.ts`의 `listSessions()`, `SessionsListResponse` 제거. `listJobs` 시그니처를 `(options?: { projectRoot?; phase?; all?; provider? }, context?)`로 확장. `projectRoot`는 context에서 기본값 주입.
+15. `src/client/http-client.ts`의 `listSessions()`, `SessionsListResponse` 제거. `listJobs` 시그니처를 `(options?: { projectRoot?; phase?; all?; provider? }, context?)`로 확장. `projectRoot`는 context에서 기본값 주입. 동시에 `:280,284`의 fetch path를 legacy jobs 경로에서 `/jobs`, `/jobs/${id}`로 갱신.
 16. `src/client/index.ts`에서 `SessionsListResponse`, `LenientSessionEntry` 재수출 삭제. `src/client/readers.ts`의 `readSessionEntryLenient`/`LenientSessionEntry`는 유지.
-17. `src/client/__tests__/http-client.test.ts`의 `listSessions` 케이스 삭제, `listJobs` 옵션 테스트 추가.
+17. `src/client/__tests__/http-client.test.ts`의 `listSessions` 케이스 삭제, `listJobs`/`getJob` 테스트의 URL 기대값을 `/jobs` 기준으로 갱신 + `listJobs` 옵션 테스트 추가.
+18. `src/__tests__/integration/flavor-coexistence.test.ts`의 legacy jobs fetch path를 `/jobs`, `/jobs/${id}`로 갱신.
 
 ### Phase E — CLI `list` 제거
 18. `src/cli/main.ts:416-449` `list` 블록 삭제.
@@ -191,9 +197,9 @@ N/A — CLI/HTTP surface 재설계.
 
 | # | 위험 | 완화 |
 |---|------|------|
-| R1 | `/api/jobs` 쿼리 확장이 기존 raw consumer(Reef 포함)를 깨뜨린다. | Response shape는 고정, 쿼리는 전부 선택. 쿼리 없으면 기존 동작과 완전히 동일. `flavor-coexistence.test.ts`가 raw shape guard로 유지. |
+| R1 | legacy jobs read path → `/jobs` rename이 Reef 등 외부 소비자의 path 하드코딩을 깬다. | 의도된 breaking change. coral은 dual routing/redirect/deprecation shim을 두지 않는다. commit 메시지가 유일한 공지이며, 외부 소비자는 해당 커밋을 기점으로 path를 갱신한다. Response shape는 유지되므로 path만 바꾸면 복구 가능. `flavor-coexistence.test.ts`가 새 path 기준의 shape guard로 계속 작동. |
 | R2 | `/sessions` 제거가 Reef의 session sync를 깨뜨린다. | Reef의 `safeFetch`(`remote-sync.ts:246-258`)는 실패 시 null 반환 → syncSessions가 자연스럽게 skip. crash 없음. 기존 session row는 stale로 남고 Reef 자체 cold-scan이 계속 session 인벤토리를 채움. |
-| R3 | `session:updated` 제거가 Reef ChatUI의 live refresh를 깨뜨린다. | ChatUI는 `job:terminal { sessionId }`에 필터링해 동등한 invalidation을 얻을 수 있음. 이는 Reef 측 adaptation이며 본 PR의 coral scope 밖. coral CHANGELOG에 removal을 명시해 consumer 측이 대응 가능하도록 한다. |
+| R3 | `session:updated` 제거가 Reef ChatUI의 live refresh를 깨뜨린다. | ChatUI는 `job:terminal { sessionId }`에 필터링해 동등한 invalidation을 얻을 수 있음. 이는 Reef 측 adaptation이며 본 PR의 coral scope 밖. 마찬가지로 deprecation shim 없이 commit 기점 cut-over. |
 | R4 | `SessionIndex` 제거로 backend 내부 recovery/discuss 경로가 깨질 수 있다. | SessionIndex는 HTTP `/sessions` 응답용 인덱스. 확인 결과 backend-core·lifecycle의 hydration/subscription 외에 production consumer 없음. Recovery는 `SessionManager` 직접 사용. 테스트가 regression guard. |
 | R5 | `--all`/`--phase`/`--provider`가 terminal job까지 끌어와 `notFound` spam. | abort selector는 기본 live(`queued|launching|running`)만 조회하도록 `client.listJobs`에 `all: false` 고정. terminal phase 명시 요청은 Zod validation으로 거절. |
 | R6 | Zero-match abort가 backend 호출로 404 발생. | CLI가 jobId 수집 후 빈 배열이면 backend POST 자체를 skip, exit 0 no-op로 처리. |
@@ -213,8 +219,9 @@ N/A — CLI/HTTP surface 재설계.
    - `coral-cli abort --phase completed` → validation error
    - `coral-cli abort --jobs <none-matching>` → exit 0, no backend call
    - `coral-cli list` → "unknown command"
-   - `curl "http://.../api/jobs?projectRoot=..."` → 현재 프로젝트만, shape 유지
-   - `curl "http://.../api/jobs?projectRoot=...&phase=running"` → live running만
+   - `curl "http://.../jobs?projectRoot=..."` → 현재 프로젝트만, shape 유지
+   - `curl "http://.../jobs?projectRoot=...&phase=running"` → live running만
+   - `curl http://.../<legacy-jobs-read-path>` → 404 (legacy path 없음)
    - `curl http://.../sessions` → 404
    - SSE subscribe 시 `session:updated` event 없음, `job:*` event만 스트리밍
 5. grep (AC13 전체 명령) → 0 active matches (허용 리스트 제외).

@@ -76,12 +76,12 @@ disallowedTools: Write, Edit
     3) Workflow Composition — from every command result state:
        a. Success: does the response suggest natural next steps?
        b. Error: does the message explain what happened AND what to do next?
-          `Use coral-cli list --provider codex` > `Error: not found`
+          `Use coral-cli jobs --provider codex` > `Error: not found`
        c. Partial: are intermediate states clear about progress and next actions?
        d. Flag: dead-end errors, success with no forward guidance, command flows
           requiring trial-and-error to discover
     4) Seamless Transitions — check command operation flows:
-       a. Codex flow: run → wait → run(session) → `coral-cli list --provider codex`
+       a. Codex flow: run → wait → run(session) → `coral-cli jobs --provider codex`
        b. Discuss flow: seed → start → watch → participate → abort/ended
        c. Are parameter names and patterns consistent across related operations?
        d. Flag: jarring flow breaks, inconsistent parameter names across commands,

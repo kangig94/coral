@@ -149,7 +149,7 @@ Commands:
   codex [options] [agent]       codex provider operations
   claude [options] [agent]      claude provider operations
   simulate <file>               Run a simulation scenario from a YAML document
-  list [options]                List sessions
+  jobs [options]                List jobs for the current project
   wait [options]                Stream job progress (NDJSON output)
   abort [options]               Abort running jobs
   workflow [options]            Execute a workflow pipeline

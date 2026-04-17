@@ -388,7 +388,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime, this.eventBus);
+    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime);
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
@@ -753,7 +753,7 @@ export class ExecutionService implements RecoveryCapableService {
     ctx: CallerContext,
     expectedProvider?: string,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
-    const session = getSessionById(sessionId, this.runtime, this.eventBus);
+    const session = getSessionById(sessionId, this.runtime);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
     }

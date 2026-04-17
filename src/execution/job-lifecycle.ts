@@ -40,6 +40,7 @@ import {
 } from './job-lifecycle-contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
+const JOB_TERMINAL_RELEASE_POLL_MS = 10;
 
 function bindProviderRunner(
   launchCoordinator: LaunchCoordinator,
@@ -515,6 +516,7 @@ export class WaitCoordinator {
     const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
       let settled = false;
+      let releasePollTimer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
 
       const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
       if (remainingMs <= 0) {
@@ -529,7 +531,8 @@ export class WaitCoordinator {
       const cleanup = (): void => {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
-        this.deps.eventBus.off('session:updated', onSessionUpdated);
+        this.deps.eventBus.off('job:progress', onJobProgress);
+        this.deps.time.clearTimeout(releasePollTimer ?? null);
         this.deps.time.clearTimeout(timer);
       };
 
@@ -545,13 +548,27 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
+          if (!isTerminalPhase(status.phase)) {
+            return;
+          }
           if (!this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, status)) {
+            scheduleReleasePoll();
             return;
           }
           finish(resolve);
         } catch (error: unknown) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
+      };
+
+      const scheduleReleasePoll = (): void => {
+        if (settled || releasePollTimer) {
+          return;
+        }
+        releasePollTimer = this.deps.time.setTimeout(() => {
+          releasePollTimer = undefined;
+          recheck();
+        }, JOB_TERMINAL_RELEASE_POLL_MS);
       };
 
       const onJobCompleted = ({ jobId: completedJobId }: { jobId: string }): void => {
@@ -566,15 +583,15 @@ export class WaitCoordinator {
         }
       };
 
-      const onSessionUpdated = ({ sessionId }: { sessionId: string }): void => {
-        if (sessionId === owner.sessionId) {
+      const onJobProgress = ({ jobId: progressedJobId }: { jobId: string }): void => {
+        if (progressedJobId === jobId) {
           recheck();
         }
       };
 
       this.deps.eventBus.on('job:completed', onJobCompleted);
       this.deps.eventBus.on('job:phase_changed', onJobPhaseChanged);
-      this.deps.eventBus.on('session:updated', onSessionUpdated);
+      this.deps.eventBus.on('job:progress', onJobProgress);
 
       recheck();
       if (settled) {
