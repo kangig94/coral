@@ -23,6 +23,8 @@ world:
         message: provider-progress-2
     result:
       content: final simulation result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: launch
@@ -47,7 +49,8 @@ steps:
     progress: provider-progress-2
     result:
       content: final simulation result
-      aborted: false
+      outcome:
+        kind: completed
     runtimeRecorded: true
     noRealIO: true
   - type: advance

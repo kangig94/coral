@@ -89,6 +89,7 @@ function seedCompletedJob(jobId: string, namespace: string, projectRoot: string,
     },
     result: {
       content: `${jobId}-done`,
+      outcome: { kind: 'completed' },
     },
   };
 

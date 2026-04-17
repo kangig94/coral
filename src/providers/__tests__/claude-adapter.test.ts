@@ -120,7 +120,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
     expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
-    expect(result.nonResumable === true || result.errors !== undefined).toBe(true);
+    expect(result.nonResumable === true || result.outcome.kind !== 'completed').toBe(true);
   });
 
   it('does not fall back to one-shot runCli when persistent continuity exists and cwd drifts', async () => {
@@ -538,7 +538,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
 
     expect(result).not.toBe('timeout');
     if (typeof result !== 'string') {
-      expect(result.aborted === true || result.errors !== undefined || result.nonResumable === true).toBe(true);
+      expect(result.outcome.kind !== 'completed' || result.nonResumable === true).toBe(true);
     }
   }, 3000);
 
@@ -1020,6 +1020,6 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
 
     expect(runCliMock).not.toHaveBeenCalled();
     expect(acquireServerMock).not.toHaveBeenCalled();
-    expect(result.nonResumable === true || result.errors !== undefined).toBe(true);
+    expect(result.nonResumable === true || result.outcome.kind !== 'completed').toBe(true);
   });
 });

@@ -149,6 +149,7 @@ const waitTerminalEvent = {
   resultPath: '/tmp/result.md',
   result: {
     content: 'Workflow summary',
+    outcome: { kind: 'completed' as const },
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
@@ -674,55 +675,64 @@ describe('cli format', () => {
       );
     });
 
-    it('attributes non-zero exit to the provider in the header', () => {
+    it('formats provider_exit with a zero code', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
           content: '',
-          exitCode: 7,
+          exitCode: 0,
+          outcome: { kind: 'provider_exit' as const, code: 0 },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, true)).toBe(
-        'Job job-1 provider exited 7\n' + 'Result path: /tmp/result.md\n' + 'Exited with code 7',
+        'Job job-1 provider exited 0\n' + 'Result path: /tmp/result.md\n' + 'Exited with code 0',
       );
     });
 
-    it('reports "aborted" in the header when result.aborted is true', () => {
+    it('formats an aborted outcome with the abort token in the header', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
           content: '',
-          aborted: true,
+          outcome: { kind: 'aborted' as const, reason: 'signal_abort' },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 aborted\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 aborted: signal_abort\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
       );
     });
 
-    it('attributes notice-only failures to coral in the header with the notice as reason', () => {
+    it('formats coral_fault headers with the [kind] tag', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
           content: '',
-          notice: 'provider timed out',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'wrapper_crashed' as const,
+              cause: { message: 'provider timed out' },
+            },
+          },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 coral errored: provider timed out\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 coral errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n'
+          + 'Result path: /tmp/result.md\n'
+          + 'Remaining jobs: job-2',
       );
     });
 
-    it('appends notice as ": reason" when both exitCode and notice are present', () => {
+    it('formats provider_exit with a note', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
           content: '',
           exitCode: 7,
-          notice: 'forced timeout at 600s',
+          outcome: { kind: 'provider_exit' as const, code: 7, note: 'forced timeout at 600s' },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
@@ -736,6 +746,47 @@ describe('cli format', () => {
     it('includes the cursor in terminal output when present', () => {
       expect(formatWaitTerminal(waitTerminalEvent, 'cursor-3', false)).toBe(
         'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2\n' + 'Cursor: cursor-3',
+      );
+    });
+
+    it('includes provider name literals for representative provider-scoped coral faults', () => {
+      const providerSessionUnavailable = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'provider_session_unavailable' as const,
+              provider: 'codex' as const,
+              note: 'thread missing',
+            },
+          },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+      const adapterOutputUnparseable = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'adapter_output_unparseable' as const,
+              provider: 'claude' as const,
+              exitCode: 7,
+              stdout: 'oops',
+              stderr: 'stderr',
+              parseError: 'bad json',
+            },
+          },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(providerSessionUnavailable, null, false)).toContain(
+        'Job job-1 coral errored: Codex session unavailable: thread missing. [provider_session_unavailable]',
+      );
+      expect(formatWaitTerminal(adapterOutputUnparseable, null, false)).toContain(
+        'Job job-1 coral errored: Claude produced unparseable output (exit 7): bad json. [adapter_output_unparseable]',
       );
     });
 

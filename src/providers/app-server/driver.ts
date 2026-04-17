@@ -1,4 +1,5 @@
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { AbortReason } from '../../shared/coral-fault.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
 
 export interface AppServerSessionDriver<TState> {
@@ -31,5 +32,5 @@ export type DriverStepOutcome = { terminal?: TurnOutcome };
 export type TurnOutcome =
   | { kind: 'completed'; turn: unknown }
   | { kind: 'failed'; message: string }
-  | { kind: 'aborted' }
+  | { kind: 'aborted'; reason: AbortReason }
   | { kind: 'nonResumable'; message: string };

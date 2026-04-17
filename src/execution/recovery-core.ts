@@ -9,7 +9,7 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../shared/types.js';
-import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from './recovery-notices.js';
+import type { CoralFault } from '../shared/coral-fault.js';
 
 /**
  * Invariant — jobIds freshness:
@@ -41,7 +41,7 @@ export interface JobStoreSnapshot {
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; notice: string; status: PersistedStatusRecord }
+  | { type: 'markError'; jobId: string; fault: CoralFault; status: PersistedStatusRecord }
   | { type: 'registerQueued'; jobId: string; launchRecord: PersistedLaunchRecord }
   | {
       type: 'registerRunning';
@@ -98,7 +98,7 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
         : {
             type: 'markError',
             jobId: snap.jobId,
-            notice: OLD_FORMAT_NOTICE,
+            fault: { kind: 'stale_status_schema' },
             status: snap.status,
           },
     description: 'incompatible',
@@ -133,7 +133,7 @@ const CLASSIFIER_TABLE: ReadonlyArray<{
         : {
             type: 'markError',
             jobId: snap.jobId,
-            notice: GHOST_LAUNCH_NOTICE,
+            fault: { kind: 'ghost_launch' },
             status: snap.status,
           },
     description: 'stale_running',

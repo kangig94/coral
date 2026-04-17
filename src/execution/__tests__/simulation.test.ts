@@ -32,7 +32,7 @@ const COMPLETE_SCENARIO: SimulationDocument = {
         { delayMs: 5, message: 'provider-progress-1' },
         { delayMs: 5, message: 'provider-progress-2' },
       ],
-      result: { content: 'final simulation result' },
+      result: { content: 'final simulation result', outcome: { kind: 'completed' } },
     },
   },
   steps: [
@@ -45,7 +45,7 @@ const COMPLETE_SCENARIO: SimulationDocument = {
       type: 'expect',
       phase: 'completed',
       progress: 'provider-progress-2',
-      result: { content: 'final simulation result', aborted: false },
+      result: { content: 'final simulation result', outcome: { kind: 'completed' } },
       runtimeRecorded: true,
       noRealIO: true,
     },
@@ -87,7 +87,7 @@ const RESET_SCENARIO: SimulationDocument = {
       },
     ],
     fakeProvider: {
-      result: { content: 'reset world result' },
+      result: { content: 'reset world result', outcome: { kind: 'completed' } },
     },
   },
   steps: [
@@ -104,7 +104,7 @@ const RESET_SCENARIO: SimulationDocument = {
     {
       type: 'expect',
       phase: 'completed',
-      result: { content: 'reset world result', aborted: false },
+      result: { content: 'reset world result', outcome: { kind: 'completed' } },
       noRealIO: true,
     },
   ],
@@ -191,7 +191,7 @@ describe('deterministic simulation lifecycle replay', () => {
         runtimeRecorded: true,
         result: {
           content: 'final simulation result',
-          aborted: false,
+          outcome: { kind: 'completed' },
         },
       },
     });
@@ -219,7 +219,7 @@ describe('deterministic simulation lifecycle replay', () => {
       launch: { state: 'ready' },
       result: {
         content: 'final simulation result',
-        aborted: false,
+        outcome: { kind: 'completed' },
       },
     });
     expect(world.readArtifact(launch.jobId, 'exit', { freshness: 'cached' })).toMatchObject({
@@ -291,7 +291,7 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(world.getJobStatus(launch.jobId)).toMatchObject({
       phase: 'aborted',
       result: {
-        aborted: true,
+        outcome: { kind: 'aborted', reason: 'signal_abort' },
       },
     });
 
@@ -342,7 +342,7 @@ describe('deterministic simulation lifecycle replay', () => {
       phase: 'completed',
       result: {
         content: 'reset world result',
-        aborted: false,
+        outcome: { kind: 'completed' },
       },
     });
     expect(world.getNoRealIoReport()).toEqual({
@@ -402,7 +402,7 @@ describe('deterministic simulation lifecycle replay', () => {
         },
       ],
       fakeProvider: {
-        result: { content: 'env artifact result' },
+        result: { content: 'env artifact result', outcome: { kind: 'completed' } },
       },
     });
     worlds.push(world);

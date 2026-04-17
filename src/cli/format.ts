@@ -1,4 +1,5 @@
 import { MAX_INLINE } from '../shared/schemas.js';
+import { describeCoralFault } from '../shared/coral-fault.js';
 import type { JobsListResponse } from '../client/http-client.js';
 import { isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
@@ -188,19 +189,18 @@ function pickTerminalPreviewSource(result: TerminalResult): string {
     return content;
   }
 
-  if (typeof result.notice === 'string' && result.notice.length > 0) {
-    return result.notice;
+  switch (result.outcome.kind) {
+    case 'completed':
+      return '(empty result)';
+    case 'coral_fault':
+      return describeCoralFault(result.outcome.fault);
+    case 'aborted':
+      return 'Aborted';
+    case 'provider_exit':
+      return `Exited with code ${result.outcome.code}`;
+    default:
+      return assertNever(result.outcome);
   }
-
-  if (result.aborted) {
-    return 'Aborted';
-  }
-
-  if (result.exitCode !== undefined && result.exitCode !== null) {
-    return `Exited with code ${result.exitCode}`;
-  }
-
-  return '(empty result)';
 }
 
 function formatRelativeAge(updatedAt: string, now = Date.now()): string {
@@ -546,21 +546,20 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
 }
 
 function terminalOutcomeHeader(jobId: string, result: TerminalResult): string {
-  if (result.aborted === true) return `Job ${jobId} aborted`;
-
-  const notice = typeof result.notice === 'string' && result.notice.length > 0 ? result.notice : undefined;
-  const exitCode = result.exitCode;
-
-  if (exitCode !== undefined && exitCode !== null && exitCode !== 0) {
-    const base = `Job ${jobId} provider exited ${exitCode}`;
-    return notice === undefined ? base : `${base}: ${notice}`;
+  switch (result.outcome.kind) {
+    case 'completed':
+      return `Job ${jobId} completed`;
+    case 'aborted':
+      return `Job ${jobId} aborted: ${result.outcome.reason}`;
+    case 'provider_exit': {
+      const base = `Job ${jobId} provider exited ${result.outcome.code}`;
+      return result.outcome.note === undefined ? base : `${base}: ${result.outcome.note}`;
+    }
+    case 'coral_fault':
+      return `Job ${jobId} coral errored: ${describeCoralFault(result.outcome.fault)} [${result.outcome.fault.kind}]`;
+    default:
+      return assertNever(result.outcome);
   }
-
-  if (notice !== undefined) {
-    return `Job ${jobId} coral errored: ${notice}`;
-  }
-
-  return `Job ${jobId} completed`;
 }
 
 export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {

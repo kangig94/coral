@@ -74,7 +74,7 @@ describe('pipe executor coral cascade invariant', () => {
         name: 'stub-provider',
         execute: async (request) => {
           capturedLaunches.push(cloneProviderRequest(request));
-          return { content: 'stub-provider-result' };
+          return { content: 'stub-provider-result', outcome: { kind: 'completed' } };
         },
       };
 

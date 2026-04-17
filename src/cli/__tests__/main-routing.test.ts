@@ -1085,7 +1085,7 @@ describe('cli main routing', () => {
       jobId: 'job-1',
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: 'done', exitCode: 0 },
+      result: { content: 'done', exitCode: 0, outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield progressEvent;
@@ -1112,7 +1112,7 @@ describe('cli main routing', () => {
       jobId: 'job-1',
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: 'preview text', exitCode: 0 },
+      result: { content: 'preview text', exitCode: 0, outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield terminalEvent;
@@ -1139,7 +1139,7 @@ describe('cli main routing', () => {
       jobId: 'job-1',
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: '' },
+      result: { content: '', outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield terminalEvent;

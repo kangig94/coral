@@ -71,6 +71,7 @@ function makeTerminalEvent(
     resultPath: '/tmp/result.md',
     result: {
       content: 'done',
+      outcome: { kind: 'completed' },
       ...result,
     },
     ...overrides,
@@ -425,7 +426,7 @@ describe('cli follow', () => {
     [{ exitCode: null }, 1],
     [{ exitCode: 256 }, 1],
     [{ exitCode: 1.5 }, 1],
-    [{ aborted: true, exitCode: 0 }, 1],
+    [{ outcome: { kind: 'aborted' as const, reason: 'signal_abort' as const }, exitCode: 0 }, 1],
   ])('maps terminal result %j to exit code %i', async (result, expected) => {
     const { launchAndFollow } = await loadFollowModule();
 

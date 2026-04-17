@@ -7,7 +7,6 @@ import type {
   SessionEntry,
   TerminalResult,
 } from '../../shared/types.js'
-import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from '../recovery-notices.js'
 import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../recovery-core.js'
 import { planRecovery } from '../recovery-core.js'
 
@@ -278,7 +277,7 @@ function summarizeActions(actions: RecoveryAction[]) {
         return {
           type: action.type,
           jobId: action.jobId,
-          notice: action.notice,
+          fault: action.fault.kind,
         }
       case 'releaseSessionClaim':
         return {
@@ -310,7 +309,7 @@ describe('planRecovery', () => {
     ])
   })
 
-  it('returns markError with OLD_FORMAT_NOTICE for incompatible live jobs', () => {
+  it('returns markError with stale_status_schema for incompatible live jobs', () => {
     const status = makeStatus('incompatible-job', 'launching')
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'incompatible-job',
@@ -324,13 +323,13 @@ describe('planRecovery', () => {
       {
         type: 'markError',
         jobId: 'incompatible-job',
-        notice: OLD_FORMAT_NOTICE,
+        fault: { kind: 'stale_status_schema' },
         status,
       },
     ])
   })
 
-  it('returns markError with GHOST_LAUNCH_NOTICE for stale_running jobs', () => {
+  it('returns markError with ghost_launch for stale_running jobs', () => {
     const status = makeStatus('ghost-job', 'running')
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'ghost-job',
@@ -346,7 +345,7 @@ describe('planRecovery', () => {
       {
         type: 'markError',
         jobId: 'ghost-job',
-        notice: GHOST_LAUNCH_NOTICE,
+        fault: { kind: 'ghost_launch' },
         status,
       },
     ])
@@ -769,8 +768,8 @@ describe('planRecovery', () => {
     ])
     expect(summarizeActions(plan.cleanup)).toEqual([
       { type: 'deleteIncompleteDir', jobId: 'incomplete' },
-      { type: 'markError', jobId: 'incompatible', notice: OLD_FORMAT_NOTICE },
-      { type: 'markError', jobId: 'ghost', notice: GHOST_LAUNCH_NOTICE },
+      { type: 'markError', jobId: 'incompatible', fault: 'stale_status_schema' },
+      { type: 'markError', jobId: 'ghost', fault: 'ghost_launch' },
       {
         type: 'releaseSessionClaim',
         shardDir: '/sessions/order',

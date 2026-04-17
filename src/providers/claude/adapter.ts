@@ -90,6 +90,7 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
 function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderResult {
   return {
     ...mapProviderResultBase(result),
+    exitCode: 0,
     conversationRef: result.sessionId ?? fallbackConversationRef,
     nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
@@ -100,11 +101,20 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult | nul
   if (error instanceof ClaudeExecParseError) {
     return {
       content: '',
-      notice: 'Claude CLI returned non-JSON output; result is non-resumable.',
       nonResumable: true,
       model: fallbackModel,
-      exitCode: error.failure.exitCode,
-      errors: [error.failure],
+      exitCode: error.failure.exitCode ?? null,
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'adapter_output_unparseable',
+          provider: 'claude',
+          exitCode: error.failure.exitCode ?? null,
+          stdout: error.failure.stdout,
+          stderr: error.failure.stderr,
+          parseError: error.failure.parseError,
+        },
+      },
     };
   }
   return null;
@@ -164,8 +174,14 @@ function buildNewSessionRequiredResult(request: ProviderRequest, reason: string)
     content: '',
     model: resolveClaudeModel(request.model, request.coralEnv),
     nonResumable: true,
-    notice: reason,
-    errors: [reason],
+    outcome: {
+      kind: 'coral_fault',
+      fault: {
+        kind: 'provider_session_unavailable',
+        provider: 'claude',
+        note: reason,
+      },
+    },
   };
 }
 

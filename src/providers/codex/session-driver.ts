@@ -396,6 +396,16 @@ async function interruptTurn(ctx: DriverContext, threadId: string, turnId: strin
   await rpc(ctx, 'turn/interrupt', { threadId, turnId });
 }
 
+function buildCodexFailureMessage(message?: string, status?: string): string {
+  if (typeof message === 'string' && message.trim().length > 0) {
+    return message.trim();
+  }
+  if (typeof status === 'string' && status.trim().length > 0) {
+    return `Codex turn failed with status ${status.trim()}.`;
+  }
+  return 'Codex session driver reported a failed turn.';
+}
+
 export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
   name: 'Codex',
   subscriptionPhase: 'afterInitialize',
@@ -476,7 +486,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
   async startTurn(ctx, state, request): Promise<DriverStepOutcome> {
     state.turnStartRequested = true;
     if (ctx.runtime.signal.aborted && !state.turnId) {
-      return { terminal: { kind: 'aborted' } };
+      return { terminal: { kind: 'aborted', reason: 'signal_abort' } };
     }
     if (!state.threadId) {
       throw new Error('Codex thread id missing before turn/start.');
@@ -493,7 +503,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     flushBufferedNotifications(state);
 
     if (!state.turnId && ctx.runtime.signal.aborted) {
-      return { terminal: { kind: 'aborted' } };
+      return { terminal: { kind: 'aborted', reason: 'signal_abort' } };
     }
 
     if (response.turn?.status && response.turn.status !== 'inProgress') {
@@ -560,8 +570,14 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         content: '',
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
-        notice: outcome.message,
-        errors: [state.error?.message ?? outcome.message],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_session_unavailable',
+            provider: 'codex',
+            note: outcome.message,
+          },
+        },
       };
     }
 
@@ -575,7 +591,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         conversationRef: state.threadId ?? undefined,
         model: state.model,
         durationMs: Date.now() - state.startedAt,
-        aborted: true,
+        outcome: { kind: 'aborted', reason: outcome.reason },
       };
     }
 
@@ -585,9 +601,14 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         conversationRef: state.threadId ?? undefined,
         model: state.model,
         durationMs: Date.now() - state.startedAt,
-        exitCode: 1,
-        notice: outcome.message,
-        errors: [outcome.message],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: 'codex',
+            message: buildCodexFailureMessage(outcome.message),
+          },
+        },
       };
     }
 
@@ -595,16 +616,25 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     const turnStatus = turn?.status;
     const turnFailed = !isSuccessfulTurn(turnStatus);
     const turnAborted = isAbortedTurn(turnStatus);
+    const failureMessage = turnFailed ? buildCodexFailureMessage(state.error?.message, turnStatus) : undefined;
 
     return {
       content: state.lastAgentMessage,
       conversationRef: state.threadId ?? undefined,
       model: state.model,
       durationMs: Date.now() - state.startedAt,
-      aborted: turnAborted || undefined,
-      exitCode: turnFailed ? 1 : 0,
-      notice: turnFailed && state.error?.message ? state.error.message : undefined,
-      errors: turnFailed && state.error?.message ? [state.error.message] : undefined,
+      outcome: turnAborted
+        ? { kind: 'aborted', reason: 'signal_abort' }
+        : turnFailed
+          ? {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: failureMessage ?? 'Codex session driver reported a failed turn.',
+              },
+            }
+          : { kind: 'completed' },
     };
   },
 };

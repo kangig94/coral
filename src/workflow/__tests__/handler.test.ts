@@ -19,7 +19,7 @@ function createProviderRegistry(): ProviderRegistry {
   for (const name of ['claude', 'codex']) {
     registry.register({
       name,
-      execute: async () => ({ content: `${name} response` }),
+      execute: async () => ({ content: `${name} response`, outcome: { kind: 'completed' } }),
     });
   }
   return registry;

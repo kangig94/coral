@@ -1,6 +1,6 @@
 import { resolveInjectMd } from '../inject.js';
 import { isRecord } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderRequest } from '../../shared/types.js';
 import { resolveModelTier } from '../../shared/schemas.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
 import { brokerNotificationMethods } from '../claude-appserver/protocol.js';
@@ -133,16 +133,14 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: TurnOutcome): void
   state.resolveTerminal(outcome);
 }
 
-function failResult(state: ClaudeTurnState, notice: string): ProviderResult {
-  return {
-    content: '',
-    conversationRef: state.conversationRef,
-    model: state.prepared.model,
-    durationMs: Date.now() - state.startedAt,
-    exitCode: 1,
-    notice,
-    errors: [notice],
-  };
+function buildClaudeFailureMessage(message?: string, status?: string): string {
+  if (typeof message === 'string' && message.trim().length > 0) {
+    return message.trim();
+  }
+  if (typeof status === 'string' && status.trim().length > 0) {
+    return `Claude turn failed with status ${status.trim()}.`;
+  }
+  return 'Claude session driver reported a failed turn.';
 }
 
 function readTurnConversationRef(value: unknown): string | undefined {
@@ -296,10 +294,7 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
       checkpoint(state);
       resolveTerminalOnce(state, {
         kind: 'failed',
-        message:
-          typeof params.message === 'string' && params.message.length > 0
-            ? params.message
-            : 'Claude broker turn failed.',
+        message: buildClaudeFailureMessage(readString(params.message), readString(params.status)),
       });
     }
   },
@@ -333,14 +328,23 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
   finalize(state, outcome) {
     if (outcome.kind === 'completed') {
       const turn = outcome.turn as ClaudeCompletedTurn;
+      const failureMessage = turn.isError ? buildClaudeFailureMessage(turn.errors.join(' ')) : undefined;
       return {
         content: turn.content,
         conversationRef: state.conversationRef,
         model: turn.model,
         durationMs: turn.durationMs,
-        exitCode: turn.isError ? 1 : 0,
-        notice: turn.isError && turn.errors.length > 0 ? turn.errors.join(' ') : undefined,
-        errors: turn.errors.length > 0 ? turn.errors : undefined,
+        exitCode: 0,
+        outcome: turn.isError
+          ? {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'claude',
+                message: failureMessage ?? 'Claude session driver reported a failed turn.',
+              },
+            }
+          : { kind: 'completed' },
         usage: turn.costUsd !== undefined ? { costUsd: turn.costUsd } : undefined,
       };
     }
@@ -351,7 +355,7 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
         conversationRef: state.conversationRef,
         model: state.prepared.model,
         durationMs: Date.now() - state.startedAt,
-        aborted: true,
+        outcome: { kind: 'aborted', reason: outcome.reason },
       };
     }
 
@@ -362,11 +366,32 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
         model: state.prepared.model,
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
-        notice: outcome.message,
-        errors: [outcome.message],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_session_unavailable',
+            provider: 'claude',
+            note: outcome.message,
+          },
+        },
       };
     }
 
-    return failResult(state, outcome.message);
+    // `failed` outcome: runner.ts:66-83 normally wraps this into provider_request_failed
+    // before finalize returns, so this branch is defense-in-depth for direct callers.
+    return {
+      content: '',
+      conversationRef: state.conversationRef,
+      model: state.prepared.model,
+      durationMs: Date.now() - state.startedAt,
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_request_failed',
+          provider: 'claude',
+          message: buildClaudeFailureMessage(outcome.message),
+        },
+      },
+    };
   },
 };

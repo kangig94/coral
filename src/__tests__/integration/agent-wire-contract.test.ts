@@ -174,7 +174,7 @@ async function waitForLaunchRequest(launchRequests: readonly RecordedLaunchReque
 const launchRequests: RecordedLaunchRequest[] = [];
 const providerExecute = vi.fn(async (request: ProviderRequest) => {
   launchRequests.push(cloneProviderRequest(request));
-  return { content: 'stub-provider-result' };
+  return { content: 'stub-provider-result', outcome: { kind: 'completed' as const } };
 });
 
 describe('agent wire contract', () => {

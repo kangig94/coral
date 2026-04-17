@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { describeCoralFault, type CoralFault } from '../../shared/coral-fault.js';
 import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type PersistedStatusRecord, type TerminalResult } from '../../shared/types.js';
 import type { ProgressStore } from '../progress-store.js';
@@ -63,12 +64,15 @@ export function readSessionRefs(
 export function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
-  notice: string,
+  fault: CoralFault,
   log: (message: string) => void,
 ): void {
+  const message = describeCoralFault(fault);
   const terminalResult: TerminalResult =
-    status.jobKind === 'workflow' ? { content: '', notice, workflow: { steps: [] } } : { content: '', notice };
-  progressStore.updateLaunchState(status.jobId, 'error', notice);
+    status.jobKind === 'workflow'
+      ? { content: '', workflow: { steps: [] }, outcome: { kind: 'coral_fault', fault } }
+      : { content: '', outcome: { kind: 'coral_fault', fault } };
+  progressStore.updateLaunchState(status.jobId, 'error', message);
   if (status.jobKind === 'workflow') {
     try {
       progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');

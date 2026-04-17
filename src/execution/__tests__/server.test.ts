@@ -105,7 +105,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
@@ -694,7 +694,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       initialPhase: 'running',
     });
-    progressStore.markTerminalStatus(jobIdA, { content: 'done-a' }, 'completed');
+    progressStore.markTerminalStatus(jobIdA, { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
 
     progressStore.initJob({
       jobId: jobIdB,
@@ -704,7 +704,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       initialPhase: 'running',
     });
-    progressStore.markTerminalStatus(jobIdB, { content: 'done-b' }, 'completed');
+    progressStore.markTerminalStatus(jobIdB, { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
 
     const services = new Map<string, InstanceType<typeof ExecutionService>>();
     const capturedManagers: unknown[] = [];
@@ -1196,7 +1196,7 @@ describe('execution backend server', () => {
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register({
         name: 'codex',
-        execute: vi.fn(async () => ({ content: 'ok' })),
+        execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
       });
       const executionService = options.executionService ?? createFakeExecutionService();
       runtimeState.setLifecycle('running');
@@ -2853,7 +2853,7 @@ describe('execution backend server', () => {
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         deps.providerRegistry.register({
           name: 'claude',
-          execute: vi.fn(async () => ({ content: 'ok' })),
+          execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
         });
         const started = await startHttpHandlerServer(deps);
 
@@ -3234,7 +3234,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
     progressStore.appendProgress('job-1', 'session-1', 'working');
-    progressStore.appendTerminal('job-1', 'session-1', { content: 'done' }, 'completed');
+    progressStore.appendTerminal('job-1', 'session-1', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
     progressStore.initJob({
       jobId: 'job-2',
       sessionId: 'session-2',
@@ -3294,7 +3294,7 @@ describe('execution backend server', () => {
     expect(detailBody.status).toMatchObject({
       jobId: 'job-1',
       phase: 'completed',
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     });
     expect(detailBody.events).toHaveLength(2);
     expect(detailBody.events[0]).toMatchObject({
@@ -3305,7 +3305,7 @@ describe('execution backend server', () => {
     expect(detailBody.events[1]).toMatchObject({
       eventId: 2,
       type: 'terminal',
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     });
 
     const missingResponse = await fetch(`${backend.baseUrl}/jobs/missing-job`, {
@@ -3378,7 +3378,12 @@ describe('execution backend server', () => {
         projectRoot: '/tmp/project',
         backendNamespace: testBackendNamespace,
       });
-      progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
+      progressStore.appendTerminal(
+        'job-completed',
+        'session-completed',
+        { content: 'done', outcome: { kind: 'completed' } },
+        'completed',
+      );
       progressStore.initJob({
         jobId: 'job-foreign-project',
         sessionId: 'session-foreign-project',
@@ -3508,13 +3513,13 @@ describe('execution backend server', () => {
       expect(detailBody.status).toMatchObject({
         jobId: 'job-completed',
         phase: 'completed',
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       });
       expect(detailBody.events).toEqual([
         expect.objectContaining({
           eventId: 1,
           type: 'terminal',
-          result: { content: 'done' },
+          result: { content: 'done', outcome: { kind: 'completed' } },
         }),
       ]);
     });
@@ -3815,8 +3820,8 @@ describe('execution backend server', () => {
       jobKind: 'workflow',
       result: {
         content: '',
-        notice: 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.',
         workflow: { steps: [] },
+        outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
       },
     });
     expect(recoveredSession?.activeJobId).toBeUndefined();
@@ -4794,7 +4799,7 @@ describe('execution backend server', () => {
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register({
         name: 'codex',
-        execute: vi.fn(async () => ({ content: 'ok' })),
+        execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
       });
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(true);
@@ -4919,13 +4924,13 @@ describe('execution backend server', () => {
 
       const _backend = await startBackendServer({ progressStore });
 
-      // After recovery, the old-format job should be marked as error with the OLD_FORMAT_NOTICE
+      // After recovery, the old-format job should be marked as a stale_status_schema fault
       const status = progressStore.readStatus(jobId);
       expect(status).toMatchObject({
         phase: 'error',
         result: {
           content: '',
-          notice: 'Incompatible job format — missing durable launch record. Job predates the handoff recovery system.',
+          outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
         },
       });
 
@@ -4965,8 +4970,7 @@ describe('execution backend server', () => {
         phase: 'error',
         result: {
           content: '',
-          notice:
-            'Launch record exists but runtime.json was never written. The durable wrapper did not start successfully.',
+          outcome: { kind: 'coral_fault', fault: { kind: 'ghost_launch' } },
         },
       });
 

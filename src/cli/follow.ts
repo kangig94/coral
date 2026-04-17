@@ -31,6 +31,10 @@ type LaunchAndFollowOptions = {
   columns: number;
 };
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled value: ${JSON.stringify(value)}`);
+}
+
 function emitLaunch(decision: FollowLaunchDecision): void {
   process.stdout.write(formatLaunch(decision) + '\n');
 }
@@ -63,17 +67,29 @@ function emitWaitEvent(
 }
 
 function toExitCode(result: TerminalResult): number {
-  if (result.aborted === true) {
-    return 1;
+  switch (result.outcome.kind) {
+    case 'aborted':
+    case 'coral_fault':
+      return 1;
+    case 'provider_exit':
+      return normalizeExitCode(result.outcome.code);
+    case 'completed':
+      return normalizeExitCode(result.exitCode);
+    default:
+      return assertNever(result.outcome);
   }
+}
 
-  const exitCode = result.exitCode;
-
+function normalizeExitCode(exitCode: number | null | undefined): number {
   if (exitCode === undefined) {
     return 0;
   }
 
-  if (exitCode === null || !Number.isInteger(exitCode)) {
+  if (exitCode === null) {
+    return 1;
+  }
+
+  if (!Number.isInteger(exitCode)) {
     return 1;
   }
 

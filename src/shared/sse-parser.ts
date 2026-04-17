@@ -1,4 +1,5 @@
-import { isRecord, isStringArray } from './utils.js';
+import { z } from 'zod';
+import { terminalResultSchema } from './types.js';
 import type { WaitStreamEvent } from './types.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;
@@ -12,52 +13,62 @@ export type SseEventBlock = {
   id?: string;
 };
 
+const waitStreamEventTypeSchema = z.enum(['progress', 'queued', 'terminal', 'waiting']);
+
+const waitProgressEventSchema = z
+  .object({
+    type: z.literal('progress'),
+    jobId: z.string(),
+    eventId: z.number().int(),
+    message: z.string(),
+  })
+  .strict();
+
+const waitQueuedEventSchema = z
+  .object({
+    type: z.literal('queued'),
+    jobId: z.string(),
+    sessionId: z.string(),
+    queuePosition: z.number(),
+    runningJobIds: z.array(z.string()),
+  })
+  .strict();
+
+const waitTerminalEventSchema = z
+  .object({
+    type: z.literal('terminal'),
+    jobId: z.string(),
+    remainingJobIds: z.array(z.string()),
+    resultPath: z.string(),
+    result: terminalResultSchema,
+  })
+  .strict();
+
+const waitWaitingEventSchema = z
+  .object({
+    type: z.literal('waiting'),
+    waitingJobIds: z.array(z.string()),
+  })
+  .strict();
+
+export const waitStreamEventSchema = z.discriminatedUnion('type', [
+  waitProgressEventSchema,
+  waitQueuedEventSchema,
+  waitTerminalEventSchema,
+  waitWaitingEventSchema,
+]);
+
 export function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
-  if (!eventType) return null;
+  if (!eventType || !waitStreamEventTypeSchema.safeParse(eventType).success) {
+    return null;
+  }
 
   const parsed: unknown = JSON.parse(rawData);
-  if (!isRecord(parsed) || parsed.type !== eventType) {
+  const event = waitStreamEventSchema.parse(parsed);
+  if (event.type !== eventType) {
     throw new Error(`Invalid wait stream event payload for ${eventType}`);
   }
-
-  switch (eventType) {
-    case 'progress':
-      if (
-        typeof parsed.jobId === 'string' &&
-        Number.isInteger(parsed.eventId) &&
-        typeof parsed.message === 'string'
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid progress wait stream event');
-    case 'terminal':
-      if (
-        typeof parsed.jobId === 'string' &&
-        isStringArray(parsed.remainingJobIds) &&
-        typeof parsed.resultPath === 'string' &&
-        isRecord(parsed.result)
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid terminal wait stream event');
-    case 'waiting':
-      if (isStringArray(parsed.waitingJobIds)) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid waiting wait stream event');
-    case 'queued':
-      if (
-        typeof parsed.jobId === 'string' &&
-        typeof parsed.sessionId === 'string' &&
-        typeof parsed.queuePosition === 'number' &&
-        isStringArray(parsed.runningJobIds)
-      ) {
-        return parsed as WaitStreamEvent;
-      }
-      throw new Error('Invalid queued wait stream event');
-    default:
-      return null;
-  }
+  return event;
 }
 
 export function parseSseBlock(block: string): SseEventBlock | null {

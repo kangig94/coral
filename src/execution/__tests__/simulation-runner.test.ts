@@ -237,9 +237,13 @@ describe('scenario runner', () => {
     });
 
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)).toMatchObject({
-      phase: 'completed',
+      phase: 'error',
       result: {
         exitCode: 9,
+        outcome: {
+          kind: 'provider_exit',
+          code: 9,
+        },
       },
     });
     expect(run.world.readArtifact(FIRST_BOOTED_JOB_ID, 'exit', { freshness: 'fresh' })).toMatchObject({

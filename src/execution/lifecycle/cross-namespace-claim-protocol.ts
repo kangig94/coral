@@ -1,5 +1,5 @@
 import { isNoEntryError, isRecord } from '../../shared/utils.js';
-import { isPersistedStatusRecordLike } from '../progress-store.js';
+import { parsePersistedStatusRecord } from '../../shared/persistence-parsers.js';
 import type { Runtime } from '../runtime.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
@@ -54,8 +54,8 @@ export function readAdoptionStatusSnapshot(
 ): AdoptionStatusSnapshot | null {
   try {
     const raw = storage.readFileSync(statusPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (!isPersistedStatusRecordLike(parsed)) return null;
+    const parsed = parsePersistedStatusRecord(JSON.parse(raw));
+    if (parsed === null) return null;
     return {
       raw,
       record: parsed,

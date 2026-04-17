@@ -399,7 +399,11 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       backendNamespace: 'runtime-only',
       phase: 'completed',
       launch: { state: 'ready', updatedAt: '2035-04-15T01:02:05.000Z' },
-      result: { content: 'Recovered content from runtime storage', nonResumable: false },
+      result: {
+        content: 'Recovered content from runtime storage',
+        nonResumable: false,
+        outcome: { kind: 'completed' },
+      },
     };
     writeJson(harness.runtime, harness.runtime.paths.jobStatusPath(jobId), status);
     expect(readStatusRecord(jobId)).toBeNull();

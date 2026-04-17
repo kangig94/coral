@@ -3,6 +3,10 @@ import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { requireAppServerRuntime, type ProviderRuntime } from '../types.js';
 import type { AppServerSessionDriver, DriverContext, TurnOutcome } from './driver.js';
 
+function faultProvider(driver: AppServerSessionDriver<unknown>): 'claude' | 'codex' {
+  return driver.name === 'Codex' ? 'codex' : 'claude';
+}
+
 export async function runAppServerTurn<TState>(
   driver: AppServerSessionDriver<TState>,
   request: ProviderRequest,
@@ -61,6 +65,20 @@ export async function runAppServerTurn<TState>(
 
   const finalize = (outcome: TurnOutcome): ProviderResult => {
     stopNotifications();
+    if (outcome.kind === 'failed') {
+      const base = driver.finalize(state, outcome);
+      return {
+        ...base,
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: faultProvider(driver),
+            message: outcome.message,
+          },
+        },
+      };
+    }
     return driver.finalize(state, outcome);
   };
 
@@ -83,7 +101,7 @@ export async function runAppServerTurn<TState>(
       unsubscribe = subscribe();
     }
     if (runtime.signal.aborted) {
-      return finalize({ kind: 'aborted' });
+      return finalize({ kind: 'aborted', reason: 'signal_abort' });
     }
 
     const started = await driver.startTurn(ctx, state, request);
@@ -106,7 +124,7 @@ export async function runAppServerTurn<TState>(
     return finalize(outcome);
   } catch (error) {
     if (runtime.signal.aborted) {
-      return finalize({ kind: 'aborted' });
+      return finalize({ kind: 'aborted', reason: 'signal_abort' });
     }
     return finalize({ kind: 'failed', message: errorMessage(error) });
   } finally {

@@ -246,17 +246,39 @@ function createFakeProviderServerHandle(options?: {
   };
 }
 
-function makeProvider(options?: { execute?: Provider['execute']; preflight?: Provider['preflight'] }): {
+type TestProviderResult = Omit<ProviderResult, 'outcome'> & {
+  outcome?: ProviderResult['outcome'];
+};
+
+type TestTerminalResult = Omit<NonNullable<PersistedStatusRecord['result']>, 'outcome'> & {
+  outcome?: NonNullable<PersistedStatusRecord['result']>['outcome'];
+};
+
+function completedOutcome() {
+  return { kind: 'completed' } as const;
+}
+
+function withCompletedOutcome<T extends { content: string; outcome?: ProviderResult['outcome'] }>(result: T): T & {
+  outcome: ReturnType<typeof completedOutcome>;
+} {
+  if (result.outcome) {
+    return result as T & { outcome: ReturnType<typeof completedOutcome> };
+  }
+  return { ...result, outcome: completedOutcome() };
+}
+
+function makeProvider(options?: {
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderResult>;
+  preflight?: Provider['preflight'];
+}): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(
-    options?.execute ??
-      (async (): Promise<ProviderResult> => ({
-        content: 'ok',
-      })),
-  );
+  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderResult> => {
+    const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
+    return withCompletedOutcome(result);
+  });
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -269,7 +291,7 @@ function makeProvider(options?: { execute?: Provider['execute']; preflight?: Pro
 function makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(async () => ({ content: 'ok' })),
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
@@ -341,7 +363,7 @@ function makeSharedClaudeAppServerProvider(spec: {
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(async () => ({ content: 'ok' })),
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
@@ -463,7 +485,7 @@ function makeStatusRecord(
   phase: JobPhase,
   options: {
     sessionId?: string;
-    result?: PersistedStatusRecord['result'];
+    result?: TestTerminalResult;
   } = {},
 ): PersistedStatusRecord {
   return {
@@ -477,7 +499,7 @@ function makeStatusRecord(
       state: 'ready',
       updatedAt: '2026-03-06T00:00:00.000Z',
     },
-    ...(options.result ? { result: options.result } : {}),
+    ...(options.result ? { result: withCompletedOutcome(options.result) } : {}),
   };
 }
 
@@ -487,7 +509,7 @@ function makeTerminalReplay(
     eventId?: number;
     sessionId?: string;
     ts?: string;
-    result?: PersistedProgressRecord['result'];
+    result?: TestTerminalResult;
   } = {},
 ): PersistedProgressRecord {
   return {
@@ -496,7 +518,7 @@ function makeTerminalReplay(
     eventId: options.eventId ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: options.result ?? { content: 'done' },
+    result: withCompletedOutcome(options.result ?? { content: 'done' }),
   };
 }
 
@@ -585,7 +607,7 @@ describe('ExecutionService', () => {
           },
         });
 
-        return { content: result.stdout };
+        return { content: result.stdout, outcome: { kind: 'completed' as const } };
       },
     };
     mockState.getNewProvider.mockReturnValue(provider);
@@ -620,6 +642,7 @@ describe('ExecutionService', () => {
       execute: async (): Promise<ProviderResult> => ({
         content: 'ok',
         conversationRef: 'thread-1',
+        outcome: { kind: 'completed' },
       }),
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -1015,7 +1038,7 @@ describe('ExecutionService', () => {
         const lease = await runtime.acquireServer!(spec);
         await firstLeaseHeld.promise;
         lease.release();
-        return { content: 'done' };
+        return { content: 'done', outcome: { kind: 'completed' } };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -1050,14 +1073,12 @@ describe('ExecutionService', () => {
 
     const terminal = await waitForTerminalEvent(service, second.job);
     expect(terminal.result).toMatchObject({
-      aborted: true,
-      notice: 'Aborted while waiting for a provider server lease',
+      outcome: { kind: 'aborted', reason: 'signal_abort' },
     });
     expect(progressStore.readStatus(second.job)).toMatchObject({
       phase: 'aborted',
       result: {
-        aborted: true,
-        notice: 'Aborted while waiting for a provider server lease',
+        outcome: { kind: 'aborted', reason: 'signal_abort' },
       },
     });
 
@@ -1574,8 +1595,14 @@ describe('ExecutionService', () => {
         execute: async () => ({
           content: '',
           nonResumable: true,
-          notice: 'Conversation thread-stale is no longer resumable.',
-          errors: ['No such thread'],
+          outcome: {
+            kind: 'coral_fault',
+            fault: {
+              kind: 'provider_session_unavailable',
+              provider: 'codex',
+              note: 'Conversation thread-stale is no longer resumable.',
+            },
+          },
         }),
       });
       mockState.getNewProvider.mockReturnValue(provider);
@@ -1598,8 +1625,14 @@ describe('ExecutionService', () => {
       expect(terminal.result).toMatchObject({
         content: '',
         nonResumable: true,
-        notice: 'Conversation thread-stale is no longer resumable.',
-        errors: ['No such thread'],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_session_unavailable',
+            provider: 'codex',
+            note: 'Conversation thread-stale is no longer resumable.',
+          },
+        },
       });
       expect(updatedSession?.activeJobId).toBeUndefined();
       expect(updatedSession?.lastJobId).toBe(decision.job);
@@ -1901,8 +1934,7 @@ describe('ExecutionService', () => {
       expect(progressStore.readStatus(decision.job)).toMatchObject({
         phase: 'aborted',
         result: {
-          aborted: true,
-          notice: 'Aborted while queued.',
+          outcome: { kind: 'aborted', reason: 'queue_shutdown' },
         },
       });
     });
@@ -1952,7 +1984,7 @@ describe('ExecutionService', () => {
         );
 
         await Promise.resolve();
-        progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+        progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
         await Promise.resolve();
         expect(outcome).toBe('pending');
 
@@ -1994,7 +2026,7 @@ describe('ExecutionService', () => {
         if (!injected) {
           injected = true;
           suppressWakeups = true;
-          progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+          progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
           sessionManager.releaseJob(sessionId, jobId);
           suppressWakeups = false;
         }
@@ -2117,7 +2149,7 @@ describe('ExecutionService', () => {
         eventId: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ];
 
@@ -2141,7 +2173,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
   });
@@ -2160,7 +2192,7 @@ describe('ExecutionService', () => {
         state: 'ready',
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     });
     vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
 
@@ -2175,7 +2207,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
   });
@@ -2198,7 +2230,7 @@ describe('ExecutionService', () => {
     const terminalStatus: PersistedStatusRecord = {
       ...runningStatus,
       phase: 'completed',
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     };
 
     vi.spyOn(progressStore, 'readStatus')
@@ -2220,7 +2252,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
     expect(waitForChange).not.toHaveBeenCalled();
@@ -2253,7 +2285,7 @@ describe('ExecutionService', () => {
           jobId: 'job-1',
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
-          result: { content: 'done' },
+          result: { content: 'done', outcome: { kind: 'completed' } },
         },
       ]);
     } finally {
@@ -2294,7 +2326,7 @@ describe('ExecutionService', () => {
           jobId: 'job-1',
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
-          result: { content: 'done' },
+          result: { content: 'done', outcome: { kind: 'completed' } },
         },
       });
       await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
@@ -2419,7 +2451,7 @@ describe('ExecutionService', () => {
           jobId: 'job-1',
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
-          result: { content: 'done' },
+          result: { content: 'done', outcome: { kind: 'completed' } },
         },
       });
       await expect(streamIterator.next()).resolves.toEqual({ done: true, value: undefined });
@@ -2516,7 +2548,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
 
@@ -2603,7 +2635,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
   });
@@ -2722,6 +2754,7 @@ describe('ExecutionService', () => {
     );
     expect(terminal.result).toEqual({
       content: 'FINAL',
+      outcome: { kind: 'completed' },
       workflow: {
         steps: [
           {
@@ -2841,12 +2874,22 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider({
       execute: async (request) => {
         if (request.name?.startsWith('architect')) {
-          return { content: 'ARCH' };
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
         }
         if (request.name?.startsWith('resolver')) {
-          return { content: '', notice: 'resolver failed' };
+          return {
+            content: '',
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: 'resolver failed',
+              },
+            },
+          };
         }
-        return { content: 'unexpected' };
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -2877,9 +2920,19 @@ describe('ExecutionService', () => {
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(terminal.result).toEqual({
+    expect(terminal.result).toMatchObject({
       content: '',
-      notice: "Step 1, atom 'resolver' failed: resolver failed",
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'workflow_atom_failed',
+          step: 1,
+          atom: 'resolver',
+          cause: {
+            message: expect.stringContaining('resolver failed'),
+          },
+        },
+      },
       workflow: {
         steps: [
           {
@@ -2904,12 +2957,12 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider({
       execute: async (request) => {
         if (request.name?.startsWith('architect')) {
-          return { content: 'ARCH' };
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
         }
         if (request.name?.startsWith('resolver')) {
-          return { content: '', aborted: true };
+          return { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } };
         }
-        return { content: 'unexpected' };
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -2940,10 +2993,12 @@ describe('ExecutionService', () => {
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(terminal.result).toEqual({
+    expect(terminal.result).toMatchObject({
       content: '',
-      aborted: true,
-      notice: "Step 1, atom 'resolver' failed: aborted",
+      outcome: {
+        kind: 'coral_fault',
+        fault: { kind: 'workflow_aborted' },
+      },
       workflow: {
         steps: [
           {
@@ -2958,7 +3013,7 @@ describe('ExecutionService', () => {
       },
     });
     expect(status).toMatchObject({
-      phase: 'aborted',
+      phase: 'error',
       result: terminal.result,
     });
     expect(session?.state).toBe('non_resumable');
@@ -2987,13 +3042,13 @@ describe('ExecutionService', () => {
     expect(appendTerminal).toHaveBeenCalled();
     expect(markTerminalStatus).toHaveBeenCalledWith(
       decision.job,
-      expect.objectContaining({ content: 'ok' }),
+      expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
       'completed',
     );
-    expect(terminal.result).toEqual({ content: 'ok' });
+    expect(terminal.result).toMatchObject({ content: 'ok', outcome: { kind: 'completed' } });
     expect(status).toMatchObject({
       phase: 'completed',
-      result: { content: 'ok' },
+      result: { content: 'ok', outcome: { kind: 'completed' } },
     });
   });
 
@@ -3018,11 +3073,11 @@ describe('ExecutionService', () => {
       service as unknown as {
         finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
       }
-    ).finishQueuedAbort(jobId, 'session-1', 'Aborted while queued.');
+    ).finishQueuedAbort(jobId, 'session-1', 'queue_shutdown');
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      { content: '', aborted: true, notice: 'Aborted while queued.' },
+      { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
       'aborted',
     );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
@@ -3047,11 +3102,36 @@ describe('ExecutionService', () => {
 
     (
       service as unknown as {
-        launchOrchestrator: { failJob(jobId: string, sessionId: string, launchState: string, message: string): void };
+        launchOrchestrator: {
+          failJob(
+            jobId: string,
+            sessionId: string,
+            launchState: string,
+            fault: { kind: 'provider_request_failed'; provider: 'codex'; message: string },
+          ): void;
+        };
       }
-    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', 'provider failed');
+    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', {
+      kind: 'provider_request_failed',
+      provider: 'codex',
+      message: 'provider failed',
+    });
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, { content: '', notice: 'provider failed' }, 'error');
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      {
+        content: '',
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: 'codex',
+            message: 'provider failed',
+          },
+        },
+      },
+      'error',
+    );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });
   });
 
@@ -3071,7 +3151,7 @@ describe('ExecutionService', () => {
       throw new Error('disk full');
     });
     const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
-    const result = { content: 'done', workflow: { steps: [] } };
+    const result = { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } };
 
     (
       service as unknown as {
@@ -3093,22 +3173,37 @@ describe('ExecutionService', () => {
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
   });
 
-  it.each([
-    {
-      phase: 'completed' as const,
-      result: { content: 'done', workflow: { steps: [] } },
-      markdown: '# completed\n',
-    },
-    {
-      phase: 'error' as const,
-      result: { content: '', notice: 'failed', workflow: { steps: [] } },
-      markdown: '# failed\n',
-    },
-    {
-      phase: 'aborted' as const,
-      result: { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } },
-      markdown: '# aborted\n',
-    },
+    it.each([
+      {
+        phase: 'completed' as const,
+        result: { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } },
+        markdown: '# completed\n',
+      },
+      {
+        phase: 'error' as const,
+        result: {
+          content: '',
+          workflow: { steps: [] },
+          outcome: {
+            kind: 'coral_fault',
+            fault: {
+              kind: 'provider_request_failed',
+              provider: 'codex',
+              message: 'failed',
+            },
+          },
+        },
+        markdown: '# failed\n',
+      },
+      {
+        phase: 'error' as const,
+        result: {
+          content: '',
+          workflow: { steps: [] },
+          outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+        },
+        markdown: '# aborted\n',
+      },
   ])(
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
     ({ phase, result, markdown }) => {
@@ -3177,8 +3272,12 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } = getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
     const jobId = `workflow-fallback-order-${randomUUID()}`;
-    const phase = 'aborted' as const;
-    const result = { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } };
+    const phase = 'error' as const;
+    const result = {
+      content: '',
+      workflow: { steps: [] },
+      outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+    };
     const markdown = '# fallback\n';
     trackJob(jobId);
     progressStore.initJob({
@@ -3283,11 +3382,24 @@ describe('ExecutionService', () => {
       };
     }
 
-    function buildExpectedInterruptedReport(reason: 'restart' | 'handoff', ...detailLines: string[]): string {
-      const baseNotice =
+    function buildExpectedInterruptedReport(
+      reason: 'restart' | 'handoff',
+      continuity: 'verified' | 'missing' | 'unavailable' | 'pre_checkpoint_preserved',
+      ...detailLines: string[]
+    ): string {
+      const triggerText =
         reason === 'restart'
-          ? 'Backend restarted during the app-server turn. The interrupted turn was not replayed.'
-          : 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+          ? 'App-server restarted during the turn'
+          : 'App-server handoff occurred during the turn';
+      const continuityText =
+        continuity === 'verified'
+          ? 'continuity verified'
+          : continuity === 'missing'
+            ? 'continuity missing'
+            : continuity === 'unavailable'
+              ? 'continuity unavailable'
+              : 'existing conversation reference was preserved';
+      const baseNotice = `${triggerText}; ${continuityText}.`;
       return [baseNotice, '', ...detailLines].join('\n');
     }
 
@@ -3573,12 +3685,17 @@ describe('ExecutionService', () => {
         restoreActiveLaunch(jobId, 'codex');
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        service.completeRecoveredJob(jobId, session.sessionId, { content: 'recovered done' }, 'completed');
+        service.completeRecoveredJob(
+          jobId,
+          session.sessionId,
+          { content: 'recovered done', outcome: { kind: 'completed' } },
+          'completed',
+        );
 
         const status = progressStore.readStatus(jobId);
         expect(status).toMatchObject({
           phase: 'completed',
-          result: { content: 'recovered done' },
+          result: { content: 'recovered done', outcome: { kind: 'completed' } },
         });
         expect(existsSync(jobResultPath(jobId))).toBe(true);
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done');
@@ -3637,7 +3754,8 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
-          'Session was interrupted before completion. State unknown.',
+          'pre_checkpoint_preserved',
+          'Session was interrupted before completion. The existing conversation reference was preserved.',
         );
 
         expect(spawnProviderServerMock).not.toHaveBeenCalled();
@@ -3645,7 +3763,14 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
-            notice: expect.stringContaining('The existing conversation reference was preserved.'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'pre_checkpoint_preserved',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3701,6 +3826,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
+          'verified',
           'Session is resumable. Use resume to continue.',
           'Conversation reference preserved: thread-recovered',
         );
@@ -3709,6 +3835,14 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'verified',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3777,6 +3911,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
+          'missing',
           'Session thread is no longer available. Marked as non-resumable.',
         );
 
@@ -3785,7 +3920,14 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             nonResumable: true,
-            notice: expect.stringContaining('session is non-resumable'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'missing',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3855,6 +3997,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'handoff',
+          'unavailable',
           'Could not reach provider server to verify session. Marked as non-resumable.',
         );
 
@@ -3863,7 +4006,14 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             nonResumable: true,
-            notice: expect.stringContaining('could not be verified'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'handoff',
+                continuity: 'unavailable',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -4278,7 +4428,14 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
         const all = [
           { jobId, sessionId: 'session-1', eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
           { jobId, sessionId: 'session-1', eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
-          { jobId, sessionId: 'session-1', eventId: 3, type: 'terminal' as const, ts: '', result: { content: 'done' } },
+          {
+            jobId,
+            sessionId: 'session-1',
+            eventId: 3,
+            type: 'terminal' as const,
+            ts: '',
+            result: { content: 'done', outcome: { kind: 'completed' as const } },
+          },
         ];
         return all.filter((e) => e.eventId > fromEventId);
       });

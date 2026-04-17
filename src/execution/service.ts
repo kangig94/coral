@@ -41,6 +41,7 @@ import {
   type StepDetail,
   WorkflowExecutionError,
 } from '../workflow/pipe-executor.js';
+import { describeCoralFault, type AbortReason, type CoralFault } from '../shared/coral-fault.js';
 import { AbortRegistry } from './abort-controller-registry.js';
 import type { LaunchCoordinator, LaunchPool } from './engine.js';
 import type { TypedEventBus } from './event-bus.js';
@@ -48,7 +49,6 @@ import { type ProviderHostManager, type ProviderServerAttachment } from './host-
 import { buildCoralInstruction } from './instruction.js';
 import { LaunchOrchestrator, WaitCoordinator } from './job-lifecycle.js';
 import {
-  QUEUED_ABORT_MESSAGE,
   SessionClaimError,
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   rejectLaunch,
@@ -122,21 +122,6 @@ type InterruptedAppServerFinalization = {
 };
 
 const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;
-const APP_SERVER_RESTART_NOTICE =
-  'Backend restarted during the app-server turn. The interrupted turn was not replayed.';
-const APP_SERVER_HANDOFF_NOTICE =
-  'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
-const APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE =
-  'The job ended before a resumable conversation checkpoint for this turn was written.';
-const APP_SERVER_CONTINUITY_VERIFIED_NOTICE = 'Session continuity was verified for the saved conversation reference.';
-const APP_SERVER_CONTINUITY_MISSING_NOTICE =
-  'The saved conversation reference is no longer available, so the session is non-resumable.';
-const APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE =
-  'Session continuity could not be verified because the recovery probe was unavailable.';
-
-function joinNotice(...parts: Array<string | undefined>): string {
-  return parts.filter((part): part is string => typeof part === 'string' && part.length > 0).join(' ');
-}
 
 function buildSessionControllerProfile(
   coralEnv: Record<string, string>,
@@ -206,32 +191,35 @@ function buildEffectiveCoralEnv(
   return merged;
 }
 
-function buildInterruptedAppServerReport(options: {
-  baseNotice: string;
-  probeOutcome: InterruptedProbeOutcome;
-  conversationRef?: string;
-}): string {
-  const lines = [options.baseNotice, ''];
+function buildInterruptedAppServerReport(
+  fault: Extract<CoralFault, { kind: 'app_server_interrupted' }>,
+  conversationRef?: string,
+): string {
+  const lines = [describeCoralFault(fault), ''];
 
-  if (options.probeOutcome === 'verified') {
+  if (fault.continuity === 'verified') {
     lines.push('Session is resumable. Use resume to continue.');
-    if (options.conversationRef) {
-      lines.push(`Conversation reference preserved: ${options.conversationRef}`);
+    if (conversationRef) {
+      lines.push(`Conversation reference preserved: ${conversationRef}`);
     }
     return lines.join('\n');
   }
 
-  if (options.probeOutcome === 'missing') {
+  if (fault.continuity === 'missing') {
     lines.push('Session thread is no longer available. Marked as non-resumable.');
     return lines.join('\n');
   }
 
-  if (options.probeOutcome === 'unavailable') {
+  if (fault.continuity === 'unavailable') {
     lines.push('Could not reach provider server to verify session. Marked as non-resumable.');
     return lines.join('\n');
   }
 
-  lines.push('Session was interrupted before completion. State unknown.');
+  lines.push(
+    fault.continuity === 'pre_checkpoint_empty'
+      ? 'Session was interrupted before completion. No resumable conversation was available.'
+      : 'Session was interrupted before completion. The existing conversation reference was preserved.',
+  );
   return lines.join('\n');
 }
 
@@ -513,7 +501,6 @@ export class ExecutionService implements RecoveryCapableService {
       return;
     }
 
-    const baseNotice = options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
     const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(launchRecord.provider);
     const session =
       this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
@@ -613,41 +600,35 @@ export class ExecutionService implements RecoveryCapableService {
       mutation = { type: 'clear_non_resumable' };
     }
 
-    let notice: string;
-    if (probeOutcome === 'waiting') {
-      notice = joinNotice(
-        baseNotice,
-        APP_SERVER_INTERRUPTED_BEFORE_CONTINUITY_NOTICE,
-        mutation.type === 'clear_non_resumable'
-          ? 'No resumable conversation was available.'
-          : 'The existing conversation reference was preserved.',
-      );
-    } else if (probeOutcome === 'verified') {
-      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_VERIFIED_NOTICE);
-    } else if (probeOutcome === 'missing') {
-      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_MISSING_NOTICE);
-    } else {
-      notice = joinNotice(baseNotice, APP_SERVER_CONTINUITY_UNVERIFIED_NOTICE);
-    }
+    const fault: Extract<CoralFault, { kind: 'app_server_interrupted' }> = {
+      kind: 'app_server_interrupted',
+      trigger: options.reason,
+      continuity:
+        probeOutcome === 'verified'
+          ? 'verified'
+          : probeOutcome === 'missing'
+            ? 'missing'
+            : probeOutcome === 'unavailable'
+              ? 'unavailable'
+              : mutation.type === 'clear_non_resumable'
+                ? 'pre_checkpoint_empty'
+                : 'pre_checkpoint_preserved',
+    };
 
     let reportConversationRef: string | undefined;
     if (probeOutcome === 'verified') {
       reportConversationRef = mutation.type === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
     }
 
-    const interruptedReport = buildInterruptedAppServerReport({
-      baseNotice,
-      probeOutcome,
-      conversationRef: reportConversationRef,
-    });
+    const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
 
-    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', notice);
+    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeCoralFault(fault));
     this.writeTerminalResult(
       launchRecord.jobId,
       launchRecord.sessionId,
       {
         content: interruptedReport,
-        notice,
+        outcome: { kind: 'coral_fault', fault },
         ...(probeOutcome === 'missing' || probeOutcome === 'unavailable' ? { nonResumable: true } : {}),
       },
       'error',
@@ -1226,7 +1207,7 @@ export class ExecutionService implements RecoveryCapableService {
       const status = this.progressStore.readStatus(jobId);
       const pool = this.jobPools.get(jobId) ?? 'default';
       if (status?.phase === 'queued' && this.launchCoordinator.cancelQueued(jobId, pool)) {
-        this.finishQueuedAbort(jobId, status.sessionId, QUEUED_ABORT_MESSAGE);
+        this.finishQueuedAbort(jobId, status.sessionId, 'queue_shutdown');
         aborted.push(jobId);
         continue;
       }
@@ -1466,8 +1447,8 @@ export class ExecutionService implements RecoveryCapableService {
     return this.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
   }
 
-  private finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
-    this.launchOrchestrator.finishQueuedAbort(jobId, sessionId, message);
+  private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
+    this.launchOrchestrator.finishQueuedAbort(jobId, sessionId, reason);
   }
 
   private markJobRunning(jobId: string): void {
@@ -1523,6 +1504,7 @@ export class ExecutionService implements RecoveryCapableService {
           {
             content: result.finalOutput,
             workflow: serialized.workflow,
+            outcome: { kind: 'completed' },
           },
           serialized.markdown,
         );
@@ -1573,6 +1555,7 @@ export class ExecutionService implements RecoveryCapableService {
           {
             content: result.finalOutput,
             workflow: serialized.workflow,
+            outcome: { kind: 'completed' },
           },
           serialized.markdown,
         );
@@ -1584,21 +1567,33 @@ export class ExecutionService implements RecoveryCapableService {
 
   private handleWorkflowError(err: unknown, signal: AbortSignal, sessionId: string, jobId: string): void {
     const message = errorMessage(err);
-    const aborted = err instanceof WorkflowExecutionError ? err.aborted : signal.aborted;
-    const phase: Extract<JobPhase, 'error' | 'aborted'> = aborted ? 'aborted' : 'error';
+    const workflowError = err instanceof WorkflowExecutionError ? err : null;
+    const aborted = workflowError ? workflowError.aborted : signal.aborted;
     const stepDetails = err instanceof WorkflowExecutionError ? err.stepDetails : [];
+    const fault: CoralFault = aborted
+      ? { kind: 'workflow_aborted' }
+      : {
+          kind: 'workflow_atom_failed',
+          step: workflowError?.failedStep,
+          atom: workflowError?.failedAtom,
+          cause: { message },
+        };
 
     try {
       const serialized = serializeWorkflowResult(stepDetails);
-      const terminalResult: TerminalResult = aborted
-        ? { content: '', aborted: true, notice: message, workflow: serialized.workflow }
-        : { content: '', notice: message, workflow: serialized.workflow };
-      this.finishWorkflowJob(sessionId, jobId, phase, terminalResult, serialized.markdown);
+      const terminalResult: TerminalResult = {
+        content: '',
+        outcome: { kind: 'coral_fault', fault },
+        workflow: serialized.workflow,
+      };
+      this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
     } catch {
-      const emptyResult: TerminalResult = aborted
-        ? { content: '', aborted: true, notice: message, workflow: { steps: [] } }
-        : { content: '', notice: message, workflow: { steps: [] } };
-      this.finishWorkflowJob(sessionId, jobId, phase, emptyResult, '');
+      const emptyResult: TerminalResult = {
+        content: '',
+        outcome: { kind: 'coral_fault', fault },
+        workflow: { steps: [] },
+      };
+      this.finishWorkflowJob(sessionId, jobId, 'error', emptyResult, '');
     }
   }
 }
