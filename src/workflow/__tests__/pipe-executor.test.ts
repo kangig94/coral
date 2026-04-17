@@ -29,13 +29,21 @@ function running(job: string, session: string) {
   };
 }
 
-function terminal(jobId: string, _sessionId: string, result: TerminalResult): WaitStreamEvent {
+function terminal(
+  jobId: string,
+  _sessionId: string,
+  result: Omit<TerminalResult, 'outcome'> & { outcome?: TerminalResult['outcome'] },
+): WaitStreamEvent {
+  const terminalResult: TerminalResult =
+    result.outcome !== undefined
+      ? ({ ...result, outcome: result.outcome } as TerminalResult)
+      : { ...result, outcome: { kind: 'completed' } };
   return {
     type: 'terminal',
     jobId,
     remainingJobIds: [],
     resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
-    result,
+    result: terminalResult,
   };
 }
 
@@ -430,7 +438,7 @@ describe('workflow pipe executor', () => {
           controller.abort();
           return emit([stillWaiting(['job-1'])]);
         }
-        return emit([terminal('job-1', 'session-1', { content: '', aborted: true })]);
+          return emit([terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })]);
       }),
     });
 
@@ -451,7 +459,19 @@ describe('workflow pipe executor', () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { content: '', notice: 'error msg' })]);
+          return emit([
+            terminal('job-1', 'session-1', {
+              content: '',
+              outcome: {
+                kind: 'coral_fault',
+                fault: {
+                  kind: 'provider_request_failed',
+                  provider: 'claude',
+                  message: 'error msg',
+                },
+              },
+            }),
+          ]);
         }
         return emit([]);
       }),
@@ -460,7 +480,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'architect' failed: error msg",
+      message: "Step 0, atom 'architect' failed: Claude turn failed: error msg.",
       aborted: false,
     });
 
@@ -596,7 +616,17 @@ describe('workflow pipe executor', () => {
       waitStream: vi.fn(() =>
         emit([
           terminal('job-a', 'session-a', { content: 'ARCH' }),
-          terminal('job-b', 'session-b', { content: '', notice: 'primary failure' }),
+          terminal('job-b', 'session-b', {
+            content: '',
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: 'primary failure',
+              },
+            },
+          }),
         ]),
       ),
     });
@@ -604,7 +634,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'critic' failed: primary failure",
+      message: "Step 0, atom 'critic' failed: Codex turn failed: primary failure.",
       aborted: false,
       stepDetails: [
         {
@@ -637,7 +667,9 @@ describe('workflow pipe executor', () => {
           controller.abort();
           return emit([stillWaiting(['job-2'])]);
         }
-        return emit([terminal('job-2', 'session-2', { content: '', aborted: true })]);
+        return emit([
+          terminal('job-2', 'session-2', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+        ]);
       }),
     });
 
@@ -866,7 +898,17 @@ describe('waitForAtoms', () => {
       waitStream: vi.fn(() =>
         emit([
           terminal('job-1', 'session-1', { content: 'ARCH' }),
-          terminal('job-2', 'session-2', { content: '', notice: 'process killed' }),
+          terminal('job-2', 'session-2', {
+            content: '',
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: 'process killed',
+              },
+            },
+          }),
         ]),
       ),
     });
@@ -894,7 +936,7 @@ describe('waitForAtoms', () => {
         },
       ),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'critic' failed: process killed",
+      message: "Step 0, atom 'critic' failed: Codex turn failed: process killed.",
       aborted: false,
       stepDetails: [
         {
@@ -912,7 +954,9 @@ describe('waitForAtoms', () => {
 
   it('throws WorkflowExecutionError on aborted terminal results', async () => {
     const executionSvc = createExecutionService({
-      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: '', aborted: true })])),
+      waitStream: vi.fn(() =>
+        emit([terminal('job-1', 'session-1', { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } })])
+      ),
     });
 
     await expect(

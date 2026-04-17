@@ -1,3 +1,4 @@
+import { phaseForOutcome, type TerminalOutcome, wrapperCrashedFault } from '../../shared/coral-fault.js';
 import { formatError } from '../../shared/utils.js';
 import {
   isAppServerRuntime,
@@ -15,7 +16,6 @@ import type { RecoveryRegistry } from '../recovery-registry.js';
 import type { Runtime } from '../runtime.js';
 import { SessionManager } from '../session-manager.js';
 import type { RecoveryCapableService } from '../service.js';
-import { GHOST_LAUNCH_NOTICE, OLD_FORMAT_NOTICE } from '../recovery-notices.js';
 import { markJobAsError } from './job-helpers.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: PersistedLaunchRecord };
@@ -45,14 +45,18 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       log(`Deleted incomplete admission: ${action.jobId}\n`);
       return;
     case 'markError': {
-      markJobAsError(progressStore, action.status, action.notice, log);
+      markJobAsError(progressStore, action.status, action.fault, log);
       new SessionManager(action.status.projectRoot, runtime).releaseJob(action.status.sessionId, action.status.jobId);
-      if (action.notice === OLD_FORMAT_NOTICE) {
-        log(`Marked incompatible old-format job: ${action.jobId}\n`);
-      } else if (action.notice === GHOST_LAUNCH_NOTICE) {
-        log(`Marked ghost launch job: ${action.jobId}\n`);
-      } else {
-        log(`Marked recovery job as error: ${action.jobId}\n`);
+      switch (action.fault.kind) {
+        case 'stale_status_schema':
+          log(`Marked incompatible old-format job: ${action.jobId}\n`);
+          break;
+        case 'ghost_launch':
+          log(`Marked ghost launch job: ${action.jobId}\n`);
+          break;
+        default:
+          log(`Marked recovery job as error: ${action.jobId}\n`);
+          break;
       }
       return;
     }
@@ -93,12 +97,16 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
       log(`Failed to delete incomplete admission ${action.jobId}: ${formatError(error)}\n`);
       return;
     case 'markError':
-      if (action.notice === OLD_FORMAT_NOTICE) {
-        log(`Failed to handle incompatible job ${action.jobId}: ${formatError(error)}\n`);
-      } else if (action.notice === GHOST_LAUNCH_NOTICE) {
-        log(`Failed to handle ghost launch job ${action.jobId}: ${formatError(error)}\n`);
-      } else {
-        log(`Failed to handle recovery error-mark job ${action.jobId}: ${formatError(error)}\n`);
+      switch (action.fault.kind) {
+        case 'stale_status_schema':
+          log(`Failed to handle incompatible job ${action.jobId}: ${formatError(error)}\n`);
+          break;
+        case 'ghost_launch':
+          log(`Failed to handle ghost launch job ${action.jobId}: ${formatError(error)}\n`);
+          break;
+        default:
+          log(`Failed to handle recovery error-mark job ${action.jobId}: ${formatError(error)}\n`);
+          break;
       }
       return;
     case 'registerQueued':
@@ -144,22 +152,19 @@ export function finalizeDeadAdoptedJob({
           fallbackConversationRef: launchRecord.request.conversationRef,
         })
         .then((result) => {
-          const phase = result.aborted ? ('aborted' as const) : ('completed' as const);
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
             {
               content: result.content,
               durationMs: result.durationMs,
-              aborted: result.aborted,
               nonResumable: result.nonResumable,
               exitCode: result.exitCode,
-              notice: result.notice,
-              errors: result.errors,
               warnings: result.warnings,
               usage: result.usage,
+              outcome: result.outcome,
             },
-            phase,
+            phaseForOutcome(result.outcome),
             { conversationRef: result.conversationRef, nonResumable: result.nonResumable },
           );
         })
@@ -168,7 +173,16 @@ export function finalizeDeadAdoptedJob({
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
-            { content: '', notice: `Provider recovery failed: ${formatError(recoverErr)}` },
+            {
+              content: '',
+              outcome: {
+                kind: 'coral_fault',
+                fault: {
+                  kind: 'recovery_parse_failed',
+                  cause: { message: formatError(recoverErr) },
+                },
+              },
+            },
             'error',
           );
         });
@@ -177,16 +191,36 @@ export function finalizeDeadAdoptedJob({
 
     const persistedPayload = progressStore.readTerminalPayload(jobId);
     if (persistedPayload !== null) {
-      const phase: 'aborted' | 'completed' | 'error' =
-        persistedPayload.aborted === true ? 'aborted' : exitRecord.exitCode === 0 ? 'completed' : 'error';
+      const phase = phaseForOutcome(persistedPayload.outcome);
       const payload: TerminalResult = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
       service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, { nonResumable: persistedPayload.nonResumable === true });
       return;
     }
 
-    service.completeRecoveredJob(jobId, launchRecord.sessionId, { content: '', exitCode: exitRecord.exitCode }, exitRecord.exitCode === 0 ? 'completed' : 'error');
+    const outcome: TerminalOutcome =
+      exitRecord.exitCode === null
+        ? {
+            kind: 'coral_fault',
+            fault: wrapperCrashedFault(
+              exitRecord.signal !== null
+                ? `Provider wrapper exited via signal ${exitRecord.signal} without a terminal outcome`
+                : 'Provider wrapper exited without a numeric exit code or terminal outcome',
+            ),
+          }
+        : { kind: 'provider_exit', code: exitRecord.exitCode };
+    service.completeRecoveredJob(
+      jobId,
+      launchRecord.sessionId,
+      { content: '', exitCode: exitRecord.exitCode, outcome },
+      phaseForOutcome(outcome),
+    );
     return;
   }
 
-  service.completeRecoveredJob(jobId, launchRecord.sessionId, { content: '', notice: 'Wrapper process lost — no exit.json found' }, 'error');
+  service.completeRecoveredJob(
+    jobId,
+    launchRecord.sessionId,
+    { content: '', outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } } },
+    'error',
+  );
 }

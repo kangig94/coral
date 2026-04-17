@@ -6,7 +6,7 @@ import type { Provider, ProviderArtifactCleanup } from '../types.js';
 function makeProvider(name: string): Provider {
   return {
     name,
-    execute: async () => ({ content: `${name} response` }),
+    execute: async () => ({ content: `${name} response`, outcome: { kind: 'completed' as const } }),
   };
 }
 
@@ -42,12 +42,12 @@ describe('ProviderRegistry', () => {
       finalizeInterrupted: () => ({}),
     };
     const artifactRecovery = {
-      finalizeFromArtifacts: async () => ({ content: 'recovered' }),
+      finalizeFromArtifacts: async () => ({ content: 'recovered', outcome: { kind: 'completed' as const } }),
     };
     const artifactCleanup = makeCleanupRole('claude');
     const provider: Provider = {
       name: 'claude',
-      execute: async () => ({ content: 'ok' }),
+      execute: async () => ({ content: 'ok', outcome: { kind: 'completed' as const } }),
       appServerLifecycle,
       artifactRecovery,
       artifactCleanup,

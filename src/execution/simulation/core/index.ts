@@ -11,6 +11,7 @@ import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
+import type { ProviderName, TerminalOutcome } from '../../../shared/coral-fault.js';
 import { composeChildEnv } from '../../../shared/env-sanitize.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../../shared/process-constants.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
@@ -63,13 +64,14 @@ export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } fr
 
 export type FakeProviderScenario = {
   name?: string;
+  faultProvider?: ProviderName;
   cli?: {
     command?: string;
     args?: string[];
     extraEnv?: Record<string, string>;
   };
   progress?: Array<{ delayMs?: number; message: string }>;
-  result?: Partial<ProviderResult>;
+  result?: Omit<Partial<ProviderResult>, 'outcome'> & Pick<ProviderResult, 'outcome'>;
   preflightError?: Error | string;
 };
 
@@ -368,6 +370,30 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
   };
 }
 
+function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null | undefined): TerminalOutcome {
+  if (aborted) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+  if (typeof exitCode === 'number' && exitCode !== 0) {
+    return { kind: 'provider_exit', code: exitCode };
+  }
+  return { kind: 'completed' };
+}
+
+function buildRecoveredArtifactFailureOutcome(
+  scenario: FakeProviderScenario | undefined,
+  message: string,
+): TerminalOutcome {
+  return {
+    kind: 'coral_fault',
+    fault: {
+      kind: 'provider_request_failed',
+      provider: scenario?.faultProvider ?? 'claude',
+      message,
+    },
+  };
+}
+
 export function createFakeProvider(runtime: SimulationRuntime, scenario: FakeProviderScenario | undefined): Provider {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
@@ -405,12 +431,14 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
         },
       });
 
+      const exitCode = scenario?.result?.exitCode ?? cli.code;
+      const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(cli.aborted, exitCode);
       const result: ProviderResult = {
-        content: scenario?.result?.content ?? cli.stdout.trimEnd(),
-        exitCode: scenario?.result?.exitCode ?? cli.code,
-        aborted: scenario?.result?.aborted ?? cli.aborted,
-        durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
         ...scenario?.result,
+        content: scenario?.result?.content ?? cli.stdout.trimEnd(),
+        exitCode,
+        durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
+        outcome,
       };
       return result;
     },
@@ -419,12 +447,18 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
       finalizeFromArtifacts: async ({ stdoutPath, stderrPath, exitCode, signal }) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
         const stderr = readFileIfPresent(runtime.storage, stderrPath).trimEnd();
+        const recoveredArtifactFailed = scenario?.result?.outcome === undefined && stderr.length > 0;
+        const outcome =
+          scenario?.result?.outcome ??
+          (recoveredArtifactFailed
+            ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
+            : buildDefaultExecutionOutcome(signal !== null, exitCode));
         const result: ProviderResult = {
+          ...scenario?.result,
           content: scenario?.result?.content ?? stdout,
           exitCode: scenario?.result?.exitCode ?? exitCode,
-          aborted: scenario?.result?.aborted ?? signal !== null,
-          notice: scenario?.result?.notice ?? (stderr.length > 0 ? stderr : undefined),
-          ...scenario?.result,
+          nonResumable: scenario?.result?.nonResumable ?? (recoveredArtifactFailed ? true : undefined),
+          outcome,
         };
         return result;
       },

@@ -3,7 +3,6 @@ import type { Command } from 'commander';
 import { UsageError } from '../errors.js';
 import {
   emitError,
-  getOutputFormat,
   handleLaunchResult,
   makeClient,
   resolveInput,
@@ -22,8 +21,6 @@ export function registerWorkflowCommands(program: Command): void {
     .option('-o, --owner <id>', 'Session owner ID for memo isolation')
     .option('-d, --detach', 'Return launch decision without waiting')
     .action(async (opts: WorkflowOptions) => {
-      const outputFormat = getOutputFormat(workflowCommand);
-
       try {
         const { expression } = opts;
 
@@ -44,9 +41,9 @@ export function registerWorkflowCommands(program: Command): void {
 
         const client = makeClient(process.cwd());
         const result = await client.workflow(expression, payload);
-        await handleLaunchResult(result, opts.detach, outputFormat, client);
+        await handleLaunchResult(result, opts.detach, client);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 }

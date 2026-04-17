@@ -34,6 +34,8 @@ steps:
   - type: expect
     phase: aborted
     result:
-      aborted: true
+      outcome:
+        kind: aborted
+        reason: signal_abort
     runtimeRecorded: true
     noRealIO: true

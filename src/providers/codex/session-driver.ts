@@ -1,13 +1,20 @@
 import type { ProviderContinuityBlob, ProviderResult } from '../../shared/types.js';
 import { readString } from '../../shared/utils.js';
 import { resolveModelTier } from '../../shared/schemas.js';
-import type { AppServerSessionDriver, DriverContext, DriverStepOutcome } from '../app-server/driver.js';
+import {
+  buildProviderFailureMessage,
+  type AppServerSessionDriver,
+  type DriverContext,
+  type DriverStepOutcome,
+} from '../app-server/driver.js';
 import { requireConversationRef } from '../types.js';
 import {
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
+  resolveCodexServiceTier,
+  type CodexServiceTier,
 } from './request-mapping.js';
 import type {
   AppServerMethod,
@@ -30,6 +37,7 @@ export type CodexTurnState = {
   startedAt: number;
   cwd: string;
   model: string | undefined;
+  serviceTier: CodexServiceTier | undefined;
   sessionId: string;
   threadId: string | null;
   threadIds: Set<string>;
@@ -398,6 +406,7 @@ async function interruptTurn(ctx: DriverContext, threadId: string, turnId: strin
 
 export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
   name: 'Codex',
+  faultProviderName: 'codex',
   subscriptionPhase: 'afterInitialize',
 
   buildServerSpec(request, persistedContinuity) {
@@ -418,6 +427,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
       startedAt: Date.now(),
       cwd: request.cwd,
       model: resolveModelTier(request.model),
+      serviceTier: resolveCodexServiceTier(request, ctx.runtime),
       sessionId: request.sessionId,
       threadId: null,
       threadIds: new Set(),
@@ -447,7 +457,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     if (request.action === 'resume') {
       const conversationRef = requireConversationRef(request, 'resume');
       try {
-        const response = await rpc(ctx, 'thread/resume', mapThreadResumeParams(request, conversationRef));
+        const response = await rpc(ctx, 'thread/resume', mapThreadResumeParams(request, conversationRef, state.serviceTier));
         threadId = response.thread.id;
       } catch (error) {
         if (isMissingConversationError(error)) {
@@ -462,7 +472,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         throw error;
       }
     } else {
-      const response = await rpc(ctx, 'thread/start', mapThreadStartParams(request));
+      const response = await rpc(ctx, 'thread/start', mapThreadStartParams(request, state.serviceTier));
       threadId = response.thread.id;
     }
 
@@ -476,13 +486,13 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
   async startTurn(ctx, state, request): Promise<DriverStepOutcome> {
     state.turnStartRequested = true;
     if (ctx.runtime.signal.aborted && !state.turnId) {
-      return { terminal: { kind: 'aborted' } };
+      return { terminal: { kind: 'aborted', reason: 'signal_abort' } };
     }
     if (!state.threadId) {
       throw new Error('Codex thread id missing before turn/start.');
     }
 
-    const response = await rpc(ctx, 'turn/start', mapTurnStartParams(request, state.threadId));
+    const response = await rpc(ctx, 'turn/start', mapTurnStartParams(request, state.threadId, state.serviceTier));
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
@@ -493,7 +503,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     flushBufferedNotifications(state);
 
     if (!state.turnId && ctx.runtime.signal.aborted) {
-      return { terminal: { kind: 'aborted' } };
+      return { terminal: { kind: 'aborted', reason: 'signal_abort' } };
     }
 
     if (response.turn?.status && response.turn.status !== 'inProgress') {
@@ -560,8 +570,14 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         content: '',
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
-        notice: outcome.message,
-        errors: [state.error?.message ?? outcome.message],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_session_unavailable',
+            provider: 'codex',
+            note: outcome.message,
+          },
+        },
       };
     }
 
@@ -575,7 +591,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         conversationRef: state.threadId ?? undefined,
         model: state.model,
         durationMs: Date.now() - state.startedAt,
-        aborted: true,
+        outcome: { kind: 'aborted', reason: outcome.reason },
       };
     }
 
@@ -585,9 +601,14 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         conversationRef: state.threadId ?? undefined,
         model: state.model,
         durationMs: Date.now() - state.startedAt,
-        exitCode: 1,
-        notice: outcome.message,
-        errors: [outcome.message],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: 'codex',
+            message: buildProviderFailureMessage('Codex', outcome.message),
+          },
+        },
       };
     }
 
@@ -595,16 +616,27 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     const turnStatus = turn?.status;
     const turnFailed = !isSuccessfulTurn(turnStatus);
     const turnAborted = isAbortedTurn(turnStatus);
+    const failureMessage = turnFailed
+      ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus)
+      : undefined;
 
     return {
       content: state.lastAgentMessage,
       conversationRef: state.threadId ?? undefined,
       model: state.model,
       durationMs: Date.now() - state.startedAt,
-      aborted: turnAborted || undefined,
-      exitCode: turnFailed ? 1 : 0,
-      notice: turnFailed && state.error?.message ? state.error.message : undefined,
-      errors: turnFailed && state.error?.message ? [state.error.message] : undefined,
+      outcome: turnAborted
+        ? { kind: 'aborted', reason: 'signal_abort' }
+        : turnFailed
+          ? {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: failureMessage ?? 'Codex session driver reported a failed turn.',
+              },
+            }
+          : { kind: 'completed' },
     };
   },
 };

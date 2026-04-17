@@ -11,6 +11,8 @@ world:
   fakeProvider:
     result:
       content: post-hang-result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: hang

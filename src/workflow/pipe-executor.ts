@@ -2,8 +2,9 @@ import type { WorkflowCheckpointWriter } from '../shared/execution-contracts.js'
 import type { CallerContext } from '../shared/request-context.js';
 import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } from '../shared/types.js';
 import type { PipeAtom, PipelineAST, WorkflowExecutionPort, WorkflowSessionHandle } from './types.js';
+import { describeCoralFault, phaseForOutcome } from '../shared/coral-fault.js';
 import { truncate } from '../shared/format-progress.js';
-import { errorMessage } from '../shared/utils.js';
+import { assertNever, errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
@@ -62,17 +63,31 @@ export type LaunchedAtom = {
 type WaitFailure = {
   aborted: boolean;
   message: string;
+  failedStep?: number;
+  failedAtom?: string;
 };
 
 export class WorkflowExecutionError extends Error {
   readonly aborted: boolean;
   readonly stepDetails: StepDetail[];
+  readonly failedStep?: number;
+  readonly failedAtom?: string;
 
-  constructor(message: string, options: { aborted: boolean; stepDetails: StepDetail[] }) {
+  constructor(
+    message: string,
+    options: {
+      aborted: boolean;
+      stepDetails: StepDetail[];
+      failedStep?: number;
+      failedAtom?: string;
+    },
+  ) {
     super(message);
     this.name = 'WorkflowExecutionError';
     this.aborted = options.aborted;
     this.stepDetails = [...options.stepDetails];
+    this.failedStep = options.failedStep;
+    this.failedAtom = options.failedAtom;
   }
 }
 
@@ -105,8 +120,7 @@ type CheckpointState = {
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
+    firstFailure: WaitFailure;
     abortRequested: boolean;
     drainDeadline: number;
   };
@@ -221,13 +235,23 @@ function formatAtomProgress(atom: LaunchedAtom, message: string): string {
 }
 
 function describeTerminalFailure(result: TerminalResult): string {
-  if (result.notice) {
-    const notice = result.notice.trim();
-    return notice.length > 0 ? notice : 'unknown error';
+  switch (result.outcome.kind) {
+    case 'coral_fault':
+      return describeCoralFault(result.outcome.fault);
+    case 'aborted':
+      return result.outcome.reason;
+    case 'completed':
+    case 'provider_exit': {
+      const content = result.content.trim();
+      if (content.length > 0) {
+        return content;
+      }
+      const exitCode = result.exitCode ?? (result.outcome.kind === 'provider_exit' ? result.outcome.code : undefined);
+      return exitCode === undefined || exitCode === null ? 'unknown error' : `exited with code ${exitCode}`;
+    }
+    default:
+      return assertNever(result.outcome);
   }
-  if (result.aborted) return 'aborted';
-  const content = result.content.trim();
-  return content.length > 0 ? content : 'unknown error';
 }
 
 function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<string, string>): StepDetail[] {
@@ -254,8 +278,16 @@ function createWorkflowExecutionError(
   message: string,
   aborted: boolean,
   stepDetails: StepDetail[],
+  metadata?: { failedStep: number; failedAtom: string },
 ): WorkflowExecutionError {
-  return new WorkflowExecutionError(message, { aborted, stepDetails });
+  return new WorkflowExecutionError(message, { aborted, stepDetails, ...metadata });
+}
+
+function failureMetadataForAtom(atom: { stepIndex: number; agent: string }): { failedStep: number; failedAtom: string } {
+  return {
+    failedStep: atom.stepIndex,
+    failedAtom: atom.agent,
+  };
 }
 
 function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: number): number {
@@ -303,7 +335,12 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   if (atom.kind === 'agent') {
     const namespace = atom.namespace ?? 'coral';
     if (namespace !== 'coral') {
-      throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`);
+      throw createWorkflowExecutionError(
+        `Step ${stepIndex}, atom '${label}' launch failed: unsupported namespace "${namespace}"`,
+        false,
+        completedStepDetails,
+        { failedStep: stepIndex, failedAtom: label },
+      );
     }
 
     coralName = atom.agent;
@@ -336,13 +373,23 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   );
 
   if (decision.status === 'rejected') {
-    throw new Error(`Step ${stepIndex}, atom '${label}' launch failed: ${decision.message}`);
+    throw createWorkflowExecutionError(
+      `Step ${stepIndex}, atom '${label}' launch failed: ${decision.message}`,
+      false,
+      completedStepDetails,
+      { failedStep: stepIndex, failedAtom: label },
+    );
   }
 
   const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
   if (launchState === 'error') {
     const message = await readLaunchFailureMessage(decision.job, executionSvc, signal);
-    throw new Error(`Step ${stepIndex}, atom '${label}' failed: ${message ?? 'unknown error'}`);
+    throw createWorkflowExecutionError(
+      `Step ${stepIndex}, atom '${label}' failed: ${message ?? 'unknown error'}`,
+      false,
+      completedStepDetails,
+      { failedStep: stepIndex, failedAtom: label },
+    );
   }
 
   return {
@@ -367,8 +414,7 @@ export type WaitInternalState = {
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
+    firstFailure: WaitFailure;
     abortRequested: boolean;
     drainDeadline: number;
   };
@@ -433,8 +479,7 @@ function snapshotWaitState(state: AwaitStepState): WaitInternalState {
       state.failureDrain === null
         ? undefined
         : {
-            firstFailureMessage: state.failureDrain.firstFailure.message,
-            aborted: state.failureDrain.firstFailure.aborted,
+            firstFailure: state.failureDrain.firstFailure,
             abortRequested: true,
             drainDeadline: state.failureDrain.drainDeadline,
           },
@@ -462,6 +507,15 @@ function enterFailureDrain(
   executionSvc.abort([...state.pending.keys()]);
 }
 
+function failureMetadata(metadata: { failedStep?: number; failedAtom?: string }): { failedStep: number; failedAtom: string } | undefined {
+  return metadata.failedStep !== undefined && metadata.failedAtom !== undefined
+    ? {
+        failedStep: metadata.failedStep,
+        failedAtom: metadata.failedAtom,
+      }
+    : undefined;
+}
+
 async function recoverStaleAtom(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
@@ -486,6 +540,7 @@ async function recoverStaleAtom(
         `Step ${atom.stepIndex}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
         false,
         options.buildPartialStepDetails(),
+        failureMetadataForAtom(atom),
       );
     }
 
@@ -500,6 +555,7 @@ async function recoverStaleAtom(
         `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
         false,
         options.buildPartialStepDetails(),
+        failureMetadataForAtom(atom),
       );
     }
 
@@ -526,6 +582,7 @@ async function recoverStaleAtom(
         `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message}`,
         false,
         options.buildPartialStepDetails(),
+        failureMetadataForAtom(atom),
       );
     }
 
@@ -536,6 +593,7 @@ async function recoverStaleAtom(
         `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
         false,
         options.buildPartialStepDetails(),
+        failureMetadataForAtom(atom),
       );
     }
 
@@ -591,7 +649,7 @@ function handleWaitEvent(
       state.pending.delete(event.jobId);
       delete state.cursor.jobs[event.jobId];
 
-      const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
+      const terminalState = phaseForOutcome(event.result.outcome) === 'completed' ? 'done' : 'error';
       options.onProgress(formatAtomProgress(atom, terminalState));
 
       if (state.expectedStaleAborts.has(event.jobId)) {
@@ -599,10 +657,11 @@ function handleWaitEvent(
         return 'handled';
       }
 
-      if (event.result.aborted || event.result.notice) {
+      if (phaseForOutcome(event.result.outcome) !== 'completed') {
         enterFailureDrain(state, executionSvc, {
-          aborted: Boolean(event.result.aborted),
+          aborted: event.result.outcome.kind === 'aborted',
           message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
+          ...failureMetadataForAtom(atom),
         });
         return 'handled';
       }
@@ -677,6 +736,7 @@ async function awaitStepCompletion(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,
         buildPartialStepDetailsForCycle(),
+        failureMetadata(state.failureDrain.firstFailure),
       );
     }
 
@@ -847,7 +907,12 @@ async function handleStepLaunchFailure(
     message = launchError;
   }
   const aborted = launchError instanceof WorkflowExecutionError ? launchError.aborted : false;
-  throw createWorkflowExecutionError(message, aborted, [...baseStepDetails, ...drainedStepDetails]);
+  throw createWorkflowExecutionError(
+    message,
+    aborted,
+    [...baseStepDetails, ...drainedStepDetails],
+    launchError instanceof WorkflowExecutionError ? failureMetadata(launchError) : undefined,
+  );
 }
 
 function checkpointStepLaunch(

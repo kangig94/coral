@@ -6,6 +6,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../providers/types.js';
+import { describeCoralFault, phaseForOutcome, type AbortReason, type CoralFault, wrapperCrashedFault } from '../shared/coral-fault.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import {
@@ -31,7 +32,6 @@ import { type ProgressStore, createReplayCursor } from './progress-store.js';
 import type { Runtime, RuntimeTimePort } from './runtime.js';
 import { type SessionManager } from './session-manager.js';
 import {
-  QUEUED_ABORT_MESSAGE,
   SessionClaimError,
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   rejectLaunch,
@@ -79,7 +79,7 @@ export interface LaunchOrchestratorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
-  runtime: Pick<Runtime, 'time' | 'ids'>;
+  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
   backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
@@ -224,7 +224,7 @@ export class LaunchOrchestrator {
         if (admission.type === 'queued') {
           const queueOutcome = await this.waitForQueuedPermit(admission, signal);
           if (queueOutcome === 'aborted') {
-            this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
+            this.finishQueuedAbort(jobId, sessionId, 'queue_shutdown');
             return;
           }
 
@@ -264,7 +264,7 @@ export class LaunchOrchestrator {
       try {
         const queueOutcome = await this.waitForQueuedPermit(admission, signal);
         if (queueOutcome === 'aborted') {
-          this.finishQueuedAbort(jobId, sessionId, QUEUED_ABORT_MESSAGE);
+          this.finishQueuedAbort(jobId, sessionId, 'queue_shutdown');
           return;
         }
 
@@ -281,14 +281,14 @@ export class LaunchOrchestrator {
     })();
   }
 
-  finishQueuedAbort(jobId: string, sessionId: string, message: string): void {
-    this.finishAbortedJob(jobId, sessionId, message);
+  finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
+    this.finishAbortedJob(jobId, sessionId, reason);
   }
 
-  failJob(jobId: string, sessionId: string, launchState: LaunchState, message: string): void {
+  failJob(jobId: string, sessionId: string, launchState: LaunchState, fault: CoralFault): void {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
-    progressStore.updateLaunchState(jobId, launchState, message);
-    this.writeTerminalResult(jobId, sessionId, { content: '', notice: message }, 'error');
+    progressStore.updateLaunchState(jobId, launchState, describeCoralFault(fault));
+    this.writeTerminalResult(jobId, sessionId, { content: '', outcome: { kind: 'coral_fault', fault } }, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -349,17 +349,15 @@ export class LaunchOrchestrator {
       this.markJobReady(jobId);
     }
 
-    const phase: JobPhase = result.aborted ? 'aborted' : 'completed';
+    const phase = phaseForOutcome(result.outcome);
     const terminalResult: TerminalResult = {
       content: result.content,
       durationMs: result.durationMs,
-      aborted: result.aborted,
       nonResumable: result.nonResumable,
       exitCode: result.exitCode,
-      notice: result.notice,
-      errors: result.errors,
       warnings: result.warnings,
       usage: result.usage,
+      outcome: result.outcome,
     };
 
     const currentStatus = progressStore.readStatus(jobId);
@@ -387,17 +385,23 @@ export class LaunchOrchestrator {
     }
 
     if (error instanceof CliBusyError) {
-      this.failJob(jobId, sessionId, 'busy', error.message);
+      this.failJob(jobId, sessionId, 'busy', {
+        kind: 'launch_rejected',
+        reason: 'busy',
+        message: error.message,
+        provider: error.detail.provider,
+        globalActive: error.detail.globalActive,
+        globalLimit: error.detail.globalLimit,
+      });
       return;
     }
 
-    const message = errorMessage(error);
     if (signal.aborted || isAbortError(error)) {
-      this.finishAbortedJob(jobId, sessionId, message);
+      this.finishAbortedJob(jobId, sessionId, 'signal_abort');
       return;
     }
 
-    this.failJob(jobId, sessionId, 'error', message);
+    this.failJob(jobId, sessionId, 'error', wrapperCrashedFault(errorMessage(error)));
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
@@ -423,6 +427,8 @@ export class LaunchOrchestrator {
         pool,
         this.deps.progressStore.jobDir(jobId),
       ),
+      storage: this.deps.runtime.storage,
+      env: this.deps.runtime.env,
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
       checkpointRecovery: (update) => {
@@ -478,10 +484,10 @@ export class LaunchOrchestrator {
     this.deps.progressStore.updateLaunchState(jobId, 'ready');
   }
 
-  private finishAbortedJob(jobId: string, sessionId: string, message: string): void {
+  private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
-    progressStore.updateLaunchState(jobId, 'error', message);
-    this.writeTerminalResult(jobId, sessionId, { content: '', aborted: true, notice: message }, 'aborted');
+    progressStore.updateLaunchState(jobId, 'error', `Aborted: ${reason}`);
+    this.writeTerminalResult(jobId, sessionId, { content: '', outcome: { kind: 'aborted', reason } }, 'aborted');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -606,6 +612,7 @@ export class WaitCoordinator {
     const { jobIds, timeoutSeconds = 600, cursor } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
+    const deadlineMs = startMs + timeoutMs;
 
     const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
     const fileCursors = new Map(jobIds.map((jobId) => [jobId, createReplayCursor()]));
@@ -613,11 +620,6 @@ export class WaitCoordinator {
     const pending = new Set(jobIds);
 
     while (pending.size > 0) {
-      if (this.deps.time.now() - startMs >= timeoutMs) {
-        yield { type: 'waiting', waitingJobIds: [...pending] };
-        return;
-      }
-
       const seq = progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
@@ -641,6 +643,8 @@ export class WaitCoordinator {
           };
         }
 
+        let replaySawTerminal = false;
+
         const events = progressStore.replayFrom(jobId, fromEventId, fileCursor);
         for (const event of events) {
           fromEventIds[jobId] = event.eventId;
@@ -655,27 +659,46 @@ export class WaitCoordinator {
             continue;
           }
 
-          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+          replaySawTerminal = true;
+          const parsedTerminalMs = Date.parse(event.ts ?? '');
+          const replayEligible = Number.isFinite(parsedTerminalMs)
+            ? parsedTerminalMs <= deadlineMs
+            : this.deps.time.now() <= deadlineMs;
+
+          if (!replayEligible) {
+            break;
+          }
+
+          const remainingJobIds = [...pending].filter((id) => id !== jobId);
           yield {
             type: 'terminal',
             jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
-            result: event.result ?? { content: '' },
+            result: event.result ?? { content: '', outcome: { kind: 'completed' } },
           };
           pending.delete(jobId);
           break;
         }
 
-        const currentStatus = progressStore.readStatus(jobId);
-        if (pending.has(jobId) && currentStatus && isTerminalPhase(currentStatus.phase)) {
-          const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
+        if (!pending.has(jobId) || replaySawTerminal) {
+          continue;
+        }
+
+        // Emit a direct terminal snapshot only while this poll iteration is still inside the wait deadline.
+        const currentStatus = isTerminalPhase(status.phase) ? status : progressStore.readStatus(jobId);
+        if (currentStatus && isTerminalPhase(currentStatus.phase)) {
+          const now = this.deps.time.now();
+          if (now > deadlineMs) {
+            continue;
+          }
+          const remainingJobIds = [...pending].filter((id) => id !== jobId);
           yield {
             type: 'terminal',
             jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
-            result: currentStatus.result ?? { content: '' },
+            result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' } },
           };
           pending.delete(jobId);
         }
@@ -685,11 +708,13 @@ export class WaitCoordinator {
         return;
       }
 
-      const remainingMs = timeoutMs - (this.deps.time.now() - startMs);
-      if (remainingMs <= 0) {
-        continue;
+      const now = this.deps.time.now();
+      if (now > deadlineMs) {
+        yield { type: 'waiting', waitingJobIds: [...pending] };
+        return;
       }
 
+      const remainingMs = deadlineMs - now;
       await Promise.race([
         progressStore.waitForChange(seq),
         this.deps.time.sleep(remainingMs),

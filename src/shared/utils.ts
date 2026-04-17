@@ -1,14 +1,34 @@
 import { readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import type { RuntimeProcessPort, RuntimeStoragePort, RuntimeTimePort } from './runtime-ports.js';
 import { identPattern } from './identifiers.js';
+
+type StorageUnlinkPort = {
+  unlinkSync(path: string): void;
+};
+
+type ProcessAlivePort = {
+  isAlive(pid: number): boolean;
+};
+
+type TimeNowPort = {
+  now(): number;
+};
+
+type TimeoutHandle = {
+  unref?(): void;
+};
+
+type TimeoutPort = {
+  setTimeout(fn: () => void, ms: number): TimeoutHandle;
+  clearTimeout(handle: TimeoutHandle | null): void;
+};
 
 export function isNoEntryError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 /** Delete a file, ignoring ENOENT (already deleted). */
-export function unlinkIfExists(filePath: string, storage?: Pick<RuntimeStoragePort, 'unlinkSync'>): void {
+export function unlinkIfExists(filePath: string, storage?: StorageUnlinkPort): void {
   try {
     if (storage) {
       storage.unlinkSync(filePath);
@@ -87,7 +107,7 @@ export function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-export function isProcessAlive(pid: number, runtimeProcess: Pick<RuntimeProcessPort, 'isAlive'>): boolean {
+export function isProcessAlive(pid: number, runtimeProcess: ProcessAlivePort): boolean {
   return runtimeProcess.isAlive(pid);
 }
 
@@ -97,6 +117,10 @@ export function formatError(error: unknown): string {
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled case: ${JSON.stringify(value)}`);
 }
 
 export function isStringArray(value: unknown): value is string[] {
@@ -137,7 +161,7 @@ export function readBuildFlavor(pluginRoot: string): 'prod' | 'dev' {
   return 'prod';
 }
 
-export function nowIsoString(timeOrEpoch?: Pick<RuntimeTimePort, 'now'> | number): string {
+export function nowIsoString(timeOrEpoch?: TimeNowPort | number): string {
   const epochMs =
     typeof timeOrEpoch === 'number' ? timeOrEpoch : timeOrEpoch !== undefined ? timeOrEpoch.now() : Date.now();
   return new Date(epochMs).toISOString();
@@ -147,7 +171,7 @@ export function nowIsoString(timeOrEpoch?: Pick<RuntimeTimePort, 'now'> | number
 export function raceTimeout(
   promise: Promise<unknown>,
   timeoutMs: number,
-  time?: Pick<RuntimeTimePort, 'setTimeout' | 'clearTimeout'>,
+  time?: TimeoutPort,
 ): Promise<boolean> {
   const timers = time ?? {
     setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),

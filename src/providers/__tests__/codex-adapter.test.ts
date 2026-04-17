@@ -363,7 +363,7 @@ describe('codex adapter app-server flow', () => {
     });
 
     await expect(execution).resolves.toMatchObject({
-      aborted: true,
+      outcome: { kind: 'aborted', reason: 'signal_abort' },
       conversationRef: 'thread-1',
     });
   });
@@ -392,8 +392,14 @@ describe('codex adapter app-server flow', () => {
     ).resolves.toMatchObject({
       content: '',
       nonResumable: true,
-      notice: 'Conversation thread-missing is no longer resumable because the saved thread is missing or invalid.',
-      errors: ['No such thread'],
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_session_unavailable',
+          provider: 'codex',
+          note: 'Conversation thread-missing is no longer resumable because the saved thread is missing or invalid.',
+        },
+      },
     });
 
     expect(runtime.checkpointRecovery).not.toHaveBeenCalled();

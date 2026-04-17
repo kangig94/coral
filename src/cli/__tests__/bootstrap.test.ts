@@ -13,7 +13,6 @@ describe('cli bootstrap', () => {
 
   async function importBootstrapWith(options: {
     parseError?: unknown;
-    outputFormat?: 'text' | 'json';
   }): Promise<{
     emitError: ReturnType<typeof vi.fn>;
     parseAsync: ReturnType<typeof vi.fn>;
@@ -27,7 +26,6 @@ describe('cli bootstrap', () => {
     vi.doMock('../main.js', () => ({
       buildProgram: () => program,
       emitError,
-      getOutputFormat: () => options.outputFormat ?? 'json',
     }));
 
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
@@ -66,7 +64,7 @@ describe('cli bootstrap', () => {
   it('routes non-zero CommanderError through emitError and preserves exit 2', async () => {
     process.argv = ['node', 'coral-cli', 'wait'];
 
-    const emitError = vi.fn((_error: unknown, _outputFormat: 'text' | 'json') => {
+    const emitError = vi.fn((_error: unknown) => {
       // Simulate real emitError setting exit code for CommanderError → 2.
       process.exitCode = 2;
     });
@@ -77,7 +75,6 @@ describe('cli bootstrap', () => {
     vi.doMock('../main.js', () => ({
       buildProgram: () => program,
       emitError,
-      getOutputFormat: () => 'json' as const,
     }));
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
@@ -87,9 +84,8 @@ describe('cli bootstrap', () => {
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
     expect(emitError).toHaveBeenCalledTimes(1);
-    const [error, outputFormat] = emitError.mock.calls[0] ?? [];
+    const [error] = emitError.mock.calls[0] ?? [];
     expect(error).toBeInstanceOf(Error);
-    expect(outputFormat).toBe('json');
     expect(process.exit).toHaveBeenCalledWith(2);
   });
 });

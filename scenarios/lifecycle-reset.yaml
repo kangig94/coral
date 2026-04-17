@@ -10,6 +10,8 @@ world:
   fakeProvider:
     result:
       content: reset world result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: launch
@@ -31,5 +33,6 @@ steps:
     phase: completed
     result:
       content: reset world result
-      aborted: false
+      outcome:
+        kind: completed
     noRealIO: true

@@ -13,8 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { isTransientStreamError } from '../shared/utils.js';
-import type { CliStreamEvent } from './types.js';
+import { assertNever, isTransientStreamError } from '../shared/utils.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
@@ -27,83 +26,20 @@ type LaunchAndFollowOptions = {
   abortJob: (jobId: string) => Promise<unknown>;
   pluginRoot: string;
   projectRoot: string;
-  outputFormat: 'text' | 'json';
-  emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
+  emitError: (error: unknown) => void;
   isTTY: boolean;
   columns: number;
 };
 
-function toLaunchEvent(decision: FollowLaunchDecision): Extract<CliStreamEvent, { type: 'launch' }> {
-  return {
-    type: 'launch',
-    jobId: decision.job,
-    sessionId: decision.session,
-    status: decision.launchState,
-  };
-}
-
-function toCliStreamEvent(
-  event: WaitStreamEvent,
-  sessionId: string,
-): Exclude<CliStreamEvent, { type: 'launch' }> {
-  switch (event.type) {
-    case 'progress':
-      return {
-        type: 'progress',
-        jobId: event.jobId,
-        sessionId,
-        message: event.message,
-      };
-    case 'queued':
-      return {
-        type: 'queued',
-        jobId: event.jobId,
-        sessionId,
-        queuePosition: event.queuePosition,
-        runningJobIds: event.runningJobIds,
-      };
-    case 'terminal': {
-      const { content: _content, ...resultMeta } = event.result;
-      return {
-        type: 'terminal',
-        jobId: event.jobId,
-        sessionId,
-        remainingJobIds: event.remainingJobIds,
-        result: {
-          ...resultMeta,
-          path: event.resultPath,
-        },
-      };
-    }
-    case 'waiting':
-      return {
-        type: 'waiting',
-        waitingJobIds: event.waitingJobIds,
-      };
-  }
-}
-
-function emitLaunch(decision: FollowLaunchDecision, outputFormat: 'text' | 'json'): void {
-  if (outputFormat === 'json') {
-    process.stdout.write(JSON.stringify(toLaunchEvent(decision)) + '\n');
-    return;
-  }
-
+function emitLaunch(decision: FollowLaunchDecision): void {
   process.stdout.write(formatLaunch(decision) + '\n');
 }
 
 function emitWaitEvent(
   event: WaitStreamEvent,
-  sessionId: string,
   cursor: string | null,
-  outputFormat: 'text' | 'json',
   renderContext: WaitRenderContext,
 ): void {
-  if (outputFormat === 'json') {
-    process.stdout.write(JSON.stringify(toCliStreamEvent(event, sessionId)) + '\n');
-    return;
-  }
-
   let line: string;
   switch (event.type) {
     case 'progress':
@@ -127,17 +63,29 @@ function emitWaitEvent(
 }
 
 function toExitCode(result: TerminalResult): number {
-  if (result.aborted === true) {
-    return 1;
+  switch (result.outcome.kind) {
+    case 'aborted':
+    case 'coral_fault':
+      return 1;
+    case 'provider_exit':
+      return normalizeExitCode(result.outcome.code);
+    case 'completed':
+      return normalizeExitCode(result.exitCode);
+    default:
+      return assertNever(result.outcome);
   }
+}
 
-  const exitCode = result.exitCode;
-
+function normalizeExitCode(exitCode: number | null | undefined): number {
   if (exitCode === undefined) {
     return 0;
   }
 
-  if (exitCode === null || !Number.isInteger(exitCode)) {
+  if (exitCode === null) {
+    return 1;
+  }
+
+  if (!Number.isInteger(exitCode)) {
     return 1;
   }
 
@@ -189,7 +137,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
         .then(() => undefined, () => undefined);
   };
 
-  emitLaunch(options.launchResult, options.outputFormat);
+  emitLaunch(options.launchResult);
   process.on('SIGINT', onSigint);
 
   try {
@@ -206,7 +154,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           return 1;
         }
 
-        options.emitError(error, options.outputFormat);
+        options.emitError(error);
         return typeof process.exitCode === 'number' ? process.exitCode : 1;
       }
 
@@ -227,7 +175,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           cursorRef,
         )) {
           const cursor = cursorRef.lastEventId ?? null;
-          emitWaitEvent(event, options.launchResult.session, cursor, options.outputFormat, renderContext);
+          emitWaitEvent(event, cursor, renderContext);
 
           if (event.type === 'waiting') {
             reconnect = true;
@@ -243,7 +191,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           continue;
         }
 
-        options.emitError(new Error('wait stream ended without a terminal event'), options.outputFormat);
+        options.emitError(new Error('wait stream ended without a terminal event'));
         return typeof process.exitCode === 'number' ? process.exitCode : 1;
       } catch (error) {
         if (localAbortRequested) {
@@ -251,7 +199,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
         }
 
         if (!isTransientStreamError(error) || retriesLeft === 0) {
-          options.emitError(error, options.outputFormat);
+          options.emitError(error);
           return typeof process.exitCode === 'number' ? process.exitCode : 1;
         }
 

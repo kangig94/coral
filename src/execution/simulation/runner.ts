@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { extractRuntimePid, SimulationWorld, type WaitDetail } from './world.js';
 import type { ExpectStep, KillStep, SimulationDocument, Step } from './schema.js';
 import { errorMessage } from '../../shared/utils.js';
@@ -183,8 +184,8 @@ async function runExpectStep(
       if (step.result.content !== undefined && status?.result?.content !== step.result.content) {
         mismatches.push('expected result.content to match');
       }
-      if (step.result.aborted !== undefined && status?.result?.aborted !== step.result.aborted) {
-        mismatches.push('expected result.aborted to match');
+      if (!isDeepStrictEqual(status?.result?.outcome, step.result.outcome)) {
+        mismatches.push('expected result.outcome to match');
       }
     }
 

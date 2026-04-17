@@ -3,7 +3,6 @@ import type { Command } from 'commander';
 import { getBackendStatusFull, shutdownBackend } from '../../client/backend-helpers.js';
 import {
   emitError,
-  getOutputFormat,
   getPluginRoot,
 } from '../command-helpers.js';
 import { formatBackendStatus, formatShutdown } from '../format.js';
@@ -13,23 +12,19 @@ export function registerBackendCommands(program: Command): void {
 
   const backendStatusCommand = backend.command('status');
   backendStatusCommand.description('Show backend daemon status').action(async () => {
-    const outputFormat = getOutputFormat(backendStatusCommand);
-
     try {
       const status = await getBackendStatusFull(getPluginRoot());
-      process.stdout.write((outputFormat === 'text' ? formatBackendStatus(status) : JSON.stringify(status)) + '\n');
+      process.stdout.write(formatBackendStatus(status) + '\n');
     } catch (error) {
-      emitError(error, outputFormat);
+      emitError(error);
     }
   });
 
   const backendShutdownCommand = backend.command('shutdown');
   backendShutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
-    const outputFormat = getOutputFormat(backendShutdownCommand);
-
     try {
       const result = await shutdownBackend(getPluginRoot());
-      const text = outputFormat === 'text' ? formatShutdown(result) : JSON.stringify(result);
+      const text = formatShutdown(result);
 
       if (result.ok) {
         process.stdout.write(text + '\n');
@@ -39,7 +34,7 @@ export function registerBackendCommands(program: Command): void {
       process.stderr.write(text + '\n');
       process.exitCode = 1;
     } catch (error) {
-      emitError(error, outputFormat);
+      emitError(error);
     }
   });
 }

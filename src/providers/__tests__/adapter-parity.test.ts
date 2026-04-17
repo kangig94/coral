@@ -353,18 +353,20 @@ describe('claude provider adapter', () => {
 
     expect(result).toEqual({
       content: '',
-      notice: 'Claude CLI returned non-JSON output; result is non-resumable.',
       nonResumable: true,
       model: 'sonnet',
       exitCode: 7,
-      errors: [
-        {
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'adapter_output_unparseable',
+          provider: 'claude',
           exitCode: 7,
           stdout: 'not json',
           stderr: 'stderr',
           parseError: 'parse failed',
         },
-      ],
+      },
     });
   });
 
@@ -412,7 +414,6 @@ describe('claude provider adapter', () => {
       conversationRef: 'claude-session-9',
       
       durationMs: 18,
-      exitCode: 0,
       usage: { costUsd: 0.42 },
     });
   });

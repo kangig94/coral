@@ -65,7 +65,7 @@ function registerKbSourceCommands(kb: Command): void {
         });
         emit(result, outputFormat, formatKbSourceImport);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -78,7 +78,7 @@ function registerKbSourceCommands(kb: Command): void {
       const result = await client.kbSourceList();
       emit(result, outputFormat, formatKbSourceList);
     } catch (error) {
-      emitError(error, outputFormat);
+      emitError(error);
     }
   });
 
@@ -94,7 +94,7 @@ function registerKbSourceCommands(kb: Command): void {
         const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
         emit(result, outputFormat, formatKbSourceDelete);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 }
@@ -127,7 +127,7 @@ function registerKbMemoCommands(kb: Command): void {
         const result = await client.kbMemo({ topic: opts.topic, content, owner });
         emit(result, outputFormat, formatKbMemo);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -143,7 +143,7 @@ function registerKbMemoCommands(kb: Command): void {
         const result = await client.kbMemoList({ owner: opts.owner });
         emit(result, outputFormat, formatKbMemoList);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -160,7 +160,7 @@ function registerKbMemoCommands(kb: Command): void {
         const result = await client.kbMemoDelete({ pattern, owner: opts.owner });
         emit(result, outputFormat, formatKbMemoDelete);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -176,7 +176,7 @@ function registerKbMemoCommands(kb: Command): void {
         const result = await client.kbMemoPurge(opts.owner ? { owner: opts.owner } : {});
         emit(result, outputFormat, formatKbMemoPurge);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 }
@@ -184,6 +184,9 @@ function registerKbMemoCommands(kb: Command): void {
 export function registerKbCommands(program: Command): void {
   const cliPrefix = getCliDisplayPrefix();
   const kb = program.command('kb').description('Knowledge base operations');
+  kb.addOption(
+    new Option('-f, --output-format <format>', 'Output format').choices(['text', 'json']).default('text'),
+  );
 
   const kbSearchCommand = kb.command('search');
   kbSearchCommand
@@ -211,7 +214,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbSearch(args);
         emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -234,7 +237,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbPrinciples(args);
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -256,7 +259,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbRead({ note });
         emit(result, outputFormat, formatKbRead);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -285,7 +288,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbPromote(args as Parameters<BackendClient['kbPromote']>[0]);
         emit(result, outputFormat, formatKbPromote);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -310,7 +313,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbUpdate(args);
         emit(result, outputFormat, formatKbUpdate);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -326,7 +329,7 @@ export function registerKbCommands(program: Command): void {
         const result = await client.kbDelete({ note });
         emit(result, outputFormat, formatKbDelete);
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -339,7 +342,7 @@ export function registerKbCommands(program: Command): void {
       const result = await client.kbReindex({});
       emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
     } catch (error) {
-      emitError(error, outputFormat);
+      emitError(error);
     }
   });
 }

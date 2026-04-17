@@ -24,7 +24,7 @@ import {
   type ProviderRuntime,
   type ProviderServerLease,
 } from '../types.js';
-import { resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
+import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeBootstrapSignature,
@@ -100,11 +100,20 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult | nul
   if (error instanceof ClaudeExecParseError) {
     return {
       content: '',
-      notice: 'Claude CLI returned non-JSON output; result is non-resumable.',
       nonResumable: true,
       model: fallbackModel,
-      exitCode: error.failure.exitCode,
-      errors: [error.failure],
+      exitCode: error.failure.exitCode ?? null,
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'adapter_output_unparseable',
+          provider: 'claude',
+          exitCode: error.failure.exitCode ?? null,
+          stdout: error.failure.stdout,
+          stderr: error.failure.stderr,
+          parseError: error.failure.parseError,
+        },
+      },
     };
   }
   return null;
@@ -115,6 +124,34 @@ function resolveClaudeModel(model: string | undefined, env: Record<string, strin
   return resolveModelTier(model, cap);
 }
 
+const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
+const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
+
+function isOpusEffectiveTier(model: string | undefined, env: Record<string, string>): boolean {
+  // Unknown cap strings default to opus (no restriction).
+  const capRank = ABSTRACT_MODEL_TIERS[env.CORAL_CLAUDE_MODEL_CAP ?? 'opus'] ?? OPUS_RANK;
+  if (model === undefined) {
+    return capRank === OPUS_RANK;
+  }
+  const abstractRank = ABSTRACT_MODEL_TIERS[model];
+  if (abstractRank !== undefined) {
+    return Math.min(abstractRank, capRank) === OPUS_RANK;
+  }
+  if (/sonnet|haiku/i.test(model)) return false;
+  return true;
+}
+
+/**
+ * Precedence: explicit request effort > CORAL_CLAUDE_EFFORT > CORAL_EFFORT >
+ * built-in default. Claude Sonnet/Haiku have no xhigh level, so xhigh collapses
+ * to the provider ceiling (max) on those tiers.
+ */
+function resolveClaudeEffort(request: ProviderRequest): EffortLevel {
+  const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
+  if (resolved !== 'xhigh') return resolved;
+  return isOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';
+}
+
 function buildPreparedRequest(
   request: ProviderRequest,
 ): { prompt: string; systemPrompt?: string; model?: string; effort: EffortLevel } {
@@ -123,7 +160,7 @@ function buildPreparedRequest(
     prompt,
     systemPrompt,
     model: resolveClaudeModel(request.model, request.coralEnv),
-    effort: request.effort,
+    effort: resolveClaudeEffort(request),
   };
 }
 
@@ -132,8 +169,14 @@ function buildNewSessionRequiredResult(request: ProviderRequest, reason: string)
     content: '',
     model: resolveClaudeModel(request.model, request.coralEnv),
     nonResumable: true,
-    notice: reason,
-    errors: [reason],
+    outcome: {
+      kind: 'coral_fault',
+      fault: {
+        kind: 'provider_session_unavailable',
+        provider: 'claude',
+        note: reason,
+      },
+    },
   };
 }
 

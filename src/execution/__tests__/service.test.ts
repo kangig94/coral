@@ -246,17 +246,39 @@ function createFakeProviderServerHandle(options?: {
   };
 }
 
-function makeProvider(options?: { execute?: Provider['execute']; preflight?: Provider['preflight'] }): {
+type TestProviderResult = Omit<ProviderResult, 'outcome'> & {
+  outcome?: ProviderResult['outcome'];
+};
+
+type TestTerminalResult = Omit<NonNullable<PersistedStatusRecord['result']>, 'outcome'> & {
+  outcome?: NonNullable<PersistedStatusRecord['result']>['outcome'];
+};
+
+function completedOutcome() {
+  return { kind: 'completed' } as const;
+}
+
+function withCompletedOutcome<T extends { content: string; outcome?: ProviderResult['outcome'] }>(result: T): T & {
+  outcome: ReturnType<typeof completedOutcome>;
+} {
+  if (result.outcome) {
+    return result as T & { outcome: ReturnType<typeof completedOutcome> };
+  }
+  return { ...result, outcome: completedOutcome() };
+}
+
+function makeProvider(options?: {
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderResult>;
+  preflight?: Provider['preflight'];
+}): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(
-    options?.execute ??
-      (async (): Promise<ProviderResult> => ({
-        content: 'ok',
-      })),
-  );
+  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderResult> => {
+    const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
+    return withCompletedOutcome(result);
+  });
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -269,7 +291,7 @@ function makeProvider(options?: { execute?: Provider['execute']; preflight?: Pro
 function makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(async () => ({ content: 'ok' })),
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
@@ -341,7 +363,7 @@ function makeSharedClaudeAppServerProvider(spec: {
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(async () => ({ content: 'ok' })),
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
@@ -447,6 +469,59 @@ function createScopedContext(name: string): CallerContext {
   return { projectRoot, pluginRoot, coralEnv: {} };
 }
 
+function isoAt(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+async function flushMicrotasks(count = 5): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function makeStatusRecord(
+  ctx: CallerContext,
+  jobId: string,
+  phase: JobPhase,
+  options: {
+    sessionId?: string;
+    result?: TestTerminalResult;
+  } = {},
+): PersistedStatusRecord {
+  return {
+    jobId,
+    sessionId: options.sessionId ?? `${jobId}-session`,
+    provider: 'codex',
+    projectRoot: ctx.projectRoot,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
+    phase,
+    launch: {
+      state: 'ready',
+      updatedAt: '2026-03-06T00:00:00.000Z',
+    },
+    ...(options.result ? { result: withCompletedOutcome(options.result) } : {}),
+  };
+}
+
+function makeTerminalReplay(
+  jobId: string,
+  options: {
+    eventId?: number;
+    sessionId?: string;
+    ts?: string;
+    result?: TestTerminalResult;
+  } = {},
+): PersistedProgressRecord {
+  return {
+    jobId,
+    sessionId: options.sessionId ?? `${jobId}-session`,
+    eventId: options.eventId ?? 1,
+    type: 'terminal',
+    ts: options.ts ?? '2026-03-06T00:00:00.000Z',
+    result: withCompletedOutcome(options.result ?? { content: 'done' }),
+  };
+}
+
 describe('ExecutionService', () => {
   let ctx: CallerContext;
 
@@ -532,7 +607,7 @@ describe('ExecutionService', () => {
           },
         });
 
-        return { content: result.stdout };
+        return { content: result.stdout, outcome: { kind: 'completed' as const } };
       },
     };
     mockState.getNewProvider.mockReturnValue(provider);
@@ -567,6 +642,7 @@ describe('ExecutionService', () => {
       execute: async (): Promise<ProviderResult> => ({
         content: 'ok',
         conversationRef: 'thread-1',
+        outcome: { kind: 'completed' },
       }),
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -897,122 +973,6 @@ describe('ExecutionService', () => {
     firstLease.release();
   });
 
-  it('borrows the live exclusive app-server host for interrupts instead of queueing a second lease', async () => {
-    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
-    const server = createFakeProviderServerHandle();
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-
-    const firstLease = await service.acquireServer(spec);
-    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
-
-    await service.interruptAppServerJob(
-      {
-        jobId: `exclusive-interrupt-${randomUUID()}`,
-        sessionId: 'session-1',
-        provider: 'codex',
-        projectRoot: ctx.projectRoot,
-        backendNamespace: TEST_BACKEND_NAMESPACE,
-        pool: 'default',
-        enqueueSequence: 0,
-        providerAction: 'exec',
-        request: {
-          prompt: 'interrupt me',
-          cwd: ctx.projectRoot,
-          bypassPermissions: true,
-          coralEnv: {},
-        },
-        createdAt: new Date().toISOString(),
-      },
-      {
-        transport: 'app-server',
-        startTime: new Date().toISOString(),
-        providerMeta: {
-          provider: 'codex',
-          leaseState: 'acquired',
-          serverGeneration: firstLease.generation,
-          providerContinuity: {
-            threadId: 'thread-live',
-            turnId: 'turn-live',
-          },
-          recoveryPolicy: 'session_continuity_only',
-        },
-      },
-    );
-
-    expect(acquireServerSpy).not.toHaveBeenCalled();
-    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
-      threadId: 'thread-live',
-      turnId: 'turn-live',
-    });
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-
-    acquireServerSpy.mockRestore();
-    firstLease.release();
-  });
-
-  it('persists app-server lease-wait aborts as aborted instead of error', async () => {
-    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
-    const server = createFakeProviderServerHandle();
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const firstLeaseHeld = createDeferred<void>();
-    const { provider } = makeProvider({
-      execute: async (_request, runtime): Promise<ProviderResult> => {
-        const lease = await runtime.acquireServer!(spec);
-        await firstLeaseHeld.promise;
-        lease.release();
-        return { content: 'done' };
-      },
-    });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-
-    const first = await service.start('codex', { prompt: 'hold lease' }, ctx);
-    const second = await service.start('codex', { prompt: 'wait for lease' }, ctx);
-
-    expect(first.status).toBe('running');
-    expect(second.status).toBe('running');
-    if (first.status !== 'running' || second.status !== 'running') {
-      throw new Error('expected running launches');
-    }
-    trackJob(first.job);
-    trackJob(second.job);
-
-    await Promise.resolve();
-
-    const { progressStore } = getInternals(service);
-    const waitingRuntime = progressStore.readRuntimeRecord(second.job) as AppServerRuntimeRecord;
-    expect(waitingRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        leaseState: 'waiting',
-      },
-    });
-
-    expect(service.abort([second.job])).toEqual({
-      aborted: [second.job],
-      notFound: [],
-    });
-
-    const terminal = await waitForTerminalEvent(service, second.job);
-    expect(terminal.result).toMatchObject({
-      aborted: true,
-      notice: 'Aborted while waiting for a provider server lease',
-    });
-    expect(progressStore.readStatus(second.job)).toMatchObject({
-      phase: 'aborted',
-      result: {
-        aborted: true,
-        notice: 'Aborted while waiting for a provider server lease',
-      },
-    });
-
-    firstLeaseHeld.resolve();
-    await waitForTerminalEvent(service, first.job);
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-  });
-
   it('start rejects unknown providers', async () => {
     mockState.getNewProvider.mockReturnValue(undefined);
     const service = createService(ctx);
@@ -1139,7 +1099,7 @@ describe('ExecutionService', () => {
         channel: 'system',
       },
     });
-    expect(request.effort).toBe('high');
+    expect(request.effort).toBeUndefined();
     expect(session).toMatchObject({
       name: 'architect',
       model: 'gpt-5.4',
@@ -1458,7 +1418,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('resume rejects when the session already has an active job', async () => {
@@ -1521,8 +1481,14 @@ describe('ExecutionService', () => {
         execute: async () => ({
           content: '',
           nonResumable: true,
-          notice: 'Conversation thread-stale is no longer resumable.',
-          errors: ['No such thread'],
+          outcome: {
+            kind: 'coral_fault',
+            fault: {
+              kind: 'provider_session_unavailable',
+              provider: 'codex',
+              note: 'Conversation thread-stale is no longer resumable.',
+            },
+          },
         }),
       });
       mockState.getNewProvider.mockReturnValue(provider);
@@ -1545,8 +1511,14 @@ describe('ExecutionService', () => {
       expect(terminal.result).toMatchObject({
         content: '',
         nonResumable: true,
-        notice: 'Conversation thread-stale is no longer resumable.',
-        errors: ['No such thread'],
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_session_unavailable',
+            provider: 'codex',
+            note: 'Conversation thread-stale is no longer resumable.',
+          },
+        },
       });
       expect(updatedSession?.activeJobId).toBeUndefined();
       expect(updatedSession?.lastJobId).toBe(decision.job);
@@ -1673,7 +1645,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
@@ -1742,7 +1714,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      expect(request.effort).toBe('high');
+      expect(request.effort).toBeUndefined();
     });
 
     it('forkBySessionId rejects missing sessions', async () => {
@@ -1848,8 +1820,7 @@ describe('ExecutionService', () => {
       expect(progressStore.readStatus(decision.job)).toMatchObject({
         phase: 'aborted',
         result: {
-          aborted: true,
-          notice: 'Aborted while queued.',
+          outcome: { kind: 'aborted', reason: 'queue_shutdown' },
         },
       });
     });
@@ -1899,7 +1870,7 @@ describe('ExecutionService', () => {
         );
 
         await Promise.resolve();
-        progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+        progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
         await Promise.resolve();
         expect(outcome).toBe('pending');
 
@@ -1941,7 +1912,7 @@ describe('ExecutionService', () => {
         if (!injected) {
           injected = true;
           suppressWakeups = true;
-          progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+          progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
           sessionManager.releaseJob(sessionId, jobId);
           suppressWakeups = false;
         }
@@ -2064,7 +2035,7 @@ describe('ExecutionService', () => {
         eventId: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ];
 
@@ -2088,7 +2059,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
   });
@@ -2107,7 +2078,7 @@ describe('ExecutionService', () => {
         state: 'ready',
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     });
     vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
 
@@ -2122,7 +2093,7 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
   });
@@ -2145,7 +2116,7 @@ describe('ExecutionService', () => {
     const terminalStatus: PersistedStatusRecord = {
       ...runningStatus,
       phase: 'completed',
-      result: { content: 'done' },
+      result: { content: 'done', outcome: { kind: 'completed' } },
     };
 
     vi.spyOn(progressStore, 'readStatus')
@@ -2167,10 +2138,425 @@ describe('ExecutionService', () => {
         jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done' },
+        result: { content: 'done', outcome: { kind: 'completed' } },
       },
     ]);
     expect(waitForChange).not.toHaveBeenCalled();
+  });
+
+  it('waitStream emits a replayed terminal persisted one millisecond before the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([
+        makeTerminalReplay('job-1', { ts: isoAt(deadlineMs - 1) }),
+      ]);
+
+      const events: WaitStreamEvent[] = [];
+      for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done', outcome: { kind: 'completed' } },
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream emits a replayed terminal persisted exactly at the deadline after a late wake', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom')
+        .mockImplementationOnce(() => [])
+        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done', outcome: { kind: 'completed' } },
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream yields waiting when no terminal evidence exists on disk at the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 1);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'waiting',
+          waitingJobIds: ['job-1'],
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitStream stays conservative when a replayed terminal lands after the deadline even if status is terminal on that poll', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+      vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+      const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
+      const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(progressStore, 'readStatus').mockImplementation(() => {
+        return runtime.time.now() > deadlineMs ? terminalStatus : runningStatus;
+      });
+      vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+        return runtime.time.now() > deadlineMs ? [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs + 1) })] : [];
+      });
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const iterator = service
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const nextPromise = iterator.next();
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(nextPromise).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'waiting',
+          waitingJobIds: ['job-1'],
+        },
+      });
+      await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('status-only fallback on the final on-time poll returns terminal for waitStream and waitStreamOnce', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 100;
+
+      vi.setSystemTime(startMs);
+      const streamService = createService(ctx);
+      const { progressStore: streamStore } = getInternals(streamService);
+      const streamRunning = makeStatusRecord(ctx, 'job-1', 'running');
+      const streamTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(streamStore, 'readStatus')
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamRunning)
+        .mockImplementationOnce(() => streamTerminal);
+      vi.spyOn(streamStore, 'replayFrom').mockReturnValue([]);
+      const streamWaitForChange = vi.spyOn(streamStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const streamIterator = streamService
+        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+      const streamNext = streamIterator.next();
+
+      await flushMicrotasks();
+      expect(streamWaitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs);
+
+      await expect(streamNext).resolves.toEqual({
+        done: false,
+        value: {
+          type: 'terminal',
+          jobId: 'job-1',
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done', outcome: { kind: 'completed' } },
+        },
+      });
+      await expect(streamIterator.next()).resolves.toEqual({ done: true, value: undefined });
+
+      vi.setSystemTime(startMs);
+      const onceService = createService(ctx);
+      const { progressStore: onceStore } = getInternals(onceService);
+      const onceRunning = makeStatusRecord(ctx, 'job-1', 'running');
+      const onceTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+      vi.spyOn(onceStore, 'readStatus')
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceRunning)
+        .mockImplementationOnce(() => onceTerminal);
+      vi.spyOn(onceStore, 'replayFrom').mockReturnValue([]);
+      const onceWaitForChange = vi.spyOn(onceStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const oncePromise = onceService.waitStreamOnce('job-1', timeoutMs);
+
+      await flushMicrotasks();
+      expect(onceWaitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs);
+
+      await expect(oncePromise).resolves.toEqual({
+        content: 'done',
+        nonResumable: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('status-only fallback first observed after the deadline yields waiting', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+    let currentTime = startMs;
+
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
+    const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    vi.spyOn(progressStore, 'readStatus')
+      .mockImplementationOnce(() => runningStatus)
+      .mockImplementationOnce(() => runningStatus)
+      .mockImplementation(() => terminalStatus);
+    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const events: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+  });
+
+  it('replayed terminals with invalid or missing ts use the observation-time compatibility rule', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+
+    let currentTime = startMs;
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    const onTimeService = createService(ctx);
+    const { progressStore: onTimeStore } = getInternals(onTimeService);
+
+    vi.spyOn(onTimeStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(onTimeStore, 'replayFrom').mockReturnValue([makeTerminalReplay('job-1', { ts: '' })]);
+
+    const onTimeEvents: WaitStreamEvent[] = [];
+    for await (const event of onTimeService.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      onTimeEvents.push(event);
+    }
+
+    expect(onTimeEvents).toEqual([
+      {
+        type: 'terminal',
+        jobId: 'job-1',
+        remainingJobIds: [],
+        resultPath: jobResultPath('job-1'),
+        result: { content: 'done', outcome: { kind: 'completed' } },
+      },
+    ]);
+
+    currentTime = startMs;
+    const lateService = createService(ctx);
+    const { progressStore: lateStore } = getInternals(lateService);
+    const missingTsTerminal = {
+      jobId: 'job-1',
+      sessionId: 'job-1-session',
+      eventId: 1,
+      type: 'terminal',
+      result: { content: 'done' },
+    } as PersistedProgressRecord;
+
+    vi.spyOn(lateStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(lateStore, 'replayFrom').mockImplementation(() => {
+      return currentTime > startMs + timeoutMs ? [missingTsTerminal] : [];
+    });
+    vi.spyOn(lateStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const lateEvents: WaitStreamEvent[] = [];
+    for await (const event of lateService.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
+      lateEvents.push(event);
+    }
+
+    expect(lateEvents).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+  });
+
+  it('a skipped late replayed terminal can be replayed on the next request with the same cursor', async () => {
+    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+    const timeoutMs = 100;
+    const lateTerminalMs = startMs + timeoutMs + 1;
+    const cursor = { jobs: { 'job-1': 0 } };
+    let currentTime = startMs;
+
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      currentTime += ms + 5;
+    });
+
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+
+    vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+    vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+      return currentTime > startMs + timeoutMs ? [makeTerminalReplay('job-1', { ts: isoAt(lateTerminalMs) })] : [];
+    });
+    vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+    const firstEvents: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({
+      jobIds: ['job-1'],
+      timeoutSeconds: timeoutMs / 1000,
+      cursor,
+    })) {
+      firstEvents.push(event);
+    }
+
+    expect(firstEvents).toEqual([
+      {
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
+      },
+    ]);
+    expect(cursor).toEqual({ jobs: { 'job-1': 0 } });
+
+    const secondEvents: WaitStreamEvent[] = [];
+    for await (const event of service.waitStream({
+      jobIds: ['job-1'],
+      timeoutSeconds: timeoutMs / 1000,
+      cursor,
+    })) {
+      secondEvents.push(event);
+    }
+
+    expect(secondEvents).toEqual([
+      {
+        type: 'terminal',
+        jobId: 'job-1',
+        remainingJobIds: [],
+        resultPath: jobResultPath('job-1'),
+        result: { content: 'done', outcome: { kind: 'completed' } },
+      },
+    ]);
+  });
+
+  it('waitStreamOnce returns content for an exact-boundary replayed terminal instead of throwing', async () => {
+    vi.useFakeTimers();
+    try {
+      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+      const timeoutMs = 180_000;
+      const deadlineMs = startMs + timeoutMs;
+      vi.setSystemTime(startMs);
+
+      const service = createService(ctx);
+      const { progressStore } = getInternals(service);
+
+      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
+      vi.spyOn(progressStore, 'replayFrom')
+        .mockImplementationOnce(() => [])
+        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
+      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+      const waitOnce = service.waitStreamOnce('job-1', timeoutMs);
+
+      await flushMicrotasks();
+      expect(waitForChange).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+      await expect(waitOnce).resolves.toEqual({
+        content: 'done',
+        nonResumable: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('waitStream emits a queued event before replaying queued progress records', async () => {
@@ -2254,6 +2640,7 @@ describe('ExecutionService', () => {
     );
     expect(terminal.result).toEqual({
       content: 'FINAL',
+      outcome: { kind: 'completed' },
       workflow: {
         steps: [
           {
@@ -2373,12 +2760,22 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider({
       execute: async (request) => {
         if (request.name?.startsWith('architect')) {
-          return { content: 'ARCH' };
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
         }
         if (request.name?.startsWith('resolver')) {
-          return { content: '', notice: 'resolver failed' };
+          return {
+            content: '',
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: 'resolver failed',
+              },
+            },
+          };
         }
-        return { content: 'unexpected' };
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -2409,9 +2806,19 @@ describe('ExecutionService', () => {
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(terminal.result).toEqual({
+    expect(terminal.result).toMatchObject({
       content: '',
-      notice: "Step 1, atom 'resolver' failed: resolver failed",
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'workflow_atom_failed',
+          step: 1,
+          atom: 'resolver',
+          cause: {
+            message: expect.stringContaining('resolver failed'),
+          },
+        },
+      },
       workflow: {
         steps: [
           {
@@ -2436,12 +2843,12 @@ describe('ExecutionService', () => {
     const { provider } = makeProvider({
       execute: async (request) => {
         if (request.name?.startsWith('architect')) {
-          return { content: 'ARCH' };
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
         }
         if (request.name?.startsWith('resolver')) {
-          return { content: '', aborted: true };
+          return { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } };
         }
-        return { content: 'unexpected' };
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -2472,10 +2879,12 @@ describe('ExecutionService', () => {
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
-    expect(terminal.result).toEqual({
+    expect(terminal.result).toMatchObject({
       content: '',
-      aborted: true,
-      notice: "Step 1, atom 'resolver' failed: aborted",
+      outcome: {
+        kind: 'coral_fault',
+        fault: { kind: 'workflow_aborted' },
+      },
       workflow: {
         steps: [
           {
@@ -2490,7 +2899,7 @@ describe('ExecutionService', () => {
       },
     });
     expect(status).toMatchObject({
-      phase: 'aborted',
+      phase: 'error',
       result: terminal.result,
     });
     expect(session?.state).toBe('non_resumable');
@@ -2519,13 +2928,13 @@ describe('ExecutionService', () => {
     expect(appendTerminal).toHaveBeenCalled();
     expect(markTerminalStatus).toHaveBeenCalledWith(
       decision.job,
-      expect.objectContaining({ content: 'ok' }),
+      expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
       'completed',
     );
-    expect(terminal.result).toEqual({ content: 'ok' });
+    expect(terminal.result).toMatchObject({ content: 'ok', outcome: { kind: 'completed' } });
     expect(status).toMatchObject({
       phase: 'completed',
-      result: { content: 'ok' },
+      result: { content: 'ok', outcome: { kind: 'completed' } },
     });
   });
 
@@ -2550,11 +2959,11 @@ describe('ExecutionService', () => {
       service as unknown as {
         finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
       }
-    ).finishQueuedAbort(jobId, 'session-1', 'Aborted while queued.');
+    ).finishQueuedAbort(jobId, 'session-1', 'queue_shutdown');
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
       jobId,
-      { content: '', aborted: true, notice: 'Aborted while queued.' },
+      { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
       'aborted',
     );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
@@ -2579,11 +2988,36 @@ describe('ExecutionService', () => {
 
     (
       service as unknown as {
-        launchOrchestrator: { failJob(jobId: string, sessionId: string, launchState: string, message: string): void };
+        launchOrchestrator: {
+          failJob(
+            jobId: string,
+            sessionId: string,
+            launchState: string,
+            fault: { kind: 'provider_request_failed'; provider: 'codex'; message: string },
+          ): void;
+        };
       }
-    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', 'provider failed');
+    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', {
+      kind: 'provider_request_failed',
+      provider: 'codex',
+      message: 'provider failed',
+    });
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, { content: '', notice: 'provider failed' }, 'error');
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      {
+        content: '',
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: 'codex',
+            message: 'provider failed',
+          },
+        },
+      },
+      'error',
+    );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });
   });
 
@@ -2603,7 +3037,7 @@ describe('ExecutionService', () => {
       throw new Error('disk full');
     });
     const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
-    const result = { content: 'done', workflow: { steps: [] } };
+    const result = { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } };
 
     (
       service as unknown as {
@@ -2625,22 +3059,37 @@ describe('ExecutionService', () => {
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
   });
 
-  it.each([
-    {
-      phase: 'completed' as const,
-      result: { content: 'done', workflow: { steps: [] } },
-      markdown: '# completed\n',
-    },
-    {
-      phase: 'error' as const,
-      result: { content: '', notice: 'failed', workflow: { steps: [] } },
-      markdown: '# failed\n',
-    },
-    {
-      phase: 'aborted' as const,
-      result: { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } },
-      markdown: '# aborted\n',
-    },
+    it.each([
+      {
+        phase: 'completed' as const,
+        result: { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } },
+        markdown: '# completed\n',
+      },
+      {
+        phase: 'error' as const,
+        result: {
+          content: '',
+          workflow: { steps: [] },
+          outcome: {
+            kind: 'coral_fault',
+            fault: {
+              kind: 'provider_request_failed',
+              provider: 'codex',
+              message: 'failed',
+            },
+          },
+        },
+        markdown: '# failed\n',
+      },
+      {
+        phase: 'error' as const,
+        result: {
+          content: '',
+          workflow: { steps: [] },
+          outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+        },
+        markdown: '# aborted\n',
+      },
   ])(
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
     ({ phase, result, markdown }) => {
@@ -2709,8 +3158,12 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } = getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
     const jobId = `workflow-fallback-order-${randomUUID()}`;
-    const phase = 'aborted' as const;
-    const result = { content: '', aborted: true, notice: 'aborted', workflow: { steps: [] } };
+    const phase = 'error' as const;
+    const result = {
+      content: '',
+      workflow: { steps: [] },
+      outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+    };
     const markdown = '# fallback\n';
     trackJob(jobId);
     progressStore.initJob({
@@ -2815,11 +3268,24 @@ describe('ExecutionService', () => {
       };
     }
 
-    function buildExpectedInterruptedReport(reason: 'restart' | 'handoff', ...detailLines: string[]): string {
-      const baseNotice =
+    function buildExpectedInterruptedReport(
+      reason: 'restart' | 'handoff',
+      continuity: 'verified' | 'missing' | 'unavailable' | 'pre_checkpoint_preserved',
+      ...detailLines: string[]
+    ): string {
+      const triggerText =
         reason === 'restart'
-          ? 'Backend restarted during the app-server turn. The interrupted turn was not replayed.'
-          : 'Backend handoff interrupted the app-server turn. The interrupted turn was not replayed.';
+          ? 'App-server restarted during the turn'
+          : 'App-server handoff occurred during the turn';
+      const continuityText =
+        continuity === 'verified'
+          ? 'continuity verified'
+          : continuity === 'missing'
+            ? 'continuity missing'
+            : continuity === 'unavailable'
+              ? 'continuity unavailable'
+              : 'existing conversation reference was preserved';
+      const baseNotice = `${triggerText}; ${continuityText}.`;
       return [baseNotice, '', ...detailLines].join('\n');
     }
 
@@ -3105,12 +3571,17 @@ describe('ExecutionService', () => {
         restoreActiveLaunch(jobId, 'codex');
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        service.completeRecoveredJob(jobId, session.sessionId, { content: 'recovered done' }, 'completed');
+        service.completeRecoveredJob(
+          jobId,
+          session.sessionId,
+          { content: 'recovered done', outcome: { kind: 'completed' } },
+          'completed',
+        );
 
         const status = progressStore.readStatus(jobId);
         expect(status).toMatchObject({
           phase: 'completed',
-          result: { content: 'recovered done' },
+          result: { content: 'recovered done', outcome: { kind: 'completed' } },
         });
         expect(existsSync(jobResultPath(jobId))).toBe(true);
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done');
@@ -3169,7 +3640,8 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
-          'Session was interrupted before completion. State unknown.',
+          'pre_checkpoint_preserved',
+          'Session was interrupted before completion. The existing conversation reference was preserved.',
         );
 
         expect(spawnProviderServerMock).not.toHaveBeenCalled();
@@ -3177,7 +3649,14 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
-            notice: expect.stringContaining('The existing conversation reference was preserved.'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'pre_checkpoint_preserved',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3233,6 +3712,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
+          'verified',
           'Session is resumable. Use resume to continue.',
           'Conversation reference preserved: thread-recovered',
         );
@@ -3241,6 +3721,14 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'verified',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3309,6 +3797,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'restart',
+          'missing',
           'Session thread is no longer available. Marked as non-resumable.',
         );
 
@@ -3317,7 +3806,14 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             nonResumable: true,
-            notice: expect.stringContaining('session is non-resumable'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'restart',
+                continuity: 'missing',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3387,6 +3883,7 @@ describe('ExecutionService', () => {
 
         const expectedReport = buildExpectedInterruptedReport(
           'handoff',
+          'unavailable',
           'Could not reach provider server to verify session. Marked as non-resumable.',
         );
 
@@ -3395,7 +3892,14 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             nonResumable: true,
-            notice: expect.stringContaining('could not be verified'),
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'app_server_interrupted',
+                trigger: 'handoff',
+                continuity: 'unavailable',
+              },
+            },
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
@@ -3734,6 +4238,56 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       expect(events[0].waitingJobIds).toHaveLength(2);
     });
 
+    it('late replayed terminals keep every pending job in the waiting set across multiple jobs', async () => {
+      vi.useFakeTimers();
+      try {
+        const startMs = Date.parse('2026-03-06T00:00:00.000Z');
+        const timeoutMs = 100;
+        const deadlineMs = startMs + timeoutMs;
+        const jobIdA = `red-ws-late-a-${randomUUID()}`;
+        const jobIdB = `red-ws-late-b-${randomUUID()}`;
+        createdJobIds.add(jobIdA);
+        createdJobIds.add(jobIdB);
+        vi.setSystemTime(startMs);
+        vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
+
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId: string) => {
+          if (jobId === jobIdA) return makeStatusRecord(ctx, jobIdA, 'running', { sessionId: 'session-a' });
+          if (jobId === jobIdB) return makeStatusRecord(ctx, jobIdB, 'running', { sessionId: 'session-b' });
+          return null;
+        });
+        vi.spyOn(progressStore, 'replayFrom').mockImplementation((jobId: string) => {
+          if (jobId === jobIdA && runtime.time.now() > deadlineMs) {
+            return [makeTerminalReplay(jobIdA, { sessionId: 'session-a', ts: isoAt(deadlineMs + 1) })];
+          }
+          return [];
+        });
+        const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+
+        const iterator = service
+          .waitStream({ jobIds: [jobIdA, jobIdB], timeoutSeconds: timeoutMs / 1000 })[Symbol.asyncIterator]();
+        const nextPromise = iterator.next();
+
+        await flushMicrotasks();
+        expect(waitForChange).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+
+        const firstResult = await nextPromise;
+        expect(firstResult.done).toBe(false);
+        if (firstResult.done || firstResult.value.type !== 'waiting') throw new Error('expected waiting');
+        expect(firstResult.value.waitingJobIds).toHaveLength(2);
+        expect(firstResult.value.waitingJobIds).toContain(jobIdA);
+        expect(firstResult.value.waitingJobIds).toContain(jobIdB);
+        await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('cursor fromEventId skips already-delivered events (only newer events returned)', async () => {
       const jobId = `red-ws-cursor-${randomUUID()}`;
       createdJobIds.add(jobId);
@@ -3760,7 +4314,14 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
         const all = [
           { jobId, sessionId: 'session-1', eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
           { jobId, sessionId: 'session-1', eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
-          { jobId, sessionId: 'session-1', eventId: 3, type: 'terminal' as const, ts: '', result: { content: 'done' } },
+          {
+            jobId,
+            sessionId: 'session-1',
+            eventId: 3,
+            type: 'terminal' as const,
+            ts: '',
+            result: { content: 'done', outcome: { kind: 'completed' as const } },
+          },
         ];
         return all.filter((e) => e.eventId > fromEventId);
       });

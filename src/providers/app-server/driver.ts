@@ -1,8 +1,10 @@
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { AbortReason, ProviderName } from '../../shared/coral-fault.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
 
 export interface AppServerSessionDriver<TState> {
   readonly name: string;
+  readonly faultProviderName: ProviderName;
   readonly subscriptionPhase: 'beforeInitialize' | 'afterInitialize';
 
   buildServerSpec(
@@ -31,5 +33,15 @@ export type DriverStepOutcome = { terminal?: TurnOutcome };
 export type TurnOutcome =
   | { kind: 'completed'; turn: unknown }
   | { kind: 'failed'; message: string }
-  | { kind: 'aborted' }
+  | { kind: 'aborted'; reason: AbortReason }
   | { kind: 'nonResumable'; message: string };
+
+export function buildProviderFailureMessage(label: string, message?: string, status?: string): string {
+  if (typeof message === 'string' && message.trim().length > 0) {
+    return message.trim();
+  }
+  if (typeof status === 'string' && status.trim().length > 0) {
+    return `${label} turn failed with status ${status.trim()}.`;
+  }
+  return `${label} session driver reported a failed turn.`;
+}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { type TerminalOutcome, terminalOutcomeSchema } from './coral-fault.js';
 
 /**
  * Shared type definitions for the Coral plugin.
@@ -99,6 +100,14 @@ export interface UsageSummary {
   costUsd?: number;
 }
 
+export const usageSummarySchema = z
+  .object({
+    inputTokens: z.number().optional(),
+    outputTokens: z.number().optional(),
+    costUsd: z.number().optional(),
+  })
+  .strict();
+
 /** Request from the Execution Service to a Provider adapter. */
 export interface ProviderRequest {
   action: ProviderAction;
@@ -109,7 +118,10 @@ export interface ProviderRequest {
   prompt: string;
   model?: string;
   cwd: string;
-  effort: EffortLevel;
+  /** Explicit caller-provided effort level. Adapters apply provider-specific
+   *  env fallbacks (CORAL_{CLAUDE,CODEX}_EFFORT → CORAL_EFFORT → provider default)
+   *  when this is undefined. */
+  effort?: EffortLevel;
   bypassPermissions: boolean;
   /** User-facing system prompt passed through the backend to the provider adapter (Claude: --append-system-prompt). */
   systemPrompt?: string;
@@ -122,7 +134,7 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Result returned by a Provider adapter after execution completes. */
 export interface ProviderResult {
@@ -130,13 +142,11 @@ export interface ProviderResult {
   conversationRef?: string;
   model?: string;
   durationMs?: number;
-  aborted?: boolean;
   nonResumable?: boolean;
   exitCode?: number | null;
-  notice?: string;
-  errors?: unknown[];
   warnings?: string[];
   usage?: UsageSummary;
+  outcome: TerminalOutcome;
 }
 
 /**
@@ -162,20 +172,62 @@ export interface WorkflowResultMeta {
   steps: WorkflowStepMeta[];
 }
 
+const workflowStepMetaSchema = z
+  .object({
+    agent: z.string(),
+    step: z.number(),
+    atom: z.number(),
+    provider: z.string(),
+    start: z.number(),
+    end: z.number(),
+  })
+  .strict();
+
+export const workflowResultMetaSchema = z
+  .object({
+    steps: z.array(workflowStepMetaSchema),
+  })
+  .strict();
+
 export type JobKind = 'provider' | 'workflow';
 
 export interface TerminalResult {
   content: string;
   durationMs?: number;
-  aborted?: boolean;
   nonResumable?: boolean;
   exitCode?: number | null;
-  notice?: string;
-  errors?: unknown[];
   warnings?: string[];
   usage?: UsageSummary;
   workflow?: WorkflowResultMeta;
+  outcome: TerminalOutcome;
 }
+
+export const providerResultSchema = z
+  .object({
+    content: z.string(),
+    conversationRef: z.string().optional(),
+    model: z.string().optional(),
+    durationMs: z.number().optional(),
+    nonResumable: z.boolean().optional(),
+    exitCode: z.number().nullable().optional(),
+    warnings: z.array(z.string()).optional(),
+    usage: usageSummarySchema.optional(),
+    outcome: terminalOutcomeSchema,
+  })
+  .strict();
+
+export const terminalResultSchema = z
+  .object({
+    content: z.string(),
+    durationMs: z.number().optional(),
+    nonResumable: z.boolean().optional(),
+    exitCode: z.number().nullable().optional(),
+    warnings: z.array(z.string()).optional(),
+    usage: usageSummarySchema.optional(),
+    workflow: workflowResultMetaSchema.optional(),
+    outcome: terminalOutcomeSchema,
+  })
+  .strict();
 
 /** Opaque serializable replay cursor carried in SSE Last-Event-ID. */
 export type WaitCursor = {
@@ -311,8 +363,12 @@ export interface WorkflowCheckpoint {
   staleRetries: Record<string, number>; // atomKey -> retry count
   expectedStaleAborts: string[]; // jobIds
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
+    firstFailure: {
+      aborted: boolean;
+      message: string;
+      failedStep?: number;
+      failedAtom?: string;
+    };
     abortRequested: boolean;
     drainDeadline: number;
   };

@@ -10,6 +10,8 @@ world:
   fakeProvider:
     result:
       content: first-gen-result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: launch
@@ -23,6 +25,8 @@ steps:
     phase: completed
     result:
       content: first-gen-result
+      outcome:
+        kind: completed
   - type: corrupt
     jobId: "00000000-0000-0000-0000-000000000003"
     target: status

@@ -61,6 +61,20 @@ export async function runAppServerTurn<TState>(
 
   const finalize = (outcome: TurnOutcome): ProviderResult => {
     stopNotifications();
+    if (outcome.kind === 'failed') {
+      const base = driver.finalize(state, outcome);
+      return {
+        ...base,
+        outcome: {
+          kind: 'coral_fault',
+          fault: {
+            kind: 'provider_request_failed',
+            provider: driver.faultProviderName,
+            message: outcome.message,
+          },
+        },
+      };
+    }
     return driver.finalize(state, outcome);
   };
 
@@ -83,7 +97,7 @@ export async function runAppServerTurn<TState>(
       unsubscribe = subscribe();
     }
     if (runtime.signal.aborted) {
-      return finalize({ kind: 'aborted' });
+      return finalize({ kind: 'aborted', reason: 'signal_abort' });
     }
 
     const started = await driver.startTurn(ctx, state, request);
@@ -106,7 +120,7 @@ export async function runAppServerTurn<TState>(
     return finalize(outcome);
   } catch (error) {
     if (runtime.signal.aborted) {
-      return finalize({ kind: 'aborted' });
+      return finalize({ kind: 'aborted', reason: 'signal_abort' });
     }
     return finalize({ kind: 'failed', message: errorMessage(error) });
   } finally {

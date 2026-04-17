@@ -72,9 +72,10 @@ Strip `--deep` and `--codex` flags before passing the prompt to the execution pa
     output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
 
     // --codex
-    launch = Bash(`coral-cli codex pioneer -i "<draft file content>" --work-dir "<work_dir>" -d --output-format json`)
-    terminal = Bash(`coral-cli wait --jobs "${launch.job}" --output-format json --embed`)
-    output = terminal.event.result.content ?? Read(terminal.event.result.path)
+    launch = Bash(`coral-cli codex pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
+    job = parse `Job <job> <launchState> (session <session>)` from launch
+    terminal = Bash(`coral-cli wait --jobs "${job}" --embed`)
+    output = Read(<path from the terminal's `Result path:` line>)
     ```
 
     For items where pioneer identifies a genuinely more elegant form: mark the sub-item

@@ -110,6 +110,7 @@ function createDriver(options: {
     stateRef: () => stateRef,
     driver: {
       name: 'runner-test',
+      faultProviderName: 'claude',
       subscriptionPhase: options.subscriptionPhase ?? 'beforeInitialize',
       buildServerSpec() {
         return {
@@ -177,15 +178,38 @@ function createDriver(options: {
             content:
               state.value ||
               (typeof outcome.turn === 'string' ? outcome.turn : 'completed'),
+            outcome: { kind: 'completed' },
           };
         }
         if (outcome.kind === 'aborted') {
-          return { content: '', aborted: true };
+          return { content: '', outcome: { kind: 'aborted', reason: outcome.reason } };
         }
         if (outcome.kind === 'nonResumable') {
-          return { content: '', nonResumable: true, notice: outcome.message, errors: [outcome.message] };
+          return {
+            content: '',
+            nonResumable: true,
+            outcome: {
+              kind: 'coral_fault',
+              fault: {
+                kind: 'provider_session_unavailable',
+                provider: 'claude',
+                note: outcome.message,
+              },
+            },
+          };
         }
-        return { content: '', exitCode: 1, notice: outcome.message, errors: [outcome.message] };
+        return {
+          content: '',
+          exitCode: 1,
+          outcome: {
+            kind: 'coral_fault',
+            fault: {
+              kind: 'provider_request_failed',
+              provider: 'claude',
+              message: outcome.message,
+            },
+          },
+        };
       },
     },
   };
@@ -245,7 +269,17 @@ describe('runAppServerTurn', () => {
 
     expect(startTurn).not.toHaveBeenCalled();
     expect(lease.subscribeMock).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ nonResumable: true, notice: 'missing-thread' });
+    expect(result).toMatchObject({
+      nonResumable: true,
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_session_unavailable',
+          provider: 'claude',
+          note: 'missing-thread',
+        },
+      },
+    });
   });
 
   it('returns immediate terminal outcomes from startTurn', async () => {
@@ -289,7 +323,7 @@ describe('runAppServerTurn', () => {
     controller.abort();
     initializeDeferred.resolve({});
 
-    await expect(execution).resolves.toMatchObject({ aborted: true });
+    await expect(execution).resolves.toMatchObject({ outcome: { kind: 'aborted', reason: 'signal_abort' } });
     expect(startTurn).not.toHaveBeenCalled();
     expect(stateRef()?.interruptCalls).toBe(0);
   });
@@ -314,8 +348,8 @@ describe('runAppServerTurn', () => {
       expect(stateRef()?.interruptCalls).toBe(1);
     });
 
-    stateRef()!.terminal.resolve({ kind: 'aborted' });
-    await expect(execution).resolves.toMatchObject({ aborted: true });
+    stateRef()!.terminal.resolve({ kind: 'aborted', reason: 'signal_abort' });
+    await expect(execution).resolves.toMatchObject({ outcome: { kind: 'aborted', reason: 'signal_abort' } });
   });
 
   it('requests interrupt on mid-turn aborts', async () => {
@@ -338,8 +372,8 @@ describe('runAppServerTurn', () => {
       expect(stateRef()?.interruptCalls).toBe(1);
     });
 
-    stateRef()!.terminal.resolve({ kind: 'aborted' });
-    await expect(execution).resolves.toMatchObject({ aborted: true });
+    stateRef()!.terminal.resolve({ kind: 'aborted', reason: 'signal_abort' });
+    await expect(execution).resolves.toMatchObject({ outcome: { kind: 'aborted', reason: 'signal_abort' } });
   });
 
   it('uses the transport-close fallback when lease.closed wins', async () => {
@@ -355,8 +389,14 @@ describe('runAppServerTurn', () => {
 
     await expect(execution).resolves.toMatchObject({
       exitCode: 1,
-      notice: 'transport down',
-      errors: ['transport down'],
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_request_failed',
+          provider: 'claude',
+          message: 'transport down',
+        },
+      },
     });
     expect(onTransportClosed).toHaveBeenCalledTimes(1);
   });
@@ -394,8 +434,17 @@ describe('runAppServerTurn', () => {
         return {
           content: state.value,
           exitCode: outcome.kind === 'failed' ? 1 : 0,
-          notice: outcome.kind === 'failed' ? outcome.message : undefined,
-          errors: outcome.kind === 'failed' ? [outcome.message] : undefined,
+          outcome:
+            outcome.kind === 'failed'
+              ? {
+                  kind: 'coral_fault',
+                  fault: {
+                    kind: 'provider_request_failed',
+                    provider: 'claude',
+                    message: outcome.message,
+                  },
+                }
+              : { kind: 'completed' },
         };
       },
     });
@@ -409,8 +458,14 @@ describe('runAppServerTurn', () => {
     await expect(execution).resolves.toMatchObject({
       content: 'closed-state',
       exitCode: 1,
-      notice: 'close-won',
-      errors: ['close-won'],
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_request_failed',
+          provider: 'claude',
+          message: 'close-won',
+        },
+      },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -425,7 +480,17 @@ describe('runAppServerTurn', () => {
 
     const result = await runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
 
-    expect(result).toMatchObject({ exitCode: 1, notice: 'boom', errors: ['boom'] });
+    expect(result).toMatchObject({
+      exitCode: 1,
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_request_failed',
+          provider: 'claude',
+          message: 'boom',
+        },
+      },
+    });
   });
 
   it('preserves one stable state object across notification, await, and finalize', async () => {
@@ -458,7 +523,14 @@ describe('runAppServerTurn', () => {
 
     await expect(runAppServerTurn(driver, makeRequest(), makeRuntime(lease))).resolves.toMatchObject({
       nonResumable: true,
-      notice: 'stop',
+      outcome: {
+        kind: 'coral_fault',
+        fault: {
+          kind: 'provider_session_unavailable',
+          provider: 'claude',
+          note: 'stop',
+        },
+      },
     });
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });

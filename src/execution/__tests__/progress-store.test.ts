@@ -55,6 +55,14 @@ function isoNow(): string {
   return new Date(nowMs()).toISOString();
 }
 
+function completedResult(overrides: Partial<TerminalResult> = {}): TerminalResult {
+  return {
+    content: 'done',
+    outcome: { kind: 'completed' },
+    ...overrides,
+  };
+}
+
 function startAliveProcess(pid: number): number {
   runtime.spawner.enqueueSpawn({ pid, close: null });
   const child = runtime.process.spawn({
@@ -150,7 +158,7 @@ describe('execution ProgressStore', () => {
   it('emits event bus job lifecycle events', () => {
     const store = createStore(eventBus);
     const jobId = nextJobId('progress-bus');
-    const result = { content: 'done' } satisfies TerminalResult;
+    const result = completedResult({ content: 'done' });
     const created = vi.fn();
     const phaseChanged = vi.fn();
     const progress = vi.fn();
@@ -201,7 +209,7 @@ describe('execution ProgressStore', () => {
   it('appendTerminal updates status.json result', () => {
     const store = createStore();
     const jobId = nextJobId('progress-terminal');
-    const result = { content: 'done', exitCode: 0 } satisfies TerminalResult;
+    const result = completedResult({ content: 'done', exitCode: 0 });
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
 
     store.appendTerminal(jobId, 'session-1', result, 'completed');
@@ -221,7 +229,7 @@ describe('execution ProgressStore', () => {
     });
 
     expect(() => {
-      store.appendTerminal(jobId, 'session-1', { content: 'done' }, 'completed');
+      store.appendTerminal(jobId, 'session-1', completedResult({ content: 'done' }), 'completed');
     }).toThrow('disk full');
     expect(store.readStatus(jobId)).toMatchObject({ phase: 'launching' });
   });
@@ -265,7 +273,7 @@ describe('execution ProgressStore', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'completed',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
-      result: { content: 'done' },
+      result: completedResult({ content: 'done' }),
     } satisfies PersistedStatusRecord;
 
     store.writeStatus(jobId, record);
@@ -282,7 +290,7 @@ describe('execution ProgressStore', () => {
     const store = createStore();
     const jobId = nextJobId('progress-terminal-only');
     store.initJob({ jobId, sessionId: 'session-1', provider: 'codex', projectRoot, backendNamespace: 'test-ns' });
-    store.appendTerminal(jobId, 'session-1', { content: 'result text' }, 'completed');
+    store.appendTerminal(jobId, 'session-1', completedResult({ content: 'result text' }), 'completed');
 
     const events = store.replayFrom(jobId, 0, createReplayCursor());
 
@@ -298,7 +306,7 @@ describe('execution ProgressStore', () => {
     writeFileSync(join(store.jobDir(jobId), 'progress.jsonl'), '', 'utf-8');
 
     expect(() => {
-      store.appendTerminal(jobId, 'session-1', { content: 'done' }, 'completed');
+      store.appendTerminal(jobId, 'session-1', completedResult({ content: 'done' }), 'completed');
     }).not.toThrow();
   });
 
@@ -311,13 +319,13 @@ describe('execution ProgressStore', () => {
     const before = readFileSync(progressPath, 'utf-8');
     const seq = store.getChangeSeq();
 
-    store.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+    store.markTerminalStatus(jobId, completedResult({ content: 'done' }), 'completed');
 
     await expect(store.waitForChange(seq)).resolves.toBeUndefined();
     expect(readFileSync(progressPath, 'utf-8')).toBe(before);
     expect(store.readStatus(jobId)).toMatchObject({
       phase: 'completed',
-      result: { content: 'done' },
+      result: completedResult({ content: 'done' }),
     });
 
     const internals = store as unknown as {
@@ -331,7 +339,7 @@ describe('execution ProgressStore', () => {
   it('markTerminalStatus emits job:completed', () => {
     const store = createStore(eventBus);
     const jobId = nextJobId('progress-terminal-event');
-    const result = { content: 'done' } satisfies TerminalResult;
+    const result = completedResult({ content: 'done' });
     const completed = vi.fn();
     eventBus.on('job:completed', completed);
 
@@ -726,7 +734,7 @@ describe('liveJobCountByNamespace', () => {
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot, backendNamespace: 'ns-x' });
     expect(store.liveJobCountByNamespace('ns-x')).toBe(1);
 
-    store.appendTerminal(jobId, 's1', { content: 'done' }, 'completed');
+    store.appendTerminal(jobId, 's1', completedResult({ content: 'done' }), 'completed');
     expect(store.liveJobCountByNamespace('ns-x')).toBe(0);
   });
 });

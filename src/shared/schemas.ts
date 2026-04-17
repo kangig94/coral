@@ -38,7 +38,7 @@ export const agentIdentSchema = z.preprocess(
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
-const effortLevelSchema = z.enum(['low', 'medium', 'high', 'max']);
+const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const claudeModelCapSchema = modelNameSchema.optional();
 
 const continuationFieldsShape = {
@@ -126,30 +126,40 @@ export const workflowRequestSchema = workflowCommandSchema
 
 export type { EffortLevel } from './types.js';
 
-const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
-const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
-function parseEffortLevel(value: string, label: string): EffortLevel {
+/**
+ * Validate an effort string. Returns undefined when the input is undefined.
+ * Throws with a user-friendly label when the string is non-empty but invalid.
+ */
+export function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
+  if (value === undefined) return undefined;
   if (!VALID_EFFORT_LEVELS.has(value)) {
-    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, max`);
+    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, xhigh, max`);
   }
   return value as EffortLevel;
 }
 
-/** Validate and resolve effort level from request + environment. */
-export function resolveEffort(
-  requestEffort: string | undefined,
-  env?: Record<string, string>,
-  defaultEffort: EffortLevel = 'high',
-): EffortLevel {
-  if (requestEffort !== undefined) {
-    return parseEffortLevel(requestEffort, 'effort');
-  }
-  const envEffort = env?.CORAL_EFFORT;
-  if (envEffort !== undefined) {
-    return parseEffortLevel(envEffort, 'CORAL_EFFORT');
-  }
-  return defaultEffort;
+/**
+ * Validate the effort level supplied directly on a request. Returns undefined
+ * when the caller did not specify one — each provider adapter then applies
+ * its own env-aware fallback chain at the boundary.
+ */
+export function resolveEffort(requestEffort: string | undefined): EffortLevel | undefined {
+  return parseEffortLevel(requestEffort, 'effort');
+}
+
+export function resolveProviderEffort(
+  request: { effort?: EffortLevel | undefined },
+  providerEnvKey: string,
+  env: Record<string, string>,
+): EffortLevel | undefined {
+  return (
+    request.effort
+    ?? parseEffortLevel(env[providerEnvKey], providerEnvKey)
+    ?? parseEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
+  );
 }
 
 /** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */

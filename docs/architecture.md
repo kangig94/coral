@@ -96,10 +96,10 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 ### Wait / follow
 
-1. Detached launches return `{ session, job, launchState }` (201 or 202)
-2. `coral-cli wait --jobs "<ids>" --output-format json [--embed]` calls `streamWait()`
+1. Detached launches print `Job <job> <launchState> (session <session>)`
+2. `coral-cli wait --jobs "<ids>" [--embed]` calls `streamWait()`
 3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
-4. Terminal events always include `result.path`; `result.content` is optional inline enrichment
+4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 
 ### Job inspection and control
 
@@ -125,7 +125,7 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 | Area | Key modules | Role |
 | --- | --- | --- |
-| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, human/JSON formatting |
+| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, text formatting, KB JSON formatting |
 | Client | `src/client/http-client.ts`, `src/client/backend-lifecycle.ts`, `src/client/backend-helpers.ts` | Backend startup, HTTP requests, wait/admin helpers |
 | Backend HTTP | `src/execution/server.ts`, `src/execution/http-handler.ts` | Backend composition root and route registration |
 | Provider execution | `src/execution/service.ts`, `src/execution/engine.ts`, `src/providers/*` | Launch orchestration, provider spawning, host/runtime management |
@@ -176,3 +176,29 @@ src/shared/utils.ts and src/shared/types.ts
 | `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB text/vector state and imported sources |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
+
+## Migration Notes
+
+### CoralFault ADT (breaking wire/persistence change)
+
+Terminal results now carry a typed outcome (`TerminalOutcome`) instead of the legacy `notice: string` + `aborted: boolean` pair. The outcome is a discriminated union with four branches:
+
+- `completed` — provider turn finished successfully.
+- `aborted { reason }` — closed-token reason: `signal_abort` | `user_abort` | `queue_shutdown`.
+- `provider_exit { code, note? }` — provider process terminated with a numeric exit code.
+- `coral_fault { fault }` — typed coral-internal failure from the 12-variant `CoralFault` ADT (`src/shared/coral-fault.ts`).
+
+CLI wait output surfaces the outcome through four exhaustive headers:
+
+```
+Job <id> completed
+Job <id> aborted: <reason>
+Job <id> provider exited <N>[: <note>]
+Job <id> coral errored: <sentence> [<kind>]
+```
+
+The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`) — the human sentence may drift across releases.
+
+**Upgrade impact**: pre-upgrade `status.json` / `progress.jsonl` records use the legacy shape. On the first start after upgrade, the backend validates each record against the new schema and silently discards any record that fails — logging `Ignoring invalid status.json for <jobId>` once per job. The job directory is NOT deleted, and any session claim it owned is released so the session stays usable. No read-time promotion is performed; pre-upgrade jobs simply vanish from the discovery set.
+
+To upgrade cleanly, drop `<os-tmpdir>/coral-jobs/` before the first restart, or accept that in-flight pre-upgrade jobs will not be recoverable after the version bump.

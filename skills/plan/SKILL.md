@@ -94,27 +94,21 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     Evaluate whether the plan warrants full review. ALL of the following must hold
     to qualify as low-complexity:
-    - Total implementation ≤ ~30 lines changed across all files
-    - No new files created
+    - At most 1 new file created
     - No public API or interface changes
     - No new abstractions, patterns, or architectural decisions
     - Each change is a localized fix (not cross-cutting)
     - Root cause and fix are already confirmed (e.g., from debugger, preplan, or prior analysis)
+    - No apparent domain-specific risk (concurrency, persistence atomicity, state machine transitions, recovery paths, security-sensitive edits)
 
-    If ALL criteria pass:
-    ```
-    AskUserQuestion({ questions: [
-      { question: "Plan is low-complexity (N lines, M files, localized fixes). Skip review?", header: "Review",
-        options: [
-          { label: "Skip review", description: "Proceed directly to implementation" },
-          { label: "Review anyway", description: "Run full review loop" }
-        ], multiSelect: false }
-    ]})
-    ```
-    If "Skip review" → skip to step 4e (Execution Order), then step 5 (Completion).
-    If "Review anyway" → proceed to Review Phases normally.
+    If ALL criteria pass → print a one-line gate decision to conversation output and
+    skip directly to step 4e (Execution Order), then step 5 (Completion):
 
-    If ANY criterion fails → proceed to Review Phases (no prompt).
+    ```
+    Complexity gate passed: {M} files, {localized fix summary} — skipping review.
+    ```
+
+    If ANY criterion fails → proceed to Review Phases.
 
     #### Review Phases
 
@@ -131,11 +125,10 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     expression = "(coral:architect, coral:critic)" or "(coral:architect, coral:critic) -> coral:resolver" when --deep
     startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
     sharedContext = (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes."
-    launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d --output-format json`)
+    launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
-    - **If `--deep`**: `coral-cli wait --jobs "<job>" --output-format json` →
-      read the terminal JSON line, then `{ start, end } = event.result.workflow.steps.find(s => s.agent === "resolver")` → `Read(event.result.path, start, end - start + 1)`.
-    - **Otherwise**: `coral-cli wait --jobs "<job>" --output-format json --embed` → use `event.result.content ?? Read(event.result.path)`.
+    - **If `--deep`**: `coral-cli wait --jobs "<job>"` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver section there.
+    - **Otherwise**: `coral-cli wait --jobs "<job>" --embed` → the terminal output still prints `Result path: <path>`; use inline preview text if it is helpful, but read the printed path for the full result.
 
     **4b. Post-Round Processing**
 
@@ -145,7 +138,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
     ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision, revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
 
-    **Otherwise**: the terminal JSON line from `coral-cli wait` yields `<architect>…</architect>` + `<critic>…</critic>` in `event.result.content`; if it is absent, read `event.result.path`.
+    **Otherwise**: `coral-cli wait --embed` may preview `<architect>…</architect>` + `<critic>…</critic>` inline, but the durable artifact is always the printed `Result path: <path>`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
     If findings invalidate the current approach, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round.
 

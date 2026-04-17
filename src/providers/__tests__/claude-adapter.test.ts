@@ -120,7 +120,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
     expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
-    expect(result.nonResumable === true || result.errors !== undefined).toBe(true);
+    expect(result.nonResumable === true || result.outcome.kind !== 'completed').toBe(true);
   });
 
   it('does not fall back to one-shot runCli when persistent continuity exists and cwd drifts', async () => {
@@ -538,7 +538,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
 
     expect(result).not.toBe('timeout');
     if (typeof result !== 'string') {
-      expect(result.aborted === true || result.errors !== undefined || result.nonResumable === true).toBe(true);
+      expect(result.outcome.kind !== 'completed' || result.nonResumable === true).toBe(true);
     }
   }, 3000);
 
@@ -664,6 +664,233 @@ describe('claude adapter: fork action stays on one-shot path regardless of acqui
 
     expect(acquireServerMock).not.toHaveBeenCalled();
     expect(runCliMock).toHaveBeenCalled();
+  });
+});
+
+describe('claude adapter: effort clamping for non-Opus tiers', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  function forkRuntimeCapturingEffort(): {
+    runCliMock: ReturnType<typeof vi.fn>;
+    runtime: ProviderRuntime;
+  } {
+    const runCliMock = vi.fn(async () => ({
+      stdout: JSON.stringify({
+        type: 'result',
+        result: 'forked',
+        session_id: 'sess-fork',
+        total_cost_usd: 0,
+      }),
+      stderr: '',
+      code: 0,
+      aborted: false,
+    }));
+    const lease = makeLease({ rpcImpl: async () => ({}) });
+    const runtime = makeRuntime(lease, { acquireServer: vi.fn(async () => lease), runCli: runCliMock });
+    return { runCliMock, runtime };
+  }
+
+  function extractEffort(args: string[]): string | undefined {
+    const idx = args.indexOf('--effort');
+    return idx >= 0 ? args[idx + 1] : undefined;
+  }
+
+  it('passes xhigh through when the effective model tier is Opus', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'xhigh', model: 'opus' }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('xhigh');
+  });
+
+  it('clamps xhigh to max when the abstract model tier is Sonnet', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'xhigh', model: 'sonnet' }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('clamps xhigh to max for specific Sonnet model names', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: 'xhigh',
+        model: 'claude-sonnet-4-6',
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('clamps xhigh to max when the Opus request is capped down to Sonnet', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: 'xhigh',
+        model: 'opus',
+        coralEnv: { CORAL_CLAUDE_MODEL_CAP: 'sonnet' },
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('defaults to xhigh on Opus when no effort is specified', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: undefined, model: 'opus' }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('xhigh');
+  });
+
+  it('defaults to max on Sonnet when no effort is specified (xhigh default clamps down)', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: undefined, model: 'sonnet' }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('uses CORAL_CLAUDE_EFFORT when request effort is unset', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: undefined,
+        model: 'opus',
+        coralEnv: { CORAL_CLAUDE_EFFORT: 'medium' },
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('medium');
+  });
+
+  it('prefers CORAL_CLAUDE_EFFORT over CORAL_EFFORT', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: undefined,
+        model: 'opus',
+        coralEnv: { CORAL_CLAUDE_EFFORT: 'low', CORAL_EFFORT: 'high' },
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('low');
+  });
+
+  it('falls back to CORAL_EFFORT when no provider-specific effort is set', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: undefined,
+        model: 'opus',
+        coralEnv: { CORAL_EFFORT: 'high' },
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('high');
+  });
+
+  it('passes max through unchanged on Sonnet (no double-clamp)', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'max', model: 'sonnet' }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('clamps xhigh to max for specific Haiku model names', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runCliMock, runtime } = forkRuntimeCapturingEffort();
+
+    await claudeProvider.execute(
+      makeRequest({
+        action: 'fork',
+        conversationRef: 'sess-original',
+        effort: 'xhigh',
+        model: 'claude-haiku-3-5',
+      }),
+      runtime,
+    );
+
+    const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
+    expect(extractEffort(args)).toBe('max');
+  });
+
+  it('throws a user-friendly error when CORAL_CLAUDE_EFFORT is invalid', async () => {
+    const { claudeProvider } = await loadProvider();
+    const { runtime } = forkRuntimeCapturingEffort();
+
+    await expect(
+      claudeProvider.execute(
+        makeRequest({
+          action: 'fork',
+          conversationRef: 'sess-original',
+          effort: undefined,
+          model: 'opus',
+          coralEnv: { CORAL_CLAUDE_EFFORT: 'turbo' },
+        }),
+        runtime,
+      ),
+    ).rejects.toThrow('Invalid CORAL_CLAUDE_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
   });
 });
 
@@ -793,6 +1020,6 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
 
     expect(runCliMock).not.toHaveBeenCalled();
     expect(acquireServerMock).not.toHaveBeenCalled();
-    expect(result.nonResumable === true || result.errors !== undefined).toBe(true);
+    expect(result.nonResumable === true || result.outcome.kind !== 'completed').toBe(true);
   });
 });

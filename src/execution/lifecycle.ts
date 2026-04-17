@@ -22,6 +22,7 @@ import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import type { RecoveredDiscussResume } from './discuss/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
+import { wrapperCrashedFault } from '../shared/coral-fault.js';
 import { isTerminalPhase } from '../shared/types.js';
 import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
@@ -37,7 +38,6 @@ import { StartupInterruptedError } from './lifecycle/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
 import type { RecoveryCapableService } from './service.js';
 
-export { OLD_FORMAT_NOTICE, GHOST_LAUNCH_NOTICE } from './recovery-notices.js';
 export { adoptOrphanedCrossNamespaceJobs } from './lifecycle/cross-namespace-adoption.js';
 export { StartupInterruptedError } from './lifecycle/errors.js';
 export {
@@ -116,7 +116,7 @@ export function cleanupStaleJobs(
 export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      markJobAsError(progressStore, status, message, () => {});
+      markJobAsError(progressStore, status, wrapperCrashedFault(message), () => {});
     } catch {
       // fail-isolated: skip this job, continue with others
     }

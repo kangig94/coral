@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { BackendToolHttpError } from '../../client/http-client.js';
 import type { BackendStatusFull, ShutdownResult } from '../../client/backend-helpers.js';
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/types.js';
@@ -7,6 +8,8 @@ import type { WatchState } from '../../discuss/watch.js';
 import type { KbReadResult } from '../../kb/types.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { WaitStreamEvent } from '../../shared/types.js';
+import { BackendUnreachableError, TransientHttpError } from '../../shared/utils.js';
+import { buildErrorEnvelope, UsageError } from '../errors.js';
 import {
   formatAbortResult,
   formatBackendStatus,
@@ -15,6 +18,7 @@ import {
   formatDiscussStart,
   formatDiscussWatch,
   formatError,
+  formatErrorEnvelope,
   formatKbDelete,
   formatKbPrinciples,
   formatKbMemo,
@@ -145,6 +149,7 @@ const waitTerminalEvent = {
   resultPath: '/tmp/result.md',
   result: {
     content: 'Workflow summary',
+    outcome: { kind: 'completed' as const },
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
@@ -506,28 +511,282 @@ describe('cli format', () => {
     });
   });
 
+  describe('formatErrorEnvelope', () => {
+    it('formats UsageError envelopes on a single line', () => {
+      const { envelope } = buildErrorEnvelope(new UsageError('input is required (-i, --input)'));
+
+      expect(formatErrorEnvelope(envelope)).toBe('input is required (-i, --input) [code=invalid_usage]');
+    });
+
+    it('formats BackendToolHttpError envelopes with detail on a second line', () => {
+      const error = new BackendToolHttpError('HTTP 503', 503, {
+        code: 'backend_recovering',
+        message: 'recovering — retry after 500ms',
+        detail: { retryAfterMs: 500 },
+      });
+      const { envelope } = buildErrorEnvelope(error);
+
+      expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
+        'recovering — retry after 500ms [code=backend_recovering, http=503]\n' +
+          'Detail: {"retryAfterMs":500}',
+      );
+    });
+
+    it('formats BackendToolHttpError envelopes without detail on a single line', () => {
+      const error = new BackendToolHttpError('HTTP 404', 404, {
+        code: 'not_found',
+        message: 'Job not found',
+      });
+      const { envelope } = buildErrorEnvelope(error);
+
+      expect(formatErrorEnvelope(envelope, error.statusCode)).toBe('Job not found [code=not_found, http=404]');
+    });
+
+    it('formats BackendToolHttpError detail: null literally', () => {
+      const error = new BackendToolHttpError('HTTP 400', 400, {
+        code: 'bad_request',
+        message: 'Missing prompt',
+        detail: null,
+      });
+      const { envelope } = buildErrorEnvelope(error);
+
+      expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
+        'Missing prompt [code=bad_request, http=400]\nDetail: null',
+      );
+    });
+
+    it('does not normalize multi-line envelope heads and keeps Detail: on the next line boundary', () => {
+      const formatted = formatErrorEnvelope(
+        {
+          error: true,
+          code: 'bad_request',
+          message: 'line one\nline two',
+          detail: { field: 'prompt' },
+        },
+        400,
+      );
+
+      expect(formatted.split('\n')).toEqual([
+        'line one',
+        'line two [code=bad_request, http=400]',
+        'Detail: {"field":"prompt"}',
+      ]);
+    });
+
+    it('formats BackendUnreachableError envelopes on a single line', () => {
+      const { envelope } = buildErrorEnvelope(new BackendUnreachableError('fetch failed'));
+
+      expect(formatErrorEnvelope(envelope)).toBe('fetch failed [code=backend_unreachable]');
+    });
+
+    it('formats TransientHttpError envelopes on a single line', () => {
+      const { envelope } = buildErrorEnvelope(new TransientHttpError(503, 'backend warming up'));
+
+      expect(formatErrorEnvelope(envelope)).toBe('backend warming up [code=transient]');
+    });
+
+    it('formats plain Error envelopes on a single line', () => {
+      const { envelope } = buildErrorEnvelope(new Error('boom'));
+
+      expect(formatErrorEnvelope(envelope)).toBe('boom [code=internal]');
+    });
+
+    it.each([
+      {
+        label: 'structural backend object',
+        error: {
+          statusCode: 403,
+          body: { code: 'scope_mismatch', message: 'Scope mismatch' },
+          message: 'Backend request failed: 403 Forbidden',
+        },
+        expectedText: 'HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}',
+        expectedEnvelope: 'Scope mismatch [code=scope_mismatch, http=403]',
+      },
+      {
+        label: 'plain Error instance',
+        error: new Error('boom'),
+        expectedText: 'boom',
+        expectedEnvelope: 'boom [code=internal]',
+      },
+    ])('documents formatError/formatErrorEnvelope parity for $label', ({ error, expectedText, expectedEnvelope }) => {
+      const { envelope } =
+        error instanceof Error
+          ? buildErrorEnvelope(error)
+          : buildErrorEnvelope(new BackendToolHttpError(error.message, error.statusCode, error.body));
+      const statusCode = error instanceof Error ? undefined : error.statusCode;
+
+      expect(formatError(error)).toBe(expectedText);
+      expect(formatErrorEnvelope(envelope, statusCode)).toBe(expectedEnvelope);
+    });
+  });
+
   describe('wait formatters', () => {
-    it('formats progress events', () => {
-      expect(formatWaitProgress(waitProgressEvent)).toBe('[job-1] Still running');
+    it('formats progress events without a prefix when no label is passed (single-job case)', () => {
+      expect(formatWaitProgress(waitProgressEvent)).toBe('Still running');
     });
 
-    it('formats queued events', () => {
-      expect(formatWaitQueued(waitQueuedEvent)).toBe('[job-1] queued at position 2');
+    it('formats queued events without a prefix when no label is passed (single-job case)', () => {
+      expect(formatWaitQueued(waitQueuedEvent)).toBe('queued at position 2');
     });
 
-    it('formats a non-inline terminal event with the result path', () => {
+    it('prefixes queued events with the caller-supplied positional label (multi-job case)', () => {
+      expect(formatWaitQueued(waitQueuedEvent, 'j1')).toBe('j1 - queued at position 2');
+    });
+
+    it('injects the positional label after the leading time bracket on progress messages', () => {
+      const withTime = { ...waitProgressEvent, message: '[ 0m  2s] 0-arc Thread ready' };
+      expect(formatWaitProgress(withTime, 'j0')).toBe('[ 0m  2s] j0 - 0-arc Thread ready');
+    });
+
+    it('falls back to a leading "label - " prefix on progress messages without a time bracket', () => {
+      expect(formatWaitProgress(waitProgressEvent, 'j0')).toBe('j0 - Still running');
+    });
+
+    it('keeps full jobId on terminal events without surrounding brackets', () => {
+      const longId = '3ee5b730-31b3-46ed-8efe-0127b24e2cfa';
+      expect(formatWaitTerminal({ ...waitTerminalEvent, jobId: longId }, null, false)).toContain(
+        `Job ${longId} completed`,
+      );
+    });
+
+    it('formats a non-inline terminal event with the result path and lists remaining jobIds', () => {
       expect(formatWaitTerminal(waitTerminalEvent, null, false)).toBe(
-        '[job-1] completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: 1',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+      );
+    });
+
+    it('reports "none" when no jobs remain on a non-inline terminal event', () => {
+      const event = { ...waitTerminalEvent, remainingJobIds: [] };
+      expect(formatWaitTerminal(event, null, false)).toBe(
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: none',
+      );
+    });
+
+    it('joins multiple remaining jobIds with commas on a non-inline terminal event', () => {
+      const event = { ...waitTerminalEvent, remainingJobIds: ['job-a', 'job-b', 'job-c'] };
+      expect(formatWaitTerminal(event, null, false)).toBe(
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-a, job-b, job-c',
       );
     });
 
     it('formats an inline terminal event with a content preview', () => {
-      expect(formatWaitTerminal(waitTerminalEvent, null, true)).toBe('[job-1] completed\nWorkflow summary');
+      expect(formatWaitTerminal(waitTerminalEvent, null, true)).toBe(
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Workflow summary',
+      );
+    });
+
+    it('formats provider_exit with a zero code', () => {
+      const event = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          exitCode: 0,
+          outcome: { kind: 'provider_exit' as const, code: 0 },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(event, null, true)).toBe(
+        'Job job-1 provider exited 0\n' + 'Result path: /tmp/result.md\n' + 'Exited with code 0',
+      );
+    });
+
+    it('formats an aborted outcome with the abort token in the header', () => {
+      const event = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: { kind: 'aborted' as const, reason: 'signal_abort' },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(event, null, false)).toBe(
+        'Job job-1 aborted: signal_abort\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+      );
+    });
+
+    it('formats coral_fault headers with the [kind] tag', () => {
+      const event = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'wrapper_crashed' as const,
+              cause: { message: 'provider timed out' },
+            },
+          },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(event, null, false)).toBe(
+        'Job job-1 coral errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n'
+          + 'Result path: /tmp/result.md\n'
+          + 'Remaining jobs: job-2',
+      );
+    });
+
+    it('formats provider_exit with a note', () => {
+      const event = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          exitCode: 7,
+          outcome: { kind: 'provider_exit' as const, code: 7, note: 'forced timeout at 600s' },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(event, null, false)).toBe(
+        'Job job-1 provider exited 7: forced timeout at 600s\n'
+          + 'Result path: /tmp/result.md\n'
+          + 'Remaining jobs: job-2',
+      );
     });
 
     it('includes the cursor in terminal output when present', () => {
       expect(formatWaitTerminal(waitTerminalEvent, 'cursor-3', false)).toBe(
-        '[job-1] completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: 1\n' + 'Cursor: cursor-3',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2\n' + 'Cursor: cursor-3',
+      );
+    });
+
+    it('includes provider name literals for representative provider-scoped coral faults', () => {
+      const providerSessionUnavailable = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'provider_session_unavailable' as const,
+              provider: 'codex' as const,
+              note: 'thread missing',
+            },
+          },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+      const adapterOutputUnparseable = {
+        ...waitTerminalEvent,
+        result: {
+          content: '',
+          outcome: {
+            kind: 'coral_fault' as const,
+            fault: {
+              kind: 'adapter_output_unparseable' as const,
+              provider: 'claude' as const,
+              exitCode: 7,
+              stdout: 'oops',
+              stderr: 'stderr',
+              parseError: 'bad json',
+            },
+          },
+        },
+      } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
+
+      expect(formatWaitTerminal(providerSessionUnavailable, null, false)).toContain(
+        'Job job-1 coral errored: Codex session unavailable: thread missing. [provider_session_unavailable]',
+      );
+      expect(formatWaitTerminal(adapterOutputUnparseable, null, false)).toContain(
+        'Job job-1 coral errored: Claude produced unparseable output (exit 7): bad json. [adapter_output_unparseable]',
       );
     });
 

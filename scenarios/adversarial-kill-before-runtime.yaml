@@ -11,6 +11,8 @@ world:
   fakeProvider:
     result:
       content: should-not-reach
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: launch

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { terminalOutcomeSchema } from '../../shared/coral-fault.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),
@@ -93,17 +94,16 @@ const fakeProviderResultSchema = z.object({
   conversationRef: z.string().optional(),
   model: z.string().optional(),
   durationMs: z.number().optional(),
-  aborted: z.boolean().optional(),
   nonResumable: z.boolean().optional(),
   exitCode: z.number().nullable().optional(),
-  notice: z.string().optional(),
-  errors: z.array(z.unknown()).optional(),
   warnings: z.array(z.string()).optional(),
   usage: usageSummarySchema.optional(),
+  outcome: terminalOutcomeSchema,
 });
 
 const fakeProviderSchema = z.object({
   name: z.string().optional(),
+  faultProvider: z.enum(['claude', 'codex']).optional(),
   cli: fakeProviderCliSchema.optional(),
   progress: z.array(fakeProviderProgressSchema).optional(),
   result: fakeProviderResultSchema.optional(),
@@ -195,7 +195,7 @@ const shutdownStepSchema = z.object({
 
 const resultExpectationSchema = z.object({
   content: z.string().optional(),
-  aborted: z.boolean().optional(),
+  outcome: terminalOutcomeSchema,
 });
 
 const sessionCountExpectationSchema = z.object({

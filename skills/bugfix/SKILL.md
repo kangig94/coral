@@ -23,8 +23,8 @@ Strip the `--codex` flag before passing the prompt to the execution path.
 1. **Diagnose**:
    - **Default**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
      Wait for the agent to return its diagnosis in `<Output_Format>` structure.
-   - **`--codex`**: Run `coral-cli codex debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d --output-format json`.
-     Capture `job` from the detached launch JSON, then run `coral-cli wait --jobs "<job>" --output-format json --embed` → read `event.result.content`; if absent, `Read(event.result.path)` is best-effort recovery for findings.
+   - **`--codex`**: Run `coral-cli codex debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d`.
+     Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait --jobs "<job>" --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings.
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
 

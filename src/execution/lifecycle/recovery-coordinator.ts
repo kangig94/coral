@@ -1,3 +1,4 @@
+import { wrapperCrashedFault } from '../../shared/coral-fault.js';
 import { formatError } from '../../shared/utils.js';
 import {
   isAppServerRuntime,
@@ -371,7 +372,9 @@ export function createRecoveryCoordinator({
         for (const { jobId } of allRecoverable) {
           try {
             const status = progressStore.readStatus(jobId);
-            if (status) markJobAsError(progressStore, status, `Recovery adoption failed: ${formatError(error)}`, log);
+            if (status) {
+              markJobAsError(progressStore, status, wrapperCrashedFault(`Recovery adoption failed: ${formatError(error)}`), log);
+            }
           } catch {
             // best-effort
           }

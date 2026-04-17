@@ -19,6 +19,8 @@ world:
   fakeProvider:
     result:
       content: promoted-result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: hang
@@ -49,5 +51,7 @@ steps:
     phase: completed
     result:
       content: promoted-result
+      outcome:
+        kind: completed
     noRealIO: true
 continueOnFailure: true

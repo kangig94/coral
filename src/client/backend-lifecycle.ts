@@ -664,7 +664,7 @@ async function waitForReplacementBackend(
   }
 
   throw new BackendUnreachableError(
-    'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
+    'Timed out waiting for Coral backend startup. Run `coral-cli backend status` to check backend health.',
   );
 }
 
@@ -796,6 +796,6 @@ export async function ensureBackend(pluginRoot?: string): Promise<BackendHandle>
   }
 
   throw new BackendUnreachableError(
-    'Timed out waiting for Coral backend startup. Use the backend tool with op: "status" to check backend health.',
+    'Timed out waiting for Coral backend startup. Run `coral-cli backend status` to check backend health.',
   );
 }

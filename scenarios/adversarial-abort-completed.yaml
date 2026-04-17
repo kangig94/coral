@@ -10,6 +10,8 @@ world:
   fakeProvider:
     result:
       content: completed-result
+      outcome:
+        kind: completed
 steps:
   - type: boot
   - type: launch
@@ -23,10 +25,13 @@ steps:
     phase: completed
     result:
       content: completed-result
+      outcome:
+        kind: completed
   - type: abort
   - type: expect
     phase: completed
     result:
       content: completed-result
-      aborted: false
+      outcome:
+        kind: completed
 continueOnFailure: true

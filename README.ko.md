@@ -218,7 +218,10 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_KB_PATH` | `~/.coral/kb` | KB 저장 경로 |
 | `CORAL_CODEX_MODEL` | `gpt-5.4` | Codex CLI 기본 모델 |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
+| `CORAL_CODEX_FAST` | _(없음)_ | Codex 서비스 티어 토글 (`1` = fast, `0` = flex). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`로 폴백 |
+| `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`) |
+| `CORAL_EFFORT` | _(없음)_ | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용 |
 | `CORAL_MAX_WORKERS` | `10` | 최대 동시 워커 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | 완료된 토론 세션 자동 정리 기한 (0 = 비활성화) |

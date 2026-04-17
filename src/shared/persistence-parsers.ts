@@ -12,6 +12,7 @@ import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
 } from './persistence-types.js';
+import { jobPhaseSchema, terminalResultSchema, type PersistedStatusRecord } from './types.js';
 
 const finiteNumberSchema = z.number().finite();
 const integerSchema = z.number().int();
@@ -32,11 +33,28 @@ export const persistedStatusRecordSchema = z
     sessionId: z.string(),
     provider: z.string(),
     projectRoot: z.string(),
-    backendNamespace: z.string(),
-    phase: z.string(),
-    launch: z.object({ state: z.string(), updatedAt: z.string() }).passthrough(),
+    backendNamespace: z.string().optional(),
+    bundleHash: z.string().optional(),
+    jobKind: z.enum(['provider', 'workflow']).optional(),
+    phase: jobPhaseSchema,
+    launch: z
+      .object({
+        state: z.enum(['pending', 'queued', 'ready', 'busy', 'error']),
+        message: z.string().optional(),
+        updatedAt: z.string(),
+      })
+      .passthrough(),
+    result: terminalResultSchema.optional(),
   })
   .passthrough();
+
+export function parsePersistedStatusRecord(value: unknown): PersistedStatusRecord | null {
+  return parseWithSchema(persistedStatusRecordSchema, value) as PersistedStatusRecord | null;
+}
+
+export function safeParsePersistedStatusRecord(value: unknown) {
+  return persistedStatusRecordSchema.safeParse(value);
+}
 
 function recordLikeSchema<T extends z.ZodTypeAny>(valueSchema: T) {
   return z.union([z.record(z.string(), valueSchema), z.array(valueSchema)]);

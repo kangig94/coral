@@ -2,7 +2,6 @@ import type { JobKind, JobPhase, LaunchDecision, PersistedLaunchRecord, Provider
 import { resolveEffort } from '../shared/schemas.js';
 import type { AdmissionResult } from './engine.js';
 
-export const QUEUED_ABORT_MESSAGE = 'Aborted while queued.';
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
 export type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
@@ -39,7 +38,7 @@ export function toProviderRequest(launchRecord: PersistedLaunchRecord): Provider
     conversationRef: request.conversationRef,
     model: request.model,
     cwd: request.cwd ?? projectRoot,
-    effort: resolveEffort(request.effort, request.coralEnv),
+    effort: resolveEffort(request.effort),
     bypassPermissions: request.bypassPermissions,
     systemPrompt: request.systemPrompt,
     instruction: request.instruction,

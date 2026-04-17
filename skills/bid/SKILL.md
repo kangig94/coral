@@ -31,16 +31,17 @@ Split args on the **first comma**:
 
 ## Bid Mode Flow
 
-1. Run `coral-cli discuss participate --session "<session>" --agent-name "user" --score <score> --thought "<thought>" --output-format json`
-2. On `action: 'listen'` → "Bid recorded. Wait for the discuss watch output to show whether you won the floor."
-3. On `action: 'session_ended'` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
+1. Run `coral-cli discuss participate --session "<session>" --agent-name "user" --score <score> --thought "<thought>"`
+2. If output starts with `Listen` → "Bid recorded. Wait for the discuss watch output to show the next state."
+3. If output is `Your turn to speak` → tell the user they won the floor and should submit `/bid <speech>`.
+4. If output starts with `Session ended` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Speech Mode Flow
 
-1. Run `coral-cli discuss participate --session "<session>" --agent-name "user" --content "<content>" --output-format json`
-2. On `action: 'speech_recorded'` → "Speech recorded. Waiting for next round..."
-3. On `action: 'not_your_turn'` → "It's not your turn yet. Wait to win the floor, then use `/bid <speech>`."
-4. On `action: 'session_ended'` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
+1. Run `coral-cli discuss participate --session "<session>" --agent-name "user" --content "<content>"`
+2. If output is `Speech recorded` → "Speech recorded. Waiting for next round..."
+3. If output starts with `Not your turn` → "It's not your turn yet. Wait to win the floor, then use `/bid <speech>`."
+4. If output starts with `Session ended` → "Discussion ended." Delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Error Policy
 

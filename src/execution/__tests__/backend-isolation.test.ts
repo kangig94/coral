@@ -12,7 +12,7 @@ import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { TerminalResult } from '../../shared/types.js';
 
-const terminalResult: TerminalResult = { content: '', durationMs: 100, exitCode: 0 };
+const terminalResult: TerminalResult = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
 
 describe('backend isolation', () => {
   it('two coordinators track children independently', () => {
@@ -87,11 +87,11 @@ describe('backend isolation', () => {
 
     regA.register({
       name: 'provider-a',
-      execute: async () => ({ content: '' }),
+      execute: async () => ({ content: '', outcome: { kind: 'completed' } }),
     });
     regB.register({
       name: 'provider-b',
-      execute: async () => ({ content: '' }),
+      execute: async () => ({ content: '', outcome: { kind: 'completed' } }),
     });
 
     expect(regA.get('provider-a')).toBeDefined();

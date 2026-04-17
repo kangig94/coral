@@ -14,7 +14,7 @@ export class UsageError extends Error {
   }
 }
 
-interface CliErrorEnvelope {
+export interface CliErrorEnvelope {
   error: true;
   code: string;
   message: string;

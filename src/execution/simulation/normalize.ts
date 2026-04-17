@@ -86,6 +86,7 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
 
   return {
     name: config.name,
+    faultProvider: config.faultProvider,
     cli: config.cli
       ? {
           command: config.cli.command,
@@ -97,9 +98,15 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
     result: config.result
       ? {
           ...config.result,
-          errors: config.result.errors ? [...config.result.errors] : undefined,
           warnings: config.result.warnings ? [...config.result.warnings] : undefined,
           usage: config.result.usage ? { ...config.result.usage } : undefined,
+          outcome:
+            config.result.outcome.kind === 'coral_fault'
+              ? {
+                  ...config.result.outcome,
+                  fault: { ...config.result.outcome.fault },
+                }
+              : { ...config.result.outcome },
         }
       : undefined,
     preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),

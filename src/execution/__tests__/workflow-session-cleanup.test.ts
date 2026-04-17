@@ -18,7 +18,7 @@ function makeDeps(overrides: Partial<WorkflowSessionCleanupDeps>): WorkflowSessi
 function makeProvider(overrides: Partial<Provider> = {}): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(async () => ({ content: 'ok' })),
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
     ...overrides,
   };
 }

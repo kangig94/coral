@@ -8,7 +8,11 @@ import {
   hasRunningSessions,
   listAttachedSessions,
 } from '../discuss/context-registry.js';
-import { persistAbortEndForShutdown } from '../discuss/operations.js';
+import {
+  abortDiscussSession,
+  persistAbortEndForShutdown,
+  recoverPersistedSessionsFromStore,
+} from '../discuss/operations.js';
 import { readSessionEvents } from '../discuss/persistence.js';
 import { detachSession } from '../discuss/registry.js';
 import {
@@ -17,7 +21,20 @@ import {
   createDiscussHarness,
   discussContextOptions,
   persistSession,
+  type DiscussHarness,
 } from './discuss-test-helpers.js';
+
+async function recoverSessions(harness: DiscussHarness) {
+  return recoverPersistedSessionsFromStore(
+    harness.store,
+    () => harness.context,
+    (snapshot) => ({
+      projectRoot: snapshot.projectRoot,
+      pluginRoot: harness.ctx.pluginRoot,
+      coralEnv: {},
+    }),
+  );
+}
 
 describe('DiscussContext lifecycle boundaries', () => {
   afterEach(() => {
@@ -323,5 +340,94 @@ describe('DiscussContext lifecycle boundaries', () => {
     expect(events.at(-1)?.kind).toBe('session.synthesized');
     expect(harness.store.load('stale-retry-session')?.runtime.controlPhase).toBe('idle');
     expect(harness.context.sessions.get('stale-retry-session')?.snapshot.runtime.controlPhase).toBe('idle');
+  });
+
+  it('user abort durably appends an abort marker for ended synthesize-window sessions and recovery skips them', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'user-abort-synthesize-session',
+      recover: false,
+      buildTail: (current) => [
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:04:00.000Z',
+          {
+            endReason: 'all_blocked',
+            endReasonContent: 'All blocked.',
+          },
+        ),
+      ],
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const liveSession = harness.context.sessions.get('user-abort-synthesize-session');
+    expect(liveSession?.snapshot.state.status).toBe('ended');
+    expect(liveSession?.snapshot.runtime.controlPhase).toBe('synthesize');
+
+    await abortDiscussSession(harness.context, 'user-abort-synthesize-session');
+
+    const events = readSessionEvents(harness.context, 'user-abort-synthesize-session');
+    const abortMarkers = events.filter(
+      (event) => event.kind === 'session.ended' && event.payload.reason === 'abort',
+    );
+
+    expect(liveSession?.controller.signal.aborted).toBe(true);
+    expect(harness.context.sessions.get('user-abort-synthesize-session')).toBeUndefined();
+    expect(abortMarkers).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({
+      kind: 'session.ended',
+      payload: { endReasonContent: 'abort', force: true, reason: 'abort' },
+    });
+
+    const recovered = await recoverSessions(harness);
+
+    expect(recovered.map((session) => session.sessionId)).not.toContain('user-abort-synthesize-session');
+    expect(harness.context.sessions.has('user-abort-synthesize-session')).toBe(false);
+  });
+
+  it('user abort does not duplicate an existing abort marker for ended synthesize-window sessions', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'user-abort-ended-session',
+      recover: false,
+      buildTail: (current) => [
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:05:00.000Z',
+          {
+            endReason: 'all_blocked',
+            endReasonContent: 'All blocked.',
+          },
+        ),
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 2,
+          'session.ended',
+          '2026-03-10T00:05:01.000Z',
+          {
+            endReasonContent: 'abort',
+            force: true,
+            reason: 'abort',
+          },
+        ),
+      ],
+    });
+    attachPersistedSession(harness, snapshot);
+
+    await abortDiscussSession(harness.context, 'user-abort-ended-session');
+
+    const events = readSessionEvents(harness.context, 'user-abort-ended-session');
+    expect(events.filter((event) => event.kind === 'session.ended' && event.payload.reason === 'abort')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ payload: { reason: 'abort' } });
   });
 });

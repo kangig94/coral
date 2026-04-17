@@ -69,7 +69,7 @@ disallowedTools: Write, Edit
     2) Discoverability Hierarchy — evaluate prominence:
        a. In the skill list: does each SKILL.md description make the skill's value
           immediately obvious? Would a user know WHEN to use it?
-       b. In CLI help and structured JSON surfaces: are required fields truly required? Is the most common operation
+       b. In CLI help and machine-readable surfaces: are required fields truly required? Is the most common operation
           the simplest to invoke?
        c. Flag: vague skill descriptions ("Planning"), too many required fields, primary
           operations buried behind boilerplate parameters
@@ -90,7 +90,7 @@ disallowedTools: Write, Edit
        a. Can common operations be one-liners while advanced options are discoverable?
           Level 1: `coral-cli codex -i "review auth.ts"`
           Level 2: `coral-cli codex --session "<id>" -i "..." --model "<model>"`
-          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d --output-format json` + `coral-cli wait --jobs "<job>" --output-format json --embed`
+          Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d` + `coral-cli wait --jobs "<job>" --embed` with the printed `Result path: <path>` recovery contract
        b. Do descriptions hint at advanced capabilities without overwhelming?
        c. Flag: all parameters equally prominent, advanced features undiscoverable,
           simple operations requiring expert-level knowledge

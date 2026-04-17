@@ -5,17 +5,16 @@ import type { Command } from 'commander';
 
 import {
   BackendClient,
+  BackendToolHttpError,
   type AcceptedLaunchResponse,
   type CallerContext,
 } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import { collectCoralEnv } from '../shared/utils.js';
-import { MAX_INLINE } from '../shared/schemas.js';
-import type { WaitStreamEvent } from '../shared/types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { buildErrorEnvelope, UsageError } from './errors.js';
 import {
-  formatError,
+  formatErrorEnvelope,
   formatLaunch,
 } from './format.js';
 import { launchAndFollow } from './follow.js';
@@ -134,11 +133,6 @@ export type KbMemoPurgeOptions = {
   owner?: string;
 };
 
-type WaitOutputRecord = {
-  cursor: string | null;
-  event: unknown;
-};
-
 // Wait emits a `waiting` event at this deadline so the process exits before
 // the cli-resolve hook's Bash timeout (600_000ms) kills it — leaving room
 // for the final event (and its resume cursor) to reach stdout.
@@ -190,13 +184,10 @@ export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?
   process.stdout.write(text + '\n');
 }
 
-export function emitError(error: unknown, outputFormat: CliOutputFormat): void {
+export function emitError(error: unknown): void {
   const { envelope, exitCode } = buildErrorEnvelope(error);
-  if (outputFormat === 'json') {
-    process.stderr.write(JSON.stringify(envelope) + '\n');
-  } else {
-    process.stderr.write(formatError(error) + '\n');
-  }
+  const statusCode = error instanceof BackendToolHttpError ? error.statusCode : undefined;
+  process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
   process.exitCode = exitCode;
 }
 
@@ -232,9 +223,8 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
   );
 }
 
-export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse, outputFormat: CliOutputFormat): void {
-  const text = outputFormat === 'text' ? formatLaunch(decision) : JSON.stringify(decision);
-  process.stdout.write(text + '\n');
+export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
+  process.stdout.write(formatLaunch(decision) + '\n');
 }
 
 export function getTerminalContext(): { isTTY: boolean; columns: number } {
@@ -247,19 +237,15 @@ export function getTerminalContext(): { isTTY: boolean; columns: number } {
 export async function handleLaunchResult(
   result: unknown,
   detach: boolean | undefined,
-  outputFormat: CliOutputFormat,
   client: BackendClient,
 ): Promise<void> {
   if (!isAcceptedLaunchResponse(result)) {
-    emitError(
-      new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`),
-      outputFormat,
-    );
+    emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
     return;
   }
 
   if (detach) {
-    emitAcceptedLaunchResponse(result, outputFormat);
+    emitAcceptedLaunchResponse(result);
     return;
   }
 
@@ -272,74 +258,9 @@ export async function handleLaunchResult(
     },
     pluginRoot,
     projectRoot: process.cwd(),
-    outputFormat,
     emitError,
     ...getTerminalContext(),
   });
-}
-
-export function shapeWaitOutputRecord(
-  event: WaitStreamEvent,
-  cursor: string | null,
-  embed: boolean,
-): WaitOutputRecord {
-  if (event.type === 'progress' || event.type === 'queued') {
-    return { cursor: null, event };
-  }
-
-  if (event.type !== 'terminal') {
-    return { cursor, event };
-  }
-
-  const {
-    resultPath,
-    result: { content: rawContent, ...resultMeta },
-  } = event;
-  const pathFirstEvent = {
-    ...event,
-    result: {
-      ...resultMeta,
-      path: resultPath,
-    },
-  };
-  const { resultPath: _resultPath, ...pathFirstEventWithoutResultPath } = pathFirstEvent;
-  const pathOnlyRecord: WaitOutputRecord = {
-    cursor,
-    event: pathFirstEventWithoutResultPath,
-  };
-
-  if (!embed) {
-    return pathOnlyRecord;
-  }
-
-  let text: string | undefined;
-  if (event.result.workflow !== undefined) {
-    try {
-      text = readFileSync(resultPath, 'utf8');
-    } catch {
-      // Fall back to path-only output when the artifact is unavailable.
-    }
-  } else {
-    text = rawContent;
-  }
-
-  if (text === undefined) {
-    return pathOnlyRecord;
-  }
-
-  const embeddedRecord: WaitOutputRecord = {
-    cursor,
-    event: {
-      ...pathFirstEventWithoutResultPath,
-      result: {
-        ...resultMeta,
-        path: resultPath,
-        content: text,
-      },
-    },
-  };
-
-  return JSON.stringify(embeddedRecord).length <= MAX_INLINE ? embeddedRecord : pathOnlyRecord;
 }
 
 export function getPluginRoot(): string {

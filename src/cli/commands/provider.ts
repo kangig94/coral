@@ -4,7 +4,6 @@ import type { ProviderRegistry } from '../../providers/registry.js';
 import { UsageError } from '../errors.js';
 import {
   emitError,
-  getOutputFormat,
   getProviderNames,
   handleLaunchResult,
   makeClient,
@@ -25,8 +24,6 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
       .option('-b, --bypass-permissions', 'Bypass permission checks')
       .option('-d, --detach', 'Return launch decision without waiting')
       .action(async (agent: string | undefined, opts: ProviderRunOptions) => {
-        const outputFormat = getOutputFormat(provider);
-
         try {
           if (opts.input === undefined) {
             throw new UsageError('input is required (-i, --input)');
@@ -47,9 +44,9 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
                 prompt,
                 agent ? { agent, ...requestOptions } : requestOptions,
               );
-          await handleLaunchResult(result, opts.detach, outputFormat, client);
+          await handleLaunchResult(result, opts.detach, client);
         } catch (error) {
-          emitError(error, outputFormat);
+          emitError(error);
         }
       });
   }

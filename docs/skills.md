@@ -39,16 +39,16 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 Many skills follow the same detached-launch pattern:
 
 ```bash
-coral-cli codex -i "<prompt>" --work-dir "<path>" -d --output-format json
-coral-cli wait --jobs "<job>" --output-format json --embed
+coral-cli codex -i "<prompt>" --work-dir "<path>" -d
+coral-cli wait --jobs "<job>" --embed
 ```
 
 Rules:
 
-1. Use detached JSON launches when a skill needs a durable `job` or `session`.
-2. Monitor with `coral-cli wait`.
-3. Prefer `event.result.content` when present.
-4. Fall back to `Read(event.result.path)` when inline content is absent.
+1. Use detached launches when a skill needs a durable `job` or `session`.
+2. Capture `job` and `session` from the launch line: `Job <job> <launchState> (session <session>)`.
+3. Monitor with `coral-cli wait`.
+4. For `--embed`, use inline preview text when it helps, but read the printed `Result path: <path>` for the full artifact.
 
 ## `--red` Flag
 
@@ -64,7 +64,7 @@ Generated tests use `red-<target>.<ext>` staging names and are triaged before be
 
 The Codex skill is session-aware:
 
-- active Codex work can be inspected with `coral-cli jobs --provider codex --output-format json`
+- active Codex work can be inspected with `coral-cli jobs --provider codex`
 - general requests use `coral-cli codex -i ...`
 - delegated agent requests use `coral-cli codex <agent> -i ...`
 - consecutive general requests reuse the previous `session` when available

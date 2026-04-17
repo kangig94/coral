@@ -6,15 +6,12 @@ import { streamWait, type WaitCursorRef } from '../../client/backend-helpers.js'
 import { isLivePhase, jobPhaseSchema } from '../../shared/types.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
-  emit,
   emitError,
-  getOutputFormat,
   getPluginRoot,
   getProviderNames,
   getTerminalContext,
   makeClient,
   parseJobIds,
-  shapeWaitOutputRecord,
   WAIT_TIMEOUT_SECONDS,
   type AbortOptions,
   type WaitOptions,
@@ -159,8 +156,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--provider <name>', 'Limit jobs to a registered provider')
     .option('--all', 'Include terminal jobs in addition to live jobs')
     .action(async (opts: JobsOptions) => {
-      const outputFormat = getOutputFormat(jobsCommand);
-
       try {
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
@@ -173,11 +168,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         });
         const rows = formatJobsList(result);
 
-        if (outputFormat === 'json') {
-          process.stdout.write(JSON.stringify(rows) + '\n');
-          return;
-        }
-
         process.stdout.write(
           renderJobsList(rows, {
             phase: parsed.phase,
@@ -186,19 +176,17 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           }) + '\n',
         );
       } catch (error) {
-        emitError(normalizeUsageError(error), outputFormat);
+        emitError(normalizeUsageError(error));
       }
     });
 
   const waitCommand = program.command('wait');
   waitCommand
-    .description('Stream job progress (NDJSON output)')
+    .description('Stream job progress (text output)')
     .requiredOption('--jobs <ids>', 'Comma-separated job IDs')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
     .option('--embed', 'Embed terminal result content when size permits (path is always present)')
     .action(async (opts: WaitOptions) => {
-      const outputFormat = getOutputFormat(waitCommand);
-
       try {
         const jobIds = parseJobIds(opts.jobs);
         const timeoutSeconds = WAIT_TIMEOUT_SECONDS;
@@ -206,6 +194,10 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const embed = opts.embed === true;
         const { port, host, token } = await ensureBackend(getPluginRoot() || undefined);
         const cursorRef: WaitCursorRef = { lastEventId: opts.cursor };
+        const jobLabels =
+          jobIds.length > 1
+            ? new Map(jobIds.map((id, index) => [id, `j${index}`]))
+            : null;
 
         for await (const event of streamWait(
           jobIds,
@@ -218,21 +210,15 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         )) {
           const cursor = cursorRef.lastEventId ?? null;
 
-          if (outputFormat === 'json') {
-            const record = shapeWaitOutputRecord(event, cursor, embed);
-            process.stdout.write(JSON.stringify(record) + '\n');
-            continue;
-          }
-
           const ctx: WaitRenderContext = getTerminalContext();
           let formatted: string;
 
           switch (event.type) {
             case 'progress':
-              formatted = formatWaitProgress(event);
+              formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
               break;
             case 'queued':
-              formatted = formatWaitQueued(event);
+              formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
               break;
             case 'terminal':
               formatted = formatWaitTerminal(event, cursor, embed);
@@ -248,7 +234,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           }
         }
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -260,8 +246,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--phase <phase>', 'Abort live jobs in a single phase')
     .option('--provider <name>', 'Abort live jobs for a registered provider')
     .action(async (opts: AbortOptions) => {
-      const outputFormat = getOutputFormat(abortCommand);
-
       try {
         const parsed = abortSelectorSchema.parse(opts);
         const projectRoot = process.cwd();
@@ -269,7 +253,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
         if (parsed.jobs !== undefined) {
           const result = await client.abortJobs(parseJobIds(parsed.jobs));
-          emit(result, outputFormat, formatAbortResult);
+          process.stdout.write(formatAbortResult(result) + '\n');
           return;
         }
 
@@ -283,14 +267,14 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const jobIds = jobs.jobs.map(({ jobId }) => jobId);
 
         if (jobIds.length === 0) {
-          emit({ aborted: [], notFound: [] }, outputFormat, formatAbortResult);
+          process.stdout.write(formatAbortResult({ aborted: [], notFound: [] }) + '\n');
           return;
         }
 
         const result = await client.abortJobs(jobIds);
-        emit(result, outputFormat, formatAbortResult);
+        process.stdout.write(formatAbortResult(result) + '\n');
       } catch (error) {
-        emitError(normalizeUsageError(error), outputFormat);
+        emitError(normalizeUsageError(error));
       }
     });
 }

@@ -523,7 +523,7 @@ describe('lifecycle recovery characterization', () => {
     }
   })
 
-  it('2. incompatible live job is marked error with OLD_FORMAT_NOTICE and releases its session claim', async () => {
+  it('2. incompatible live job is marked stale_status_schema and releases its session claim', async () => {
     const modules = await loadModules()
     const pluginRoot = createProjectRoot('plugin-incompatible')
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
@@ -559,7 +559,7 @@ describe('lifecycle recovery characterization', () => {
         phase: 'error',
         result: {
           content: '',
-          notice: modules.lifecycleModule.OLD_FORMAT_NOTICE,
+          outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
         },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
@@ -572,7 +572,7 @@ describe('lifecycle recovery characterization', () => {
     }
   })
 
-  it('3. stale_running live job is marked error with GHOST_LAUNCH_NOTICE and releases its session claim', async () => {
+  it('3. stale_running live job is marked ghost_launch and releases its session claim', async () => {
     const modules = await loadModules()
     const pluginRoot = createProjectRoot('plugin-ghost')
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
@@ -615,7 +615,7 @@ describe('lifecycle recovery characterization', () => {
         phase: 'error',
         result: {
           content: '',
-          notice: modules.lifecycleModule.GHOST_LAUNCH_NOTICE,
+          outcome: { kind: 'coral_fault', fault: { kind: 'ghost_launch' } },
         },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
@@ -834,12 +834,12 @@ describe('lifecycle recovery characterization', () => {
       expect(completeSpy).toHaveBeenCalledWith(
         'stale-dead-completed',
         session.sessionId,
-        { content: '', exitCode: 0 },
+        { content: '', exitCode: 0, outcome: { kind: 'provider_exit', code: 0 } },
         'completed',
       )
       expect(progressStore.readStatus('stale-dead-completed')).toMatchObject({
         phase: 'completed',
-        result: { content: '', exitCode: 0 },
+        result: { content: '', exitCode: 0, outcome: { kind: 'provider_exit', code: 0 } },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
@@ -912,12 +912,12 @@ describe('lifecycle recovery characterization', () => {
       expect(completeSpy).toHaveBeenCalledWith(
         'stale-dead-error',
         session.sessionId,
-        { content: '', exitCode: 7 },
+        { content: '', exitCode: 7, outcome: { kind: 'provider_exit', code: 7 } },
         'error',
       )
       expect(progressStore.readStatus('stale-dead-error')).toMatchObject({
         phase: 'error',
-        result: { content: '', exitCode: 7 },
+        result: { content: '', exitCode: 7, outcome: { kind: 'provider_exit', code: 7 } },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
         undefined,
@@ -992,12 +992,12 @@ describe('lifecycle recovery characterization', () => {
         expect(completeSpy).toHaveBeenCalledWith(
           jobId,
           session.sessionId,
-          { content: '', notice: 'Wrapper process lost — no exit.json found' },
+          { content: '', outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } } },
           'error',
         )
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
-          result: { content: '', notice: 'Wrapper process lost — no exit.json found' },
+          result: { content: '', outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } } },
         })
       } finally {
         await stopLifecycleController(controller)
@@ -1046,11 +1046,10 @@ describe('lifecycle recovery characterization', () => {
 
     const persistedPayload: TerminalResult = {
       content: 'persisted content that should be preserved later',
-      notice: 'persisted notice',
       workflow: { steps: [] },
-      aborted: false,
       exitCode: 0,
       usage: { inputTokens: 12, outputTokens: 4 },
+      outcome: { kind: 'completed' },
     }
     const persistedTerminal: PersistedProgressRecord = {
       jobId,
@@ -1399,7 +1398,7 @@ describe('lifecycle recovery characterization', () => {
         backendNamespace: namespace,
         result: {
           content: '',
-          notice: 'Wrapper process lost — no exit.json found',
+          outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } },
         },
       })
       expect(adoptSpy).toHaveBeenCalledWith(
@@ -1858,10 +1857,9 @@ describe('lifecycle recovery characterization', () => {
 
     const persistedPayload: TerminalResult = {
       content: 'aborted payload',
-      notice: 'persisted aborted notice',
-      aborted: true,
       exitCode: 0,
       usage: { inputTokens: 9, outputTokens: 2 },
+      outcome: { kind: 'aborted', reason: 'signal_abort' },
     }
     appendProgressRecord(progressStore.jobDir(jobId), {
       jobId,
@@ -1948,10 +1946,9 @@ describe('lifecycle recovery characterization', () => {
 
     const persistedPayload: TerminalResult = {
       content: 'completed payload',
-      notice: 'persisted completed notice',
-      aborted: false,
       exitCode: 0,
       usage: { inputTokens: 8, outputTokens: 3 },
+      outcome: { kind: 'completed' },
     }
     appendProgressRecord(progressStore.jobDir(jobId), {
       jobId,
@@ -2038,10 +2035,9 @@ describe('lifecycle recovery characterization', () => {
 
     const persistedPayload: TerminalResult = {
       content: 'error payload',
-      notice: 'persisted error notice',
-      aborted: false,
       exitCode: 1,
       usage: { inputTokens: 7, outputTokens: 1 },
+      outcome: { kind: 'provider_exit', code: 1 },
     }
     appendProgressRecord(progressStore.jobDir(jobId), {
       jobId,
@@ -2084,6 +2080,85 @@ describe('lifecycle recovery characterization', () => {
       })
     } finally {
       await stopLifecycleController(controller)
+    }
+  })
+
+  it('3b. legacy status.json is warned once, skipped during hydration, preserved on disk, and releases its session claim', async () => {
+    const modules = await loadModules()
+    const { backendLog } = await import('../../shared/backend-log.js')
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {})
+    const pluginRoot = createProjectRoot('plugin-legacy-status')
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)
+    const projectRoot = createProjectRoot('project-legacy-status')
+    const eventBus = new modules.eventBusModule.TypedEventBus()
+    let progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus)
+    const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime)
+    const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot)
+    const jobId = 'legacy-status-job'
+    const fakeService = createFakeExecutionAndRecoveryService()
+
+    progressStore.initJob({
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      initialPhase: 'running',
+    })
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+    })
+    sessionManager.claimForJobSync(session.sessionId, jobId)
+    writeJson(join(progressStore.jobDir(jobId), 'status.json'), {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      phase: 'running',
+      launch: {
+        state: 'ready',
+        updatedAt: '2026-04-12T00:00:00.000Z',
+      },
+      result: {
+        content: '',
+        notice: 'legacy notice',
+        aborted: false,
+      },
+    })
+
+    progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus)
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+    })
+
+    try {
+      await controller.start()
+
+      expect(progressStore.listJobIds()).not.toContain(jobId)
+      expect(progressStore.readStatus(jobId)).toBeNull()
+      expect(existsSync(progressStore.jobDir(jobId))).toBe(true)
+      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled()
+      expect(fakeService.adoptRunningJob).not.toHaveBeenCalled()
+      expect(fakeService.completeRecoveredJob).not.toHaveBeenCalled()
+      expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
+        undefined,
+      )
+
+      progressStore.listJobIds()
+      progressStore.readStatus(jobId)
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Ignoring invalid status.json for ${jobId}`))
+    } finally {
+      await stopLifecycleController(controller)
+      warnSpy.mockRestore()
     }
   })
 })

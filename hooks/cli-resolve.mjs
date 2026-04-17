@@ -34,7 +34,6 @@ import {
 import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
 import {
   detectCoralInvocation,
-  skipGlobalOptions,
   textInvokesCoralWait,
   tokensInvokeCoralWait,
 } from './lib/coral-invocation.mjs';
@@ -101,14 +100,13 @@ function hasAmbiguousShortCluster(token) {
 // === 2. Subcommand shape detection ===
 
 function detectCommandShape(tokens) {
-  const index = skipGlobalOptions(tokens, 2);
-  if (index === null || index >= tokens.length) return null;
+  if (tokens.length <= 2) return null;
 
-  const subcommand = tokens[index].value;
+  const subcommand = tokens[2].value;
   if (subcommand.startsWith('-')) return null;
-  if (subcommand === 'workflow') return { kind: 'workflow', startIndex: index + 1 };
+  if (subcommand === 'workflow') return { kind: 'workflow', startIndex: 3 };
   if (KNOWN_PROVIDER_COMMANDS.has(subcommand) || !RESERVED_TOP_LEVEL_COMMANDS.has(subcommand)) {
-    return { kind: 'provider', startIndex: index + 1 };
+    return { kind: 'provider', startIndex: 3 };
   }
 
   return null;

@@ -9,7 +9,7 @@
     {
       "name": "coral",
       "description": "Claude Code plugin - structured agents with Codex and Claude CLI bridges",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "author": {
         "name": "kangig94"
       },
@@ -25,5 +25,5 @@
       ]
     }
   ],
-  "version": "0.5.1"
+  "version": "0.5.2"
 }

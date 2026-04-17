@@ -83,10 +83,10 @@ disallowedTools: Write, Edit
     4) Verify protocol clarity — numbered steps with clear outcomes:
        ```markdown
        <!-- CORRECT: Step-by-step with explicit commands and branching -->
-       1. **Seed personas**: Run `coral-cli discuss seed --input-json - --output-format json` → persona assignments
+       1. **Seed personas**: Run `coral-cli discuss seed --input-json -` → persona assignments
        2. **Generate personas**: Spawn persona-generator agents in parallel → full personas
-       3. **Start session**: Run `coral-cli discuss start --input-json - --output-format json` → session_id
-       4. **Monitor**: Run `coral-cli discuss watch --session <session_id> --output-format json` → poll for events
+       3. **Start session**: Run `coral-cli discuss start --input-json -` → session_id
+       4. **Monitor**: Run `coral-cli discuss watch --session <session_id>` → poll for status and cursor updates
 
        <!-- WRONG: Vague instructions without commands or outcomes -->
        Do the discussion thing and return the result.

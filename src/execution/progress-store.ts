@@ -13,7 +13,9 @@ import {
   type TerminalResult,
   type WorkflowCheckpoint,
 } from '../shared/types.js';
-import { isNoEntryError, isRecord, nowIsoString } from '../shared/utils.js';
+import { backendLog } from '../shared/backend-log.js';
+import { safeParsePersistedStatusRecord } from '../shared/persistence-parsers.js';
+import { errorMessage, isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
@@ -39,25 +41,20 @@ export type InitJobOptions = {
   initialPhase?: JobPhase;
 };
 
+type StatusDiskReadResult =
+  | { kind: 'ok'; record: PersistedStatusRecord }
+  | { kind: 'absent' }
+  | { kind: 'invalid'; reason: InvalidStatusReason };
+
+type InvalidStatusReason = 'read_error' | 'corrupt_json' | 'invalid_schema';
+
+type OwnedStatusReadResult = StatusDiskReadResult | { kind: 'foreign' };
+
 export function createReplayCursor(): ReplayCursor {
   return { lastOffset: 0, remainder: '' };
 }
 
 export { formatElapsed } from '../shared/format-progress.js';
-
-export function isPersistedStatusRecordLike(value: unknown): value is PersistedStatusRecord {
-  return (
-    isRecord(value) &&
-    typeof value.jobId === 'string' &&
-    typeof value.sessionId === 'string' &&
-    typeof value.provider === 'string' &&
-    typeof value.projectRoot === 'string' &&
-    typeof value.phase === 'string' &&
-    isRecord(value.launch) &&
-    typeof value.launch.state === 'string' &&
-    typeof value.launch.updatedAt === 'string'
-  );
-}
 
 export class ProgressStore {
   private readonly namespace: string;
@@ -69,6 +66,7 @@ export class ProgressStore {
   private readonly statusCache = new Map<string, PersistedStatusRecord>();
   private readonly runtimeCache = new Map<string, PersistedRuntimeRecord>();
   private readonly knownJobIds = new Set<string>();
+  private readonly warnedInvalidStatusReads = new Set<string>();
   private readonly eventBus: TypedEventBus;
   private enqueueSequence = 0;
   private liveCount = 0;
@@ -104,26 +102,32 @@ export class ProgressStore {
    * Inclusion rules (all satisfy "this store may act on the job"):
    *   - status namespace matches this store            → my job
    *   - status namespace is null (legacy)              → adoptable
-   *   - status is unreadable or corrupt                → garbage this store
+   *   - status is missing / corrupt JSON               → garbage this store
    *     may need to clean up (ownership undetermined; treated as adoptable
    *     so that recovery can reclaim or delete the directory)
+   *   - status parses but fails schema validation      → skipped from
+   *     hydration so old-shape records are silently discarded instead of
+   *     being reclassified as incomplete admission
    *
    * The only exclusion is a readable status with an explicit foreign
    * namespace, which belongs to another live store and must not be touched.
    *
-   * Returns the parsed record if owned (or null for corrupt/missing but owned),
-   * or undefined if the job belongs to a foreign namespace.
+   * Returns the parsed record if owned, an explicit absent/invalid result for
+   * locally owned-but-unreadable jobs, or `foreign` if the job belongs to
+   * another namespace.
    */
-  private readOwnedStatus(jobId: string): PersistedStatusRecord | null | undefined {
-    try {
-      const record = this.readStatusFromDisk(jobId);
-      if (!record) return null;
-      const ns = readBackendNamespace(record);
-      if (ns !== null && ns !== this.namespace) return undefined;
-      return record;
-    } catch {
-      return null;
+  private readOwnedStatus(jobId: string): OwnedStatusReadResult {
+    const status = this.readStatusFromDisk(jobId);
+    if (status.kind !== 'ok') {
+      return status;
     }
+
+    const ns = readBackendNamespace(status.record);
+    if (ns !== null && ns !== this.namespace) {
+      return { kind: 'foreign' };
+    }
+
+    return status;
   }
 
   getEventBus(): TypedEventBus {
@@ -287,25 +291,25 @@ export class ProgressStore {
     this.applyStatusRecord(jobId, record);
   }
 
-  /** Read status.json. Returns null if not found or corrupt. */
+  /** Read status.json. Returns null if absent or invalid. */
   readStatus(jobId: string): PersistedStatusRecord | null {
     const cached = this.statusCache.get(jobId);
     if (cached) return { ...cached };
 
-    try {
-      const record = this.readStatusFromDisk(jobId);
-      if (!record) return null;
-      const namespace = readBackendNamespace(record);
-      if (namespace !== null && namespace !== this.namespace) {
-        return null;
-      }
-      this.knownJobIds.add(jobId);
-      this.statusCache.set(jobId, { ...record });
-      if (isLivePhase(record.phase)) this.liveCount++;
-      return { ...record };
-    } catch {
+    const status = this.readStatusFromDisk(jobId);
+    if (status.kind !== 'ok') {
       return null;
     }
+
+    const record = status.record;
+    const namespace = readBackendNamespace(record);
+    if (namespace !== null && namespace !== this.namespace) {
+      return null;
+    }
+    this.knownJobIds.add(jobId);
+    this.statusCache.set(jobId, { ...record });
+    if (isLivePhase(record.phase)) this.liveCount++;
+    return { ...record };
   }
 
   scopedLookup(jobId: string, projectRoot: string): 'found' | 'missing' | 'mismatch' {
@@ -662,12 +666,13 @@ export class ProgressStore {
     try {
       for (const entry of this.storage.readdirSync(this.paths.jobsDir(), { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        const record = this.readOwnedStatus(entry.name);
-        if (record === undefined) continue;
+        const status = this.readOwnedStatus(entry.name);
+        if (status.kind === 'foreign') continue;
+        if (status.kind === 'invalid' && status.reason === 'invalid_schema') continue;
         this.knownJobIds.add(entry.name);
-        if (record && !this.statusCache.has(entry.name)) {
-          this.statusCache.set(entry.name, { ...record });
-          if (isLivePhase(record.phase)) this.liveCount++;
+        if (status.kind === 'ok' && !this.statusCache.has(entry.name)) {
+          this.statusCache.set(entry.name, { ...status.record });
+          if (isLivePhase(status.record.phase)) this.liveCount++;
         }
       }
     } catch (error: unknown) {
@@ -678,14 +683,47 @@ export class ProgressStore {
     this.hydrated = true;
   }
 
-  private readStatusFromDisk(jobId: string): PersistedStatusRecord | null {
+  private readStatusFromDisk(jobId: string): StatusDiskReadResult {
+    const statusPath = this.statusPath(jobId);
+    let data: string;
+
     try {
-      const data = this.storage.readFileSync(this.statusPath(jobId), 'utf-8');
-      const parsed = JSON.parse(data);
-      if (!isPersistedStatusRecordLike(parsed)) return null;
-      return parsed;
-    } catch {
-      return null;
+      data = this.storage.readFileSync(statusPath, 'utf-8');
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return { kind: 'absent' };
+      }
+      return this.invalidStatusRead(jobId, statusPath, 'read_error', errorMessage(error));
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch (error: unknown) {
+      return this.invalidStatusRead(jobId, statusPath, 'corrupt_json', errorMessage(error));
+    }
+
+    const result = safeParsePersistedStatusRecord(parsed);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      const path = issue?.path.join('.') ?? 'status';
+      const message = issue ? `${path}: ${issue.message}` : 'schema validation failed';
+      return this.invalidStatusRead(jobId, statusPath, 'invalid_schema', message);
+    }
+
+    return { kind: 'ok', record: result.data as PersistedStatusRecord };
+  }
+
+  private invalidStatusRead(
+    jobId: string,
+    statusPath: string,
+    reason: InvalidStatusReason,
+    detail: string,
+  ): Extract<StatusDiskReadResult, { kind: 'invalid' }> {
+    if (!this.warnedInvalidStatusReads.has(jobId)) {
+      backendLog.warn(`Ignoring invalid status.json for ${jobId} at ${statusPath} (${reason}): ${detail}`);
+      this.warnedInvalidStatusReads.add(jobId);
+    }
+    return { kind: 'invalid', reason };
   }
 }
