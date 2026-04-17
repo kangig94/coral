@@ -43,8 +43,8 @@ Run project review agents in tier order, consolidate findings, issue a verdict.
     Spawn only agents marked INVOKE in the table.
     For each agent, pass: "Review [scope files] focusing on [focus from plan]."
 
-    **Fast path** (total INVOKE agents < 5): spawn ALL agents in parallel, wait for all.
-    **Standard path** (5+ INVOKE agents): tier-ordered execution:
+    **Fast path** (total INVOKE agents ≤ 5): spawn ALL agents in parallel, wait for all.
+    **Standard path** (6+ INVOKE agents): tier-ordered execution:
     1. Tier 1 (safety) — spawn in parallel, wait for all to complete
        - If ANY returns BLOCKING findings → output REJECT verdict, STOP here
     2. Tier 2 (domain) + tier 3 (quality) — spawn in parallel, wait for all to complete
