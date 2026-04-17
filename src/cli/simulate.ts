@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { Command } from 'commander';
+import { type Command } from 'commander';
 import yaml from 'yaml';
 import { ZodError } from 'zod';
 import { runScenario, type ScenarioResult, type StepResult } from '../execution/simulation/runner.js';
@@ -114,16 +114,16 @@ export function registerSimulateCommand(program: Command, helpers: SimulateHelpe
       } catch (error: unknown) {
         helpers.emitError(normalizeSimulateError(error), outputFormat);
       } finally {
-        if (!world) {
-          return;
-        }
-        const worldToCleanup = world;
-
-        try {
-          await withMutedStderr(() => worldToCleanup.teardown());
-        } catch (cleanupError: unknown) {
-          process.stderr.write(`Simulation cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
-          process.exitCode = 1;
+        if (world) {
+          const worldToCleanup = world;
+          try {
+            await withMutedStderr(() => worldToCleanup.teardown());
+          } catch (cleanupError: unknown) {
+            process.stderr.write(
+              `Simulation cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`,
+            );
+            process.exitCode = 1;
+          }
         }
       }
     });

@@ -1,11 +1,7 @@
-import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import type { KbRuntime } from '../contracts.js';
-import { writeFileAtomic } from '../mutation-helpers.js';
 import { runCurateClaude } from './operations.js';
-import type { SpawnCliFn } from './types.js';
+import type { GitSyncRuntimePicks, SpawnCliFn } from './types.js';
 
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
@@ -24,31 +20,43 @@ export type GitSyncController = {
 export function createGitSyncController({
   kb,
   spawnCli,
+  processPort,
+  storagePort,
+  envPort,
 }: {
   kb: KbRuntime;
   spawnCli: SpawnCliFn;
-}): GitSyncController {
+} & GitSyncRuntimePicks): GitSyncController {
   let cachedIsGitRepo: boolean | null = null;
   let deferredCommitTimer: NodeJS.Timeout | null = null;
   const root = kb.markdownRoot;
 
   function git(args: string[], timeoutMs = 15000): string {
-    return execFileSync('git', ['-C', root, ...args], {
+    const result = processPort.execSync('git', args, {
+      cwd: root,
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
+      inheritEnv: true,
     });
+    // Runtime execSync reports non-zero exits in-band, so rethrow here to preserve existing try/catch semantics.
+    if (result.error || result.status !== 0) {
+      throw result.error ?? new Error(result.stderr || result.stdout || `git ${args.join(' ')} failed`);
+    }
+    return result.stdout;
   }
 
-  const execFileP = promisify(execFile);
-
   async function gitAsync(args: string[], timeoutMs = 15000): Promise<string> {
-    const { stdout } = await execFileP('git', ['-C', root, ...args], {
+    const result = await processPort.exec('git', args, {
+      cwd: root,
       encoding: 'utf-8',
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
+      inheritEnv: true,
     });
-    return stdout;
+    if (result.error || result.status !== 0) {
+      throw result.error ?? new Error(result.stderr || result.stdout || `git ${args.join(' ')} failed`);
+    }
+    return result.stdout;
   }
 
   function gitCommit(message: string): void {
@@ -73,7 +81,7 @@ export function createGitSyncController({
   }
 
   function isGitSyncEnabled(): boolean {
-    if (process.env.CORAL_KB_GIT_SYNC !== '1') {
+    if (envPort.get('CORAL_KB_GIT_SYNC') !== '1') {
       return false;
     }
     try {
@@ -112,7 +120,7 @@ export function createGitSyncController({
 
   function kbGitPaths(): string[] {
     return ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json', '.gitignore'].filter((entry) =>
-      existsSync(join(root, entry.replace(/\/$/, ''))),
+      storagePort.existsSync(join(root, entry.replace(/\/$/, ''))),
     );
   }
 
@@ -121,7 +129,7 @@ export function createGitSyncController({
     try {
       let existing = '';
       try {
-        existing = readFileSync(gitignorePath, 'utf-8');
+        existing = storagePort.readFileSync(gitignorePath, 'utf-8');
       } catch {
         /* no file */
       }
@@ -133,7 +141,7 @@ export function createGitSyncController({
 
       const suffix = `${GITIGNORE_HEADER}\n${missing.join('\n')}\n`;
       const newContent = existing.length === 0 ? suffix : `${existing}\n${suffix}`;
-      writeFileAtomic(gitignorePath, newContent);
+      storagePort.writeAtomicSync(gitignorePath, newContent);
     } catch {
       // best-effort
     }

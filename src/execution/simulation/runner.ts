@@ -73,7 +73,7 @@ function resolveJobTarget(jobId: string | undefined, cursor: RunnerCursor, actio
   if (cursor.launchedJobIds.size === 1) {
     return {
       ok: true,
-      jobId: [...cursor.launchedJobIds][0] as string,
+      jobId: [...cursor.launchedJobIds][0],
     };
   }
 

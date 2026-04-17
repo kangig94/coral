@@ -764,7 +764,11 @@ function buildCommunityContextMap(
     .slice(0, GRAPH_CONTEXT_MAX_COMMUNITIES);
 
   for (const { community, memberSet } of relevantCommunities) {
-    const summaryText = `${community.title}: ${community.summary!.trim()}`;
+    const summary = community.summary?.trim();
+    if (!summary) {
+      continue;
+    }
+    const summaryText = `${community.title}: ${summary}`;
     for (const hit of noteSourceHits) {
       if (!hit.tags.some((tag) => memberSet.has(tag))) {
         continue;
@@ -1058,7 +1062,7 @@ export async function searchKb(
   let limit = topK;
   let hits = await searchOrama(db, oramaTerm, limit);
   let exhausted = hits.length < limit;
-  let resolvedHits = hits.map((hit) => resolveHit(hit, index));
+  const resolvedHits = hits.map((hit) => resolveHit(hit, index));
 
   while (shouldContinueWidening(hits, resolvedHits, communitiesFresh, scope, topK, exhausted)) {
     const prevCount = hits.length;

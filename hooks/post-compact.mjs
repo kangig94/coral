@@ -1,25 +1,19 @@
 #!/usr/bin/env node
 
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { JOBS_DIR, projectTmpDir } from './lib/plugin-paths.mjs';
+import { SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS, isLivePhase } from './lib/jobs-state.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
-
-const JOBS_DIR = join(tmpdir(), 'coral-jobs');
-const LIVE_PHASES = new Set(['queued', 'launching', 'running']);
-const SNAPSHOT_PREFIX = 'active-jobs-';
-const SNAPSHOT_SUFFIX = '.json';
-const SNAPSHOT_TTL_MS = 10 * 60_000;
 
 try {
   const input = JSON.parse(await readStdin());
   const projectRoot = process.env.CLAUDE_PROJECT_DIR ?? input.cwd;
   if (!projectRoot) process.exit(0);
 
-  const projectSlug = projectRoot.replace(/\//g, '-');
-  const snapshotDir = join(tmpdir(), 'coral', projectSlug);
+  const snapshotDir = projectTmpDir(projectRoot);
   if (!existsSync(snapshotDir)) process.exit(0);
   if (!statSync(snapshotDir).isDirectory()) process.exit(0);
 
@@ -101,7 +95,7 @@ try {
         continue;
       }
 
-      if (LIVE_PHASES.has(state.status.phase)) {
+      if (isLivePhase(state.status.phase)) {
         pending.push({ job, status: state.status });
         continue;
       }

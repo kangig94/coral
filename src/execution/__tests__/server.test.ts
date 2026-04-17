@@ -13,17 +13,19 @@ import type * as ServerMod from '../server.js';
 import type * as BackendInfoMod from '../../infra/backend-info.js';
 import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
+import type * as InfraPathsMod from '../../infra/paths.js';
+import type * as HttpHandlerMod from '../http-handler.js';
 import type { ProviderServerHandle } from '../engine.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
-import { readDiscussEventLog, readStatusRecordWithStorage } from '../../client/readers.js';
+import { readDiscussEventLog } from '../../client/readers.js';
+import { readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import { ProgressStore } from '../progress-store.js';
-import { SessionIndex } from '../session-index.js';
-import { SessionManager, listSessionShards } from '../session-manager.js';
+import { SessionManager } from '../session-manager.js';
 import {
   discussEventLogPath,
   discussSourcesPath,
@@ -40,7 +42,9 @@ import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
 import { createRealRuntime } from '../runtime.js';
+import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import { ZodError, ZodIssueCode } from 'zod';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -93,14 +97,12 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       yield {
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 'session-1',
         eventId: 7,
         message: 'working',
       };
       yield {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
         result: { content: 'done' },
@@ -141,6 +143,11 @@ function createFakeProviderHostManager(overrides: Record<string, unknown> = {}) 
     shutdown: vi.fn(async () => {}),
     ...overrides,
   };
+}
+
+async function advanceSimulationTime(runtime: SimulationRuntime, ms: number): Promise<void> {
+  runtime.time.tick(ms);
+  await flushMicrotasks();
 }
 
 function createFakeProviderServerHandle(options?: {
@@ -292,7 +299,7 @@ async function loadExecutionModules(): Promise<{
   backendInfo: BackendInfoModule;
   backendLock: BackendLockModule;
   lifecycleModule: LifecycleModule;
-  infraPaths: typeof import('../../infra/paths.js');
+  infraPaths: typeof InfraPathsMod;
 }> {
   vi.resetModules();
   const [serverModule, backendInfo, backendLock, lifecycleModule, infraPaths] = await Promise.all([
@@ -619,7 +626,7 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect((body as Record<string, unknown>).subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
+    expect(body.subsystems).toMatchObject({ kb: 'ok', discuss: 'ok' });
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -854,18 +861,27 @@ describe('execution backend server', () => {
 
   it('runs KB initialization during startup before idle watching begins', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
-    const createKbSubsystemFn = vi.fn(async () => ({
-      kb: {
-        closeVectorStores: vi.fn(async () => {}),
-      } as never,
-      curateScheduler: {
-        start: vi.fn(async () => {}),
-        schedule: vi.fn(),
-        scheduleDeferredCommit: vi.fn(),
-        isRunning: () => false,
-        stop: vi.fn(async () => {}),
-      },
-    }));
+    type KbRuntimeThreadOptions = {
+      processPort: { exec: unknown };
+      storagePort: { writeAtomicSync: unknown };
+      envPort: { get: unknown };
+    };
+    let receivedKbOptions: KbRuntimeThreadOptions | null = null;
+    const createKbSubsystemFn = vi.fn(async (options) => {
+      receivedKbOptions = options;
+      return {
+        kb: {
+          closeVectorStores: vi.fn(async () => {}),
+        } as never,
+        curateScheduler: {
+          start: vi.fn(async () => {}),
+          schedule: vi.fn(),
+          scheduleDeferredCommit: vi.fn(),
+          isRunning: () => false,
+          stop: vi.fn(async () => {}),
+        },
+      };
+    });
 
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
@@ -873,6 +889,11 @@ describe('execution backend server', () => {
     });
 
     expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    expect(receivedKbOptions).not.toBeNull();
+    const kbOptions = receivedKbOptions as unknown as KbRuntimeThreadOptions;
+    expect(typeof kbOptions.processPort.exec).toBe('function');
+    expect(typeof kbOptions.storagePort.writeAtomicSync).toBe('function');
+    expect(typeof kbOptions.envPort.get).toBe('function');
     const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
     const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(initOrder).toBeDefined();
@@ -1198,7 +1219,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
-        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
@@ -1223,7 +1243,7 @@ describe('execution backend server', () => {
 
     async function startHttpHandlerServer(
       deps: HttpHandlerDeps,
-      createHttpHandlerFn?: typeof import('../http-handler.js').createHttpHandler,
+      createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler,
     ) {
       const importedCreateHttpHandler = createHttpHandlerFn ?? (await import('../http-handler.js')).createHttpHandler;
       const handler = importedCreateHttpHandler(deps);
@@ -2313,13 +2333,64 @@ describe('execution backend server', () => {
 
         expect(discussResponse.status).toBe(404);
         expect(await discussResponse.json()).toEqual({
-          error: 'not_found',
+          code: 'not_found',
+          message: 'Not found',
         });
 
         expect(kbResponse.status).toBe(404);
         expect(await kbResponse.json()).toEqual({
-          error: 'not_found',
+          code: 'not_found',
+          message: 'Not found',
         });
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it.each([
+      {
+        name: 'GET /discuss/sessions/:id view',
+        method: 'GET',
+        path: `/discuss/sessions/session-1?projectRoot=${encodeURIComponent('/tmp/project')}&view=bogus`,
+        expectedMessage: "view: Invalid enum value. Expected 'control' | 'audit', received 'bogus'",
+      },
+      {
+        name: 'GET /kb/entries scope',
+        method: 'GET',
+        path: '/kb/entries?q=contracts&scope=bogus',
+        expectedMessage: "scope: Invalid enum value. Expected 'notes' | 'sources' | 'communities' | 'all', received 'bogus'",
+      },
+      {
+        name: 'GET /kb/memos projectRoot',
+        method: 'GET',
+        path: '/kb/memos?projectRoot=',
+        expectedMessage: 'projectRoot: String must contain at least 1 character(s)',
+      },
+      {
+        name: 'DELETE /kb/memos pattern/all',
+        method: 'DELETE',
+        path: `/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&all=true`,
+        expectedMessage: 'Exactly one of pattern or all=true must be provided',
+      },
+    ])('returns flat invalid_request bodies for safeParse regressions on $name', async ({ method, path, expectedMessage }) => {
+      const started = await startMockedRouteServer();
+
+      try {
+        const response = await fetch(`${started.baseUrl}${path}`, {
+          method,
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+
+        expect(response.status).toBe(400);
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+          detail: { issues: unknown[] };
+        };
+        expect(body.code).toBe('invalid_request');
+        expect(body.message).toBe(expectedMessage);
+        expect(() => JSON.parse(body.message)).toThrow();
+        expect(body.detail.issues.length).toBeGreaterThan(0);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2553,6 +2624,62 @@ describe('execution backend server', () => {
       }
     });
 
+    it('maps provider_mismatch from POST /sessions/:id/messages and forwards the provider assertion', async () => {
+      const sessionId = 'session-codex';
+      const fakeService = createFakeExecutionService({
+        resumeBySessionId: vi.fn(async () => ({
+          status: 'rejected',
+          phase: 'preflight',
+          code: 'provider_mismatch',
+          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
+        })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'continue',
+            provider: 'claude',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+          }),
+        });
+
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+        };
+
+        expect(response.status).toBe(409);
+        expect(body).toMatchObject({ code: 'provider_mismatch' });
+        expect(body.message).toContain('codex');
+        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
+        expect(fakeService.resumeBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId,
+            prompt: 'continue',
+            provider: 'claude',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('routes POST /sessions/:id/forks through service.forkBySessionId', async () => {
       const fakeService = createFakeExecutionService({
         forkBySessionId: vi.fn(async () => ({ status: 'running', job: 'job-fork', session: 'session-child' })),
@@ -2602,7 +2729,63 @@ describe('execution backend server', () => {
       }
     });
 
-    it('maps workflow camelCase request fields before calling executeWorkflow', async () => {
+    it('maps provider_mismatch from POST /sessions/:id/forks and forwards the provider assertion', async () => {
+      const sessionId = 'session-codex';
+      const fakeService = createFakeExecutionService({
+        forkBySessionId: vi.fn(async () => ({
+          status: 'rejected',
+          phase: 'preflight',
+          code: 'provider_mismatch',
+          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
+        })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/forks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'branch',
+            provider: 'claude',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+          }),
+        });
+
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+        };
+
+        expect(response.status).toBe(409);
+        expect(body).toMatchObject({ code: 'provider_mismatch' });
+        expect(body.message).toContain('codex');
+        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
+        expect(fakeService.forkBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId,
+            prompt: 'branch',
+            provider: 'claude',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('passes canonical workflow camelCase fields to executeWorkflow', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
           executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
@@ -2639,9 +2822,9 @@ describe('execution backend server', () => {
             expect.any(Array),
             {
               expression: 'architect',
-              start_prompt: 'Begin',
+              startPrompt: 'Begin',
               provider: 'codex',
-              work_dir: '/tmp/workflow',
+              workDir: '/tmp/workflow',
               owner: 'team-a',
             },
             expect.objectContaining({
@@ -2659,6 +2842,142 @@ describe('execution backend server', () => {
           await _closeHttpServer(started.server);
         }
       });
+    });
+
+    it("defaults omitted workflow provider to 'claude' for both executeWorkflow arguments", async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        deps.providerRegistry.register({
+          name: 'claude',
+          execute: vi.fn(async () => ({ content: 'ok' })),
+        });
+        const started = await startHttpHandlerServer(deps);
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              workDir: '/tmp/workflow',
+              projectRoot: '/tmp/project',
+              claudeModelCap: 'sonnet',
+            }),
+          });
+
+          expect(response.status).toBe(202);
+          expect(fakeService.executeWorkflow).toHaveBeenCalledWith(
+            'claude',
+            expect.any(Array),
+            {
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'claude',
+              workDir: '/tmp/workflow',
+            },
+            expect.objectContaining({
+              projectRoot: '/tmp/project',
+              pluginRoot: '/tmp/plugin',
+            }),
+            '/tmp/workflow',
+          );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('keeps WorkflowInputError on the plain invalid_request message path', async () => {
+      vi.resetModules();
+      const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
+      workflowError.name = 'WorkflowInputError';
+      vi.doMock('../../workflow/handler.js', () => ({
+        handleWorkflow: vi.fn(async () => {
+          throw workflowError;
+        }),
+        isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
+      }));
+
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
+      const started = await startHttpHandlerServer(deps, createHttpHandler);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/workflow`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            expression: 'architect',
+            startPrompt: 'Begin',
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: "Step 0, atom 'architect' has unsupported namespace 'other'",
+        });
+      } finally {
+        vi.doUnmock('../../workflow/handler.js');
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('keeps ZodError on the invalid_request + detail.issues path for workflow input failures', async () => {
+      vi.resetModules();
+      const workflowError = new ZodError([
+        {
+          code: ZodIssueCode.custom,
+          path: ['expression'],
+          message: 'Expression required',
+        },
+      ]);
+      vi.doMock('../../workflow/handler.js', () => ({
+        handleWorkflow: vi.fn(async () => {
+          throw workflowError;
+        }),
+        isWorkflowInputFailure: (error: unknown) => error === workflowError,
+      }));
+
+      const { createHttpHandler } = await import('../http-handler.js');
+      const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
+      const started = await startHttpHandlerServer(deps, createHttpHandler);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/workflow`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            expression: 'architect',
+            startPrompt: 'Begin',
+            projectRoot: '/tmp/project',
+          }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: 'expression: Expression required',
+          detail: { issues: workflowError.issues },
+        });
+      } finally {
+        vi.doUnmock('../../workflow/handler.js');
+        await _closeHttpServer(started.server);
+      }
     });
 
     it('returns AbortResult directly from POST /jobs/abort and preserves partial misses', async () => {
@@ -2745,7 +3064,7 @@ describe('execution backend server', () => {
     );
   });
 
-  it('streams SSE wait events and closes after terminal completion for found/missing mixes', async () => {
+  it('defaults an absent /jobs/wait cursor to an empty replay state', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore('test-ns', runtime);
     createdJobIds.add('job-1');
@@ -2783,6 +3102,7 @@ describe('execution backend server', () => {
     expect(body).toContain('event: terminal');
     expect(body).toContain('"message":"working"');
     expect(body).toContain('"content":"done"');
+    expect(body).not.toContain('"sessionId":"session-1"');
 
     const firstIdLine = body.split('\n').find((line) => line.startsWith('id: '));
     expect(firstIdLine).toBeTruthy();
@@ -2794,6 +3114,58 @@ describe('execution backend server', () => {
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
       cursor: { jobs: {} },
+      projectRoot: '/tmp/project',
+    });
+  });
+
+  it('honors the /jobs/wait Last-Event-ID header cursor', async () => {
+    const fakeService = createFakeExecutionService();
+    const progressStore = new ProgressStore('test-ns', runtime);
+    createdJobIds.add('job-1');
+    progressStore.initJob({
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+      progressStore,
+    });
+    const encodedCursor = Buffer.from(
+      JSON.stringify({
+        jobs: {
+          'job-1': 4,
+        },
+      }),
+      'utf-8',
+    ).toString('base64url');
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Last-Event-ID': encodedCursor,
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(fakeService.waitStream).toHaveBeenCalledWith({
+      jobIds: ['job-1'],
+      timeoutSeconds: 1,
+      cursor: {
+        jobs: {
+          'job-1': 4,
+        },
+      },
       projectRoot: '/tmp/project',
     });
   });
@@ -2832,16 +3204,8 @@ describe('execution backend server', () => {
         provider: 'codex',
         projectRoot: '/tmp/project',
       });
-      eventBus.emit('session:updated', {
-        sessionId: 'session-1',
-        shardHash: 'abc123',
-        version: 2,
-        projectRoot: '/tmp/project',
-      });
 
-      const eventChunk = await stream.waitForText(
-        (text) => text.includes('event: job:created') && text.includes('event: session:updated'),
-      );
+      const eventChunk = await stream.waitForText((text) => text.includes('event: job:created'));
 
       expect(eventChunk).toContain('"jobId":"job-1"');
       expect(eventChunk).not.toContain('"jobId":"job-2"');
@@ -2886,7 +3250,7 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-2' });
 
-    const jobsResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
+    const jobsResponse = await fetch(`${backend.baseUrl}/jobs`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const jobsBody = (await jobsResponse.json()) as {
@@ -2917,7 +3281,7 @@ describe('execution backend server', () => {
       ]),
     );
 
-    const detailResponse = await fetch(`${backend.baseUrl}/api/jobs/job-1`, {
+    const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-1`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const detailBody = (await detailResponse.json()) as {
@@ -2943,7 +3307,7 @@ describe('execution backend server', () => {
       result: { content: 'done' },
     });
 
-    const missingResponse = await fetch(`${backend.baseUrl}/api/jobs/missing-job`, {
+    const missingResponse = await fetch(`${backend.baseUrl}/jobs/missing-job`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
 
@@ -2954,8 +3318,8 @@ describe('execution backend server', () => {
     });
   });
 
-  describe('/api/jobs phase filter', () => {
-    it('filters collection responses by phase and preserves job detail lookups', async () => {
+  describe('GET /jobs query filters', () => {
+    it('filters collection responses by projectRoot, phase, all, and provider and sorts by updatedAt descending', async () => {
       const fakeService = createFakeExecutionService();
       const progressStore = new ProgressStore('test-ns', runtime);
       const backend = await startBackendServer({
@@ -2966,6 +3330,7 @@ describe('execution backend server', () => {
       createdJobIds.add('job-running');
       createdJobIds.add('job-queued');
       createdJobIds.add('job-completed');
+      createdJobIds.add('job-foreign-project');
 
       progressStore.initJob({
         jobId: 'job-running',
@@ -3001,13 +3366,52 @@ describe('execution backend server', () => {
       progressStore.initJob({
         jobId: 'job-completed',
         sessionId: 'session-completed',
-        provider: 'codex',
+        provider: 'claude',
+        projectRoot: '/tmp/project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubLaunchRecord(progressStore, {
+        jobId: 'job-completed',
+        sessionId: 'session-completed',
+        provider: 'claude',
         projectRoot: '/tmp/project',
         backendNamespace: testBackendNamespace,
       });
       progressStore.appendTerminal('job-completed', 'session-completed', { content: 'done' }, 'completed');
+      progressStore.initJob({
+        jobId: 'job-foreign-project',
+        sessionId: 'session-foreign-project',
+        provider: 'codex',
+        projectRoot: '/tmp/other-project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubLaunchRecord(progressStore, {
+        jobId: 'job-foreign-project',
+        sessionId: 'session-foreign-project',
+        provider: 'codex',
+        projectRoot: '/tmp/other-project',
+        backendNamespace: testBackendNamespace,
+      });
+      stubRuntimeRecord(progressStore, { jobId: 'job-foreign-project' });
 
-      const allResponse = await fetch(`${backend.baseUrl}/api/jobs`, {
+      const setUpdatedAt = (jobId: string, updatedAt: string) => {
+        const status = progressStore.readStatus(jobId);
+        expect(status).not.toBeNull();
+        progressStore.writeStatus(jobId, {
+          ...status!,
+          launch: {
+            ...status!.launch,
+            updatedAt,
+          },
+        });
+      };
+
+      setUpdatedAt('job-running', '2026-04-17T10:00:00.000Z');
+      setUpdatedAt('job-queued', '2026-04-17T12:00:00.000Z');
+      setUpdatedAt('job-completed', '2026-04-17T11:00:00.000Z');
+      setUpdatedAt('job-foreign-project', '2026-04-17T09:00:00.000Z');
+
+      const allResponse = await fetch(`${backend.baseUrl}/jobs`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const allBody = (await allResponse.json()) as {
@@ -3015,9 +3419,27 @@ describe('execution backend server', () => {
       };
 
       expect(allResponse.status).toBe(200);
-      expect(allBody.jobs.map((job) => job.jobId).sort()).toEqual(['job-completed', 'job-queued', 'job-running']);
+      expect(allBody.jobs.map((job) => job.jobId)).toEqual([
+        'job-queued',
+        'job-completed',
+        'job-running',
+        'job-foreign-project',
+      ]);
 
-      const runningResponse = await fetch(`${backend.baseUrl}/api/jobs?phase=running`, {
+      const projectScopedResponse = await fetch(
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
+      const projectScopedBody = (await projectScopedResponse.json()) as {
+        jobs: Array<{ jobId: string; status: { phase: string } }>;
+      };
+
+      expect(projectScopedResponse.status).toBe(200);
+      expect(projectScopedBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-running']);
+
+      const runningResponse = await fetch(`${backend.baseUrl}/jobs?phase=running`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const runningBody = (await runningResponse.json()) as {
@@ -3035,25 +3457,45 @@ describe('execution backend server', () => {
         },
       ]);
 
-      const queuedResponse = await fetch(`${backend.baseUrl}/api/jobs?phase=queued`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
-      });
-      const queuedBody = (await queuedResponse.json()) as {
+      const allProjectsResponse = await fetch(
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}&all=1`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
+      const allProjectsBody = (await allProjectsResponse.json()) as {
         jobs: Array<{ jobId: string; status: { phase: string } }>;
       };
 
-      expect(queuedResponse.status).toBe(200);
-      expect(queuedBody.jobs).toEqual([
+      expect(allProjectsResponse.status).toBe(200);
+      expect(allProjectsBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-completed', 'job-running']);
+
+      const providerResponse = await fetch(`${backend.baseUrl}/jobs?provider=codex&all=1`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+      const providerBody = (await providerResponse.json()) as {
+        jobs: Array<{ jobId: string; status: { phase: string } }>;
+      };
+
+      expect(providerResponse.status).toBe(200);
+      expect(providerBody.jobs).toEqual([
         {
-          jobId: 'job-queued',
+          jobId: 'job-running',
           status: expect.objectContaining({
-            jobId: 'job-queued',
-            phase: 'queued',
+            jobId: 'job-running',
+            phase: 'running',
+          }),
+        },
+        {
+          jobId: 'job-foreign-project',
+          status: expect.objectContaining({
+            jobId: 'job-foreign-project',
+            phase: 'launching',
           }),
         },
       ]);
 
-      const detailResponse = await fetch(`${backend.baseUrl}/api/jobs/job-completed`, {
+      const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-completed`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const detailBody = (await detailResponse.json()) as {
@@ -3075,49 +3517,6 @@ describe('execution backend server', () => {
         }),
       ]);
     });
-  });
-
-  it('lists only authoritative in-namespace sessions from /sessions and skips corrupt entries', async () => {
-    const projectRoot = createProjectRoot('session-project');
-    const foreignProjectRoot = createProjectRoot('foreign-session-project');
-    const visible = new SessionManager(projectRoot, runtime).allocate({
-      provider: 'codex',
-      name: 'alpha',
-      model: 'gpt-5',
-      cwd: projectRoot,
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-    });
-    new SessionManager(foreignProjectRoot, runtime).allocate({
-      provider: 'codex',
-      name: 'foreign',
-      model: 'gpt-5',
-      cwd: foreignProjectRoot,
-      projectRoot: foreignProjectRoot,
-      backendNamespace: foreignBackendNamespace,
-    });
-    new SessionManager(projectRoot, runtime).allocate('codex', 'legacy', 'gpt-5', projectRoot, projectRoot);
-    const [shardDir] = listSessionShards(runtime);
-    writeFileSync(join(shardDir, 'corrupt.json'), '{not-json', 'utf-8');
-
-    const backend = await startBackendServer();
-    const response = await fetch(`${backend.baseUrl}/sessions`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-    const body = (await response.json()) as {
-      sessions: Array<Record<string, unknown>>;
-    };
-
-    expect(response.status).toBe(200);
-    expect(body.sessions).toEqual([
-      expect.objectContaining({
-        sessionId: visible.sessionId,
-        provider: 'codex',
-        state: 'pending',
-        backendNamespace: testBackendNamespace,
-        provenanceState: 'authoritative',
-      }),
-    ]);
   });
 
   it('maps provider-less continuation errors on the new session routes', async () => {
@@ -3218,6 +3617,35 @@ describe('execution backend server', () => {
     expect(await missingResponse.json()).toMatchObject({ code: 'invalid_request' });
     expect(emptyResponse.status).toBe(400);
     expect(await emptyResponse.json()).toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('returns 400 when /jobs/wait includes a body cursor', async () => {
+    const fakeService = createFakeExecutionService();
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+        cursor: {
+          jobs: {
+            'job-1': 4,
+          },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 
   it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
@@ -3528,7 +3956,7 @@ describe('execution backend server', () => {
     const response = await fetch(`${backend.baseUrl}/health`);
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
   });
 
   describe('shutdown policy', () => {
@@ -3610,12 +4038,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: {
-          hydrate: vi.fn(),
-          hasShard: vi.fn(() => true),
-          discoverShard: vi.fn(),
-          invalidate: vi.fn(),
-        } as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -3857,12 +4279,6 @@ describe('execution backend server', () => {
       };
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
       const providerHostManager = createFakeProviderHostManager();
       // eslint-disable-next-line prefer-const -- circular: writeBackendInfoFn closure reads controller, but controller assignment needs writeBackendInfoFn
       let controller!: ReturnType<LifecycleModule['createLifecycle']>;
@@ -3889,7 +4305,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -3989,12 +4404,6 @@ describe('execution backend server', () => {
       const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
 
       const controller = lifecycleModule.createLifecycle({
         identity: {
@@ -4013,7 +4422,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map(),
         eventBus: new TypedEventBus(),
@@ -4124,12 +4532,6 @@ describe('execution backend server', () => {
 
       const fakeIdleTimer = createFakeIdleTimer();
       const { runtimeState, setLifecycle } = createRuntimeStateMock();
-      const sessionIndex = {
-        hydrate: vi.fn(),
-        hasShard: vi.fn(() => true),
-        discoverShard: vi.fn(),
-        invalidate: vi.fn(),
-      };
       const discussRegistry = createDiscussContextRegistry();
       const writeBackendInfoFn = vi.fn();
       const lifecycleRuntime = createRealRuntime();
@@ -4162,7 +4564,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: fakeIdleTimer as never,
         progressStore,
-        sessionIndex: sessionIndex as never,
         streamResponses: new Set(),
         discussStores: new Map([[source, store]]),
         eventBus: new TypedEventBus(),
@@ -4223,6 +4624,157 @@ describe('execution backend server', () => {
         await controller.waitForShutdown().catch(() => {});
       }
     });
+
+    it('cleans up an adopted running job on shutdown after the recovery poller is live and suppresses late completion', async () => {
+      const { lifecycleModule } = await loadExecutionModules();
+      const pluginRoot = createProjectRoot('startup-interrupted-after-poller');
+      const namespace = pluginRootNamespace(pluginRoot);
+      const recoveryPollMs = 500;
+      const runtime = new SimulationRuntime();
+      const progressStore = new ProgressStore('test-ns', runtime);
+      const jobId = 'running-adoption-poller-job';
+      const pid = 41_424;
+      createdJobIds.add(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: 'running-poller-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+        initialPhase: 'running',
+      });
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: 'running-poller-session',
+        provider: 'codex',
+        projectRoot: pluginRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.writeRuntimeRecord(jobId, {
+        pid,
+        stdoutPath: join(runtime.paths.jobsDir(), jobId, 'stdout.log'),
+        stderrPath: join(runtime.paths.jobsDir(), jobId, 'stderr.log'),
+        startTime: '2026-04-17T00:00:00.000Z',
+      });
+
+      const fakeIdleTimer = createFakeIdleTimer();
+      const { runtimeState, setLifecycle } = createRuntimeStateMock();
+      const providerHostManager = createFakeProviderHostManager();
+      const writeBackendInfoFn = vi.fn();
+      const cleanupSpy = vi.fn();
+      let pidAlive = true;
+      let recoveryPollObserved = false;
+      let recoveryPollHandle: ReturnType<typeof runtime.time.setInterval> | null = null;
+      // eslint-disable-next-line prefer-const -- circular: shutdown is triggered from setLaunchFenceActive, which needs the controller instance
+      let controller!: ReturnType<LifecycleModule['createLifecycle']>;
+      const originalSetInterval = runtime.time.setInterval.bind(runtime.time);
+      const clearIntervalSpy = vi.spyOn(runtime.time, 'clearInterval');
+      vi.spyOn(runtime.time, 'setInterval').mockImplementation((fn, ms) => {
+        const handle = originalSetInterval(fn, ms);
+        if (ms === recoveryPollMs) {
+          recoveryPollHandle = handle;
+          runtime.time.tick(recoveryPollMs + 1);
+          recoveryPollObserved = true;
+        }
+        return handle;
+      });
+      vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+      const setLaunchFenceActive = runtimeState.setLaunchFenceActive as ReturnType<typeof vi.fn>;
+      setLaunchFenceActive.mockImplementation((active: boolean) => {
+        if (!active && recoveryPollObserved) {
+          void controller.shutdown('sigint');
+        }
+      });
+
+      const fakeService = {
+        adoptRunningJob: vi.fn(() => ({ cleanup: cleanupSpy })),
+        recoverQueuedJob: vi.fn(),
+        completeRecoveredJob: vi.fn(),
+      };
+
+      controller = lifecycleModule.createLifecycle({
+        identity: {
+          pluginRoot,
+          namespace,
+          version: '9.9.9',
+          bundleHash: 'testhash1234',
+          flavor: 'prod',
+          instanceId: 'lifecycle-instance-poller',
+          token: 'test-token',
+          now: () => 1,
+          log: () => {},
+        },
+        runtime,
+        backendPid: 1234,
+        runtimeState,
+        idleTimer: fakeIdleTimer as never,
+        progressStore,
+        streamResponses: new Set(),
+        discussStores: new Map(),
+        eventBus: new TypedEventBus(),
+        launchCoordinator: new LaunchCoordinator({ runtime }),
+        providerRegistry: new ProviderRegistry(),
+        server: createServer(),
+        getExecutionService: () => fakeService as never,
+        getRecoveryService: () => fakeService as never,
+        listExecutionServices: () => [fakeService as never],
+        getDiscussStoreForSource: () => {
+          throw new Error('Unexpected discuss store lookup');
+        },
+        knownDiscussSources: () => new Set<string>(),
+        getDiscussContext: () => {
+          throw new Error('Unexpected discuss context lookup');
+        },
+        acquireLockFn: async () => {},
+        writeBackendInfoFn,
+        removeBackendInfoIfOwnerFn: () => {},
+        removeLockIfOwnerFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        terminateAllFn: () => {},
+        providerHostManager: providerHostManager as never,
+        createKbSubsystemFn: async () => createMockKbSubsystem(),
+        registerBuiltInProvidersFn: () => {},
+        recoverPersistedDiscussFn: async () => [],
+        hooks: {
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        },
+        closeServerFn: async () => {},
+        listenFn: async () => ({ port: 4104, host: '127.0.0.1' }),
+      });
+
+      try {
+        const startResult = await controller.start().catch((error: unknown) => error);
+        await controller.waitForShutdown();
+
+        expect(startResult).toBeInstanceOf(lifecycleModule.StartupInterruptedError);
+        expect(fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
+        expect(recoveryPollObserved).toBe(true);
+        expect(recoveryPollHandle).not.toBeNull();
+        expect(cleanupSpy).toHaveBeenCalledTimes(1);
+        expect(clearIntervalSpy).toHaveBeenCalledWith(recoveryPollHandle);
+        expect(fakeService.completeRecoveredJob).not.toHaveBeenCalled();
+        expect(writeBackendInfoFn).not.toHaveBeenCalled();
+        expect(setLifecycle).not.toHaveBeenCalledWith('running');
+        expect(controller.getRecoveryRegistry()).toBeNull();
+
+        pidAlive = false;
+        // VirtualTime.clearInterval marks the timer inactive and tick() skips
+        // inactive records without firing fn() — see simulation/core/virtual-time.ts.
+        // So if shutdown properly cleared the poller, these assertions genuinely
+        // prove no late completion fires even when the PID transitions to dead.
+        await advanceSimulationTime(runtime, recoveryPollMs + 1);
+
+        expect(fakeService.completeRecoveredJob).not.toHaveBeenCalled();
+        expect(cleanupSpy).toHaveBeenCalledTimes(1);
+        expect(writeBackendInfoFn).not.toHaveBeenCalled();
+        expect(setLifecycle).not.toHaveBeenCalledWith('running');
+      } finally {
+        await controller.waitForShutdown().catch(() => {});
+      }
+    });
   });
 
   describe('launch fence', () => {
@@ -4262,7 +4814,6 @@ describe('execution backend server', () => {
         runtimeState,
         idleTimer: createFakeIdleTimer() as never,
         progressStore: new ProgressStore('test-ns', runtime),
-        sessionIndex: new SessionIndex(runtime),
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),

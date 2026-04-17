@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+//
+// ralph-loop — multi-event hook driving the `/coral:ralph` iteration loop.
+//
+//   UserPromptSubmit  : on `/coral:ralph ...`, create state file + inject
+//                       a SKILL.md hand-off pointing at it.
+//   PreToolUse(Skill) : same for Claude-initiated Skill("coral:ralph").
+//   Stop              : end the loop (promise matched, abort sentinel,
+//                       maxIterations cap) or `decision: 'block'` to drive
+//                       the next iteration.
 
 import {
   closeSync,
@@ -12,9 +21,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
+import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { RALPH_FIELD_RE, RALPH_MESSAGE_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -25,16 +36,23 @@ const DEFAULT_STATE = {
   completionPromise: 'TASK COMPLETE',
 };
 
+const ABORT_SENTINEL = 'STOP_LOOP';
+const STATE_FILE_PREFIX = 'ralph-state-';
+const STATE_SWEEP_TTL_MS = 24 * 60 * 60_000;
+const PROMISE_TAG_RE = /<promise>([\s\S]*?)<\/promise>/;
+const ABORT_TAG_RE = /<abort>([\s\S]*?)<\/abort>/;
+
+// === Main I/O ===
+
 try {
   const input = JSON.parse(await readStdin());
   const event = input.hook_event_name;
   const sessionId = input.session_id || input.sessionId;
-  const projectDir = resolve(process.env.CLAUDE_PROJECT_DIR || '.');
+  const projectDir = resolve(projectDirFromInput(input));
 
   if (event === 'UserPromptSubmit') {
     if (!sessionId) process.exit(0);
-    const message = input.user_message || input.message || input.prompt || '';
-    if (!/\/(?:coral:)?ralph\b/.test(message)) process.exit(0);
+    if (!RALPH_MESSAGE_RE.test(readUserMessage(input))) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
@@ -48,7 +66,7 @@ try {
   if (event === 'PreToolUse') {
     if (!sessionId) process.exit(0);
     const skill = input.tool_input?.skill || '';
-    if (!/coral:ralph|^ralph$/.test(skill)) process.exit(0);
+    if (!RALPH_FIELD_RE.test(skill)) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
@@ -74,76 +92,46 @@ try {
   const stateDir = dirname(statePath);
 
   if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
-    deleteFile(statePath);
-    sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
-    process.exit(0);
+    endLoop(statePath, stateDir);
+  }
+
+  const assistantText = extractAssistantText(input.last_assistant_message)
+    || readLastAssistantText(input.transcript_path);
+
+  const abortText = extractAbortText(assistantText);
+  if (abortText && normalizeWhitespace(abortText) === ABORT_SENTINEL) {
+    endLoop(statePath, stateDir);
   }
 
   if (state.completionPromise) {
-    const promiseText = extractPromiseText(
-      extractAssistantText(input.last_assistant_message)
-      || readLastAssistantText(input.transcript_path)
-    );
-
+    const promiseText = extractPromiseText(assistantText);
     if (promiseText && normalizeWhitespace(promiseText) === normalizeWhitespace(state.completionPromise)) {
-      deleteFile(statePath);
-      sweepStale(stateDir, 'ralph-state-', 24 * 60 * 60_000);
-      process.exit(0);
+      endLoop(statePath, stateDir);
     }
   }
 
-  const nextState = {
-    ...state,
-    iteration: state.iteration + 1,
-  };
+  const nextState = { ...state, iteration: state.iteration + 1 };
   atomicWriteJson(statePath, nextState);
-  const ctxPct = readCtxPct(sessionId);
-  let ctxNote = '';
-  if (ctxPct != null) {
-    const compactPct = parseInt(process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, 10) || 95;
-    if (ctxPct >= compactPct - 10) {
-      ctxNote = `\n\nContext usage is at ${ctxPct}%. Continue working — auto-compact will trigger automatically.`;
-    } else {
-      ctxNote = `\n\nContext usage is currently ${ctxPct}%. Do NOT stop due to context concerns.`;
-    }
-  } else {
-    ctxNote = '\n\nDo NOT stop due to context concerns — auto-compact handles context management automatically.';
-  }
+
   writeJson({
     decision: 'block',
-    reason: `${state.prompt}\n\nIf already complete, output <promise>${state.completionPromise}</promise> immediately. If not complete, continue from where you left off.${ctxNote}`,
+    reason: buildBlockReason(state, sessionId),
     systemMessage: `🔄 Ralph iteration ${nextState.iteration}`,
   });
 } catch {
   process.exit(0);
 }
 
-function readCtxPct(sessionId) {
-  try {
-    const sessionsPath = join(homedir(), '.claude', 'hud', '.coral-sessions.json');
-    const all = JSON.parse(readFileSync(sessionsPath, 'utf8'));
-    const entry = all[sessionId];
-    if (!entry || entry.ctx == null) return null;
-    if (Date.now() - (entry.ts || 0) > 5 * 60 * 1000) return null;
-    return entry.ctx;
-  } catch {
-    return null;
-  }
+// === State file management ===
+
+function getStatePath(projectDir, sessionId) {
+  return join(projectTmpDir(projectDir), `${STATE_FILE_PREFIX}${sessionId}.json`);
 }
 
 function createStateFile(projectDir, sessionId) {
   const statePath = getStatePath(projectDir, sessionId);
   atomicWriteJson(statePath, DEFAULT_STATE);
   return statePath;
-}
-
-function getStatePath(projectDir, sessionId) {
-  const projectSlug = projectDir.replace(/\//g, '-');
-  return join(tmpdir(), 'coral', projectSlug, `ralph-state-${sessionId}.json`);
-}
-
-function buildAdditionalContext(statePath) {
-  return `Ralph loop state file created: ${statePath}. Read this file first, then edit it. In SKILL.md step 1: if plan mode, delete this file. If prompt mode, write your cleaned prompt (flags stripped) to the 'prompt' field, optionally override maxIterations and completionPromise.`;
 }
 
 function readState(statePath) {
@@ -169,6 +157,76 @@ function deleteFile(path) {
   try {
     unlinkSync(path);
   } catch {}
+}
+
+function endLoop(statePath, stateDir) {
+  deleteFile(statePath);
+  sweepStale(stateDir, STATE_FILE_PREFIX, STATE_SWEEP_TTL_MS);
+  process.exit(0);
+}
+
+// === Prompt injection ===
+
+function buildAdditionalContext(statePath) {
+  return `Ralph loop state file created: ${statePath}. Read this file first, then edit it. In SKILL.md step 1: if plan mode, delete this file. If prompt mode, write your cleaned prompt (flags stripped) to the 'prompt' field, optionally override maxIterations and completionPromise.`;
+}
+
+function buildBlockReason(state, sessionId) {
+  const ctxNote = buildCtxNote(sessionId);
+  return `${state.prompt}\n\n`
+    + `If already complete, output <promise>${state.completionPromise}</promise> immediately.\n\n`
+    + `If the loop must end without completion (unrecoverable error, blocking question for the user, requirements fundamentally unclear), write the reason in your reply body and output <abort>${ABORT_SENTINEL}</abort> on a separate line to terminate.\n\n`
+    + `Otherwise, continue from where you left off.${ctxNote}`;
+}
+
+function buildCtxNote(sessionId) {
+  const ctxPct = readCtxPct(sessionId);
+  if (ctxPct == null) {
+    return '\n\nDo NOT stop due to context concerns — auto-compact handles context management automatically.';
+  }
+  const compactPct = parseInt(process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, 10) || 95;
+  if (ctxPct >= compactPct - 10) {
+    return `\n\nContext usage is at ${ctxPct}%. Continue working — auto-compact will trigger automatically.`;
+  }
+  return `\n\nContext usage is currently ${ctxPct}%. Do NOT stop due to context concerns.`;
+}
+
+function readCtxPct(sessionId) {
+  try {
+    const sessionsPath = join(homedir(), '.claude', 'hud', '.coral-sessions.json');
+    const all = JSON.parse(readFileSync(sessionsPath, 'utf8'));
+    const entry = all[sessionId];
+    if (!entry || entry.ctx == null) return null;
+    if (Date.now() - (entry.ts || 0) > 5 * 60 * 1000) return null;
+    return entry.ctx;
+  } catch {
+    return null;
+  }
+}
+
+// === Assistant-text extraction (transcript + tag parsing) ===
+
+function extractAssistantText(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractAssistantText).filter(Boolean).join('\n');
+  if (typeof value !== 'object') return '';
+
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.content === 'string') return value.content;
+  if (Array.isArray(value.content)) {
+    return value.content
+      .map(block => {
+        if (typeof block === 'string') return block;
+        if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+        return extractAssistantText(block);
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (value.message) return extractAssistantText(value.message);
+
+  return '';
 }
 
 function readLastAssistantText(transcriptPath) {
@@ -210,38 +268,19 @@ function readTranscriptTail(transcriptPath) {
   }
 }
 
-function extractAssistantText(value) {
-  if (!value) return '';
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(extractAssistantText).filter(Boolean).join('\n');
-  if (typeof value !== 'object') return '';
-
-  if (typeof value.text === 'string') return value.text;
-  if (typeof value.content === 'string') return value.content;
-  if (Array.isArray(value.content)) {
-    return value.content
-      .map(block => {
-        if (typeof block === 'string') return block;
-        if (block?.type === 'text' && typeof block.text === 'string') return block.text;
-        return extractAssistantText(block);
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  if (value.message) return extractAssistantText(value.message);
-
-  return '';
+function extractPromiseText(text) {
+  return text ? (text.match(PROMISE_TAG_RE)?.[1]?.trim() || '') : '';
 }
 
-function extractPromiseText(text) {
-  if (!text) return '';
-  const match = text.match(/<promise>([\s\S]*?)<\/promise>/);
-  return match?.[1]?.trim() || '';
+function extractAbortText(text) {
+  return text ? (text.match(ABORT_TAG_RE)?.[1]?.trim() || '') : '';
 }
 
 function normalizeWhitespace(text) {
   return text.trim().replace(/\s+/g, ' ');
 }
+
+// === JSON output ===
 
 function writeJson(value) {
   console.log(JSON.stringify(value));

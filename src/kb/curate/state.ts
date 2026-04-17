@@ -400,33 +400,37 @@ function recoverCurateState(value: unknown): CurateState {
     return defaults;
   }
 
-  let discoveryHighSeq = 0;
-  try {
-    discoveryHighSeq = parseNonNegativeInteger(value.discoveryHighSeq ?? 0, 'discoveryHighSeq');
-  } catch {
-    discoveryHighSeq = recoverCursor(value.discoveredThrough)?.entrySeq ?? 0;
-  }
+  const discoveryHighSeq = (() => {
+    try {
+      return parseNonNegativeInteger(value.discoveryHighSeq ?? 0, 'discoveryHighSeq');
+    } catch {
+      return recoverCursor(value.discoveredThrough)?.entrySeq ?? 0;
+    }
+  })();
 
-  let discoveryOffset = 0;
-  try {
-    discoveryOffset = parseNonNegativeInteger(value.discoveryOffset ?? 0, 'discoveryOffset');
-  } catch {
-    discoveryOffset = 0;
-  }
+  const discoveryOffset = (() => {
+    try {
+      return parseNonNegativeInteger(value.discoveryOffset ?? 0, 'discoveryOffset');
+    } catch {
+      return 0;
+    }
+  })();
 
-  let consecutiveFailures = 0;
-  try {
-    consecutiveFailures = parseNonNegativeInteger(value.consecutiveFailures ?? 0, 'consecutiveFailures');
-  } catch {
-    consecutiveFailures = 0;
-  }
+  const consecutiveFailures = (() => {
+    try {
+      return parseNonNegativeInteger(value.consecutiveFailures ?? 0, 'consecutiveFailures');
+    } catch {
+      return 0;
+    }
+  })();
 
-  let migrationVersion = 0;
-  try {
-    migrationVersion = parseNonNegativeInteger(value.migrationVersion ?? 0, 'migrationVersion');
-  } catch {
-    migrationVersion = 0;
-  }
+  const migrationVersion = (() => {
+    try {
+      return parseNonNegativeInteger(value.migrationVersion ?? 0, 'migrationVersion');
+    } catch {
+      return 0;
+    }
+  })();
 
   let activeClaim: CurateState['activeClaim'] = null;
   if (isRecord(value.activeClaim)) {

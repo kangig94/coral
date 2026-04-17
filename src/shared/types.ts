@@ -1,7 +1,8 @@
+import { z } from 'zod';
+
 /**
  * Shared type definitions for the Coral plugin.
  */
-import type { EffortLevel } from './schemas.js';
 
 export type SessionControllerProfile = {
   owner?: string;
@@ -21,7 +22,9 @@ export type SessionId = string;
 export type SessionState = 'pending' | 'ready' | 'non_resumable';
 
 /** Lifecycle phase of a single job. */
-export type JobPhase = 'queued' | 'launching' | 'running' | 'completed' | 'error' | 'aborted';
+export const JOB_PHASES = ['queued', 'launching', 'running', 'completed', 'error', 'aborted'] as const;
+export const jobPhaseSchema = z.enum(JOB_PHASES);
+export type JobPhase = (typeof JOB_PHASES)[number];
 
 export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase, 'queued' | 'launching' | 'running'> {
   return phase === 'queued' || phase === 'launching' || phase === 'running';
@@ -118,6 +121,8 @@ export interface ProviderRequest {
    */
   instruction?: ProviderInstruction;
 }
+
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 /** Result returned by a Provider adapter after execution completes. */
 export interface ProviderResult {
@@ -329,13 +334,17 @@ export interface PersistedProgressRecord {
 export interface WaitRequest {
   jobIds: string[];
   timeoutSeconds?: number;
-  cursor?: WaitCursor;
   projectRoot?: string;
+}
+
+/** Internal wait-stream request with optional replay cursor state. */
+export interface WaitStreamRequest extends WaitRequest {
+  cursor?: WaitCursor;
 }
 
 /** Events emitted by the wait stream. */
 export type WaitStreamEvent =
-  | { type: 'progress'; jobId: string; sessionId: string; eventId: number; message: string }
+  | { type: 'progress'; jobId: string; eventId: number; message: string }
   | {
       type: 'queued';
       jobId: string;
@@ -345,10 +354,9 @@ export type WaitStreamEvent =
     }
   | {
       type: 'terminal';
-      completedJobId: string;
-      sessionId: string;
+      jobId: string;
       remainingJobIds: string[];
       resultPath: string;
       result: TerminalResult;
     }
-  | { type: 'running'; runningJobIds: string[] };
+  | { type: 'waiting'; waitingJobIds: string[] };

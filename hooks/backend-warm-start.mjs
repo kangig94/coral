@@ -4,15 +4,10 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, parseManifestFlavor, readStdin } from './lib/hook-utils.mjs';
 
 function readManifestFlavor(pluginRoot) {
-  try {
-    const manifest = JSON.parse(readFileSync(join(pluginRoot, 'bridge', 'manifest.json'), 'utf-8'));
-    return manifest?.flavor === 'dev' ? 'dev' : 'prod';
-  } catch {
-    return 'prod';
-  }
+  return parseManifestFlavor(join(pluginRoot, 'bridge', 'manifest.json')) ?? 'prod';
 }
 
 function recordFlavor(record) {

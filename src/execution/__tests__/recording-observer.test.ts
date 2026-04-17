@@ -8,6 +8,7 @@ import {
   observeRuntimeSpawns,
 } from '../recording-observer.js';
 import { createRealRuntime, type ChildProcessLike } from '../runtime.js';
+import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { loadRecording } from '../simulation/recording.js';
 
 const tempDirs: string[] = [];
@@ -84,7 +85,7 @@ describe('recording observer', () => {
     const files = readdirSync(recordingDir);
     expect(files).toHaveLength(1);
 
-    const recording = loadRecording(runtime.storage, join(recordingDir, files[0]!));
+    const recording = loadRecording(runtime.storage, join(recordingDir, files[0]));
     expect(recording.command).toBe(process.execPath);
     expect(recording.args).toEqual(['-e', "process.stdout.write('recorded\\n');"]);
     expect(recording.events).toEqual(
@@ -93,5 +94,57 @@ describe('recording observer', () => {
         expect.objectContaining({ type: 'close', code: 0, signal: null }),
       ]),
     );
+  });
+
+  it.each([
+    {
+      name: 'real',
+      createRuntime: () => createRealRuntime(),
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('late-bound\\n');"],
+      runExec: async (runtime: ReturnType<typeof createRealRuntime>) =>
+        runtime.process.exec(process.execPath, ['-e', "process.stdout.write('late-bound\\n');"]),
+    },
+    {
+      name: 'simulation',
+      createRuntime: () => new SimulationRuntime(),
+      command: 'fake-late-bound',
+      args: ['--simulation'],
+      runExec: async (runtime: SimulationRuntime) => {
+        runtime.spawner.enqueueSpawn({
+          stdout: [{ delayMs: 1, data: 'late-bound\n' }],
+          close: { delayMs: 1, code: 0 },
+        });
+        const execPromise = runtime.process.exec('fake-late-bound', ['--simulation']);
+        await flushMicrotasks();
+        runtime.time.tick(1);
+        await flushMicrotasks();
+        return execPromise;
+      },
+    },
+  ])('observes late-bound exec dispatch after wrapping spawn post-construction (%s)', async (scenario) => {
+    const runtime = scenario.createRuntime();
+    const observer = new EventEmitterObserver();
+    const events: Array<{ command: string; args: string[] }> = [];
+
+    observer.onSpawn((event) => {
+      events.push({
+        command: event.command,
+        args: [...event.args],
+      });
+    });
+    observeRuntimeSpawns(runtime, observer);
+
+    await expect(scenario.runExec(runtime as never)).resolves.toEqual({
+      stdout: 'late-bound\n',
+      stderr: '',
+      status: 0,
+    });
+    expect(events).toEqual([
+      {
+        command: scenario.command,
+        args: scenario.args,
+      },
+    ]);
   });
 });

@@ -14,7 +14,6 @@ const childOutputChunkSchema = z.object({
   delayMs: z.number().optional(),
   data: z.string(),
 });
-type ChildOutputChunkDocument = z.infer<typeof childOutputChunkSchema>;
 
 const mockKillActionSchema = z.object({
   signal: z.union([z.string(), z.literal(0)]).optional(),
@@ -22,7 +21,6 @@ const mockKillActionSchema = z.object({
   exitCode: z.number().nullable().optional(),
   exitSignal: z.string().nullable().optional(),
 });
-type MockKillActionDocument = z.infer<typeof mockKillActionSchema>;
 
 const outputChunksSchema = z.union([z.string(), z.array(childOutputChunkSchema)]);
 
@@ -31,13 +29,11 @@ const mockSpawnCloseSchema = z.object({
   code: z.number().nullable().optional(),
   signal: z.string().nullable().optional(),
 });
-type MockSpawnClose = z.infer<typeof mockSpawnCloseSchema>;
 
 const mockSpawnErrorSchema = z.object({
   delayMs: z.number().optional(),
   error: scenarioErrorSchema,
 });
-type MockSpawnError = z.infer<typeof mockSpawnErrorSchema>;
 
 const mockSpawnScriptSchema = z.object({
   pid: z.number().optional(),
@@ -47,7 +43,6 @@ const mockSpawnScriptSchema = z.object({
   error: mockSpawnErrorSchema.nullable().optional(),
   kills: z.array(mockKillActionSchema).optional(),
 });
-type MockSpawnScriptDocument = z.infer<typeof mockSpawnScriptSchema>;
 
 const durableCliRuntimeRecordSchema = z.object({
   transport: z.literal('durable-cli').optional(),
@@ -58,14 +53,12 @@ const durableCliRuntimeRecordSchema = z.object({
   providerMeta: z.record(z.unknown()).optional(),
   tailWatermark: z.number().optional(),
 });
-type DurableCliRuntimeRecordDocument = z.infer<typeof durableCliRuntimeRecordSchema>;
 
 const mockDurableExitSchema = z.object({
   delayMs: z.number().optional(),
   exitCode: z.number().nullable().optional(),
   signal: z.string().nullable().optional(),
 });
-type MockDurableExit = z.infer<typeof mockDurableExitSchema>;
 
 const mockDurableScriptSchema = z.object({
   pid: z.number().optional(),
@@ -77,27 +70,23 @@ const mockDurableScriptSchema = z.object({
   kills: z.array(mockKillActionSchema).optional(),
   waitForExitError: scenarioErrorSchema.optional(),
 });
-type MockDurableScriptDocument = z.infer<typeof mockDurableScriptSchema>;
 
 const fakeProviderCliSchema = z.object({
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
   extraEnv: z.record(z.string()).optional(),
 });
-type FakeProviderCli = z.infer<typeof fakeProviderCliSchema>;
 
 const fakeProviderProgressSchema = z.object({
   delayMs: z.number().optional(),
   message: z.string(),
 });
-type FakeProviderProgress = z.infer<typeof fakeProviderProgressSchema>;
 
 const usageSummarySchema = z.object({
   inputTokens: z.number().optional(),
   outputTokens: z.number().optional(),
   costUsd: z.number().optional(),
 });
-type UsageSummaryDocument = z.infer<typeof usageSummarySchema>;
 
 const fakeProviderResultSchema = z.object({
   content: z.string().optional(),
@@ -112,7 +101,6 @@ const fakeProviderResultSchema = z.object({
   warnings: z.array(z.string()).optional(),
   usage: usageSummarySchema.optional(),
 });
-type FakeProviderResult = z.infer<typeof fakeProviderResultSchema>;
 
 const fakeProviderSchema = z.object({
   name: z.string().optional(),
@@ -121,7 +109,6 @@ const fakeProviderSchema = z.object({
   result: fakeProviderResultSchema.optional(),
   preflightError: scenarioErrorSchema.optional(),
 });
-type FakeProviderConfig = z.infer<typeof fakeProviderSchema>;
 
 const worldConfigSchema = z.object({
   epochMs: z.number().optional(),
@@ -143,7 +130,6 @@ export type WorldConfig = z.infer<typeof worldConfigSchema>;
 const bootStepSchema = z.object({
   type: z.literal('boot'),
 });
-type BootStep = z.infer<typeof bootStepSchema>;
 
 const launchStepSchema = z.object({
   type: z.literal('launch'),
@@ -175,19 +161,16 @@ const waitStepObjectSchema = z.object({
   maxSteps: z.number().int().positive().optional(),
   timeoutMs: z.number().positive().optional(),
 });
-type WaitStep = z.infer<typeof waitStepObjectSchema>;
 
 const advanceStepSchema = z.object({
   type: z.literal('advance'),
   ms: z.number(),
 });
-type AdvanceStep = z.infer<typeof advanceStepSchema>;
 
 const abortStepSchema = z.object({
   type: z.literal('abort'),
   jobId: z.string().optional(),
 });
-type AbortStep = z.infer<typeof abortStepSchema>;
 
 const killStepObjectSchema = z.object({
   type: z.literal('kill'),
@@ -199,38 +182,32 @@ export type KillStep = z.infer<typeof killStepObjectSchema>;
 export const cycleStepSchema = z.object({
   type: z.literal('cycle'),
 });
-type CycleStep = z.infer<typeof cycleStepSchema>;
 
 /** @deprecated Use cycleStepSchema. */
 export const restartStepSchema = z.object({
   type: z.literal('restart'),
 });
-type RestartStep = z.infer<typeof restartStepSchema>;
 
 const shutdownStepSchema = z.object({
   type: z.literal('shutdown'),
   reason: z.string().optional(),
 });
-type ShutdownStep = z.infer<typeof shutdownStepSchema>;
 
 const resultExpectationSchema = z.object({
   content: z.string().optional(),
   aborted: z.boolean().optional(),
 });
-type ResultExpectation = z.infer<typeof resultExpectationSchema>;
 
 const sessionCountExpectationSchema = z.object({
   provider: z.string(),
   count: z.number().int().nonnegative(),
   projectRoot: z.string().optional(),
 });
-type SessionCountExpectation = z.infer<typeof sessionCountExpectationSchema>;
 
 const timingExpectationSchema = z.object({
   minMs: z.number().optional(),
   maxMs: z.number().optional(),
 });
-type TimingExpectation = z.infer<typeof timingExpectationSchema>;
 
 const expectStepObjectSchema = z.object({
   type: z.literal('expect'),
@@ -250,7 +227,6 @@ const hangStepSchema = z.object({
   type: z.literal('hang'),
   delayMs: z.number().optional(),
 });
-type HangStep = z.infer<typeof hangStepSchema>;
 
 const crashStepSchema = z.object({
   type: z.literal('crash'),
@@ -258,7 +234,6 @@ const crashStepSchema = z.object({
   signal: z.string().optional(),
   delayMs: z.number().optional(),
 });
-type CrashStep = z.infer<typeof crashStepSchema>;
 
 const corruptTargetSchema = z.enum(['status', 'runtime', 'exit']);
 export type CorruptTarget = z.infer<typeof corruptTargetSchema>;
@@ -268,7 +243,6 @@ const corruptStepSchema = z.object({
   jobId: z.string(),
   target: corruptTargetSchema,
 });
-type CorruptStep = z.infer<typeof corruptStepSchema>;
 
 const stepSchema = z
   .discriminatedUnion('type', [

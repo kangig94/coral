@@ -27,7 +27,9 @@ Key modules and their roles in the current Coral runtime.
 | Module | Responsibility |
 | --- | --- |
 | `runtime.ts` | `Runtime` interface (6 subports: `time`, `storage`, `paths`, `process`, `ids`, `env`) + `RealRuntime` production implementation. All execution I/O routes through this single world, swapped once at `createBackendServer()`. |
-| `server.ts` | Backend server composition root. `createBackendServer({ runtime?, bootSnapshot?, ... })` wires `LifecycleDeps` and threads the runtime downward. `bootSnapshot` is the sole channel for boot identity (version, bundleHash, instanceId, token, etc.). |
+| `server.ts` | Backend daemon entry point. Wraps `createBackendCore` with the runtime observer. Composition lives in `src/execution/composition/`. |
+| `backend-core.ts` | Public façade re-exporting `createBackendCore`, `listInstantiatedExecutionServices`, and public types from `composition/`. |
+| `backend-core-types.ts` | Acyclic leaf for public surface types (`BackendBootSnapshot`, `BackendCoreOptions`, `BackendCoreResult`, `CreateServerFn`, `FetchFn`). |
 | `http-handler.ts` | HTTP route parsing and request handling |
 | `service.ts` | `ExecutionService`: session create (with optional agent), resume/fork, workflow delegation, wait handling. Receives root-resolved `backendNamespace` from deps (no ambient fallback). |
 | `engine.ts` | `LaunchCoordinator({ runtime })`: child-process tracking, queues, timeouts. Worker limits (`MAX_WORKERS`, `DISCUSS_MAX_WORKERS`) are lazy getters via `RuntimeEnv`. `DurableExecutionTransport` seam for the durable wrapper protocol. |
@@ -38,13 +40,24 @@ Key modules and their roles in the current Coral runtime.
 | `host-manager.ts` | Provider host runtime management (runtime-backed spawn) |
 | `event-bus.ts` | Typed backend event bus |
 | `progress-store.ts` | Namespace-bound job persistence. Constructor: `(namespace, runtime, eventBus?)`. Lazy hydration via `ensureHydrated()`. Instance-scoped `enqueueSequence`. |
-| `session-manager.ts` | Persisted provider sessions. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
-| `session-index.ts` | Namespace-aware session indexing |
+| `session-manager.ts` | Persisted provider sessions on disk. Constructor: `(workingDirectory, runtime, eventBus?)`. Runtime-injected, no static methods. |
 | `agent-resolution.ts` | Resolves `coral:<agent>` content from `agents/` and `skills/` |
 | `instruction.ts` | Converts resolved content into provider instructions |
 | `tool-response.ts` | Shared domain result contract used by HTTP routes |
 | `discuss-tools.ts` | Dedicated discuss action handlers for `/discuss/:action` |
 | `kb-tools.ts` | Dedicated KB action handlers for `/kb/:action` |
+
+## Backend Composition (`src/execution/composition/`)
+
+| Module | Responsibility |
+| --- | --- |
+| `create-backend-core.ts` | Orchestration root. `createBackendCore` sequences `resolveBackendDefaults` → `createBackendWorld` → `finalizeWithWorld(world)` → `createRuntimeState` → `createExecutionServices` → `createDiscussRuntime` → `createBackendControl`, assembles `HttpHandlerDeps` + `LifecycleDeps`, creates the server, and late-binds `lifecycleController`. Owns the single `streamResponses` set and the `scopeCheckJobs` 2-arity curry. |
+| `backend-defaults.ts` | `resolveBackendDefaults(options, runtime)` returns a single-use `BackendDefaultsPlan`: eager defaults plus `finalizeWithWorld(bindings)` that binds `listenFn`, `cleanupStaleJobsFn`, `markJobsAsErrorFn`, and `terminateAllFn` against the world and throws on a second call. Owns `__PLUGIN_ROOT__`, ownership verifier, plugin-root resolution, and the default factory bag. |
+| `backend-world.ts` | `createBackendWorld(options, runtime, defaultsPlan)` resolves identity metadata (version, bundleHash, flavor, instanceId, token, bindHost, advertiseHost, backendPid, coralEnvSnapshot, log, resolveProjectSource, namespace, pluginRoot), runs `setBuildFlavor`/`backendLog.init`, constructs primitive singletons (`IdleTimer`, `LaunchCoordinator`, `TypedEventBus`, `ProviderRegistry`, `PluginRegistry`, `DiscussContextRegistry`, `ProgressStore`, `ProviderHostManager`), and returns the `BackendWorld` bag. Declares `__VERSION__`. |
+| `runtime-state.ts` | `createRuntimeState(startedAt)` returns `MutableBackendRuntimeState` (lifecycle, startedAt, kbSubsystem, kbInitError, launchFenceActive). |
+| `execution-services.ts` | `createExecutionServices` exposes per-`CallerContext` `getExecutionService`/`getRecoveryService`/`listExecutionServices` with a private `Map<string, ExecutionServiceLike>`. Also re-exports `listInstantiatedExecutionServices` for façade compatibility. |
+| `discuss-runtime.ts` | `createDiscussRuntime` returns `getDiscussStoreForSource`, `getDiscussContext`, `readHelpersDeps`, `discussStores` (live Map for `LifecycleDeps`), and `hooks` (`onShutdown`, `onIdleCheck`, `onRecoveryComplete`). Hooks live here because every branch pivots on discuss state. |
+| `backend-control.ts` | `createBackendControl` returns `abortJobs`, `scopeCheckJobs`, `isDrainRequested`, `requestDrain`. Uses a late-bound `getLifecycleController` getter (called at use time, not snapshotted). Bundles abort/scope job-control and the drain admission gate as one control-plane helper. |
 
 ## Discuss Runtime (`src/execution/discuss/`)
 

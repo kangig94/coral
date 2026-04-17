@@ -225,7 +225,7 @@ export function readBackendInfo(pluginRoot: string, runtime?: BackendInfoRuntime
     if (!parsed || typeof parsed !== 'object') return null;
     const record = parsed as Record<string, unknown>;
     // Default host for legacy backend.json files written before host field was added
-    if (!record.host) record.host = '127.0.0.1';
+    record.host ??= '127.0.0.1';
     // Legacy backend.json files predate flavor; default them to prod on read.
     if (!('flavor' in record)) record.flavor = 'prod';
     if (!isBackendInfo(parsed)) return null;

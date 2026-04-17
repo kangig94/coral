@@ -8,6 +8,14 @@ export function exitIfChildProcess() {
   if (process.env.CORAL_CHILD === '1') process.exit(0);
 }
 
+export function parseManifestFlavor(manifestPath) {
+  try {
+    return JSON.parse(readFileSync(manifestPath, 'utf8')).flavor === 'dev' ? 'dev' : 'prod';
+  } catch {
+    return null;
+  }
+}
+
 let _cachedFlavor;
 let _cachedFlavorSource;
 
@@ -16,15 +24,11 @@ function readBuildFlavorState() {
     return { flavor: _cachedFlavor, source: _cachedFlavorSource };
   }
 
-  try {
-    const here = fileURLToPath(import.meta.url);
-    const manifest = resolve(dirname(here), '..', '..', 'bridge', 'manifest.json');
-    _cachedFlavor = JSON.parse(readFileSync(manifest, 'utf8')).flavor === 'dev' ? 'dev' : 'prod';
-    _cachedFlavorSource = 'manifest';
-  } catch {
-    _cachedFlavor = 'prod';
-    _cachedFlavorSource = 'fallback';
-  }
+  const here = fileURLToPath(import.meta.url);
+  const manifest = resolve(dirname(here), '..', '..', 'bridge', 'manifest.json');
+  const parsed = parseManifestFlavor(manifest);
+  _cachedFlavor = parsed ?? 'prod';
+  _cachedFlavorSource = parsed === null ? 'fallback' : 'manifest';
   return { flavor: _cachedFlavor, source: _cachedFlavorSource };
 }
 
@@ -58,6 +62,10 @@ export function readStdin() {
   });
 }
 
+export function readUserMessage(input) {
+  return input?.user_message || input?.message || input?.prompt || '';
+}
+
 export function resolveProjectSource(projectDir) {
   try {
     const remote = execSync('git remote get-url origin', {
@@ -87,7 +95,7 @@ export function resolveKbRoot() {
 
 const IDENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
-export function isOwnerId(value) {
+export function isValidSessionId(value) {
   return typeof value === 'string' && value.length > 0 && IDENT_PATTERN.test(value);
 }
 

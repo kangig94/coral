@@ -13,7 +13,6 @@ import { createProviderHostManager } from '../../execution/host-manager.js';
 import { ProgressStore } from '../../execution/progress-store.js';
 import { createRealRuntime } from '../../execution/runtime.js';
 import { ExecutionService } from '../../execution/service.js';
-import { SessionIndex } from '../../execution/session-index.js';
 import { pluginRootNamespace, resolveProjectSource } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
@@ -115,7 +114,7 @@ async function startHttpHandlerServer(
         res.statusCode = 500;
         res.setHeader('Content-Type', 'application/json');
         res.end(
-          JSON.stringify({ error: 'internal_error', message: error instanceof Error ? error.message : String(error) }),
+          JSON.stringify({ code: 'internal_error', message: error instanceof Error ? error.message : String(error) }),
         );
         return;
       }
@@ -220,7 +219,6 @@ describe('agent wire contract', () => {
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
     const progressStore = new ProgressStore('test-ns', runtime, eventBus);
-    const sessionIndex = new SessionIndex(runtime);
     const pluginRegistry = createPluginRegistry({
       storage: runtime.storage,
       env: runtime.env,
@@ -274,7 +272,6 @@ describe('agent wire contract', () => {
       runtimeState,
       idleTimer: idleTimer as never,
       progressStore,
-      sessionIndex,
       activeLaunchCount: () => launchCoordinator.active,
       queueDepth: () => launchCoordinator.queueDepth(),
       streamResponses: new Set(),

@@ -10,6 +10,7 @@ import {
   executePipeline,
   formatStepOutput,
   launchAtomWithRetry,
+  toSessionHandles,
   waitForAtoms,
   type LaunchedAtom,
 } from '../pipe-executor.js';
@@ -28,21 +29,20 @@ function running(job: string, session: string) {
   };
 }
 
-function terminal(jobId: string, sessionId: string, result: TerminalResult): WaitStreamEvent {
+function terminal(jobId: string, _sessionId: string, result: TerminalResult): WaitStreamEvent {
   return {
     type: 'terminal',
-    completedJobId: jobId,
-    sessionId,
+    jobId,
     remainingJobIds: [],
     resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
     result,
   };
 }
 
-function stillRunning(runningJobIds: string[]): WaitStreamEvent {
+function stillWaiting(waitingJobIds: string[]): WaitStreamEvent {
   return {
-    type: 'running',
-    runningJobIds,
+    type: 'waiting',
+    waitingJobIds,
   };
 }
 
@@ -58,7 +58,7 @@ type MockExecutionService = WorkflowExecutionPort & {
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
-  getConversationRef: ReturnType<typeof vi.fn>;
+  cleanupWorkflowSessions: ReturnType<typeof vi.fn>;
   waitForJobTerminal: ReturnType<typeof vi.fn>;
 };
 
@@ -69,7 +69,7 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
     waitStream: vi.fn((_req: WaitRequest) => emit([])),
-    getConversationRef: vi.fn(() => undefined),
+    cleanupWorkflowSessions: vi.fn(),
     waitForJobTerminal: vi.fn(async () => {}),
     ...overrides,
   } as MockExecutionService;
@@ -90,6 +90,36 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
     ...overrides,
   };
 }
+
+describe('toSessionHandles', () => {
+  it('deduplicates atoms by (providerName, sessionId)', () => {
+    const handles = toSessionHandles([
+      { providerName: 'claude', sessionId: 'sess-a' },
+      { providerName: 'claude', sessionId: 'sess-b' },
+      { providerName: 'claude', sessionId: 'sess-a' },
+      { providerName: 'codex', sessionId: 'sess-a' },
+    ]);
+
+    expect(handles).toEqual([
+      { providerName: 'claude', sessionId: 'sess-a' },
+      { providerName: 'claude', sessionId: 'sess-b' },
+      { providerName: 'codex', sessionId: 'sess-a' },
+    ]);
+  });
+
+  it('treats same sessionId across providers as distinct handles', () => {
+    const handles = toSessionHandles([
+      { providerName: 'claude', sessionId: 'sess-1' },
+      { providerName: 'codex', sessionId: 'sess-1' },
+    ]);
+
+    expect(handles).toHaveLength(2);
+  });
+
+  it('returns an empty array for no atoms', () => {
+    expect(toSessionHandles([])).toEqual([]);
+  });
+});
 
 describe('workflow pipe executor', () => {
   it('passes each step output as the next step prompt and returns ordered step details', async () => {
@@ -247,7 +277,7 @@ describe('workflow pipe executor', () => {
       waitStream: vi.fn((req: WaitRequest) => {
         if (firstCycle) {
           firstCycle = false;
-          return emit([stillRunning([...req.jobIds])]);
+          return emit([stillWaiting([...req.jobIds])]);
         }
         return emit([
           terminal('job-codex-resumed', 'session-codex', { content: 'CODEX DONE' }),
@@ -323,7 +353,7 @@ describe('workflow pipe executor', () => {
       waitForJobTerminal: vi.fn(async () => {
         throw new Error('Timed out waiting for job job-1 to reach a terminal state and release its session');
       }),
-      waitStream: vi.fn((req: WaitRequest) => emit([stillRunning([...req.jobIds])])),
+      waitStream: vi.fn((req: WaitRequest) => emit([stillWaiting([...req.jobIds])])),
     });
 
     try {
@@ -348,7 +378,7 @@ describe('workflow pipe executor', () => {
     }
   });
 
-  it('success path calls cleanup with resolved refs, undefined refs skipped', async () => {
+  it('success path passes all launched sessions to cleanup port', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async (_provider, coralName) => {
         if (coralName === 'architect') {
@@ -365,7 +395,6 @@ describe('workflow pipe executor', () => {
         }
         return emit([]);
       }),
-      getConversationRef: vi.fn((_provider, sessionId) => (sessionId === 'session-1' ? 'conv-ref-1' : undefined)),
     });
 
     const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx);
@@ -385,20 +414,21 @@ describe('workflow pipe executor', () => {
       expect.objectContaining({ prompt: 'seed', cwd: ctx.projectRoot }),
       ctx,
     );
-    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
-    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-2');
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
+      { providerName: 'claude', sessionId: 'session-1' },
+      { providerName: 'claude', sessionId: 'session-2' },
+    ]);
   });
 
-  it('abort path calls cleanup', async () => {
+  it('abort path still invokes cleanup with launched sessions', async () => {
     const controller = new AbortController();
     let waitCalls = 0;
     const executionSvc = createExecutionService({
-      getConversationRef: vi.fn(() => 'conv-ref-aborted'),
       waitStream: vi.fn((_req: WaitRequest) => {
         waitCalls += 1;
         if (waitCalls === 1) {
           controller.abort();
-          return emit([stillRunning(['job-1'])]);
+          return emit([stillWaiting(['job-1'])]);
         }
         return emit([terminal('job-1', 'session-1', { content: '', aborted: true })]);
       }),
@@ -411,13 +441,14 @@ describe('workflow pipe executor', () => {
       aborted: true,
     });
 
-    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
-    expect(executionSvc.getConversationRef).toHaveBeenCalledTimes(1);
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledTimes(1);
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
+      { providerName: 'claude', sessionId: 'session-1' },
+    ]);
   });
 
-  it('error path calls cleanup', async () => {
+  it('error path still invokes cleanup with launched sessions', async () => {
     const executionSvc = createExecutionService({
-      getConversationRef: vi.fn(() => 'conv-ref-error'),
       waitStream: vi.fn((req: WaitRequest) => {
         if (req.jobIds[0] === 'job-1') {
           return emit([terminal('job-1', 'session-1', { content: '', notice: 'error msg' })]);
@@ -433,26 +464,26 @@ describe('workflow pipe executor', () => {
       aborted: false,
     });
 
-    expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
+      { providerName: 'claude', sessionId: 'session-1' },
+    ]);
   });
 
-  it('very-early-abort skips cleanup with no launched atoms', async () => {
+  it('very-early-abort invokes cleanup with an empty session list', async () => {
     const controller = new AbortController();
     controller.abort();
 
-    const executionSvc = createExecutionService({
-      getConversationRef: vi.fn(() => 'conv-ref-skipped'),
-    });
+    const executionSvc = createExecutionService();
 
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, { signal: controller.signal }),
     ).rejects.toMatchObject({ aborted: true });
 
-    expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([]);
     expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
   });
 
-  it('codex-only pipeline skips ref resolution', async () => {
+  it('codex-only pipeline delegates cleanup routing to the port', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
       waitStream: vi.fn((req: WaitRequest) => {
@@ -461,16 +492,17 @@ describe('workflow pipe executor', () => {
         }
         return emit([]);
       }),
-      getConversationRef: vi.fn(() => 'conv-ref-codex'),
     });
 
     const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx);
 
     expect(result.finalOutput).toBe('DONE');
-    expect(executionSvc.getConversationRef).not.toHaveBeenCalled();
+    expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
+      { providerName: 'codex', sessionId: 'session-1' },
+    ]);
   });
 
-  it('deduplicates stale-recovered claude sessions by sessionId', async () => {
+  it('invokes cleanup with the (providerName, sessionId) pair after stale recovery', async () => {
     // Mock Date.now to guarantee time advances between lastActivityAt set and stale check.
     let mockNow = 10_000;
     vi.spyOn(Date, 'now').mockImplementation(() => {
@@ -480,12 +512,11 @@ describe('workflow pipe executor', () => {
 
     let firstCycle = true;
     const executionSvc = createExecutionService({
-      getConversationRef: vi.fn(() => 'conv-ref-1'),
       resume: vi.fn(async () => running('job-resumed', 'session-1')),
       waitStream: vi.fn((_req: WaitRequest) => {
         if (firstCycle) {
           firstCycle = false;
-          return emit([stillRunning(['job-1'])]);
+          return emit([stillWaiting(['job-1'])]);
         }
         return emit([terminal('job-resumed', 'session-1', { content: 'DONE' })]);
       }),
@@ -507,8 +538,10 @@ describe('workflow pipe executor', () => {
         },
         ctx,
       );
-      expect(executionSvc.getConversationRef).toHaveBeenCalledTimes(1);
-      expect(executionSvc.getConversationRef).toHaveBeenCalledWith('claude', 'session-1');
+      expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledTimes(1);
+      expect(executionSvc.cleanupWorkflowSessions).toHaveBeenCalledWith([
+        { providerName: 'claude', sessionId: 'session-1' },
+      ]);
     } finally {
       vi.restoreAllMocks();
     }
@@ -602,7 +635,7 @@ describe('workflow pipe executor', () => {
         secondStepWait += 1;
         if (secondStepWait === 1) {
           controller.abort();
-          return emit([stillRunning(['job-2'])]);
+          return emit([stillWaiting(['job-2'])]);
         }
         return emit([terminal('job-2', 'session-2', { content: '', aborted: true })]);
       }),

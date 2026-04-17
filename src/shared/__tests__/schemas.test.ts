@@ -8,6 +8,7 @@ import {
   sessionForkSchema,
   sessionMessageSchema,
   waitInputSchema,
+  workflowCommandSchema,
   workflowRequestSchema,
 } from '../schemas.js';
 
@@ -161,6 +162,17 @@ describe('sessionMessageSchema', () => {
       projectRoot: '/tmp/project',
     });
     expect(parsed).not.toHaveProperty('bypassPermissions');
+    expect(parsed).not.toHaveProperty('provider');
+  });
+
+  it('accepts an optional provider assertion', () => {
+    const parsed = sessionMessageSchema.parse({
+      prompt: 'Continue',
+      projectRoot: '/tmp/project',
+      provider: 'codex',
+    });
+
+    expect(parsed.provider).toBe('codex');
   });
 
   it('accepts explicit continuation overrides', () => {
@@ -191,7 +203,7 @@ describe('sessionMessageSchema', () => {
     const result = sessionMessageSchema.safeParse({
       prompt: 'Continue',
       projectRoot: '/tmp/project',
-      provider: 'codex',
+      extra: true,
     });
 
     expect(result.success).toBe(false);
@@ -208,6 +220,16 @@ describe('sessionForkSchema', () => {
       projectRoot: '/tmp/project',
     });
     expect(parsed).not.toHaveProperty('bypassPermissions');
+    expect(parsed).not.toHaveProperty('provider');
+  });
+
+  it('accepts an optional provider assertion', () => {
+    const parsed = sessionForkSchema.parse({
+      projectRoot: '/tmp/project',
+      provider: 'codex',
+    });
+
+    expect(parsed.provider).toBe('codex');
   });
 
   it('accepts an empty prompt when provided', () => {
@@ -230,27 +252,17 @@ describe('sessionForkSchema', () => {
 });
 
 describe('jobWaitSchema', () => {
-  it('parses a valid wait body with a strict cursor shape', () => {
+  it('parses a valid wait body without a cursor field', () => {
     const parsed = jobWaitSchema.parse({
       jobIds: ['job-1', 'job-2'],
       projectRoot: '/tmp/project',
       timeoutSeconds: 30,
-      cursor: {
-        jobs: {
-          'job-1': 4,
-        },
-      },
     });
 
     expect(parsed).toEqual({
       jobIds: ['job-1', 'job-2'],
       projectRoot: '/tmp/project',
       timeoutSeconds: 30,
-      cursor: {
-        jobs: {
-          'job-1': 4,
-        },
-      },
     });
   });
 
@@ -263,29 +275,24 @@ describe('jobWaitSchema', () => {
     ).toThrow('At least one job required');
   });
 
-  it('rejects invalid cursor values and unknown cursor keys', () => {
-    expect(
-      jobWaitSchema.safeParse({
-        jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
-        cursor: {
-          jobs: {
-            'job-1': -1,
-          },
+  it('rejects a body cursor via strict mode', () => {
+    const input = {
+      jobIds: ['job-1'],
+      projectRoot: '/tmp/project',
+      cursor: {
+        jobs: {
+          'job-1': 4,
         },
-      }).success,
-    ).toBe(false);
+      },
+    };
 
-    expect(
-      jobWaitSchema.safeParse({
-        jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
-        cursor: {
-          jobs: {},
-          extra: true,
-        },
-      }).success,
-    ).toBe(false);
+    expect(() => jobWaitSchema.parse(input)).toThrow();
+
+    const parsed = jobWaitSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.code).toBe('unrecognized_keys');
+    }
   });
 
   it('rejects legacy inline-only fields via strict mode', () => {
@@ -331,7 +338,7 @@ describe('jobAbortSchema', () => {
 });
 
 describe('workflowRequestSchema', () => {
-  it('parses a minimal workflow request without defaulting provider', () => {
+  it("applies provider default of 'claude' when omitted", () => {
     const parsed = workflowRequestSchema.parse({
       expression: 'architect -> resolver',
       startPrompt: 'hello',
@@ -341,9 +348,10 @@ describe('workflowRequestSchema', () => {
     expect(parsed).toEqual({
       expression: 'architect -> resolver',
       startPrompt: 'hello',
+      provider: 'claude',
       projectRoot: '/tmp/project',
     });
-    expect(parsed).not.toHaveProperty('provider');
+    expect(parsed.provider).toBe('claude');
   });
 
   it('accepts supported optional fields', () => {
@@ -365,6 +373,54 @@ describe('workflowRequestSchema', () => {
       owner: 'owner-1',
       claudeModelCap: 'haiku',
     });
+  });
+
+  it('re-parses canonical workflow commands idempotently', () => {
+    const parsed = workflowCommandSchema.parse({
+      expression: 'architect',
+      startPrompt: 'hello',
+      workDir: '/tmp/work',
+    });
+
+    expect(workflowCommandSchema.parse(parsed)).toEqual(parsed);
+  });
+
+  it('rejects legacy start_prompt under strict mode', () => {
+    const parsed = workflowRequestSchema.safeParse({
+      expression: 'architect',
+      start_prompt: 'hello',
+      startPrompt: 'hello',
+      projectRoot: '/tmp/project',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected parse failure');
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Unrecognized key(s) in object: 'start_prompt'",
+        }),
+      ]),
+    );
+  });
+
+  it('rejects legacy work_dir under strict mode', () => {
+    const parsed = workflowRequestSchema.safeParse({
+      expression: 'architect',
+      startPrompt: 'hello',
+      work_dir: '/tmp/legacy',
+      projectRoot: '/tmp/project',
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected parse failure');
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: "Unrecognized key(s) in object: 'work_dir'",
+        }),
+      ]),
+    );
   });
 
   it('rejects effort and other unknown keys via strict mode', () => {

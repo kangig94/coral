@@ -1,3 +1,4 @@
+import type { ZodError, ZodIssue } from 'zod';
 import { isRecord } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 
@@ -15,6 +16,17 @@ export function domainError(code: string, message: string, detail?: unknown): To
 
 export function toolValidationError(error: { message: string }): ToolDomainResult {
   return domainError('invalid_request', error.message);
+}
+
+export function formatZodError(error: ZodError): { message: string; detail: { issues: ZodIssue[] } } {
+  const first = error.issues[0];
+  const path = first?.path.join('.') ?? '';
+  const head = first ? (path.length > 0 ? `${path}: ${first.message}` : first.message) : 'invalid request';
+  const extras = error.issues.length - 1;
+  return {
+    message: extras > 0 ? `${head} (+${extras} more issues)` : head,
+    detail: { issues: error.issues },
+  };
 }
 
 export function deriveErrorMessage(code: string, detail?: unknown): string {
@@ -69,6 +81,7 @@ export function launchToHttp(
     case 'session_busy':
     case 'non_resumable':
     case 'legacy_session_unsupported':
+    case 'provider_mismatch':
       statusCode = 409;
       break;
   }

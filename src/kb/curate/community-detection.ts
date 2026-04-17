@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
+import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
 import { unlinkIfExists } from '../../shared/utils.js';
 import {
@@ -31,13 +32,19 @@ import {
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };
-type Louvain = (typeof import('graphology-communities-louvain'))['default'];
-type LouvainDetails = import('graphology-communities-louvain').DetailedLouvainOutput;
+type Louvain = {
+  detailed(
+    graph: AbstractGraph<TagGraphNodeAttributes, TagGraphEdgeAttributes>,
+    options?: Record<string, unknown>,
+  ): DetailedLouvainOutput;
+};
+type LouvainDetails = DetailedLouvainOutput;
 
 const Graph =
   (GraphologyModule as unknown as { default?: GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes> })
     .default ?? (GraphologyModule as unknown as GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes>);
-const louvain = (louvainModule as unknown as { default?: Louvain }).default ?? (louvainModule as unknown as Louvain);
+const louvain: Louvain =
+  (louvainModule as unknown as { default?: Louvain }).default ?? (louvainModule as unknown as Louvain);
 
 export type TagGraphEdge = {
   left: string;

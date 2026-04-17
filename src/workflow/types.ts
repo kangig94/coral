@@ -1,6 +1,12 @@
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { LaunchDecision, LaunchState, ProviderInstruction, WaitRequest, WaitStreamEvent } from '../shared/types.js';
+import type {
+  LaunchDecision,
+  LaunchState,
+  ProviderInstruction,
+  WaitStreamEvent,
+  WaitStreamRequest,
+} from '../shared/types.js';
 
 export type AgentAtom = {
   kind: 'agent';
@@ -45,12 +51,21 @@ export interface ResumeInput {
   parentWorkflowJobId?: string;
 }
 
+export interface WorkflowSessionHandle {
+  providerName: string;
+  sessionId: string;
+}
+
 export interface WorkflowExecutionPort {
   coralDispatch(providerName: string, coralName: string, input: CoralDispatchInput, ctx: CallerContext): Promise<LaunchDecision>;
   resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
-  waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent>;
-  getConversationRef(providerName: string, sessionId: string): string | undefined;
+  waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
+  /**
+   * Dispatch post-workflow cleanup to each provider's `cleanupSessions` hook.
+   * Fire-and-forget: cleanup runs asynchronously and failures surface only via `backendLog.warn`.
+   */
+  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void;
 }

@@ -118,8 +118,8 @@ describe('backend isolation', () => {
     coordA.requestLaunch('job-a', 'codex');
     coordB.requestLaunch('job-b', 'codex');
 
-    const sessionEventsB: string[] = [];
-    busB.on('session:updated', (e) => sessionEventsB.push(e.sessionId));
+    const createdJobIdsB: string[] = [];
+    busB.on('job:created', (e) => createdJobIdsB.push(e.jobId));
 
     regA.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
@@ -134,7 +134,12 @@ describe('backend isolation', () => {
     expect(coordB.getActiveJobIds()).toEqual(['job-b']);
     expect(regB.contexts.has('proj')).toBe(true);
 
-    busB.emit('session:updated', { sessionId: 's1', shardHash: 'h1', version: 1 });
-    expect(sessionEventsB).toEqual(['s1']);
+    busB.emit('job:created', {
+      jobId: 'job-b2',
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot: 'proj',
+    });
+    expect(createdJobIdsB).toEqual(['job-b2']);
   });
 });

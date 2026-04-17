@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from './utils.js';
+import type { EffortLevel } from './types.js';
+import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from './identifiers.js';
 
 const modelNameSchema = z
   .string()
@@ -42,6 +43,7 @@ const claudeModelCapSchema = modelNameSchema.optional();
 
 const continuationFieldsShape = {
   projectRoot: projectRootSchema,
+  provider: providerNameSchema.optional(),
   model: modelSchema,
   workDir: cwdSchema,
   owner: ownerSchema.optional(),
@@ -92,7 +94,6 @@ export const jobWaitSchema = z
     jobIds: z.array(z.string().min(1)).min(1, 'At least one job required'),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
-    cursor: waitCursorSchema.optional(),
   })
   .strict();
 
@@ -103,20 +104,27 @@ export const jobAbortSchema = z
   })
   .strict();
 
-export const workflowRequestSchema = z
+export const workflowCommandSchema = z
   .object({
     expression: z.string().min(1, 'Expression required'),
     startPrompt: z.string().min(1, 'Prompt required'),
     context: z.string().optional(),
-    provider: providerNameSchema.optional(),
+    provider: providerNameSchema.default('claude'),
     workDir: cwdSchema,
-    projectRoot: projectRootSchema,
     owner: ownerSchema.optional(),
+  })
+  .strict();
+
+export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
+
+export const workflowRequestSchema = workflowCommandSchema
+  .extend({
+    projectRoot: projectRootSchema,
     claudeModelCap: claudeModelCapSchema,
   })
   .strict();
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+export type { EffortLevel } from './types.js';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'max']);
 const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };

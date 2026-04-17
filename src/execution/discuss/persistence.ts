@@ -1,6 +1,7 @@
 import { buildWatchEvents } from '../../discuss/projections.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../../discuss/events.js';
 import type { Result } from '../../discuss/types.js';
+import { backendLog } from '../../shared/backend-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import {
   ABORT_REASON,
@@ -138,12 +139,14 @@ export async function commitDecision(
   }
 }
 
+const MAX_STALE_RETRIES = 5;
+
 export async function appendRuntimeEvents(
   ctx: DiscussContext,
   sessionId: string,
   buildEvents: (snapshot: PersistedDiscussSnapshot) => DiscussDomainEvent[],
 ): Promise<PersistedDiscussSnapshot | null> {
-  while (true) {
+  for (let attempt = 0; attempt < MAX_STALE_RETRIES; attempt++) {
     const current = loadAttachedOrPersistedSnapshot(ctx, sessionId);
     if (!current) {
       return null;
@@ -160,12 +163,21 @@ export async function appendRuntimeEvents(
       return snapshot;
     } catch (error: unknown) {
       if (error instanceof DiscussStaleWriteError) {
+        const seqBefore = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
         syncLiveSnapshot(ctx, sessionId);
+        const seqAfter = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
+        if (seqBefore !== undefined && seqAfter === seqBefore) {
+          backendLog.warn(`appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`);
+          return null;
+        }
         continue;
       }
       throw error;
     }
   }
+
+  backendLog.warn(`appendRuntimeEvents: exhausted ${MAX_STALE_RETRIES} retries for ${sessionId}`);
+  return null;
 }
 
 export function buildPersistedWatchState(ctx: DiscussContext, sessionId: string, cursor?: number): WatchState {

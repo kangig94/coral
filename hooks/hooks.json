@@ -140,6 +140,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/cli-monitor-guard.mjs\"",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "Stop": [

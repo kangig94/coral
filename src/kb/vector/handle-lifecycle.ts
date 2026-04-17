@@ -1,5 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { backendLog } from '../../shared/backend-log.js';
 import type { KbVectorLease, KbVectorSpecState } from '../contracts.js';
 import type { VectorStore } from './contracts.js';
 import { createDuckDBVectorStore, vectorAddonPath, vectorSnapshotDbPath } from './store.js';
@@ -240,8 +241,8 @@ export class VectorHandleLifecycle {
         return;
       }
 
-      process.stderr.write(
-        `Warning: forcing close of retired KB vector handle after ${this.vectorDrainTimeoutMs}ms drain timeout.\n`,
+      backendLog.warn(
+        `Warning: forcing close of retired KB vector handle after ${this.vectorDrainTimeoutMs}ms drain timeout.`,
       );
       void this.forceCloseRuntimeVectorHandle(handle);
     }, this.vectorDrainTimeoutMs);

@@ -5,16 +5,15 @@ import type { AcceptedLaunchResponse } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
 import {
-  formatError,
   formatLaunch,
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitRunning,
+  formatWaitWaiting,
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { errorMessage, isTransientStreamError } from '../shared/utils.js';
+import { isTransientStreamError } from '../shared/utils.js';
 import type { CliStreamEvent } from './types.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
@@ -29,6 +28,7 @@ type LaunchAndFollowOptions = {
   pluginRoot: string;
   projectRoot: string;
   outputFormat: 'text' | 'json';
+  emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
   isTTY: boolean;
   columns: number;
 };
@@ -42,20 +42,23 @@ function toLaunchEvent(decision: FollowLaunchDecision): Extract<CliStreamEvent, 
   };
 }
 
-function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { type: 'launch' }> {
+function toCliStreamEvent(
+  event: WaitStreamEvent,
+  sessionId: string,
+): Exclude<CliStreamEvent, { type: 'launch' }> {
   switch (event.type) {
     case 'progress':
       return {
         type: 'progress',
         jobId: event.jobId,
-        sessionId: event.sessionId,
+        sessionId,
         message: event.message,
       };
     case 'queued':
       return {
         type: 'queued',
         jobId: event.jobId,
-        sessionId: event.sessionId,
+        sessionId,
         queuePosition: event.queuePosition,
         runningJobIds: event.runningJobIds,
       };
@@ -63,8 +66,8 @@ function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { typ
       const { content: _content, ...resultMeta } = event.result;
       return {
         type: 'terminal',
-        completedJobId: event.completedJobId,
-        sessionId: event.sessionId,
+        jobId: event.jobId,
+        sessionId,
         remainingJobIds: event.remainingJobIds,
         result: {
           ...resultMeta,
@@ -72,10 +75,10 @@ function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { typ
         },
       };
     }
-    case 'running':
+    case 'waiting':
       return {
-        type: 'running',
-        runningJobIds: event.runningJobIds,
+        type: 'waiting',
+        waitingJobIds: event.waitingJobIds,
       };
   }
 }
@@ -91,45 +94,36 @@ function emitLaunch(decision: FollowLaunchDecision, outputFormat: 'text' | 'json
 
 function emitWaitEvent(
   event: WaitStreamEvent,
+  sessionId: string,
   cursor: string | null,
   outputFormat: 'text' | 'json',
   renderContext: WaitRenderContext,
 ): void {
   if (outputFormat === 'json') {
-    process.stdout.write(JSON.stringify(toCliStreamEvent(event)) + '\n');
+    process.stdout.write(JSON.stringify(toCliStreamEvent(event, sessionId)) + '\n');
     return;
   }
 
   let line: string;
   switch (event.type) {
     case 'progress':
-      line = formatWaitProgress(event, cursor);
+      line = formatWaitProgress(event);
       break;
     case 'queued':
-      line = formatWaitQueued(event, cursor);
+      line = formatWaitQueued(event);
       break;
     case 'terminal':
       line = formatWaitTerminal(event, cursor, false);
       break;
-    case 'running':
-      line = formatWaitRunning(event, cursor);
+    case 'waiting':
+      line = formatWaitWaiting(event, cursor);
       break;
   }
 
   process.stdout.write(renderWaitLine(line, renderContext));
-  if ((event.type === 'terminal' || event.type === 'running') && renderContext.isTTY) {
+  if ((event.type === 'terminal' || event.type === 'waiting') && renderContext.isTTY) {
     process.stdout.write('\n');
   }
-}
-
-function emitFollowError(error: unknown, outputFormat: 'text' | 'json'): void {
-  if (outputFormat === 'json') {
-    const message = errorMessage(error);
-    process.stderr.write(JSON.stringify({ error: true, message }) + '\n');
-    return;
-  }
-
-  process.stderr.write(formatError(error) + '\n');
 }
 
 function toExitCode(result: TerminalResult): number {
@@ -212,8 +206,8 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           return 1;
         }
 
-        emitFollowError(error, options.outputFormat);
-        return 1;
+        options.emitError(error, options.outputFormat);
+        return typeof process.exitCode === 'number' ? process.exitCode : 1;
       }
 
       if (localAbortRequested) {
@@ -233,9 +227,9 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           cursorRef,
         )) {
           const cursor = cursorRef.lastEventId ?? null;
-          emitWaitEvent(event, cursor, options.outputFormat, renderContext);
+          emitWaitEvent(event, options.launchResult.session, cursor, options.outputFormat, renderContext);
 
-          if (event.type === 'running') {
+          if (event.type === 'waiting') {
             reconnect = true;
             break;
           }
@@ -249,16 +243,16 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           continue;
         }
 
-        emitFollowError(new Error('wait stream ended without a terminal event'), options.outputFormat);
-        return 1;
+        options.emitError(new Error('wait stream ended without a terminal event'), options.outputFormat);
+        return typeof process.exitCode === 'number' ? process.exitCode : 1;
       } catch (error) {
         if (localAbortRequested) {
           return 1;
         }
 
         if (!isTransientStreamError(error) || retriesLeft === 0) {
-          emitFollowError(error, options.outputFormat);
-          return 1;
+          options.emitError(error, options.outputFormat);
+          return typeof process.exitCode === 'number' ? process.exitCode : 1;
         }
 
         retriesLeft -= 1;

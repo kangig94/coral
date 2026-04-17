@@ -1,10 +1,10 @@
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderCatalog } from '../providers/catalog.js';
 import { isOwnerId } from '../shared/utils.js';
 import type { LaunchDecision } from '../shared/types.js';
 import type { CallerContext } from '../shared/request-context.js';
+import { workflowCommandSchema, type WorkflowCommand } from '../shared/schemas.js';
 import { ZodError } from 'zod';
 import { parseExpression } from './pipe-parser.js';
-import { workflowInputSchema, type WorkflowInput } from './schemas.js';
 import type { PipelineAST } from './types.js';
 
 export class WorkflowInputError extends Error {
@@ -23,7 +23,7 @@ interface WorkflowService {
   executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision>;
@@ -82,16 +82,16 @@ function unknownProviderDecision(providers: string[]): LaunchDecision {
   };
 }
 
-function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderRegistry): string[] {
+function findUnknownProviders(ast: PipelineAST, defaultProviderName: string, providerRegistry: ProviderCatalog): string[] {
   const unknownProviders = new Set<string>();
-  if (!providerRegistry.get(defaultProviderName)) {
+  if (!providerRegistry.getExecutor(defaultProviderName)) {
     unknownProviders.add(defaultProviderName);
   }
 
   for (const step of ast) {
     for (const atom of step) {
       const providerName = atom.provider ?? defaultProviderName;
-      if (!providerRegistry.get(providerName)) {
+      if (!providerRegistry.getExecutor(providerName)) {
         unknownProviders.add(providerName);
       }
     }
@@ -104,9 +104,9 @@ export async function handleWorkflow(
   rawArgs: Record<string, unknown>,
   executionSvc: WorkflowService,
   ctx: CallerContext,
-  providerRegistry: ProviderRegistry,
+  providerRegistry: ProviderCatalog,
 ): Promise<LaunchDecision> {
-  const input = workflowInputSchema.parse(rawArgs);
+  const input = workflowCommandSchema.parse(rawArgs);
   let ast: PipelineAST;
   try {
     ast = normalizeAst(parseExpression(input.expression), input.provider);
@@ -123,9 +123,9 @@ export async function handleWorkflow(
 
   const owner = isOwnerId(input.owner) ? input.owner : undefined;
   if (!owner) {
-    return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.work_dir);
+    return executionSvc.executeWorkflow(input.provider, ast, input, ctx, input.workDir);
   }
 
   const effectiveContext = { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: owner } };
-  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.work_dir);
+  return executionSvc.executeWorkflow(input.provider, ast, input, effectiveContext, input.workDir);
 }

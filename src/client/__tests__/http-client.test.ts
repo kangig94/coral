@@ -192,6 +192,142 @@ describe('client http-client', () => {
     );
   });
 
+  it('includes provider in sendMessage requests when provided', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          session: 'session-1',
+          job: 'job-4',
+          launchState: 'queued',
+        },
+        202,
+        'Accepted',
+      ),
+    );
+
+    await expect(
+      client.sendMessage('session-1', 'continue', {
+        provider: 'codex',
+        model: 'gpt-5',
+      }),
+    ).resolves.toEqual({
+      session: 'session-1',
+      job: 'job-4',
+      launchState: 'queued',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/sessions/session-1/messages',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'continue',
+          provider: 'codex',
+          model: 'gpt-5',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+  });
+
+  it('omits provider from sendMessage requests when not provided', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          session: 'session-1',
+          job: 'job-5',
+          launchState: 'queued',
+        },
+        202,
+        'Accepted',
+      ),
+    );
+
+    await expect(
+      client.sendMessage('session-1', 'continue', {
+        model: 'gpt-5',
+      }),
+    ).resolves.toEqual({
+      session: 'session-1',
+      job: 'job-5',
+      launchState: 'queued',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/sessions/session-1/messages',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'continue',
+          model: 'gpt-5',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+  });
+
+  it('includes provider in forkSession requests when provided', async () => {
+    const client = new BackendClient({
+      ensureBackend: async () => backendHandle,
+      defaultContext,
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          session: 'session-2',
+          job: 'job-6',
+          launchState: 'running',
+        },
+        201,
+        'Created',
+      ),
+    );
+
+    await expect(
+      client.forkSession('session-1', 'branch', {
+        provider: 'claude',
+        model: 'sonnet',
+      }),
+    ).resolves.toEqual({
+      session: 'session-2',
+      job: 'job-6',
+      launchState: 'running',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4100/sessions/session-1/forks',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'branch',
+          provider: 'claude',
+          model: 'sonnet',
+          projectRoot: '/tmp/project',
+          owner: 'team-a',
+          effort: 'high',
+          claudeModelCap: 'sonnet',
+        }),
+      }),
+    );
+  });
+
   it('routes workflow through POST /workflow with the camelCase request shape', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
@@ -770,14 +906,11 @@ describe('client http-client', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('uses the new job and session read routes', async () => {
+  it('uses the new job read routes', async () => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
       defaultContext,
     });
-    const sessionsBody = {
-      sessions: [{ sessionId: 'session-1', provider: 'codex', provenanceState: 'authoritative' as const }],
-    };
     const jobsBody = {
       jobs: [
         {
@@ -812,17 +945,15 @@ describe('client http-client', () => {
     };
 
     fetchMock
-      .mockResolvedValueOnce(jsonResponse(sessionsBody))
       .mockResolvedValueOnce(jsonResponse(jobsBody))
       .mockResolvedValueOnce(jsonResponse(detailBody));
 
-    await expect(client.listSessions()).resolves.toEqual(sessionsBody);
-    await expect(client.listJobs('running')).resolves.toEqual(jobsBody);
+    await expect(client.listJobs({ phase: 'running' })).resolves.toEqual(jobsBody);
     await expect(client.getJob('job-1')).resolves.toEqual(detailBody);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://127.0.0.1:4100/sessions',
+      'http://127.0.0.1:4100/jobs?projectRoot=%2Ftmp%2Fproject&phase=running',
       expect.objectContaining({
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': 'backend-token' },
@@ -830,15 +961,7 @@ describe('client http-client', () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://127.0.0.1:4100/api/jobs?phase=running',
-      expect.objectContaining({
-        method: 'GET',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
-      }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      'http://127.0.0.1:4100/api/jobs/job-1',
+      'http://127.0.0.1:4100/jobs/job-1',
       expect.objectContaining({
         method: 'GET',
         headers: { 'X-Coral-Backend-Token': 'backend-token' },
@@ -883,10 +1006,10 @@ describe('client http-client', () => {
       sseResponse(
         [
           'event: progress',
-          'data: {"type":"progress","jobId":"job-1","sessionId":"session-1","eventId":1,"message":"working"}',
+          'data: {"type":"progress","jobId":"job-1","eventId":1,"message":"working"}',
           '',
-          'event: running',
-          'data: {"type":"running","runningJobIds":["job-1"]}',
+          'event: waiting',
+          'data: {"type":"waiting","waitingJobIds":["job-1"]}',
           '',
         ].join('\n'),
       ),
@@ -904,13 +1027,12 @@ describe('client http-client', () => {
     expect(first.value).toEqual({
       type: 'progress',
       jobId: 'job-1',
-      sessionId: 'session-1',
       eventId: 1,
       message: 'working',
     });
     expect(second.value).toEqual({
-      type: 'running',
-      runningJobIds: ['job-1'],
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
     });
     expect(done.done).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
@@ -956,7 +1078,9 @@ describe('client http-client', () => {
       defaultContext,
     });
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'backend_shutting_down' }, 503, 'Service Unavailable'));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ code: 'backend_shutting_down', message: 'Backend shutting down' }, 503, 'Service Unavailable'),
+    );
 
     let caught: unknown;
     try {
@@ -966,8 +1090,11 @@ describe('client http-client', () => {
     }
 
     expect(caught).toBeInstanceOf(BackendToolHttpError);
-    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down, retry');
+    expect((caught as BackendToolHttpError).message).toBe('Backend shutting down');
     expect((caught as BackendToolHttpError).statusCode).toBe(503);
-    expect((caught as BackendToolHttpError).body).toEqual({ error: 'backend_shutting_down' });
+    expect((caught as BackendToolHttpError).body).toEqual({
+      code: 'backend_shutting_down',
+      message: 'Backend shutting down',
+    });
   });
 });

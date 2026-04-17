@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
 import { probeProcessStartedAtSeconds } from '../../infra/backend-info.js';
+import { BackendUnreachableError } from '../../shared/utils.js';
 import {
   ensureBackend,
   initialControllerState,
@@ -108,6 +109,16 @@ function writeLockFile(root: string, pid: number, processStartedAt?: number): vo
   writeFileSync(backendLockPath(root), payload, 'utf-8');
 }
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.href;
+  }
+  return input.url;
+}
+
 function makeDesired() {
   return {
     version: '0.0.0',
@@ -208,6 +219,7 @@ describe('backend lock lifecycle', () => {
       process.kill(parsed.pid, 0);
       alive = true;
     } catch {
+      /* alive remains false */
     }
     expect(alive).toBe(true);
   });
@@ -422,7 +434,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4103/health' && token === 'replacement-token') {
         return new Response(
@@ -472,7 +484,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4104/health' && token === 'held-lock-token') {
         expect(existsSync(lockPath)).toBe(true);
@@ -518,7 +530,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4101/health' && token === 'existing-token') {
         return new Response(
@@ -573,7 +585,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
@@ -639,7 +651,7 @@ describe('ensureBackend flavor-aware reuse', () => {
       }),
     );
     expect(
-      fetchMock.mock.calls.filter(([input]) => String(input) === 'http://127.0.0.1:4101/admin/shutdown'),
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
     ).toHaveLength(1);
   });
 
@@ -658,7 +670,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     mockState.spawn.mockImplementation(() => ({ unref: vi.fn() }));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
@@ -742,7 +754,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(
-      fetchMock.mock.calls.filter(([input]) => String(input) === 'http://127.0.0.1:4101/admin/shutdown'),
+      fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
     ).toHaveLength(1);
   });
 
@@ -806,7 +818,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4106/health' && token === 'sick-token') {
@@ -883,7 +895,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     }) as typeof process.kill));
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
       if (url === 'http://127.0.0.1:4108/health' && token === 'unverified-token') {
         throw new Error('backend hung');
@@ -896,10 +908,154 @@ describe('ensureBackend flavor-aware reuse', () => {
     const rejection = expect(backendPromise).rejects.toThrow('legacy-no-processStartedAt');
     await vi.advanceTimersByTimeAsync(10_200);
     await rejection;
+    await expect(backendPromise).rejects.toBeInstanceOf(BackendUnreachableError);
 
     expect(mockState.spawn).not.toHaveBeenCalled();
     expect(killSpy).not.toHaveBeenCalledWith(process.pid, 'SIGKILL');
     expect(existsSync(backendLockPath(root))).toBe(true);
+  });
+
+  it('throws BackendUnreachableError when a replacement backend never becomes healthy before the deadline', async () => {
+    vi.useFakeTimers();
+
+    const root = createPluginRootWithFlavor('dev');
+    writeBackendInfo(root, {
+      port: 4110,
+      token: 'old-token',
+      flavor: 'prod',
+      instanceId: 'old-prod-backend',
+    });
+
+    mockState.spawn.mockImplementation(() => {
+      writeBackendInfo(root, {
+        port: 4111,
+        token: 'replacement-token',
+        flavor: 'dev',
+        instanceId: 'replacement-backend',
+      });
+      return { unref: vi.fn() };
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
+
+      if (url === 'http://127.0.0.1:4110/health' && token === 'old-token') {
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            version: '0.0.0',
+            bundleHash: 'test-hash',
+            flavor: 'prod',
+            instanceId: 'old-prod-backend',
+            namespace: pluginRootNamespace(root),
+            uptimeMs: 1,
+            active: 0,
+            activeJobs: 0,
+            inflightRequests: 0,
+            queueDepth: 0,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (url === 'http://127.0.0.1:4110/admin/shutdown' && token === 'old-token') {
+        return new Response(null, { status: 200 });
+      }
+
+      if (url === 'http://127.0.0.1:4111/health' && token === 'replacement-token') {
+        throw new Error('replacement not ready');
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const backendPromise = ensureBackend(root);
+    backendPromise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_200);
+
+    await expect(backendPromise).rejects.toBeInstanceOf(BackendUnreachableError);
+    await expect(backendPromise).rejects.toThrow('Timed out waiting for Coral backend startup');
+  });
+
+  it('throws BackendUnreachableError when a verified sick backend refuses to die after SIGKILL', async () => {
+    vi.useFakeTimers();
+
+    const root = createPluginRoot();
+    mockState.execFileSync.mockImplementation((command: string) => {
+      if (command === 'getconf') return '100\n';
+      throw new Error(`Unexpected execFileSync: ${command}`);
+    });
+
+    const processStartedAt = probeProcessStartedAtSeconds(process.pid);
+    if (processStartedAt === null) {
+      return;
+    }
+
+    writeBackendInfo(root, {
+      pid: process.pid,
+      port: 4112,
+      token: 'sick-token',
+      instanceId: 'sick-backend',
+      processStartedAt,
+    });
+    writeFileSync(
+      backendLockPath(root),
+      JSON.stringify({
+        instanceId: 'sick-backend',
+        pid: process.pid,
+        version: '0.0.0',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        startedAt: Date.now(),
+        processStartedAt,
+      }),
+      'utf-8',
+    );
+
+    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+      if (pid !== process.pid) return true;
+      if (signal === 0 || signal === 'SIGKILL') return true;
+      return true;
+    }) as typeof process.kill));
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
+
+      if (url === 'http://127.0.0.1:4112/health' && token === 'sick-token') {
+        throw new Error('backend hung');
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const backendPromise = ensureBackend(root);
+    await vi.advanceTimersByTimeAsync(15_500);
+
+    await expect(backendPromise).rejects.toBeInstanceOf(BackendUnreachableError);
+    await expect(backendPromise).rejects.toThrow(`Failed to terminate sick Coral backend pid ${process.pid}.`);
+  });
+
+  it('throws BackendUnreachableError when the outer ensureBackend deadline expires without progress', async () => {
+    vi.useFakeTimers();
+
+    const root = createPluginRoot();
+    writeLockFile(root, process.pid);
+
+    vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
+      if (pid === process.pid && signal === 0) return true;
+      return true;
+    }) as typeof process.kill));
+
+    const backendPromise = ensureBackend(root);
+    backendPromise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(60_200);
+
+    await expect(backendPromise).rejects.toBeInstanceOf(BackendUnreachableError);
+    await expect(backendPromise).rejects.toThrow('Timed out waiting for Coral backend startup');
   });
 
   it('waits on the outer 60s deadline rather than a 45s replacement sub-timeout', async () => {
@@ -926,7 +1082,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
+      const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
 
       if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {

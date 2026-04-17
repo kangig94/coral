@@ -9,8 +9,8 @@ import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
-const sourceBackendBundle = join(process.cwd(), 'bridge', 'coral-backend.cjs');
-const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'bridge', 'manifest.json'), 'utf-8')) as {
+const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
+const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
   bundleHash: string;
 };
 
@@ -200,25 +200,25 @@ describe('flavor coexistence integration', () => {
     expect(prodHealth.instanceId).toBe(prodInfo.instanceId);
     expect(devHealth.instanceId).toBe(devInfo.instanceId);
 
-    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(prodInfo, '/api/jobs');
-    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(devInfo, '/api/jobs');
+    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(prodInfo, '/jobs');
+    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(devInfo, '/jobs');
 
     expect(prodJobs.jobs.map((job) => job.jobId)).toEqual([prodJobId]);
     expect(devJobs.jobs.map((job) => job.jobId)).toEqual([devJobId]);
     expect(prodJobs.jobs[0]?.status.backendNamespace).toBe(prodNamespace);
     expect(devJobs.jobs[0]?.status.backendNamespace).toBe(devNamespace);
 
-    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(prodInfo, `/api/jobs/${prodJobId}`);
-    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(devInfo, `/api/jobs/${devJobId}`);
+    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
+    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
 
     const prodForeignLookup = await fetchJson<{ code: string; message: string }>(
       prodInfo,
-      `/api/jobs/${devJobId}`,
+      `/jobs/${devJobId}`,
       404,
     );
     const devForeignLookup = await fetchJson<{ code: string; message: string }>(
       devInfo,
-      `/api/jobs/${prodJobId}`,
+      `/jobs/${prodJobId}`,
       404,
     );
 

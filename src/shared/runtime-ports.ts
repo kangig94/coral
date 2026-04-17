@@ -121,7 +121,9 @@ export type RuntimeSpawnOptions = {
   command: string;
   args: string[];
   cwd?: string;
+  env?: Record<string, string>;
   envAdditions?: Record<string, string>;
+  inheritEnv?: boolean;
   shell?: boolean;
   mode: RuntimeSpawnMode;
 };
@@ -153,8 +155,27 @@ export interface DurableExecutionTransport {
 
 export type DurableTransportLike = DurableExecutionTransport;
 
+export type RuntimeExecOptions = {
+  cwd?: string;
+  timeout?: number;
+  encoding?: 'utf-8';
+  env?: Record<string, string>;
+  maxBuffer?: number;
+  inheritEnv?: boolean;
+};
+
+export type ExecResult = {
+  stdout: string;
+  stderr: string;
+  status: number | null;
+  error?: Error;
+};
+
 export interface RuntimeProcess {
   spawn(options: RuntimeSpawnOptions): ChildProcessLike;
+  exec(command: string, args: string[], options?: RuntimeExecOptions): Promise<ExecResult>;
+  // Sync exec uses spawnSync semantics, including SIGTERM-only timeout handling.
+  execSync(command: string, args: string[], options?: RuntimeExecOptions): ExecResult;
   kill(pid: number, signal: NodeJS.Signals | 0): void;
   isAlive(pid: number): boolean;
   durable: DurableExecutionTransport;
@@ -168,6 +189,7 @@ export interface RuntimeIds {
 
 export interface RuntimeEnv {
   get(key: string): string | undefined;
+  homedir(): string;
   pid(): number;
   platform(): string;
   cwd(): string;

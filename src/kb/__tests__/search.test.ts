@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
+import type * as EmbeddingModule from '../vector/embedding.js';
+import type * as VectorSyncModule from '../vector/sync.js';
 import type { EntityGraph } from '../types.js';
 
 const mockState = vi.hoisted(() => ({
@@ -23,7 +25,7 @@ vi.mock('node:os', async () => {
 });
 
 vi.mock('../vector/sync.js', async () => {
-  const actual = await vi.importActual<typeof import('../vector/sync.js')>('../vector/sync.js');
+  const actual = await vi.importActual<typeof VectorSyncModule>('../vector/sync.js');
   return {
     ...actual,
     ensureVectorIndex: (...args: Parameters<typeof actual.ensureVectorIndex>) =>
@@ -32,7 +34,7 @@ vi.mock('../vector/sync.js', async () => {
 });
 
 vi.mock('../vector/embedding.js', async () => {
-  const actual = await vi.importActual<typeof import('../vector/embedding.js')>('../vector/embedding.js');
+  const actual = await vi.importActual<typeof EmbeddingModule>('../vector/embedding.js');
   return {
     ...actual,
     createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
@@ -225,8 +227,8 @@ async function markCommunityStateFresh(kb: { readIndex: () => any }) {
       ...(community.children === undefined ? {} : { children: community.children }),
       ...(community.summary === undefined ? {} : { summary: community.summary }),
     }));
-  const topologyHash = computeCommunityTopologyFingerprint(index!);
-  const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index!);
+  const topologyHash = computeCommunityTopologyFingerprint(index);
+  const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index);
 
   writeCurateState(kb as any, {
     ...readCurateState(kb as any),

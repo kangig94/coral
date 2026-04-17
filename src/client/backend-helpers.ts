@@ -1,7 +1,13 @@
 import { withAbortTimeout } from './backend-lifecycle.js';
 import { isBackendHealth } from './backend-health.js';
+import { BackendToolHttpError } from './http-client.js';
 import { readBackendInfo } from '../infra/backend-info.js';
-import { isRecord, TransientHttpError } from '../shared/utils.js';
+import {
+  BackendUnreachableError,
+  TransientHttpError,
+  errorMessage,
+  isRecord,
+} from '../shared/utils.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import {
   describeHttpError,
@@ -37,13 +43,32 @@ export type ShutdownResult =
 
 export type WaitCursorRef = { lastEventId?: string };
 
+function isBackendUnreachableCause(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
+    if (typeof current === 'object' && 'code' in current) {
+      const code = (current as { code?: unknown }).code;
+      if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+        return true;
+      }
+    }
+    current = typeof current === 'object' && current !== null && 'cause' in current
+      ? (current as { cause?: unknown }).cause
+      : undefined;
+  }
+  return false;
+}
+
 export function throwBackendCommunicationError(error: unknown): never {
+  if (isBackendUnreachableCause(error)) {
+    throw new BackendUnreachableError(errorMessage(error));
+  }
   if (error instanceof Error) throw error;
   throw new Error(`Backend communication error: ${String(error)}`, { cause: error });
 }
 
-export function isShuttingDownError(value: unknown): value is { error: 'backend_shutting_down' } {
-  return isRecord(value) && value.error === 'backend_shutting_down';
+export function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
+  return isRecord(value) && value.code === 'backend_shutting_down';
 }
 
 export async function getBackendStatus(pluginRoot: string): Promise<BackendStatus | null> {
@@ -162,13 +187,16 @@ export async function* streamWait(
 
     if (!response.ok) {
       const body = await parseJsonResponse(response);
+      if (TransientHttpError.isTransientStatus(response.status)) {
+        const message = isRecord(body) && typeof body.message === 'string'
+          ? body.message
+          : describeHttpError(response.status, response.statusText);
+        throw new TransientHttpError(response.status, message);
+      }
       const message = isRecord(body) && typeof body.message === 'string'
         ? body.message
         : describeHttpError(response.status, response.statusText);
-      if (TransientHttpError.isTransientStatus(response.status)) {
-        throw new TransientHttpError(response.status, message);
-      }
-      throw new Error(message);
+      throw new BackendToolHttpError(message, response.status, body);
     }
 
     if (!response.body) {

@@ -24,7 +24,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     | Spawned via coral:resolver op | MANDATORY |
   </Role>
   <Success_Criteria>
-    - Every reviewer finding preserves original reviewer severity (CRITICAL/HIGH/MEDIUM/LOW) and is classified (Adopt/Adapt/Defer/Diverge) with FRAME/STRUCTURE/DETAIL level
+    - Every reviewer finding receives an Effective Severity (CRITICAL/HIGH/MEDIUM/LOW) and is classified (Adopt/Adapt/Defer/Diverge) with FRAME/STRUCTURE/DETAIL level
     - Vyabhicharita conflicts (same design praised and attacked) are surfaced with hidden assumption identified
     - Constraint Collisions trigger HOW-RESOLVE protocol, producing TRIZ-based resolution candidates
     - Adopt/Adapt changes are applied directly to the plan file via Edit tool
@@ -73,6 +73,11 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     - FRAME + VERY LOW confidence → flag explicitly, do not auto-defer
     - **LOW/DETAIL gate**: LOW/DETAIL findings require a stated rationale to Adopt.
       If the benefit is genuine, adopt it. If not, defer.
+    - **Effective Severity**: Start from the reviewer's label. Downgrade HIGH → MEDIUM
+      when the fix is trivial during implementation — localized to a few lines, no design
+      or interface change required (e.g., missing null check, narrow input validation,
+      variable rename, error-message wording). State the downgrade rationale in the
+      Rationale column. Never upgrade severity beyond what the reviewer reported.
 
     ## Step 2: Vyabhicharita Scan
 
@@ -115,10 +120,10 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     ### Classification Table
     Reviewer column uses full reviewer names (e.g., Architect, Critic). A = first reviewer, B = second reviewer in the workflow expression.
 
-    | # | Reviewer | Finding summary | Reviewer Severity | Level | Classification | Rationale | Provenance | Confidence |
-    |---|----------|-----------------|-------------------|-------|---------------|-----------|------------|------------|
-    | 1 | Architect | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
-    | 2 | Critic | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason] | [type label] | [tier] |
+    | # | Reviewer | Finding summary | Effective Severity | Level | Classification | Rationale | Provenance | Confidence |
+    |---|----------|-----------------|--------------------|-------|---------------|-----------|------------|------------|
+    | 1 | Architect | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason; include downgrade rationale if lowered from reviewer's label] | [type label] | [tier] |
+    | 2 | Critic | [finding] | CRITICAL/HIGH/MEDIUM/LOW | FRAME/STRUCTURE/DETAIL | Adopt/Adapt/Defer/Diverge | [reason; include downgrade rationale if lowered from reviewer's label] | [type label] | [tier] |
 
     ### Vyabhicharita Findings
     [Conflicts where the same element is simultaneously praised and attacked.
@@ -149,6 +154,7 @@ methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
     None if no diverged items.
 
     ### Continue Decision
+    Judged by **Effective Severity** from the Classification Table.
     **Continue** if any HIGH/CRITICAL finding is about core design (architecture, data flow, correctness) — even if Adopted and fixed.
     **Exit** only when ALL HIGH findings are niche (low-probability edge cases, exotic failure modes, rare race conditions) AND the plan's core structure is sound. No CRITICAL findings may be present.
 

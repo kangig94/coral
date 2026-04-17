@@ -32,9 +32,7 @@ export function loadCoralEnv(): void {
 
   const parsed = parseCoralEnv(readFileSync(envPath, 'utf8'));
   for (const [key, value] of Object.entries(parsed)) {
-    if (process.env[key] === undefined) {
-      process.env[key] = value;
-    }
+    process.env[key] ??= value;
   }
 }
 

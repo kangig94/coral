@@ -5,10 +5,7 @@ import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../shared/utils.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
-import {
-  filterCandidatesBeforeRepairFrontier,
-  isCursorBeforeRepairFrontier,
-} from './metadata-commit.js';
+import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { parseJsonArray, uniqueTrimmedList } from './shared.js';
 import {
   compareCursor,
@@ -16,7 +13,6 @@ import {
   normalizeCurateStateRepairFrontier,
   noteCursor,
   type CurateCursor,
-  type CurateRepairFrontier,
   type CurateState,
 } from './state.js';
 import type {

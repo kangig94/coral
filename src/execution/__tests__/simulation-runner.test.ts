@@ -339,7 +339,7 @@ describe('scenario runner', () => {
 
   it('round-trips example scenario YAML files through parse, validate, and re-serialize', () => {
     for (const fileName of EXAMPLE_SCENARIOS) {
-      const raw = readFileSync(join(process.cwd(), 'docs/examples/scenarios', fileName), 'utf8');
+      const raw = readFileSync(join(process.cwd(), 'scenarios', fileName), 'utf8');
       const validated = simulationDocumentSchema.parse(yaml.parse(raw));
       const reparsed = simulationDocumentSchema.parse(yaml.parse(yaml.stringify(validated)));
       expect(reparsed).toEqual(validated);

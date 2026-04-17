@@ -64,7 +64,7 @@ Generated tests use `red-<target>.<ext>` staging names and are triaged before be
 
 The Codex skill is session-aware:
 
-- `session list` maps to `coral-cli list --provider codex --output-format json`
+- active Codex work can be inspected with `coral-cli jobs --provider codex --output-format json`
 - general requests use `coral-cli codex -i ...`
 - delegated agent requests use `coral-cli codex <agent> -i ...`
 - consecutive general requests reuse the previous `session` when available

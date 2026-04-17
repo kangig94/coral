@@ -7,27 +7,26 @@ import {
   type BackendInfo,
 } from '../../../infra/backend-info.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
-import type { Provider } from '../../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
 import { composeChildEnv } from '../../../shared/env-sanitize.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../../shared/process-constants.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { sendJson } from '../../http-handler.js';
 import { LaunchCoordinator } from '../../engine.js';
 import { TypedEventBus } from '../../event-bus.js';
 import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
-import type { Runtime, RuntimeProcess, RuntimeStorage } from '../../runtime.js';
+import type { ExecResult, Runtime, RuntimeExecOptions, RuntimeProcess, RuntimeStorage } from '../../runtime.js';
 import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
 import { InMemoryStorage, type InMemoryRoots } from './memory-storage.js';
 import {
   MockProcessSpawner,
-  type ChildOutputChunk,
   type MockDurableScript,
-  type MockKillAction,
   type MockSpawnScript,
 } from './mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './runtime-doubles.js';
@@ -45,6 +44,7 @@ export { createMockAppServerSpawnScript, type MockAppServerScript } from './mock
 export {
   MockChildProcess,
   MockDurableTransport,
+  type MockExecSyncScript,
   MockProcessSpawner,
   MockStdin,
   type ChildOutputChunk,
@@ -126,8 +126,8 @@ export class SimulationRuntime implements Runtime {
       buildDurableEnv: (envAdditions) =>
         composeChildEnv({ ...inheritedEnv }, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
     });
-    this.process = {
-      spawn: (spawnOptions) => {
+    const simulationProcess = {} as RuntimeProcess;
+    simulationProcess.spawn = (spawnOptions) => {
         const child = this.spawner.spawn(spawnOptions);
         this.observer.emit({
           child,
@@ -136,13 +136,163 @@ export class SimulationRuntime implements Runtime {
           ...(spawnOptions.envAdditions ? { env: { ...spawnOptions.envAdditions } } : {}),
         });
         return child;
-      },
-      kill: (pid, signal) => {
-        this.spawner.kill(pid, signal);
-      },
-      isAlive: (pid) => this.spawner.isAlive(pid),
-      durable: this.spawner.durable,
+      };
+    simulationProcess.kill = (pid, signal) => {
+      this.spawner.kill(pid, signal);
     };
+    simulationProcess.isAlive = (pid) => this.spawner.isAlive(pid);
+    simulationProcess.durable = this.spawner.durable;
+
+    simulationProcess.exec = (command, args, options = {}) => {
+      const execOptions: RuntimeExecOptions = { ...options };
+      execOptions.maxBuffer ??= MAX_BUFFER;
+      const maxBuffer = execOptions.maxBuffer;
+      const encoding = execOptions.encoding ?? 'utf-8';
+
+      return new Promise<ExecResult>((resolve) => {
+        let stdout = '';
+        let stderr = '';
+        let resolved = false;
+        let timeoutHandle: ReturnType<SimulationRuntime['time']['setTimeout']> | null = null;
+        let killTimer: ReturnType<SimulationRuntime['time']['setTimeout']> | null = null;
+        let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
+
+        const child = simulationProcess.spawn({
+          command,
+          args,
+          cwd: execOptions.cwd,
+          env: execOptions.env,
+          inheritEnv: execOptions.inheritEnv,
+          mode: 'piped',
+        });
+
+        child.stdin?.end();
+
+        const clearTimers = (): void => {
+          this.time.clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+          this.time.clearTimeout(killTimer);
+          killTimer = null;
+        };
+
+        const finish = (result: ExecResult): void => {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          clearTimers();
+          resolve(result);
+        };
+
+        const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
+          if (resolved || wrapperKilled !== null || child.pid === undefined) {
+            return;
+          }
+          wrapperKilled = reason;
+          simulationProcess.kill(child.pid, 'SIGTERM');
+          killTimer = this.time.setTimeout(() => {
+            if (resolved || child.pid === undefined) {
+              return;
+            }
+            simulationProcess.kill(child.pid, 'SIGKILL');
+          }, SIGTERM_GRACE_MS);
+          killTimer.unref?.();
+        };
+
+        const appendOutput = (
+          current: string,
+          chunk: string | Buffer,
+        ): { next: string; overflowed: boolean } => {
+          if (wrapperKilled !== null) {
+            return { next: current, overflowed: false };
+          }
+
+          const text = typeof chunk === 'string' ? chunk : chunk.toString(encoding);
+          const currentBytes = Buffer.byteLength(current, encoding);
+          const chunkBytes = Buffer.byteLength(text, encoding);
+          if (currentBytes + chunkBytes <= maxBuffer) {
+            return { next: current + text, overflowed: false };
+          }
+
+          let next = current;
+          let remainingBytes = maxBuffer - currentBytes;
+          if (remainingBytes > 0) {
+            for (const character of text) {
+              const characterBytes = Buffer.byteLength(character, encoding);
+              if (characterBytes > remainingBytes) {
+                break;
+              }
+              next += character;
+              remainingBytes -= characterBytes;
+            }
+          }
+
+          return { next, overflowed: true };
+        };
+
+        if (child.stdout) {
+          child.stdout.setEncoding(encoding);
+          child.stdout.on('data', (chunk) => {
+            const result = appendOutput(stdout, chunk);
+            stdout = result.next;
+            if (result.overflowed) {
+              scheduleKill('maxBuffer');
+            }
+          });
+        }
+
+        if (child.stderr) {
+          child.stderr.setEncoding(encoding);
+          child.stderr.on('data', (chunk) => {
+            const result = appendOutput(stderr, chunk);
+            stderr = result.next;
+            if (result.overflowed) {
+              scheduleKill('maxBuffer');
+            }
+          });
+        }
+
+        child.on('close', (status) => {
+          const error =
+            wrapperKilled === 'timeout'
+              ? new Error(`timeout: ${command}`)
+              : wrapperKilled === 'maxBuffer'
+                ? new Error(`maxBuffer exceeded: ${command}`)
+                : undefined;
+          finish({
+            stdout,
+            stderr,
+            status: error ? null : status,
+            ...(error ? { error } : {}),
+          });
+        });
+
+        child.on('error', (error) => {
+          finish({
+            stdout: '',
+            stderr: '',
+            status: null,
+            error,
+          });
+        });
+
+        if (execOptions.timeout !== undefined) {
+          timeoutHandle = this.time.setTimeout(() => {
+            scheduleKill('timeout');
+          }, execOptions.timeout);
+          timeoutHandle.unref?.();
+        }
+      });
+    };
+
+    simulationProcess.execSync = (command, args, options = {}) => {
+      const execOptions: RuntimeExecOptions = { ...options };
+      execOptions.maxBuffer ??= MAX_BUFFER;
+      execOptions.encoding ??= 'utf-8';
+      return this.spawner.execSync(command, args, execOptions);
+    };
+
+    this.process = simulationProcess;
   }
 }
 
@@ -197,11 +347,11 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
     const port = parsed.port === '' ? (parsed.protocol === 'https:' ? 443 : 80) : Number(parsed.port);
 
     if (!info || parsed.pathname !== '/health' || parsed.hostname !== info.host || port !== info.port) {
-      return jsonResponse({ error: 'not_found' }, 404);
+      return jsonResponse({ code: 'not_found', message: 'Not found' }, 404);
     }
 
     if (headerValue(init?.headers, 'X-Coral-Backend-Token') !== info.token) {
-      return jsonResponse({ error: 'unauthorized' }, 401);
+      return jsonResponse({ code: 'unauthorized', message: 'Unauthorized' }, 401);
     }
 
     return jsonResponse(
@@ -225,7 +375,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
     name: providerName,
     ...(preflightError
       ? {
-          preflight: async () => {
+          preflight: async (_runtime: PreflightRuntime) => {
             throw toError(preflightError);
           },
         }
@@ -264,7 +414,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
       };
       return result;
     },
-    recovery: {
+    artifactRecovery: {
       buildRecoveryMeta: () => ({ provider: providerName }),
       finalizeFromArtifacts: async ({ stdoutPath, stderrPath, exitCode, signal }) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
@@ -302,7 +452,12 @@ export type SimulationHookLog = {
   writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
   removeLockCalls: Array<{ pluginRoot: string; instanceId: string }>;
-  createKbSubsystemCalls: Array<{ pluginRoot: string }>;
+  createKbSubsystemCalls: Array<{
+    pluginRoot: string;
+    processPort: Pick<Runtime['process'], 'exec' | 'execSync'>;
+    storagePort: Pick<Runtime['storage'], 'writeAtomicSync'>;
+    envPort: Pick<Runtime['env'], 'get'>;
+  }>;
   recoverPersistedDiscussCalls: number;
 };
 
@@ -432,8 +587,13 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     removeLockIfOwnerFn: (bootPluginRoot, instanceId) => {
       hooks.removeLockCalls.push({ pluginRoot: bootPluginRoot, instanceId });
     },
-    createKbSubsystemFn: async ({ pluginRoot: kbPluginRoot }) => {
-      hooks.createKbSubsystemCalls.push({ pluginRoot: kbPluginRoot });
+    createKbSubsystemFn: async ({ pluginRoot: kbPluginRoot, processPort, storagePort, envPort }) => {
+      hooks.createKbSubsystemCalls.push({
+        pluginRoot: kbPluginRoot,
+        processPort,
+        storagePort,
+        envPort,
+      });
       return createMockKbSubsystem();
     },
     registerBuiltInProvidersFn: () => {},
@@ -462,7 +622,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     } catch (error: unknown) {
       core.identity.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, { error: 'internal_error' });
+        sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
         return;
       }
       res.destroy();

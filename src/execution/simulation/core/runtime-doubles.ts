@@ -215,6 +215,10 @@ export class SealedEnv implements RuntimeEnv {
     return this.fullEnv[key];
   }
 
+  homedir(): string {
+    return this.fullEnv.HOME ?? this.fullEnv.USERPROFILE ?? DEFAULT_HOME;
+  }
+
   fullSnapshot(): Readonly<Record<string, string>> {
     return this.fullEnv;
   }

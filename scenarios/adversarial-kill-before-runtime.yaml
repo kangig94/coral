@@ -1,0 +1,20 @@
+# Adversarial: kill a job immediately after launch, before runtime record is written.
+# Kill requires a PID from runtime record — this is an expected failure path.
+# Callers should use abort (not kill) for pre-runtime jobs.
+world:
+  durable:
+    - pid: 99007
+      runtimeDelayMs: 1000
+      exit:
+        delayMs: 2000
+        exitCode: 0
+  fakeProvider:
+    result:
+      content: should-not-reach
+steps:
+  - type: boot
+  - type: launch
+    prompt: kill before runtime
+  - type: kill
+    jobId: "00000000-0000-0000-0000-000000000003"
+continueOnFailure: true

@@ -18,7 +18,7 @@ import type {
   WaitStreamEvent,
 } from '../../shared/types.js';
 
-import type { Provider } from '../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../providers/types.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/pipe-parser.js';
@@ -123,6 +123,7 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
+  const resolveProvider = (name: string) => mockState.getNewProvider(name);
   return new ExecutionService(ctx, {
     runtime,
     progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
@@ -132,7 +133,11 @@ function createService(
     launchCoordinator,
     eventBus,
     providerRegistry: {
-      get: mockState.getNewProvider,
+      get: resolveProvider,
+      getExecutor: resolveProvider,
+      getAppServerLifecycle: (name: string) => resolveProvider(name)?.appServerLifecycle,
+      getArtifactRecovery: (name: string) => resolveProvider(name)?.artifactRecovery,
+      getArtifactCleanup: (name: string) => resolveProvider(name)?.artifactCleanup,
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
@@ -265,7 +270,7 @@ function makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
     execute: vi.fn(async () => ({ content: 'ok' })),
-    appServer: {
+    appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
       interrupt: async (lease, continuity) => {
@@ -319,6 +324,14 @@ function makeCodexAppServerProvider(): Provider {
   };
 }
 
+function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
+  expect(preflight).toHaveBeenCalledWith({
+    process: runtime.process,
+    storage: runtime.storage,
+    env: runtime.env,
+  } satisfies PreflightRuntime);
+}
+
 function makeSharedClaudeAppServerProvider(spec: {
   provider: string;
   command: string;
@@ -329,7 +342,7 @@ function makeSharedClaudeAppServerProvider(spec: {
   return {
     name: 'claude',
     execute: vi.fn(async () => ({ content: 'ok' })),
-    appServer: {
+    appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
@@ -1016,7 +1029,7 @@ describe('ExecutionService', () => {
 
   it('start rejects when preflight throws', async () => {
     const { provider, preflight } = makeProvider({
-      preflight: async () => {
+      preflight: async (_preflightRuntime) => {
         throw new Error('not ready');
       },
     });
@@ -1026,6 +1039,7 @@ describe('ExecutionService', () => {
     const decision = await service.start('codex', { prompt: 'hello' }, ctx);
 
     expect(preflight).toHaveBeenCalledTimes(1);
+    expectRuntimePreflightArg(preflight!);
     expect(decision).toEqual({
       status: 'rejected',
       phase: 'preflight',
@@ -1245,7 +1259,73 @@ describe('ExecutionService', () => {
       }
     });
 
-    it('resumeBySessionId continues the stored provider after a global session lookup', async () => {
+    it('resumeBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'claude', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${entry.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${entry.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('resumeBySessionId continues when the asserted provider matches the stored provider', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'codex', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+      });
+    });
+
+    it('resumeBySessionId continues the stored provider when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
@@ -1410,7 +1490,7 @@ describe('ExecutionService', () => {
 
       const gate = createDeferred<void>();
       const racingProvider = makeProvider({
-        preflight: async () => {
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
       });
@@ -1430,6 +1510,7 @@ describe('ExecutionService', () => {
       if (decision.status !== 'rejected') throw new Error('expected rejected');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(racingProvider.preflight!);
       expect(queueDepth()).toBe(0);
       expect(listJobDirs()).toEqual(jobDirsBefore);
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
@@ -1491,7 +1572,111 @@ describe('ExecutionService', () => {
       }
     });
 
-    it('forkBySessionId persists the merged continuation profile onto the child session', async () => {
+    it('forkBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'claude', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${source.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${source.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when the asserted provider matches', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(source.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'codex', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const child = mgr.get('codex', decision.session);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+
+      expect(child).toMatchObject({
+        model: 'gpt-5.1',
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      expect(request).toMatchObject({
+        action: 'fork',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBe('high');
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
@@ -1696,33 +1881,36 @@ describe('ExecutionService', () => {
       await expect(service.waitForJobTerminal('missing-job', 100)).rejects.toThrow('Job not found: missing-job');
     });
 
-    it('waits for both terminal status and session claim release', async () => {
-      const service = createService(ctx);
-      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+    it('waits for both terminal status and session claim release without session events', async () => {
+      vi.useFakeTimers();
+      try {
+        const service = createService(ctx);
+        const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
 
-      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
-      const waiter = service.waitForJobTerminal(jobId, 250);
-      void waiter.then(
-        () => {
-          outcome = 'resolved';
-        },
-        () => {
-          outcome = 'rejected';
-        },
-      );
+        let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+        const waiter = service.waitForJobTerminal(jobId, 250);
+        void waiter.then(
+          () => {
+            outcome = 'resolved';
+          },
+          () => {
+            outcome = 'rejected';
+          },
+        );
 
-      await Promise.resolve();
-      progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
-      await Promise.resolve();
-      expect(outcome).toBe('pending');
+        await Promise.resolve();
+        progressStore.markTerminalStatus(jobId, { content: 'done' }, 'completed');
+        await Promise.resolve();
+        expect(outcome).toBe('pending');
 
-      sessionManager.setConversationRef(sessionId, 'thread-1');
-      await Promise.resolve();
-      expect(outcome).toBe('pending');
+        sessionManager.releaseJob(sessionId, jobId);
+        await vi.advanceTimersByTimeAsync(20);
 
-      sessionManager.releaseJob(sessionId, jobId);
-      await expect(waiter).resolves.toBeUndefined();
-      expect(outcome).toBe('resolved');
+        await expect(waiter).resolves.toBeUndefined();
+        expect(outcome).toBe('resolved');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('rechecks persisted state after subscribing so listener-install races cannot miss completion', async () => {
@@ -1739,7 +1927,7 @@ describe('ExecutionService', () => {
       ) => {
         if (
           suppressWakeups &&
-          (event === 'job:completed' || event === 'job:phase_changed' || event === 'session:updated')
+          (event === 'job:completed' || event === 'job:phase_changed' || event === 'job:progress')
         ) {
           return false;
         }
@@ -1892,14 +2080,12 @@ describe('ExecutionService', () => {
       {
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 'session-1',
         eventId: 1,
         message: 'step 1',
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -1933,8 +2119,7 @@ describe('ExecutionService', () => {
     expect(events).toEqual([
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -1979,8 +2164,7 @@ describe('ExecutionService', () => {
     expect(events).toEqual([
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -2018,7 +2202,6 @@ describe('ExecutionService', () => {
     expect(events[1]).toMatchObject({
       type: 'progress',
       jobId: decision.job,
-      sessionId: decision.session,
       eventId: 1,
     });
     if (events[1]?.type === 'progress') {
@@ -2049,7 +2232,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2126,7 +2309,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2167,7 +2350,7 @@ describe('ExecutionService', () => {
       parseExpression('architect'),
       {
         expression: 'architect',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2209,7 +2392,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -2272,7 +2455,7 @@ describe('ExecutionService', () => {
       parseExpression('architect -> resolver'),
       {
         expression: 'architect -> resolver',
-        start_prompt: 'seed',
+        startPrompt: 'seed',
         provider: 'codex',
       },
       ctx,
@@ -3311,8 +3494,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     it('allows exactly one concurrent resume and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
       const never = new Promise<ProviderResult>(() => {});
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
         execute: async () => never,
@@ -3343,6 +3526,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
       expect(loser.code).toBe('session_busy');
       expect(loser.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe(winner.job);
       expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
     });
@@ -3385,8 +3569,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('rejects when the source session becomes busy during preflight without allocating a new fork session', async () => {
       const gate = createDeferred<void>();
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
       });
@@ -3408,6 +3592,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (decision.status !== 'rejected') throw new Error('expected rejected');
       expect(decision.code).toBe('session_busy');
       expect(decision.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.list('codex').length).toBe(sessionsBefore);
       expect(listJobDirs()).toEqual(jobDirsBefore);
     });
@@ -3415,8 +3600,8 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     it('allows exactly one concurrent fork and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
       const never = new Promise<ProviderResult>(() => {});
-      const { provider } = makeProvider({
-        preflight: async () => {
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
           await gate.promise;
         },
         execute: async () => never,
@@ -3449,6 +3634,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
       expect(loser.code).toBe('session_busy');
       expect(loser.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
       expect(mgr.list('codex')).toHaveLength(sessionsBefore + 1);
       expect(mgr.get('codex', source.sessionId)?.activeJobId).toBeUndefined();
       expect(mgr.get('codex', source.sessionId)?.version).toBeGreaterThan(sourceVersionBefore ?? 0);
@@ -3541,11 +3727,11 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       }
 
       expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('running');
-      if (events[0].type !== 'running') throw new Error('expected running');
-      expect(events[0].runningJobIds).toContain(jobIdA);
-      expect(events[0].runningJobIds).toContain(jobIdB);
-      expect(events[0].runningJobIds).toHaveLength(2);
+      expect(events[0].type).toBe('waiting');
+      if (events[0].type !== 'waiting') throw new Error('expected waiting');
+      expect(events[0].waitingJobIds).toContain(jobIdA);
+      expect(events[0].waitingJobIds).toContain(jobIdB);
+      expect(events[0].waitingJobIds).toHaveLength(2);
     });
 
     it('cursor fromEventId skips already-delivered events (only newer events returned)', async () => {
@@ -3591,7 +3777,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe('terminal');
       if (events[0].type !== 'terminal') throw new Error('expected terminal');
-      expect(events[0].completedJobId).toBe(jobId);
+      expect(events[0].jobId).toBe(jobId);
       expect(events[0].resultPath).toBe(jobResultPath(jobId));
 
       const progressMessages = events

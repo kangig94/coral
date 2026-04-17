@@ -312,6 +312,10 @@ export class SimulationWorld {
       throw new Error(`Cannot abort unknown job ${jobId}`);
     }
 
+    if (isTerminalPhase(status.phase)) {
+      return;
+    }
+
     const service = this.current.backend.createService(status.projectRoot);
     const result = service.abort([jobId]);
     if (result.notFound.includes(jobId)) {
@@ -448,7 +452,7 @@ export class SimulationWorld {
   listSessions(provider: string, projectRoot?: string): SessionEntry[] {
     this.assertUsable();
     const targetRoot = projectRoot ?? this.current.backend.projectRoot;
-    return new SessionManager(targetRoot, this.current.backend.runtime, this.current.backend.eventBus).list(provider);
+    return new SessionManager(targetRoot, this.current.backend.runtime).list(provider);
   }
 
   getHookLog(): SimulationHookLog {

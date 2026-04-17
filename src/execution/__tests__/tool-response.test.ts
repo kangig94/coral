@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import type { LaunchDecision } from '../../shared/types.js';
 import {
@@ -6,6 +7,7 @@ import {
   domainError,
   domainResultToHttp,
   domainSuccess,
+  formatZodError,
   launchToHttp,
 } from '../tool-response.js';
 
@@ -41,6 +43,72 @@ describe('tool response domain helpers', () => {
   it('falls back to a humanized code when detail has no message', () => {
     expect(deriveErrorMessage('pool_too_large', { hint: 'shrink the pool' })).toBe('pool too large');
     expect(deriveErrorMessage('session_not_found')).toBe('session not found');
+  });
+
+  it('formats a single zod issue as a one-line message with detail.issues', () => {
+    const parsed = z.object({ timeoutSeconds: z.number().max(1200) }).safeParse({ timeoutSeconds: 1800 });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error('Expected zod parse to fail');
+    }
+
+    expect(formatZodError(parsed.error)).toEqual({
+      message: 'timeoutSeconds: Number must be less than or equal to 1200',
+      detail: {
+        issues: parsed.error.issues,
+      },
+    });
+  });
+
+  it('formats multiple zod issues with a (+N more issues) suffix and preserves all issues in detail', () => {
+    const parsed = z
+      .object({
+        timeoutSeconds: z.number().max(1200),
+        jobIds: z.array(z.string().min(1)).min(1),
+      })
+      .safeParse({ timeoutSeconds: 1800, jobIds: [] });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error('Expected zod parse to fail');
+    }
+
+    const formatted = formatZodError(parsed.error);
+    expect(formatted.message).toBe('timeoutSeconds: Number must be less than or equal to 1200 (+1 more issues)');
+    expect(formatted.detail.issues).toHaveLength(parsed.error.issues.length);
+    expect(formatted.detail.issues).toEqual(parsed.error.issues);
+  });
+
+  it('uses the first issue message directly when the issue path is empty', () => {
+    const parsed = z
+      .object({
+        pattern: z.string().optional(),
+        all: z.boolean().optional(),
+      })
+      .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
+        message: 'Exactly one of pattern or all=true must be provided',
+      })
+      .safeParse({ pattern: '*', all: true });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) {
+      throw new Error('Expected zod parse to fail');
+    }
+
+    expect(formatZodError(parsed.error)).toEqual({
+      message: 'Exactly one of pattern or all=true must be provided',
+      detail: {
+        issues: parsed.error.issues,
+      },
+    });
+  });
+
+  it('falls back to "invalid request" when a zod error has no issues', () => {
+    const formatted = formatZodError(new z.ZodError([]));
+    expect(formatted).toEqual({
+      message: 'invalid request',
+      detail: {
+        issues: [],
+      },
+    });
   });
 });
 
@@ -96,6 +164,23 @@ describe('launchToHttp', () => {
     });
   });
 
+  it('maps provider_mismatch launch rejections to HTTP 409 with the expected error body', () => {
+    const decision = {
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'provider_mismatch',
+      message: 'Session session-1 belongs to provider codex',
+    } satisfies LaunchDecision;
+
+    expect(launchToHttp(decision, 202)).toEqual({
+      statusCode: 409,
+      body: {
+        code: 'provider_mismatch',
+        message: 'Session session-1 belongs to provider codex',
+      },
+    });
+  });
+
   it.each([
     ['invalid_agent', 400],
     ['agent_not_found', 404],
@@ -108,6 +193,7 @@ describe('launchToHttp', () => {
     ['session_busy', 409],
     ['non_resumable', 409],
     ['legacy_session_unsupported', 409],
+    ['provider_mismatch', 409],
     ['invalid_request', 400],
   ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {
     const decision = {

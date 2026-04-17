@@ -11,19 +11,16 @@ editorialize the user's prompt. Codex will apply its own safety policies.
 **Do NOT output any text before the tool call.** All steps below are internal
 routing logic — execute them silently.
 
-## 1. Session commands
+## 1. Inspection commands
 
-If the argument starts with `session`, handle directly:
+If the argument asks to inspect active Codex work, handle directly:
 
-| Command | Action |
-|---------|--------|
-| `session list` | Run `coral-cli list --provider codex --output-format json` |
-
-Present: list → table (name, model, last used).
+- Run `coral-cli jobs --provider codex --output-format json`
+- Present: list → table (`jobId`, `phase`, `provider`, `cwd`, `age`)
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
 If the user asks to branch an existing session or create a named branch, explain that Codex session branching is unsupported and stop.
 
-If not `session`, continue to step 2.
+If not an inspection request, continue to step 2.
 
 ## 2. Session continuity
 

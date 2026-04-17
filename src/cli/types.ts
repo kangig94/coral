@@ -7,9 +7,9 @@ export type CliStreamEvent =
   | { type: 'queued'; jobId: string; sessionId: string; queuePosition: number; runningJobIds: string[] }
   | {
       type: 'terminal';
-      completedJobId: string;
+      jobId: string;
       sessionId: string;
       remainingJobIds: string[];
       result: Omit<TerminalResult, 'content'> & { path: string };
     }
-  | { type: 'running'; runningJobIds: string[] };
+  | { type: 'waiting'; waitingJobIds: string[] };

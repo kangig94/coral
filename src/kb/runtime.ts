@@ -13,8 +13,7 @@ import type {
   KbVectorSpecState,
   KbVectorTextSnapshot,
 } from './contracts.js';
-import { normalizeCommunityChildren, normalizeCommunityParent, rewriteLegacyNoteFrontmatter } from './frontmatter.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
+import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
 import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
@@ -28,7 +27,6 @@ import {
   sourceImportStageDir as pathsSourceImportStageDir,
   sourcePathFromName,
   sourcesDir as pathsSourcesDir,
-  stripMdExt,
 } from './paths.js';
 import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
 import {

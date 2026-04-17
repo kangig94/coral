@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type * as NodeOs from 'node:os';
@@ -16,28 +16,24 @@ vi.mock('node:os', async () => {
 });
 
 import { SessionManager, getSessionById, listSessionShards } from '../session-manager.js';
-import { TypedEventBus } from '../event-bus.js';
 import { createRealRuntime } from '../runtime.js';
 
-let eventBus: TypedEventBus;
 const runtime = createRealRuntime();
 
 describe('execution SessionManager', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    eventBus = new TypedEventBus();
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
-    eventBus.reset();
     vi.restoreAllMocks();
   });
 
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, eventBus), workDir };
+    return { mgr: new SessionManager(workDir, runtime), workDir };
   }
 
   it('allocate creates an entry with state pending', () => {
@@ -125,68 +121,6 @@ describe('execution SessionManager', () => {
         effort: 'high',
         claudeModelCap: 'sonnet',
       },
-    });
-  });
-
-  it('session:updated payload includes projectRoot when present', () => {
-    const { mgr, workDir } = setup('emit-root');
-    const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
-
-    mgr.allocate({
-      provider: 'codex',
-      name: 'epsilon',
-      model: 'gpt-5',
-      cwd: workDir,
-      projectRoot: '/proj/root',
-      backendNamespace: 'ns-local',
-    });
-
-    expect(emitted).toHaveLength(1);
-    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBe('/proj/root');
-  });
-
-  it('session:updated payload omits projectRoot when not set', () => {
-    const { mgr, workDir } = setup('emit-no-root');
-    const emitted: unknown[] = [];
-    eventBus.on('session:updated', (payload: unknown) => emitted.push(payload));
-
-    mgr.allocate({
-      provider: 'codex',
-      name: 'zeta',
-      model: 'gpt-5',
-      cwd: workDir,
-    });
-
-    expect(emitted).toHaveLength(1);
-    expect((emitted[0] as { projectRoot?: string }).projectRoot).toBeUndefined();
-  });
-
-  it('emits session:updated with shard hash and version on writes', () => {
-    const { mgr, workDir } = setup('session-updated-event');
-    const updated = vi.fn();
-    eventBus.on('session:updated', updated);
-
-    const entry = mgr.allocate({
-      provider: 'codex',
-      name: 'alpha',
-      model: 'gpt-5',
-      cwd: workDir,
-    });
-    const shardHash = basename(resolveSessionDir(tmpHome));
-
-    expect(updated).toHaveBeenCalledWith({
-      sessionId: entry.sessionId,
-      shardHash,
-      version: 1,
-    });
-
-    mgr.setConversationRef(entry.sessionId, 'thread-1');
-
-    expect(updated).toHaveBeenLastCalledWith({
-      sessionId: entry.sessionId,
-      shardHash,
-      version: 2,
     });
   });
 
@@ -439,12 +373,10 @@ function resolveSessionDir(baseDir: string): string {
 describe('SessionManager adversarial', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'red-sm-home-'));
-    eventBus = new TypedEventBus();
   });
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
-    eventBus.removeAllListeners();
     vi.restoreAllMocks();
   });
 

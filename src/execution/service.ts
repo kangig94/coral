@@ -1,6 +1,9 @@
 import type {
-  Provider,
+  ArtifactCleanupRuntime,
   ProviderContinuityBlob,
+  ProviderExecutor,
+  PreflightRuntime,
+  ProviderArtifactCleanup,
   ProviderRecoveryMeta,
   ProviderServerLease,
   ProviderServerSpec,
@@ -8,7 +11,7 @@ import type {
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import { resolveEffort, type EffortLevel } from '../shared/schemas.js';
+import { resolveEffort, type EffortLevel, type WorkflowCommand } from '../shared/schemas.js';
 import {
   isAppServerRuntime,
   isDurableCliRuntime,
@@ -24,14 +27,13 @@ import {
   type ProviderResult,
   type SessionEntry,
   type TerminalResult,
-  type WaitRequest,
   type WaitStreamEvent,
+  type WaitStreamRequest,
   type WorkflowResultMeta,
 } from '../shared/types.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import type { PipelineAST } from '../workflow/types.js';
-import type { WorkflowInput } from '../workflow/schemas.js';
+import type { PipelineAST, WorkflowSessionHandle } from '../workflow/types.js';
 import {
   executePipeline,
   resumePipeline,
@@ -83,8 +85,8 @@ interface LaunchIntentBase {
 }
 
 type ExecIntent = LaunchIntentBase & { agent?: string; pool?: LaunchPool };
-type ResumeIntent = LaunchIntentBase & { sessionId: string; agent?: string; pool?: LaunchPool };
-type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; prompt?: string };
+type ResumeIntent = LaunchIntentBase & { sessionId: string; provider?: string; agent?: string; pool?: LaunchPool };
+type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; provider?: string; prompt?: string };
 type CoralIntent = Omit<LaunchIntentBase, 'effort'> & { sessionId?: string; effort?: EffortLevel };
 
 interface ListResult {
@@ -283,10 +285,63 @@ function serializeWorkflowResult(details: StepDetail[]): {
   };
 }
 
-async function runProviderPreflight(provider: Provider): Promise<string | null> {
+function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
+  return {
+    process: runtime.process,
+    storage: runtime.storage,
+    env: runtime.env,
+  };
+}
+
+function toArtifactCleanupRuntime(runtime: Runtime): ArtifactCleanupRuntime {
+  return {
+    storage: runtime.storage,
+    env: runtime.env,
+  };
+}
+
+export interface WorkflowSessionCleanupDeps {
+  resolveConversationRef(providerName: string, sessionId: string): string | undefined;
+  getArtifactCleanup(providerName: string): ProviderArtifactCleanup | undefined;
+  cleanupRuntime: ArtifactCleanupRuntime;
+  onError(message: string): void;
+}
+
+/**
+ * Pure dispatch core for `ExecutionService.cleanupWorkflowSessions`.
+ * Groups handles by provider, resolves conversation refs, and fires cleanup
+ * per-provider. Exported so tests can exercise grouping and error surfacing
+ * without standing up a full ExecutionService.
+ */
+export function dispatchWorkflowSessionCleanup(
+  sessions: readonly WorkflowSessionHandle[],
+  deps: WorkflowSessionCleanupDeps,
+): void {
+  if (sessions.length === 0) return;
+
+  const refsByProvider = new Map<string, Set<string>>();
+  for (const handle of sessions) {
+    const ref = deps.resolveConversationRef(handle.providerName, handle.sessionId);
+    if (!ref) continue;
+    const bucket = refsByProvider.get(handle.providerName) ?? new Set<string>();
+    bucket.add(ref);
+    refsByProvider.set(handle.providerName, bucket);
+  }
+  if (refsByProvider.size === 0) return;
+
+  for (const [providerName, refs] of refsByProvider) {
+    const artifactCleanup = deps.getArtifactCleanup(providerName);
+    if (!artifactCleanup?.cleanupSessions) continue;
+    void artifactCleanup.cleanupSessions(deps.cleanupRuntime, [...refs]).catch((error: unknown) => {
+      deps.onError(`Provider ${providerName} session cleanup failed: ${errorMessage(error)}`);
+    });
+  }
+}
+
+async function runProviderPreflight(provider: ProviderExecutor, runtime: PreflightRuntime): Promise<string | null> {
   if (!provider.preflight) return null;
   try {
-    await provider.preflight();
+    await provider.preflight(runtime);
     return null;
   } catch (error: unknown) {
     return errorMessage(error);
@@ -333,7 +388,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime, this.eventBus);
+    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime);
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
@@ -419,8 +474,8 @@ export class ExecutionService implements RecoveryCapableService {
     launchRecord: PersistedLaunchRecord,
     runtimeRecord: AppServerRuntimeRecord,
   ): Promise<void> {
-    const provider = this.providerRegistry.get(launchRecord.provider);
-    if (!provider?.appServer) {
+    const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(launchRecord.provider);
+    if (!appServerLifecycle) {
       return;
     }
     const session = this.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
@@ -429,20 +484,20 @@ export class ExecutionService implements RecoveryCapableService {
       return;
     }
 
-    const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
+    const spec = appServerLifecycle.buildServerSpec(continuity, toProviderRequest(launchRecord));
     if (spec.shared !== true) {
       const liveServer = await this.providerHostManager.borrowLiveServer(spec, {
         serverGeneration: runtimeRecord.providerMeta.serverGeneration,
       });
       if (liveServer) {
-        await provider.appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
+        await appServerLifecycle.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
         return;
       }
     }
 
     const lease = await this.acquireServer(spec);
     try {
-      await provider.appServer.interrupt(lease, continuity);
+      await appServerLifecycle.interrupt(lease, continuity);
     } finally {
       lease.release();
     }
@@ -459,7 +514,7 @@ export class ExecutionService implements RecoveryCapableService {
     }
 
     const baseNotice = options.reason === 'restart' ? APP_SERVER_RESTART_NOTICE : APP_SERVER_HANDOFF_NOTICE;
-    const provider = this.providerRegistry.get(launchRecord.provider);
+    const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(launchRecord.provider);
     const session =
       this.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
       ({
@@ -497,11 +552,11 @@ export class ExecutionService implements RecoveryCapableService {
       | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
     let probeOutcome: InterruptedProbeOutcome;
 
-    if (provider?.appServer && continuity) {
+    if (appServerLifecycle && continuity) {
       if (runtimeRecord.providerMeta.leaseState === 'waiting') {
         probeOutcome = 'waiting';
         mutation = toMutation(
-          provider.appServer.finalizeInterrupted(
+          appServerLifecycle.finalizeInterrupted(
             {
               resumable: Boolean(preservedConversationRef ?? continuity),
               updatedContinuity: continuity,
@@ -510,7 +565,7 @@ export class ExecutionService implements RecoveryCapableService {
           ),
         );
       } else {
-        const spec = provider.appServer.buildServerSpec(continuity, toProviderRequest(launchRecord));
+        const spec = appServerLifecycle.buildServerSpec(continuity, toProviderRequest(launchRecord));
 
         try {
           const liveServer =
@@ -523,9 +578,9 @@ export class ExecutionService implements RecoveryCapableService {
             ? this.createAttachedProviderServerLease(liveServer)
             : await this.acquireServer(spec);
           try {
-            const probeResult = await provider.appServer.probe(lease, continuity);
+            const probeResult = await appServerLifecycle.probe(lease, continuity);
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
-            mutation = toMutation(provider.appServer.finalizeInterrupted(probeResult, continuity));
+            mutation = toMutation(appServerLifecycle.finalizeInterrupted(probeResult, continuity));
           } finally {
             if (!liveServer) {
               lease.release();
@@ -537,7 +592,7 @@ export class ExecutionService implements RecoveryCapableService {
           );
           probeOutcome = 'unavailable';
           mutation = toMutation(
-            provider.appServer.finalizeInterrupted(
+            appServerLifecycle.finalizeInterrupted(
               {
                 resumable: false,
                 updatedContinuity: continuity,
@@ -667,8 +722,9 @@ export class ExecutionService implements RecoveryCapableService {
       return session.providerContinuity;
     }
 
-    const provider = this.providerRegistry.get(providerName);
-    return provider?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
+    return this.providerRegistry
+      .getAppServerLifecycle(providerName)
+      ?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
   }
 
   private writeAppServerRuntimeRecord(
@@ -695,10 +751,17 @@ export class ExecutionService implements RecoveryCapableService {
   private resolveSessionByIdForContinuation(
     sessionId: string,
     ctx: CallerContext,
+    expectedProvider?: string,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
-    const session = getSessionById(sessionId, this.runtime, this.eventBus);
+    const session = getSessionById(sessionId, this.runtime);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
+    }
+    if (expectedProvider !== undefined && session.provider !== expectedProvider) {
+      return rejectLaunch(
+        'provider_mismatch',
+        `Session ${sessionId} belongs to provider '${session.provider}'. Use \`coral-cli ${session.provider} -s ${sessionId} ...\` instead.`,
+      );
     }
     if (session.backendNamespace === undefined || session.projectRoot === undefined) {
       return rejectLaunch(
@@ -744,7 +807,7 @@ export class ExecutionService implements RecoveryCapableService {
 
   private async resumeResolved(
     providerName: string,
-    provider: Provider,
+    provider: ProviderExecutor,
     session: SessionEntry,
     input: ResumeIntent,
     ctx: CallerContext,
@@ -762,7 +825,7 @@ export class ExecutionService implements RecoveryCapableService {
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const admitted = await this.claimAndAdmitJob(
@@ -799,7 +862,7 @@ export class ExecutionService implements RecoveryCapableService {
 
   private async forkResolved(
     providerName: string,
-    provider: Provider,
+    provider: ProviderExecutor,
     sourceSession: SessionEntry,
     input: ForkIntent,
     ctx: CallerContext,
@@ -810,7 +873,7 @@ export class ExecutionService implements RecoveryCapableService {
     }
     const sourceExpectedVersion = sourceSession.version;
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     const sourceClaimId = this.runtime.ids.uuid();
@@ -892,7 +955,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   private launchProviderJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -903,10 +966,10 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.get(providerName);
+    const provider = this.providerRegistry.getExecutor(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const preflightError = await runProviderPreflight(provider);
+    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
     let resolvedAgent: ResolvedAgentLaunchProfile | null = null;
@@ -979,7 +1042,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.get(providerName);
+    const provider = this.providerRegistry.getExecutor(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const session = this.sessionManager.get(providerName, input.sessionId);
@@ -1017,7 +1080,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.get(providerName);
+    const provider = this.providerRegistry.getExecutor(providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceSession = this.sessionManager.get(providerName, input.sessionId);
@@ -1030,20 +1093,20 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
-    const provider = this.providerRegistry.get(resolved.providerName);
+    const provider = this.providerRegistry.getExecutor(resolved.providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
     return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
   }
 
   async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
-    const provider = this.providerRegistry.get(resolved.providerName);
+    const provider = this.providerRegistry.getExecutor(resolved.providerName);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
     return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
@@ -1095,11 +1158,11 @@ export class ExecutionService implements RecoveryCapableService {
   async executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
-    if (!this.providerRegistry.get(providerName)) {
+    if (!this.providerRegistry.getExecutor(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
@@ -1140,8 +1203,14 @@ export class ExecutionService implements RecoveryCapableService {
     return { sessions: this.sessionManager.list(providerName) };
   }
 
-  getConversationRef(providerName: string, sessionId: string): string | undefined {
-    return this.sessionManager.get(providerName, sessionId)?.conversationRef;
+  cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void {
+    dispatchWorkflowSessionCleanup(sessions, {
+      resolveConversationRef: (providerName, sessionId) =>
+        this.sessionManager.get(providerName, sessionId)?.conversationRef,
+      getArtifactCleanup: (providerName) => this.providerRegistry.getArtifactCleanup(providerName),
+      cleanupRuntime: toArtifactCleanupRuntime(this.runtime),
+      onError: (message) => backendLog.warn(message),
+    });
   }
 
   abort(jobIds: string[]): AbortResult {
@@ -1206,7 +1275,7 @@ export class ExecutionService implements RecoveryCapableService {
     this.progressStore.rebindNamespace(jobId, this.backendNamespace, this.bundleHash);
 
     // Wire up the async execution path
-    const provider = this.providerRegistry.get(launchRecord.provider);
+    const provider = this.providerRegistry.getExecutor(launchRecord.provider);
     if (provider) {
       this.launchOrchestrator.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
     }
@@ -1322,9 +1391,9 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     result: ProviderResult,
   ): Promise<void> {
-    const provider = this.providerRegistry.get(providerName);
+    const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(providerName);
     const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
-    if (provider?.appServer && isAppServerRuntime(runtimeRecord)) {
+    if (appServerLifecycle && isAppServerRuntime(runtimeRecord)) {
       const continuity = this.resolveAppServerContinuity(
         providerName,
         runtimeRecord,
@@ -1389,7 +1458,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   /** Async generator yielding queued/progress/terminal/timeout events for monitored jobs. */
-  async *waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
+  async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     yield* this.waitCoordinator.waitForJobs(req);
   }
 
@@ -1428,14 +1497,14 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowInput,
+    input: WorkflowCommand,
     ctx: CallerContext,
     workDir?: string,
   ): void {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void executePipeline(ast, input.start_prompt, providerName, this, ctx, {
+    void executePipeline(ast, input.startPrompt, providerName, this, ctx, {
       context: input.context,
       workDir,
       signal,

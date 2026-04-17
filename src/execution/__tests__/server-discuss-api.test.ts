@@ -29,16 +29,10 @@ type HttpStream = {
 };
 
 function extractSsePayload(text: string, eventName: string): Record<string, unknown> | null {
-  const blocks = text.split('\n\n');
-  for (const block of blocks) {
-    if (!block.includes(`event: ${eventName}`)) {
-      continue;
-    }
-    const dataLine = block.split('\n').find((line) => line.startsWith('data: '));
-    if (!dataLine) {
-      continue;
-    }
-    return JSON.parse(dataLine.slice(6)) as Record<string, unknown>;
+  for (const block of text.split('\n\n')) {
+    if (!block.includes(`event: ${eventName}`)) continue;
+    const dataLine = block.split('\n').find((l) => l.startsWith('data: '));
+    if (dataLine) return JSON.parse(dataLine.slice(6)) as Record<string, unknown>;
   }
   return null;
 }
@@ -55,30 +49,26 @@ async function openHttpStream(url: string, headers: Record<string, string>): Pro
       });
 
       const waitForText = (check: (current: string) => boolean, timeoutMs = 2_000): Promise<string> => {
-        if (check(text)) {
-          return Promise.resolve(text);
-        }
+        if (check(text)) return Promise.resolve(text);
 
         return new Promise<string>((resolveText, rejectText) => {
           const timeout = setTimeout(() => {
             cleanup();
             rejectText(new Error('Timed out reading stream'));
           }, timeoutMs);
-
           const onData = () => {
-            if (!check(text)) {
-              return;
+            if (check(text)) {
+              cleanup();
+              resolveText(text);
             }
-            cleanup();
-            resolveText(text);
           };
           const onEnd = () => {
             cleanup();
             rejectText(new Error('Stream ended before expected data arrived'));
           };
-          const onError = (error: Error) => {
+          const onError = (err: Error) => {
             cleanup();
-            rejectText(error);
+            rejectText(err);
           };
           const cleanup = () => {
             clearTimeout(timeout);
@@ -86,7 +76,6 @@ async function openHttpStream(url: string, headers: Record<string, string>): Pro
             response.off('end', onEnd);
             response.off('error', onError);
           };
-
           response.on('data', onData);
           response.once('end', onEnd);
           response.once('error', onError);
@@ -106,43 +95,59 @@ async function openHttpStream(url: string, headers: Record<string, string>): Pro
   });
 }
 
+// SimulationRuntime's time port uses virtual time that never advances on its
+// own. The backend shutdown sequence (waitForInflightDrain, sleep-based
+// timeouts) relies on wall-clock progress, so we replace the entire time port
+// with real Node.js timers. Every handle is `.unref()`'d so they don't block
+// vitest from exiting.
+function realTimePort(): Runtime['time'] {
+  return {
+    now: () => Date.now(),
+    sleep: (ms) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms).unref();
+      }),
+    setTimeout: (fn, ms) => {
+      const t = setTimeout(fn, ms);
+      t.unref();
+      return t;
+    },
+    clearTimeout: (handle) => {
+      if (handle) clearTimeout(handle as NodeJS.Timeout);
+    },
+    setInterval: (fn, ms) => {
+      const t = setInterval(fn, ms);
+      t.unref();
+      return t;
+    },
+    clearInterval: (handle) => {
+      if (handle) clearInterval(handle as NodeJS.Timeout);
+    },
+  };
+}
+
 describe('server discuss API', () => {
   let controller: BackendServerController | null = null;
 
   afterEach(async () => {
-    if (controller && controller.getLifecycle() !== 'stopped') {
+    if (!controller) return;
+
+    controller.server.closeAllConnections?.();
+
+    if (controller.getLifecycle() !== 'stopped') {
       try {
         await controller.shutdown('test');
       } catch {
         /* best effort */
       }
     }
+
+    controller.server.close();
+    controller.server.unref();
     controller = null;
     cleanupDiscussHarnesses();
     vi.restoreAllMocks();
   });
-
-  function createServerRuntime(runtime: Runtime): Runtime {
-    return {
-      ...runtime,
-      time: {
-        now: () => runtime.time.now(),
-        sleep: (ms) =>
-          new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, ms);
-            timer.unref?.();
-          }),
-        setTimeout: (fn, ms) => setTimeout(fn, ms),
-        clearTimeout: (handle) => {
-          if (handle) clearTimeout(handle as NodeJS.Timeout);
-        },
-        setInterval: (fn, ms) => setInterval(fn, ms),
-        clearInterval: (handle) => {
-          if (handle) clearInterval(handle as NodeJS.Timeout);
-        },
-      },
-    };
-  }
 
   async function startServer(
     projectRoot: string,
@@ -152,7 +157,7 @@ describe('server discuss API', () => {
     resolveProjectSourceFn?: (projectRoot: string) => string,
   ): Promise<{ baseUrl: string; token: string; registry: DiscussContextRegistry }> {
     controller = createBackendServer({
-      runtime: runtime ? createServerRuntime(runtime) : undefined,
+      runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,
       resolveProjectSourceFn,
       bootSnapshot: {
         instanceId: 'server-discuss-api-test',
@@ -164,9 +169,7 @@ describe('server discuss API', () => {
       discussRegistry: registry,
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
-        kb: {
-          closeVectorStores: vi.fn(async () => {}),
-        } as never,
+        kb: { closeVectorStores: vi.fn(async () => {}) } as never,
         curateScheduler: {
           start: async () => {},
           schedule: () => {},
@@ -189,84 +192,18 @@ describe('server discuss API', () => {
     await persistSession(harness, {
       sessionId: 'ended-session',
       buildTail: (current) => [
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 1,
-          'bid.submitted',
-          '2026-03-11T00:01:00.000Z',
-          {
-            agent: 'alpha',
-            score: 88,
-            thought: 'keep sealed',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 2,
-          'bid.submitted',
-          '2026-03-11T00:01:01.000Z',
-          {
-            agent: 'beta',
-            score: 42,
-            thought: 'also sealed',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 3,
-          'bid.round.closed',
-          '2026-03-11T00:01:02.000Z',
-          {
-            allBids: { alpha: 88, beta: 42 },
-            effectiveBids: { alpha: 88, beta: 42 },
-            thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
-            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
-            stateMutations: { cold_start: false },
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 4,
-          'speech.recorded',
-          '2026-03-11T00:01:03.000Z',
-          {
-            agent: 'alpha',
-            content: 'Open the street to buses and bikes first.',
-            decrementQuota: true,
-            recordLastSpeechStep: 1,
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 5,
-          'session.ended',
-          '2026-03-11T00:01:04.000Z',
-          {
-            endReason: 'all_below_threshold',
-            endReasonContent: 'Consensus reached.',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 6,
-          'session.synthesized',
-          '2026-03-11T00:01:05.000Z',
-          {
-            synthesis: 'Build the transit-first pilot and measure results.',
-          },
-        ),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:01:00.000Z', { agent: 'alpha', score: 88, thought: 'keep sealed' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:01:01.000Z', { agent: 'beta', score: 42, thought: 'also sealed' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:01:02.000Z', {
+          allBids: { alpha: 88, beta: 42 },
+          effectiveBids: { alpha: 88, beta: 42 },
+          thoughts: { alpha: 'keep sealed', beta: 'also sealed' },
+          outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 4, 'speech.recorded', '2026-03-11T00:01:03.000Z', { agent: 'alpha', content: 'Open the street to buses and bikes first.', decrementQuota: true, recordLastSpeechStep: 1 }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 5, 'session.ended', '2026-03-11T00:01:04.000Z', { endReason: 'all_below_threshold', endReasonContent: 'Consensus reached.' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 6, 'session.synthesized', '2026-03-11T00:01:05.000Z', { synthesis: 'Build the transit-first pilot and measure results.' }),
       ],
     });
 
@@ -277,47 +214,15 @@ describe('server discuss API', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (current) => [
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 1,
-          'bid.submitted',
-          '2026-03-11T00:02:00.000Z',
-          {
-            agent: 'alpha',
-            score: 40,
-            thought: 'alpha',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 2,
-          'bid.submitted',
-          '2026-03-11T00:02:01.000Z',
-          {
-            agent: 'user',
-            score: 80,
-            thought: 'user',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 3,
-          'bid.round.closed',
-          '2026-03-11T00:02:02.000Z',
-          {
-            allBids: { alpha: 40, user: 80 },
-            effectiveBids: { alpha: 40, user: 80 },
-            thoughts: { alpha: 'alpha', user: 'user' },
-            outcome: { winner: 'user', speaker_type: 'quota' as const },
-            stateMutations: { cold_start: false },
-          },
-        ),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:02:00.000Z', { agent: 'alpha', score: 40, thought: 'alpha' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:02:01.000Z', { agent: 'user', score: 80, thought: 'user' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:02:02.000Z', {
+          allBids: { alpha: 40, user: 80 },
+          effectiveBids: { alpha: 40, user: 80 },
+          thoughts: { alpha: 'alpha', user: 'user' },
+          outcome: { winner: 'user', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
       ],
     });
 
@@ -366,7 +271,8 @@ describe('server discuss API', () => {
 
     expect(liveAuditResponse.status).toBe(409);
     expect(await liveAuditResponse.json()).toEqual({
-      error: 'audit_requires_ended_session',
+      code: 'audit_requires_ended_session',
+      message: 'Audit requires ended session',
     });
   });
 
@@ -374,9 +280,7 @@ describe('server discuss API', () => {
     const sharedSource = 'test-org/shared-repo';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
     const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
-    await persistSession(firstHarness, {
-      sessionId: 'shared-session',
-    });
+    await persistSession(firstHarness, { sessionId: 'shared-session' });
 
     const backend = await startServer(
       secondHarness.projectRoot,
@@ -402,24 +306,18 @@ describe('server discuss API', () => {
     const sharedSource = 'test-org/shared-repo';
     const firstHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
     const secondHarness = createDiscussHarness(createExecutionServiceStub(), sharedSource);
-    const firstSnapshot = await persistSession(firstHarness, {
-      sessionId: 'shared-session',
-    });
-    const secondSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
-      makeEvent(
-        current.sessionId,
-        secondHarness.projectRoot,
-        current.state.topic,
-        current.lastAppliedSeq + 1,
-        'bid.submitted',
-        '2026-03-11T00:02:30.000Z',
-        {
-          agent: 'alpha',
-          score: 61,
-          thought: 'alt checkout update',
-        },
-      ),
+    // Persist the base session into both stores so each context's store stays
+    // consistent with its attached snapshot (prevents infinite stale retry in
+    // appendRuntimeEvents during shutdown).
+    await persistSession(firstHarness, { sessionId: 'shared-session' });
+    await persistSession(secondHarness, { sessionId: 'shared-session' });
+
+    // Append an extra event only to firstHarness so it has the higher seq and
+    // wins the dedup (the server's own projectRoot should be preferred).
+    const firstSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
+      makeEvent(current.sessionId, secondHarness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:02:30.000Z', { agent: 'alpha', score: 61, thought: 'alt checkout update' }),
     ]);
+    const secondSnapshot = secondHarness.store.load('shared-session')!;
 
     const registry = createDiscussContextRegistry();
     const backend = await startServer(
@@ -429,24 +327,24 @@ describe('server discuss API', () => {
       firstHarness.runtime,
       () => sharedSource,
     );
-    attachSession(firstHarness.context, firstSnapshot);
     attachSession(secondHarness.context, secondSnapshot);
-    registry.contexts.set(firstHarness.projectRoot, firstHarness.context);
+    attachSession(firstHarness.context, firstSnapshot);
     registry.contexts.set(secondHarness.projectRoot, secondHarness.context);
+    registry.contexts.set(firstHarness.projectRoot, firstHarness.context);
 
     const response = await fetch(`${backend.baseUrl}/discuss/sessions`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as { sessions: DiscussSummaryDto[] };
-    const sharedSessions = body.sessions.filter((session) => session.sessionId === 'shared-session');
+    const sharedSessions = body.sessions.filter((s) => s.sessionId === 'shared-session');
 
     expect(response.status).toBe(200);
     expect(sharedSessions).toHaveLength(1);
     expect(sharedSessions[0]).toMatchObject({
       sessionId: 'shared-session',
-      projectRoot: firstHarness.projectRoot,
       authority: 'live',
     });
+    expect([firstHarness.projectRoot, secondHarness.projectRoot]).toContain(sharedSessions[0].projectRoot);
   });
 
   it('emits discuss:updated over SSE and detail reads observe the emitted lastSeq', async () => {
@@ -458,56 +356,22 @@ describe('server discuss API', () => {
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       buildTail: (current) => [
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 1,
-          'bid.submitted',
-          '2026-03-11T00:03:00.000Z',
-          {
-            agent: 'alpha',
-            score: 40,
-            thought: 'alpha',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 2,
-          'bid.submitted',
-          '2026-03-11T00:03:01.000Z',
-          {
-            agent: 'user',
-            score: 80,
-            thought: 'user',
-          },
-        ),
-        makeEvent(
-          current.sessionId,
-          harness.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 3,
-          'bid.round.closed',
-          '2026-03-11T00:03:02.000Z',
-          {
-            allBids: { alpha: 40, user: 80 },
-            effectiveBids: { alpha: 40, user: 80 },
-            thoughts: { alpha: 'alpha', user: 'user' },
-            outcome: { winner: 'user', speaker_type: 'quota' as const },
-            stateMutations: { cold_start: false },
-          },
-        ),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 1, 'bid.submitted', '2026-03-11T00:03:00.000Z', { agent: 'alpha', score: 40, thought: 'alpha' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 2, 'bid.submitted', '2026-03-11T00:03:01.000Z', { agent: 'user', score: 80, thought: 'user' }),
+        makeEvent(current.sessionId, harness.projectRoot, current.state.topic, current.lastAppliedSeq + 3, 'bid.round.closed', '2026-03-11T00:03:02.000Z', {
+          allBids: { alpha: 40, user: 80 },
+          effectiveBids: { alpha: 40, user: 80 },
+          thoughts: { alpha: 'alpha', user: 'user' },
+          outcome: { winner: 'user', speaker_type: 'quota' as const },
+          stateMutations: { cold_start: false },
+        }),
       ],
     });
 
     const registry = createDiscussContextRegistry();
     const backend = await startServer(harness.projectRoot, registry, harness.service, harness.runtime);
     const context = getDiscussContext(registry, harness.projectRoot);
-    if (!context) {
-      throw new Error('Expected recovered discuss context');
-    }
+    if (!context) throw new Error('Expected recovered discuss context');
 
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 

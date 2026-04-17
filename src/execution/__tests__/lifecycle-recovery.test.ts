@@ -231,9 +231,9 @@ function createFakeExecutionAndRecoveryService(
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-      yield { type: 'running', runningJobIds: [] }
+      yield { type: 'waiting', waitingJobIds: [] }
     }),
-    waitStreamOnce: vi.fn(async () => ({ type: 'running', runningJobIds: [] })),
+    waitStreamOnce: vi.fn(async () => ({ type: 'waiting', waitingJobIds: [] })),
     adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
@@ -311,12 +311,6 @@ function createLifecycleHarness(
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot)
   const { runtimeState } = createRuntimeStateMock()
   const idleTimer = createFakeIdleTimer()
-  const sessionIndex = {
-    hydrate: vi.fn(),
-    hasShard: vi.fn(() => true),
-    discoverShard: vi.fn(),
-    invalidate: vi.fn(),
-  }
   const providerRegistry = options.providerRegistry ?? new modules.providerRegistryModule.ProviderRegistry()
   const launchCoordinator = options.launchCoordinator ?? createLaunchCoordinator(modules)
   const servicesByProjectRoot = options.servicesByProjectRoot ?? new Map<string, unknown>()
@@ -349,7 +343,6 @@ function createLifecycleHarness(
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
     progressStore: options.progressStore,
-    sessionIndex: sessionIndex as never,
     streamResponses: new Set(),
     discussStores: new Map(),
     eventBus: options.eventBus,
@@ -1556,12 +1549,6 @@ describe('lifecycle recovery characterization', () => {
         runtimeState: runtimeState as never,
         idleTimer: createFakeIdleTimer() as never,
         progressStore,
-        sessionIndex: {
-          hydrate: vi.fn(),
-          hasShard: vi.fn(() => true),
-          discoverShard: vi.fn(),
-          invalidate: vi.fn(),
-        } as never,
         activeLaunchCount: () => 0,
         queueDepth: () => 0,
         streamResponses: new Set(),
@@ -1690,7 +1677,7 @@ describe('lifecycle recovery characterization', () => {
       if (existing) return existing
       const created = createFakeExecutionAndRecoveryService({
         waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-          yield { type: 'running', runningJobIds: ['queued-visible', 'running-visible'] }
+          yield { type: 'waiting', waitingJobIds: ['queued-visible', 'running-visible'] }
         }),
       })
       servicesByProjectRoot.set(root, created)
@@ -1746,7 +1733,8 @@ describe('lifecycle recovery characterization', () => {
 
       expect(abortResponse.status).toBe(503)
       expect(await abortResponse.json()).toEqual({
-        error: 'backend_shutting_down',
+        code: 'backend_shutting_down',
+        message: 'Backend shutting down',
       })
 
       const service = getOrCreateService(projectRoot)
@@ -1767,7 +1755,8 @@ describe('lifecycle recovery characterization', () => {
 
       expect(waitResponse.status).toBe(503)
       expect(await waitResponse.json()).toEqual({
-        error: 'backend_shutting_down',
+        code: 'backend_shutting_down',
+        message: 'Backend shutting down',
       })
       expect(service.waitStream).not.toHaveBeenCalled()
 
@@ -1808,7 +1797,7 @@ describe('lifecycle recovery characterization', () => {
 
       expect(postStartWaitResponse.status).toBe(200)
       expect(postStartWaitResponse.headers.get('content-type')).toContain('text/event-stream')
-      expect(await postStartWaitResponse.text()).toContain('event: running')
+      expect(await postStartWaitResponse.text()).toContain('event: waiting')
       expect(service.waitStream).toHaveBeenCalledWith({
         jobIds: ['queued-visible', 'running-visible'],
         timeoutSeconds: 1,

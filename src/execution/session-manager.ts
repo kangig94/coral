@@ -1,4 +1,4 @@
-import { basename, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { backendLog } from '../shared/backend-log.js';
 import { acquireDirectoryLock } from '../shared/fs-lock.js';
 import { isValidSessionEntry } from '../shared/session-entry.js';
@@ -9,7 +9,6 @@ import type {
   SessionEntry,
 } from '../shared/types.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../shared/utils.js';
-import { TypedEventBus } from './event-bus.js';
 import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
 
 export type SessionContinuityMutation =
@@ -79,13 +78,12 @@ export class SessionManager {
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
   private readonly sessionDir: string;
-  private readonly eventBus: TypedEventBus;
   private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string, runtime: SessionRuntime, eventBus?: TypedEventBus, isRawShardPath = false) {
+  constructor(workingDirectory: string, runtime: SessionRuntime, isRawShardPath = false) {
     this.storage = runtime.storage;
     this.paths = runtime.paths;
     this.time = runtime.time;
@@ -93,7 +91,6 @@ export class SessionManager {
     this.sessionDir = isRawShardPath
       ? workingDirectory
       : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
-    this.eventBus = eventBus ?? new TypedEventBus();
     if (!isRawShardPath) {
       this.storage.mkdirSync(this.sessionDir, { recursive: true });
     }
@@ -101,8 +98,8 @@ export class SessionManager {
   }
 
   /** Open an existing shard directory without creating it (recovery path). */
-  static openShard(shardDir: string, runtime: SessionRuntime, eventBus?: TypedEventBus): SessionManager {
-    return new SessionManager(shardDir, runtime, eventBus, true);
+  static openShard(shardDir: string, runtime: SessionRuntime): SessionManager {
+    return new SessionManager(shardDir, runtime, true);
   }
 
   private sessionPath(sessionId: string): string {
@@ -180,13 +177,6 @@ export class SessionManager {
     if (!didWrite) return;
     this.shardStamp = this.readShardStamp();
     this.populateCache(entry.sessionId, entry);
-    const shardHash = basename(this.sessionDir);
-    this.eventBus.emit('session:updated', {
-      sessionId: entry.sessionId,
-      shardHash,
-      version: entry.version,
-      ...(entry.projectRoot !== undefined ? { projectRoot: entry.projectRoot } : {}),
-    });
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
@@ -405,10 +395,9 @@ export class SessionManager {
 export function getSessionById(
   sessionId: string,
   runtime: SessionRuntime,
-  eventBus?: TypedEventBus,
 ): SessionEntry | null {
   for (const shardDir of listSessionShards(runtime)) {
-    const entry = SessionManager.openShard(shardDir, runtime, eventBus).readById(sessionId, { forceFresh: true });
+    const entry = SessionManager.openShard(shardDir, runtime).readById(sessionId, { forceFresh: true });
     if (entry !== null) {
       return entry;
     }

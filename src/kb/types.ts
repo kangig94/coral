@@ -345,7 +345,7 @@ export function entryIdToVaultLink(id: KbEntryId): string {
 }
 
 export function vaultLinkToEntryId(link: string): KbEntryId | null {
-  const match = link.trim().match(/^\[\[(notes|sources|communities)\/([^[\]\/]+)\]\]$/);
+  const match = link.trim().match(/^\[\[(notes|sources|communities)\/([^[\]/]+)\]\]$/);
   if (match === null) {
     return null;
   }

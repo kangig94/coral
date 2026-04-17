@@ -19,7 +19,6 @@ import {
   normalizeControllerEnv,
   readBootstrapSignature,
   readString,
-  sameBootstrapSignature,
 } from './shared-utils.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {

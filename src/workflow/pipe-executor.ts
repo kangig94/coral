@@ -1,10 +1,7 @@
-import { homedir } from 'node:os';
-import { readdir, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { WorkflowCheckpointWriter } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } from '../shared/types.js';
-import type { PipeAtom, PipelineAST, WorkflowExecutionPort } from './types.js';
+import type { PipeAtom, PipelineAST, WorkflowExecutionPort, WorkflowSessionHandle } from './types.js';
 import { truncate } from '../shared/format-progress.js';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -77,22 +74,6 @@ export class WorkflowExecutionError extends Error {
     this.aborted = options.aborted;
     this.stepDetails = [...options.stepDetails];
   }
-}
-
-function cleanupClaudeSessions(sessionIds: string[]): void {
-  if (sessionIds.length === 0) return;
-  const targets = new Set(sessionIds.map((id) => `${id}.jsonl`));
-  const projectsDir = join(homedir(), '.claude', 'projects');
-  (async () => {
-    const dirs = await readdir(projectsDir, { withFileTypes: true });
-    for (const dir of dirs) {
-      if (!dir.isDirectory()) continue;
-      const files = await readdir(join(projectsDir, dir.name)).catch(() => [] as string[]);
-      for (const file of files) {
-        if (targets.has(file)) await unlink(join(projectsDir, dir.name, file)).catch(() => {});
-      }
-    }
-  })().catch((e: unknown) => { backendLog.warn(`cleanupClaudeSessions failed: ${errorMessage(e)}`); });
 }
 
 /** Simple async mutex — serializes access via a single Promise chain. */
@@ -604,17 +585,17 @@ function handleWaitEvent(
     }
 
     case 'terminal': {
-      const atom = state.pending.get(event.completedJobId);
+      const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
-      state.pending.delete(event.completedJobId);
-      delete state.cursor.jobs[event.completedJobId];
+      state.pending.delete(event.jobId);
+      delete state.cursor.jobs[event.jobId];
 
       const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
       options.onProgress(formatAtomProgress(atom, terminalState));
 
-      if (state.expectedStaleAborts.has(event.completedJobId)) {
-        state.expectedStaleAborts.delete(event.completedJobId);
+      if (state.expectedStaleAborts.has(event.jobId)) {
+        state.expectedStaleAborts.delete(event.jobId);
         return 'handled';
       }
 
@@ -631,7 +612,7 @@ function handleWaitEvent(
       return 'handled';
     }
 
-    case 'running':
+    case 'waiting':
       return 'check-stale';
   }
 }
@@ -760,21 +741,24 @@ function requireStepResult(stepIndex: number, atom: LaunchedAtom, results: Map<s
   throw new Error(`Step ${stepIndex}, atom '${atom.agent}' completed without a result`);
 }
 
-function collectClaudeConversationRefs(
-  launchedAtoms: LaunchedAtom[],
-  executionSvc: WorkflowExecutionPort,
-): string[] {
+/**
+ * Dedup launched atoms into per-session handles. Multiple atoms can share a session
+ * (resume paths, defensive workflows), so downstream cleanup should see each session once.
+ */
+export function toSessionHandles(
+  launchedAtoms: readonly { providerName: string; sessionId: string }[],
+): WorkflowSessionHandle[] {
   const seen = new Set<string>();
-  const refs: string[] = [];
+  const handles: WorkflowSessionHandle[] = [];
 
   for (const atom of launchedAtoms) {
-    if (atom.providerName !== 'claude' || seen.has(atom.sessionId)) continue;
-    seen.add(atom.sessionId);
-    const ref = executionSvc.getConversationRef('claude', atom.sessionId);
-    if (ref) refs.push(ref);
+    const key = `${atom.providerName}:${atom.sessionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    handles.push({ providerName: atom.providerName, sessionId: atom.sessionId });
   }
 
-  return refs;
+  return handles;
 }
 
 type StepLaunchResult = {
@@ -1123,7 +1107,7 @@ export async function resumePipeline(
       stepDetails,
     };
   } finally {
-    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
+    executionSvc.cleanupWorkflowSessions(toSessionHandles(allLaunchedAtoms));
   }
 }
 
@@ -1218,6 +1202,6 @@ export async function executePipeline(
       stepDetails,
     };
   } finally {
-    cleanupClaudeSessions(collectClaudeConversationRefs(allLaunchedAtoms, executionSvc));
+    executionSvc.cleanupWorkflowSessions(toSessionHandles(allLaunchedAtoms));
   }
 }

@@ -7,7 +7,6 @@
  */
 
 import {
-  measureEnv,
   parsePassthrough,
   resolveEnvBudgetBytes,
   shedIfOverBudget,

@@ -37,7 +37,6 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
   return {
     type: 'progress',
     jobId: 'job-1',
-    sessionId: 'session-1',
     eventId: 1,
     message,
   };
@@ -53,10 +52,10 @@ function makeQueuedEvent(): Extract<WaitStreamEvent, { type: 'queued' }> {
   };
 }
 
-function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'running' }> {
+function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'waiting' }> {
   return {
-    type: 'running',
-    runningJobIds: ['job-1'],
+    type: 'waiting',
+    waitingJobIds: ['job-1'],
   };
 }
 
@@ -66,8 +65,7 @@ function makeTerminalEvent(
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {
     type: 'terminal',
-    completedJobId: 'job-1',
-    sessionId: 'session-1',
+    jobId: 'job-1',
     remainingJobIds: [],
     resultPath: '/tmp/result.md',
     result: {
@@ -85,6 +83,7 @@ function makeOptions(
     pluginRoot: string;
     projectRoot: string;
     outputFormat: 'text' | 'json';
+    emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
     isTTY: boolean;
     columns: number;
   }> = {},
@@ -99,6 +98,15 @@ function makeOptions(
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
     outputFormat: 'text' as const,
+    emitError: (error: unknown, outputFormat: 'text' | 'json') => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (outputFormat === 'json') {
+        process.stderr.write(JSON.stringify({ error: true, code: 'internal', message }) + '\n');
+      } else {
+        process.stderr.write(message + '\n');
+      }
+      process.exitCode = 70;
+    },
     isTTY: false,
     columns: 80,
     ...overrides,
@@ -119,6 +127,7 @@ describe('cli follow', () => {
     stdout = '';
     stderr = '';
     sigintHandler = null;
+    process.exitCode = undefined;
     mockState.ensureBackend.mockReset();
     mockState.streamWait.mockReset();
 
@@ -148,6 +157,7 @@ describe('cli follow', () => {
   });
 
   afterEach(() => {
+    process.exitCode = undefined;
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.resetModules();
@@ -278,8 +288,8 @@ describe('cli follow', () => {
         runningJobIds: ['job-9'],
       },
       {
-        type: 'running',
-        runningJobIds: ['job-1'],
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
       },
       {
         type: 'progress',
@@ -289,7 +299,7 @@ describe('cli follow', () => {
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
+        jobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
         result: {
@@ -377,7 +387,7 @@ describe('cli follow', () => {
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
+        jobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
         result: {
@@ -391,7 +401,7 @@ describe('cli follow', () => {
     expect(mockState.streamWait).toHaveBeenCalledTimes(2);
   });
 
-  it('returns 1 on non-transient stream failures without retrying', async () => {
+  it('returns the emitted envelope exit code on non-transient stream failures without retrying', async () => {
     const { launchAndFollow } = await loadFollowModule();
 
     mockState.ensureBackend.mockResolvedValueOnce(makeBackend());
@@ -399,12 +409,63 @@ describe('cli follow', () => {
       throw new Error('fatal wait failure');
     });
 
-    await expect(launchAndFollow(makeOptions())).resolves.toBe(1);
+    await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
     expect(stdout).toBe('Job job-1 running (session session-1)\n');
     expect(stderr).toBe('fatal wait failure\n');
+    expect(process.exitCode).toBe(70);
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
     expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
+    vi.useFakeTimers();
+
+    const { launchAndFollow } = await loadFollowModule();
+    const { BackendUnreachableError: FreshBackendUnreachableError } = await import('../../shared/utils.js');
+
+    mockState.ensureBackend.mockResolvedValue(makeBackend());
+    mockState.streamWait
+      .mockImplementationOnce(async function* () {
+        throw new FreshBackendUnreachableError('fetch failed');
+      })
+      .mockImplementationOnce(async function* () {
+        throw new FreshBackendUnreachableError('fetch failed');
+      })
+      .mockImplementationOnce(async function* () {
+        throw new FreshBackendUnreachableError('fetch failed');
+      });
+
+    const followPromise = launchAndFollow(
+      makeOptions({
+        outputFormat: 'json',
+        emitError: (_error: unknown, outputFormat: 'text' | 'json') => {
+          expect(outputFormat).toBe('json');
+          process.stderr.write(JSON.stringify({ error: true, code: 'backend_unreachable', message: 'fetch failed' }) + '\n');
+          process.exitCode = 69;
+        },
+      }),
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+
+    await expect(followPromise).resolves.toBe(69);
+
+    expect(stdout.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
+      {
+        type: 'launch',
+        jobId: 'job-1',
+        sessionId: 'session-1',
+        status: 'running',
+      },
+    ]);
+    expect(stderr.trim()).toBe(JSON.stringify({ error: true, code: 'backend_unreachable', message: 'fetch failed' }));
+    expect(mockState.ensureBackend).toHaveBeenCalledTimes(3);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(3);
   });
 
   it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {

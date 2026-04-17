@@ -1,23 +1,15 @@
 import { isNoEntryError } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
+import type { LockRecord } from '../shared/lock-types.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort } from './runtime.js';
 import { probeProcessStartedAtSeconds } from '../infra/backend-info.js';
 
 export { backendLockPath } from '../infra/paths.js';
+export type { LockRecord } from '../shared/lock-types.js';
 export const STARTUP_DEADLINE = 30_000;
 export const CONTENDER_BUDGET = 90_000;
 
 const RETRY_DELAY_MS = 200;
-
-export type LockRecord = {
-  instanceId: string;
-  pid: number;
-  version: string;
-  bundleHash: string;
-  flavor: 'prod' | 'dev';
-  startedAt: number;
-  processStartedAt?: number;
-};
 
 type LockSnapshot = {
   raw: string;

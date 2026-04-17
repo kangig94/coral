@@ -13,7 +13,6 @@ import type { EventBusEvents } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { SessionIndex } from './session-index.js';
 import type { LifecycleState } from './server-types.js';
 import type { ExecutionService } from './service.js';
 import type { KbSubsystem } from './kb-tools.js';
@@ -83,7 +82,6 @@ export interface HttpHandlerDeps {
   // Runtime services
   readonly idleTimer: IdleTimer;
   readonly progressStore: ProgressStore;
-  readonly sessionIndex: SessionIndex;
   readonly activeLaunchCount: () => number;
   readonly queueDepth: () => number;
   readonly streamResponses: Set<ServerResponse>;
@@ -124,6 +122,5 @@ export interface EventStreamHandlers {
   onPhaseChanged: (payload: EventBusEvents['job:phase_changed']) => void;
   onProgress: (payload: EventBusEvents['job:progress']) => void;
   onCompleted: (payload: EventBusEvents['job:completed']) => void;
-  onSessionUpdated: (payload: EventBusEvents['session:updated']) => void;
   onDiscussUpdated: (payload: EventBusEvents['discuss:updated']) => void;
 }

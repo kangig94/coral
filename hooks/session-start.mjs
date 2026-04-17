@@ -4,47 +4,37 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
+import { coralProjectDir, exitIfChildProcess, exitIfWrongFlavor, isValidSessionId, readStdin } from './lib/hook-utils.mjs';
+import { renderInject } from './lib/inject-render.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
-
-function stripSessionIdOnly(text) {
-  return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
-}
 
 try {
   const input = JSON.parse(await readStdin());
   const sessionId = input.session_id;
+  if (!isValidSessionId(sessionId)) process.exit(0);
+
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
-
-
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
+  const projectDir = process.env.CLAUDE_PROJECT_DIR;
   const gitRoot = projectDir ? findGitRoot(projectDir) : undefined;
   ensureCliPermission();
   if (projectDir && process.env.CORAL_AUTO_SYMLINK === '1') {
     ensureCoralSymlink(projectDir, gitRoot);
   }
 
-  const ownerSessionId = isOwnerId(sessionId) ? sessionId : undefined;
-  const injectText = readFileSync(join(PLUGIN_ROOT, 'INJECT.md'), 'utf-8');
-  const substituted = injectText
-    .replaceAll('{{CORAL_KB}}', resolveKbRoot())
-    .replaceAll('{{CORAL_CLI}}', cliPath)
-    .replaceAll('{{SESSION_ID}}', ownerSessionId || '')
-    .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
-    .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
-  const injectContent = ownerSessionId ? substituted : stripSessionIdOnly(substituted);
-  const additionalContext = sessionId
-    ? `SessionStart:session_id=${sessionId}\n\n${injectContent}`
-    : injectContent;
+  const injectContent = renderInject({
+    pluginRoot: PLUGIN_ROOT,
+    projectDir,
+    sessionId,
+    asOwner: true,
+  });
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext,
+      additionalContext: `SessionStart:session_id=${sessionId}\n\n${injectContent}`,
     },
   }));
 } catch {

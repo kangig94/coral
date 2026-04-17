@@ -19,12 +19,9 @@ export {
   readDiscussEventLog,
   readDiscussDiscovery,
 } from './readers.js';
-export type {
-  DiscussEventLogEntry,
-  DiscussDiscoverySession,
-  DiscussDiscoveryData,
-} from './readers.js';
-export type { ProvenanceState, LenientSessionEntry } from '../shared/session-entry.js';
+export type { DiscussEventLogEntry } from './readers.js';
+export type { DiscussDiscoverySession, DiscussDiscoveryData } from '../shared/persistence-types.js';
+export type { ProvenanceState } from '../shared/session-entry.js';
 
 // ./discuss.js
 export { buildDiscussDetail, buildDiscussSummary } from './discuss.js';
@@ -57,7 +54,6 @@ export type {
   SessionCreateResponse,
   SessionForkResponse,
   SessionMessageResponse,
-  SessionsListResponse,
   WorkflowLaunchResponse,
 } from './http-client.js';
 

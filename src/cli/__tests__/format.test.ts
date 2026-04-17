@@ -8,7 +8,6 @@ import type { KbReadResult } from '../../kb/types.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { WaitStreamEvent } from '../../shared/types.js';
 import {
-  type SessionListResult,
   formatAbortResult,
   formatBackendStatus,
   formatDiscussAbort,
@@ -29,12 +28,11 @@ import {
   formatKbUpdate,
   formatLaunch,
   formatPersonaSeed,
-  formatProviderList,
   formatShutdown,
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitRunning,
+  formatWaitWaiting,
   renderWaitLine,
 } from '../format.js';
 
@@ -64,40 +62,6 @@ const mixedAbortResult = {
   aborted: ['job-1'],
   notFound: ['job-9'],
 } satisfies AbortResult;
-
-const listResult = {
-  sessions: [
-    {
-      sessionId: 'session-1',
-      provider: 'codex',
-      name: 'alpha',
-      state: 'ready',
-      model: 'gpt-5',
-      cwd: '/tmp/project',
-    },
-  ],
-} satisfies SessionListResult;
-
-const aggregatedListResult = {
-  sessions: [
-    {
-      sessionId: 'session-1',
-      provider: 'codex',
-      name: 'alpha',
-      state: 'ready',
-      model: 'gpt-5',
-      cwd: '/tmp/codex',
-    },
-    {
-      sessionId: 'session-2',
-      provider: 'claude',
-      name: 'beta',
-      state: 'non_resumable',
-      model: 'sonnet',
-      cwd: '/tmp/claude',
-    },
-  ],
-} satisfies SessionListResult;
 
 const personaSeedResult = {
   seed_used: 7,
@@ -162,7 +126,6 @@ const notYourTurnResult = {
 const waitProgressEvent = {
   type: 'progress',
   jobId: 'job-1',
-  sessionId: 'session-1',
   eventId: 4,
   message: 'Still running',
 } satisfies Extract<WaitStreamEvent, { type: 'progress' }>;
@@ -177,8 +140,7 @@ const waitQueuedEvent = {
 
 const waitTerminalEvent = {
   type: 'terminal',
-  completedJobId: 'job-1',
-  sessionId: 'session-1',
+  jobId: 'job-1',
   remainingJobIds: ['job-2'],
   resultPath: '/tmp/result.md',
   result: {
@@ -186,10 +148,10 @@ const waitTerminalEvent = {
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
-const waitRunningEvent = {
-  type: 'running',
-  runningJobIds: ['job-1', 'job-2'],
-} satisfies Extract<WaitStreamEvent, { type: 'running' }>;
+const waitWaitingEvent = {
+  type: 'waiting',
+  waitingJobIds: ['job-1', 'job-2'],
+} satisfies Extract<WaitStreamEvent, { type: 'waiting' }>;
 
 describe('cli format', () => {
   describe('formatLaunch', () => {
@@ -213,32 +175,6 @@ describe('cli format', () => {
 
     it('formats a result with both aborted and missing jobs', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
-    });
-  });
-
-  describe('formatProviderList', () => {
-    it('formats an empty provider list', () => {
-      expect(formatProviderList({ sessions: [] })).toBe('No sessions');
-    });
-
-    it('formats a single session in table form', () => {
-      const formatted = formatProviderList(listResult);
-
-      expect(formatted).toContain('SESSION');
-      expect(formatted).toContain('STATE');
-      expect(formatted).toContain('session-1');
-      expect(formatted).toContain('ready');
-      expect(formatted).toContain('/tmp/project');
-    });
-
-    it('formats aggregated provider output with a provider column', () => {
-      const formatted = formatProviderList(aggregatedListResult, { includeProvider: true });
-
-      expect(formatted).toContain('PROVIDER');
-      expect(formatted).toContain('codex');
-      expect(formatted).toContain('claude');
-      expect(formatted).toContain('session-1');
-      expect(formatted).toContain('session-2');
     });
   });
 
@@ -549,10 +485,10 @@ describe('cli format', () => {
       expect(
         formatError({
           statusCode: 403,
-          body: { error: 'scope_mismatch' },
+          body: { code: 'scope_mismatch', message: 'Scope mismatch' },
           message: 'Backend request failed: 403 Forbidden',
         }),
-      ).toBe('HTTP 403: {"error":"scope_mismatch"}');
+      ).toBe('HTTP 403: {"code":"scope_mismatch","message":"Scope mismatch"}');
     });
 
     it('formats an Error instance', () => {
@@ -571,20 +507,12 @@ describe('cli format', () => {
   });
 
   describe('wait formatters', () => {
-    it('formats progress events with a cursor', () => {
-      expect(formatWaitProgress(waitProgressEvent, 'cursor-1')).toBe('[job-1] Still running (cursor: cursor-1)');
+    it('formats progress events', () => {
+      expect(formatWaitProgress(waitProgressEvent)).toBe('[job-1] Still running');
     });
 
-    it('formats progress events without a cursor', () => {
-      expect(formatWaitProgress(waitProgressEvent, null)).toBe('[job-1] Still running');
-    });
-
-    it('formats queued events with a cursor', () => {
-      expect(formatWaitQueued(waitQueuedEvent, 'cursor-2')).toBe('[job-1] queued at position 2 (cursor: cursor-2)');
-    });
-
-    it('formats queued events without a cursor', () => {
-      expect(formatWaitQueued(waitQueuedEvent, null)).toBe('[job-1] queued at position 2');
+    it('formats queued events', () => {
+      expect(formatWaitQueued(waitQueuedEvent)).toBe('[job-1] queued at position 2');
     });
 
     it('formats a non-inline terminal event with the result path', () => {
@@ -603,15 +531,15 @@ describe('cli format', () => {
       );
     });
 
-    it('formats running output with active jobs', () => {
-      expect(formatWaitRunning(waitRunningEvent, 'cursor-4')).toBe(
-        'Still running; jobs: job-1, job-2 (cursor: cursor-4)',
+    it('formats waiting output with pending jobs', () => {
+      expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4')).toBe(
+        'Still waiting; jobs: job-1, job-2 (cursor: cursor-4)',
       );
     });
 
-    it('formats running output without active jobs', () => {
-      expect(formatWaitRunning({ type: 'running', runningJobIds: [] }, null)).toBe(
-        'Still running; jobs: none',
+    it('formats waiting output without pending jobs', () => {
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe(
+        'Still waiting; jobs: none',
       );
     });
 

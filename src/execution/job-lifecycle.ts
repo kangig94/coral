@@ -1,6 +1,6 @@
 import type { ProviderCliRunner } from '../providers/runner-port.js';
 import type {
-  Provider,
+  ProviderExecutor,
   ProviderRecoveryMeta,
   ProviderRuntime,
   ProviderServerLease,
@@ -20,15 +20,16 @@ import {
   type ProviderResult,
   type SessionEntry,
   type TerminalResult,
-  type WaitRequest,
   type WaitStreamEvent,
+  type WaitRequest,
+  type WaitStreamRequest,
 } from '../shared/types.js';
-import { AbortRegistry } from './abort-controller-registry.js';
-import { CliBusyError, LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
-import { TypedEventBus } from './event-bus.js';
-import { ProgressStore, createReplayCursor } from './progress-store.js';
+import { type AbortRegistry } from './abort-controller-registry.js';
+import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
+import { type TypedEventBus } from './event-bus.js';
+import { type ProgressStore, createReplayCursor } from './progress-store.js';
 import type { Runtime, RuntimeTimePort } from './runtime.js';
-import { SessionManager } from './session-manager.js';
+import { type SessionManager } from './session-manager.js';
 import {
   QUEUED_ABORT_MESSAGE,
   SessionClaimError,
@@ -40,6 +41,7 @@ import {
 } from './job-lifecycle-contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
+const JOB_TERMINAL_RELEASE_POLL_MS = 10;
 
 function bindProviderRunner(
   launchCoordinator: LaunchCoordinator,
@@ -150,7 +152,7 @@ export class LaunchOrchestrator {
   }
 
   launchProviderJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -197,7 +199,7 @@ export class LaunchOrchestrator {
   }
 
   runAsync(
-    provider: Provider,
+    provider: ProviderExecutor,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -244,7 +246,7 @@ export class LaunchOrchestrator {
   }
 
   runRecoveredQueuedJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     launchRecord: PersistedLaunchRecord,
     admission: QueuedHandle,
     pool: LaunchPool,
@@ -311,7 +313,7 @@ export class LaunchOrchestrator {
   }
 
   private async executeJob(
-    provider: Provider,
+    provider: ProviderExecutor,
     request: ProviderRequest,
     jobId: string,
     sessionId: string,
@@ -514,14 +516,25 @@ export class WaitCoordinator {
 
     const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
-      let timer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
       let settled = false;
+      let releasePollTimer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
+
+      const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
+      if (remainingMs <= 0) {
+        reject(timeoutError);
+        return;
+      }
+
+      const timer = this.deps.time.setTimeout(() => {
+        finish(() => reject(timeoutError));
+      }, remainingMs);
 
       const cleanup = (): void => {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
-        this.deps.eventBus.off('session:updated', onSessionUpdated);
-        if (timer) this.deps.time.clearTimeout(timer);
+        this.deps.eventBus.off('job:progress', onJobProgress);
+        this.deps.time.clearTimeout(releasePollTimer ?? null);
+        this.deps.time.clearTimeout(timer);
       };
 
       const finish = (callback: () => void): void => {
@@ -536,17 +549,31 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
+          if (!isTerminalPhase(status.phase)) {
+            return;
+          }
           if (!this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, status)) {
+            scheduleReleasePoll();
             return;
           }
           finish(resolve);
         } catch (error: unknown) {
-          finish(() => reject(error));
+          finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
       };
 
-      const onJobCompleted = ({ jobId: completedJobId }: { jobId: string }): void => {
-        if (completedJobId === jobId) {
+      const scheduleReleasePoll = (): void => {
+        if (settled || releasePollTimer) {
+          return;
+        }
+        releasePollTimer = this.deps.time.setTimeout(() => {
+          releasePollTimer = undefined;
+          recheck();
+        }, JOB_TERMINAL_RELEASE_POLL_MS);
+      };
+
+      const onJobCompleted = ({ jobId: completedId }: { jobId: string }): void => {
+        if (completedId === jobId) {
           recheck();
         }
       };
@@ -557,34 +584,24 @@ export class WaitCoordinator {
         }
       };
 
-      const onSessionUpdated = ({ sessionId }: { sessionId: string }): void => {
-        if (sessionId === owner.sessionId) {
+      const onJobProgress = ({ jobId: progressedJobId }: { jobId: string }): void => {
+        if (progressedJobId === jobId) {
           recheck();
         }
       };
 
       this.deps.eventBus.on('job:completed', onJobCompleted);
       this.deps.eventBus.on('job:phase_changed', onJobPhaseChanged);
-      this.deps.eventBus.on('session:updated', onSessionUpdated);
+      this.deps.eventBus.on('job:progress', onJobProgress);
 
       recheck();
       if (settled) {
         return;
       }
-
-      const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
-      if (remainingMs <= 0) {
-        finish(() => reject(timeoutError));
-        return;
-      }
-
-      timer = this.deps.time.setTimeout(() => {
-        finish(() => reject(timeoutError));
-      }, remainingMs);
     });
   }
 
-  async *waitForJobs(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
+  async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const { progressStore, launchCoordinator, jobPools } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor } = req;
     const startMs = this.deps.time.now();
@@ -597,7 +614,7 @@ export class WaitCoordinator {
 
     while (pending.size > 0) {
       if (this.deps.time.now() - startMs >= timeoutMs) {
-        yield { type: 'running', runningJobIds: [...pending] };
+        yield { type: 'waiting', waitingJobIds: [...pending] };
         return;
       }
 
@@ -632,7 +649,6 @@ export class WaitCoordinator {
             yield {
               type: 'progress',
               jobId,
-              sessionId: status.sessionId,
               eventId: event.eventId,
               message: event.message ?? '',
             };
@@ -642,8 +658,7 @@ export class WaitCoordinator {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
-            completedJobId: jobId,
-            sessionId: status.sessionId,
+            jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: event.result ?? { content: '' },
@@ -657,8 +672,7 @@ export class WaitCoordinator {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
-            completedJobId: jobId,
-            sessionId: currentStatus.sessionId,
+            jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '' },
@@ -690,13 +704,13 @@ export class WaitCoordinator {
     }
 
     for await (const event of this.waitForJobs(request)) {
-      if (event.type === 'terminal' && event.completedJobId === jobId) {
+      if (event.type === 'terminal' && event.jobId === jobId) {
         return {
           content: event.result.content,
           nonResumable: event.result.nonResumable ?? false,
         };
       }
-      if (event.type === 'running') {
+      if (event.type === 'waiting') {
         throw new Error('Wait expired while job still running');
       }
     }

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { backendLog } from '../../shared/backend-log.js';
 import { isRecord, TransientHttpError } from '../../shared/utils.js';
@@ -267,7 +268,7 @@ async function downloadFile(url: string, destinationPath: string): Promise<void>
   rmSync(tempPath, { force: true });
 
   try {
-    await pipeline(Readable.fromWeb(response.body as any), createWriteStream(tempPath));
+    await pipeline(Readable.fromWeb(response.body as WebReadableStream), createWriteStream(tempPath));
     renameSync(tempPath, destinationPath);
   } catch (error: unknown) {
     rmSync(tempPath, { force: true });
@@ -500,9 +501,7 @@ export class LocalOnnxProvider implements EmbeddingProvider {
   }
 
   private getSession(): Promise<OnnxSession> {
-    if (this.sessionPromise === null) {
-      this.sessionPromise = this.ort.InferenceSession.create(this.modelPath);
-    }
+    this.sessionPromise ??= this.ort.InferenceSession.create(this.modelPath);
     return this.sessionPromise;
   }
 }

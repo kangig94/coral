@@ -84,7 +84,7 @@ disallowedTools: Write, Edit
        export class session_manager { ... }
        ```
     5) Test coverage check per changed module:
-       - Codex modules: `src/providers/codex/__tests__/<module>.test.ts`
+       - Provider modules: `src/providers/__tests__/<module>.test.ts`
        - Discuss modules: `src/discuss/__tests__/<module>.test.ts`
        - Edge cases covered (empty input, corrupt data, timeout)?
        - Error paths tested (spawn failure, invalid JSON)?
@@ -107,7 +107,7 @@ disallowedTools: Write, Edit
     git diff --name-only | xargs grep -n 'TODO\|FIXME\|HACK' 2>/dev/null
 
     # Check test file existence for each source module
-    ls src/providers/codex/__tests__/*.test.ts
+    ls src/providers/__tests__/*.test.ts
     ls src/discuss/__tests__/*.test.ts
 
     # Run tests to verify coverage
@@ -149,7 +149,7 @@ disallowedTools: Write, Edit
     - Confusing brevity with elegance: Praising short code that's hard to understand. Instead: evaluate by cognitive load — how much context must a reader hold?
     - Rubber-stamping: Approving without reading every changed file. Instead: cite file:line evidence for every finding.
     - Style wars: Rejecting working code for personal preference. Instead: only flag violations per `.claude/rules/conventions.md`.
-    - Ignoring tests: Passing code with no test coverage. Instead: always check for corresponding tests in `src/providers/codex/__tests__/` or `src/discuss/__tests__/`.
+    - Ignoring tests: Passing code with no test coverage. Instead: always check for corresponding tests in `src/providers/__tests__/` or `src/discuss/__tests__/`.
     - Scope creep: Flagging pre-existing issues not in the diff. Instead: review only what changed.
   </Failure_Modes_To_Avoid>
 </Agent_Prompt>
