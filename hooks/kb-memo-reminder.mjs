@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isOwnerId } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isValidSessionId } from './lib/hook-utils.mjs';
 import { activeBridgeCommand, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -20,7 +20,7 @@ try {
   const input = JSON.parse(await readStdin());
   const sessionId = input.session_id;
   if (!sessionId) process.exit(0);
-  if (!isOwnerId(sessionId)) process.exit(0);
+  if (!isValidSessionId(sessionId)) process.exit(0);
 
   const projectDir = projectDirFromInput(input);
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';

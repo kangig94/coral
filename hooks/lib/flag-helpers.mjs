@@ -55,7 +55,7 @@ export function analyzeValueSegments(segments) {
 // token (e.g., `--input prompt.txt`). Returns an analyzeValueSegments result
 // augmented with `nextIndex` (pointing at the consumed value token) and a
 // `replacement` slot describing the value token's range.
-export function analyzeSeparateValue(tokens, index) {
+function analyzeSeparateValue(tokens, index) {
   const valueToken = tokens[index + 1];
   if (valueToken === undefined) return null;
 
@@ -73,7 +73,7 @@ export function analyzeSeparateValue(tokens, index) {
 
 // Parses a flag-with-inline-value form like `--input=prompt` or `-iprompt`.
 // `prefix` is the exact literal to strip (`--input=` or `-i`).
-export function analyzeInlineValue(token, prefix) {
+function analyzeInlineValue(token, prefix) {
   const segments = getInlineValueSegments(token, prefix);
   if (segments === null) return null;
 

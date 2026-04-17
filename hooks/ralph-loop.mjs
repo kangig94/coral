@@ -23,7 +23,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { RALPH_FIELD_RE, RALPH_MESSAGE_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
@@ -39,6 +39,8 @@ const DEFAULT_STATE = {
 const ABORT_SENTINEL = 'STOP_LOOP';
 const STATE_FILE_PREFIX = 'ralph-state-';
 const STATE_SWEEP_TTL_MS = 24 * 60 * 60_000;
+const PROMISE_TAG_RE = /<promise>([\s\S]*?)<\/promise>/;
+const ABORT_TAG_RE = /<abort>([\s\S]*?)<\/abort>/;
 
 // === Main I/O ===
 
@@ -50,8 +52,7 @@ try {
 
   if (event === 'UserPromptSubmit') {
     if (!sessionId) process.exit(0);
-    const message = input.user_message || input.message || input.prompt || '';
-    if (!RALPH_MESSAGE_RE.test(message)) process.exit(0);
+    if (!RALPH_MESSAGE_RE.test(readUserMessage(input))) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
@@ -268,17 +269,11 @@ function readTranscriptTail(transcriptPath) {
 }
 
 function extractPromiseText(text) {
-  return extractTagText(text, 'promise');
+  return text ? (text.match(PROMISE_TAG_RE)?.[1]?.trim() || '') : '';
 }
 
 function extractAbortText(text) {
-  return extractTagText(text, 'abort');
-}
-
-function extractTagText(text, tag) {
-  if (!text) return '';
-  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
-  return match?.[1]?.trim() || '';
+  return text ? (text.match(ABORT_TAG_RE)?.[1]?.trim() || '') : '';
 }
 
 function normalizeWhitespace(text) {

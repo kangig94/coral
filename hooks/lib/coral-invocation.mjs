@@ -40,7 +40,7 @@ export function detectCoralInvocation(tokens) {
 //   1 if it is an inline form (`--output-format=json`, `-fjson`)
 //   2 if it is a separated form (`--output-format json`, `-f json`)
 //   null if a separated form is missing its value
-export function getGlobalOptionWidth(tokens, index) {
+function getGlobalOptionWidth(tokens, index) {
   const token = tokens[index];
   if (token === undefined) return null;
 
