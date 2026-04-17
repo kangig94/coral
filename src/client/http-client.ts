@@ -114,6 +114,7 @@ export type KbSourceDeleteResponse = {
 
 type SessionRequestOptions = {
   context?: CallerContext;
+  provider?: string;
   model?: string;
   workDir?: string;
   owner?: string;

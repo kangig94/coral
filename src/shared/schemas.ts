@@ -43,6 +43,7 @@ const claudeModelCapSchema = modelNameSchema.optional();
 
 const continuationFieldsShape = {
   projectRoot: projectRootSchema,
+  provider: providerNameSchema.optional(),
   model: modelSchema,
   workDir: cwdSchema,
   owner: ownerSchema.optional(),

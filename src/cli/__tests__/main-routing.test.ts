@@ -289,6 +289,7 @@ describe('cli main routing', () => {
         model: 'gpt-5',
         owner: 'owner-1',
         bypassPermissions: true,
+        provider: 'codex',
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
@@ -334,7 +335,43 @@ describe('cli main routing', () => {
       'session-raw-text',
     ]);
 
-    expect(mockState.sendMessage).toHaveBeenCalledWith('session-raw-text', missingInput, {});
+    expect(mockState.sendMessage).toHaveBeenCalledWith('session-raw-text', missingInput, {
+      provider: 'codex',
+    });
+  });
+
+  it('injects the claude provider into resume requests', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.sendMessage.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-claude-resume',
+      session: 'session-claude-resume',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'claude', '-i', 'hi', '-s', 'session-claude-resume']);
+
+    expect(mockState.sendMessage).toHaveBeenCalledWith('session-claude-resume', 'hi', {
+      provider: 'claude',
+    });
+  });
+
+  it('keeps provider positional for createSession and does not duplicate it in options', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.createSession.mockResolvedValueOnce({
+      launchState: 'running',
+      job: 'job-create-raw',
+      session: 'session-create-raw',
+    });
+    mockState.launchAndFollow.mockResolvedValueOnce(0);
+
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
+
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {});
   });
 
   it.each([

@@ -162,6 +162,17 @@ describe('sessionMessageSchema', () => {
       projectRoot: '/tmp/project',
     });
     expect(parsed).not.toHaveProperty('bypassPermissions');
+    expect(parsed).not.toHaveProperty('provider');
+  });
+
+  it('accepts an optional provider assertion', () => {
+    const parsed = sessionMessageSchema.parse({
+      prompt: 'Continue',
+      projectRoot: '/tmp/project',
+      provider: 'codex',
+    });
+
+    expect(parsed.provider).toBe('codex');
   });
 
   it('accepts explicit continuation overrides', () => {
@@ -192,7 +203,7 @@ describe('sessionMessageSchema', () => {
     const result = sessionMessageSchema.safeParse({
       prompt: 'Continue',
       projectRoot: '/tmp/project',
-      provider: 'codex',
+      extra: true,
     });
 
     expect(result.success).toBe(false);
@@ -209,6 +220,16 @@ describe('sessionForkSchema', () => {
       projectRoot: '/tmp/project',
     });
     expect(parsed).not.toHaveProperty('bypassPermissions');
+    expect(parsed).not.toHaveProperty('provider');
+  });
+
+  it('accepts an optional provider assertion', () => {
+    const parsed = sessionForkSchema.parse({
+      projectRoot: '/tmp/project',
+      provider: 'codex',
+    });
+
+    expect(parsed.provider).toBe('codex');
   });
 
   it('accepts an empty prompt when provided', () => {

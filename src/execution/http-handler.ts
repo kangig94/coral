@@ -605,6 +605,7 @@ async function handleSessionMessage(
     {
       sessionId,
       prompt: parsed.prompt,
+      ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
       model: parsed.model,
       cwd: parsed.workDir,
       bypassPermissions: parsed.bypassPermissions,
@@ -652,6 +653,7 @@ async function handleSessionFork(
     {
       sessionId,
       prompt: parsed.prompt,
+      ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
       model: parsed.model,
       cwd: parsed.workDir,
       bypassPermissions: parsed.bypassPermissions,

@@ -85,8 +85,8 @@ interface LaunchIntentBase {
 }
 
 type ExecIntent = LaunchIntentBase & { agent?: string; pool?: LaunchPool };
-type ResumeIntent = LaunchIntentBase & { sessionId: string; agent?: string; pool?: LaunchPool };
-type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; prompt?: string };
+type ResumeIntent = LaunchIntentBase & { sessionId: string; provider?: string; agent?: string; pool?: LaunchPool };
+type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; provider?: string; prompt?: string };
 type CoralIntent = Omit<LaunchIntentBase, 'effort'> & { sessionId?: string; effort?: EffortLevel };
 
 interface ListResult {
@@ -751,10 +751,17 @@ export class ExecutionService implements RecoveryCapableService {
   private resolveSessionByIdForContinuation(
     sessionId: string,
     ctx: CallerContext,
+    expectedProvider?: string,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
     const session = getSessionById(sessionId, this.runtime, this.eventBus);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
+    }
+    if (expectedProvider !== undefined && session.provider !== expectedProvider) {
+      return rejectLaunch(
+        'provider_mismatch',
+        `Session ${sessionId} belongs to provider '${session.provider}'. Use \`coral-cli ${session.provider} -s ${sessionId} ...\` instead.`,
+      );
     }
     if (session.backendNamespace === undefined || session.projectRoot === undefined) {
       return rejectLaunch(
@@ -1086,7 +1093,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
     const provider = this.providerRegistry.getExecutor(resolved.providerName);
@@ -1096,7 +1103,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx);
+    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
     const provider = this.providerRegistry.getExecutor(resolved.providerName);

@@ -2628,6 +2628,62 @@ describe('execution backend server', () => {
       }
     });
 
+    it('maps provider_mismatch from POST /sessions/:id/messages and forwards the provider assertion', async () => {
+      const sessionId = 'session-codex';
+      const fakeService = createFakeExecutionService({
+        resumeBySessionId: vi.fn(async () => ({
+          status: 'rejected',
+          phase: 'preflight',
+          code: 'provider_mismatch',
+          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
+        })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'continue',
+            provider: 'claude',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+          }),
+        });
+
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+        };
+
+        expect(response.status).toBe(409);
+        expect(body).toMatchObject({ code: 'provider_mismatch' });
+        expect(body.message).toContain('codex');
+        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
+        expect(fakeService.resumeBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId,
+            prompt: 'continue',
+            provider: 'claude',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('routes POST /sessions/:id/forks through service.forkBySessionId', async () => {
       const fakeService = createFakeExecutionService({
         forkBySessionId: vi.fn(async () => ({ status: 'running', job: 'job-fork', session: 'session-child' })),
@@ -2666,6 +2722,62 @@ describe('execution backend server', () => {
             cwd: '/tmp/work',
             bypassPermissions: false,
             systemPrompt: 'fork-system',
+          },
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('maps provider_mismatch from POST /sessions/:id/forks and forwards the provider assertion', async () => {
+      const sessionId = 'session-codex';
+      const fakeService = createFakeExecutionService({
+        forkBySessionId: vi.fn(async () => ({
+          status: 'rejected',
+          phase: 'preflight',
+          code: 'provider_mismatch',
+          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
+        })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/forks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            prompt: 'branch',
+            provider: 'claude',
+            projectRoot: '/tmp/project',
+            model: 'gpt-5',
+            workDir: '/tmp/work',
+          }),
+        });
+
+        const body = (await response.json()) as {
+          code: string;
+          message: string;
+        };
+
+        expect(response.status).toBe(409);
+        expect(body).toMatchObject({ code: 'provider_mismatch' });
+        expect(body.message).toContain('codex');
+        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
+        expect(fakeService.forkBySessionId).toHaveBeenCalledWith(
+          {
+            sessionId,
+            prompt: 'branch',
+            provider: 'claude',
+            model: 'gpt-5',
+            cwd: '/tmp/work',
           },
           expect.objectContaining({
             projectRoot: '/tmp/project',

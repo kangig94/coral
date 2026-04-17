@@ -81,6 +81,7 @@ export function launchToHttp(
     case 'session_busy':
     case 'non_resumable':
     case 'legacy_session_unsupported':
+    case 'provider_mismatch':
       statusCode = 409;
       break;
   }

@@ -46,7 +46,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
             ...(opts.bypassPermissions !== undefined ? { bypassPermissions: opts.bypassPermissions } : {}),
           };
           const result = opts.session
-            ? await client.sendMessage(opts.session, prompt, requestOptions)
+            ? await client.sendMessage(opts.session, prompt, { ...requestOptions, provider: providerName })
             : await client.createSession(
                 providerName,
                 prompt,

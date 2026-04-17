@@ -1259,7 +1259,73 @@ describe('ExecutionService', () => {
       }
     });
 
-    it('resumeBySessionId continues the stored provider after a global session lookup', async () => {
+    it('resumeBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'claude', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${entry.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${entry.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('resumeBySessionId continues when the asserted provider matches the stored provider', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'codex', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+      });
+    });
+
+    it('resumeBySessionId continues the stored provider when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
@@ -1506,7 +1572,111 @@ describe('ExecutionService', () => {
       }
     });
 
-    it('forkBySessionId persists the merged continuation profile onto the child session', async () => {
+    it('forkBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'claude', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${source.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${source.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when the asserted provider matches', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(source.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'codex', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const child = mgr.get('codex', decision.session);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+
+      expect(child).toMatchObject({
+        model: 'gpt-5.1',
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      expect(request).toMatchObject({
+        action: 'fork',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBe('high');
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });

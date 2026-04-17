@@ -164,6 +164,23 @@ describe('launchToHttp', () => {
     });
   });
 
+  it('maps provider_mismatch launch rejections to HTTP 409 with the expected error body', () => {
+    const decision = {
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'provider_mismatch',
+      message: 'Session session-1 belongs to provider codex',
+    } satisfies LaunchDecision;
+
+    expect(launchToHttp(decision, 202)).toEqual({
+      statusCode: 409,
+      body: {
+        code: 'provider_mismatch',
+        message: 'Session session-1 belongs to provider codex',
+      },
+    });
+  });
+
   it.each([
     ['invalid_agent', 400],
     ['agent_not_found', 404],
@@ -176,6 +193,7 @@ describe('launchToHttp', () => {
     ['session_busy', 409],
     ['non_resumable', 409],
     ['legacy_session_unsupported', 409],
+    ['provider_mismatch', 409],
     ['invalid_request', 400],
   ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {
     const decision = {
