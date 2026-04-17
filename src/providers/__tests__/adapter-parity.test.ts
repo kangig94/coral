@@ -414,7 +414,6 @@ describe('claude provider adapter', () => {
       conversationRef: 'claude-session-9',
       
       durationMs: 18,
-      exitCode: 0,
       usage: { costUsd: 0.42 },
     });
   });

@@ -1,13 +1,20 @@
 import type { ProviderContinuityBlob, ProviderResult } from '../../shared/types.js';
 import { readString } from '../../shared/utils.js';
 import { resolveModelTier } from '../../shared/schemas.js';
-import type { AppServerSessionDriver, DriverContext, DriverStepOutcome } from '../app-server/driver.js';
+import {
+  buildProviderFailureMessage,
+  type AppServerSessionDriver,
+  type DriverContext,
+  type DriverStepOutcome,
+} from '../app-server/driver.js';
 import { requireConversationRef } from '../types.js';
 import {
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
+  resolveCodexServiceTier,
+  type CodexServiceTier,
 } from './request-mapping.js';
 import type {
   AppServerMethod,
@@ -30,6 +37,7 @@ export type CodexTurnState = {
   startedAt: number;
   cwd: string;
   model: string | undefined;
+  serviceTier: CodexServiceTier | undefined;
   sessionId: string;
   threadId: string | null;
   threadIds: Set<string>;
@@ -396,18 +404,9 @@ async function interruptTurn(ctx: DriverContext, threadId: string, turnId: strin
   await rpc(ctx, 'turn/interrupt', { threadId, turnId });
 }
 
-function buildCodexFailureMessage(message?: string, status?: string): string {
-  if (typeof message === 'string' && message.trim().length > 0) {
-    return message.trim();
-  }
-  if (typeof status === 'string' && status.trim().length > 0) {
-    return `Codex turn failed with status ${status.trim()}.`;
-  }
-  return 'Codex session driver reported a failed turn.';
-}
-
 export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
   name: 'Codex',
+  faultProviderName: 'codex',
   subscriptionPhase: 'afterInitialize',
 
   buildServerSpec(request, persistedContinuity) {
@@ -428,6 +427,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
       startedAt: Date.now(),
       cwd: request.cwd,
       model: resolveModelTier(request.model),
+      serviceTier: resolveCodexServiceTier(request, ctx.runtime),
       sessionId: request.sessionId,
       threadId: null,
       threadIds: new Set(),
@@ -457,7 +457,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     if (request.action === 'resume') {
       const conversationRef = requireConversationRef(request, 'resume');
       try {
-        const response = await rpc(ctx, 'thread/resume', mapThreadResumeParams(request, conversationRef));
+        const response = await rpc(ctx, 'thread/resume', mapThreadResumeParams(request, conversationRef, state.serviceTier));
         threadId = response.thread.id;
       } catch (error) {
         if (isMissingConversationError(error)) {
@@ -472,7 +472,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         throw error;
       }
     } else {
-      const response = await rpc(ctx, 'thread/start', mapThreadStartParams(request));
+      const response = await rpc(ctx, 'thread/start', mapThreadStartParams(request, state.serviceTier));
       threadId = response.thread.id;
     }
 
@@ -492,7 +492,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
       throw new Error('Codex thread id missing before turn/start.');
     }
 
-    const response = await rpc(ctx, 'turn/start', mapTurnStartParams(request, state.threadId));
+    const response = await rpc(ctx, 'turn/start', mapTurnStartParams(request, state.threadId, state.serviceTier));
     state.turnId = response.turn?.id ?? null;
     if (state.turnId) {
       state.threadTurnIds.set(state.threadId, state.turnId);
@@ -606,7 +606,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
           fault: {
             kind: 'provider_request_failed',
             provider: 'codex',
-            message: buildCodexFailureMessage(outcome.message),
+            message: buildProviderFailureMessage('Codex', outcome.message),
           },
         },
       };
@@ -616,7 +616,9 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     const turnStatus = turn?.status;
     const turnFailed = !isSuccessfulTurn(turnStatus);
     const turnAborted = isAbortedTurn(turnStatus);
-    const failureMessage = turnFailed ? buildCodexFailureMessage(state.error?.message, turnStatus) : undefined;
+    const failureMessage = turnFailed
+      ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus)
+      : undefined;
 
     return {
       content: state.lastAgentMessage,

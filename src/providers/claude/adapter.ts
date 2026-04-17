@@ -24,7 +24,7 @@ import {
   type ProviderRuntime,
   type ProviderServerLease,
 } from '../types.js';
-import { ABSTRACT_MODEL_TIERS, parseEffortLevel, resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
+import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {
   buildClaudeBootstrapSignature,
@@ -90,7 +90,6 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
 function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderResult {
   return {
     ...mapProviderResultBase(result),
-    exitCode: 0,
     conversationRef: result.sessionId ?? fallbackConversationRef,
     nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
@@ -148,11 +147,7 @@ function isOpusEffectiveTier(model: string | undefined, env: Record<string, stri
  * to the provider ceiling (max) on those tiers.
  */
 function resolveClaudeEffort(request: ProviderRequest): EffortLevel {
-  const resolved =
-    request.effort
-    ?? parseEffortLevel(request.coralEnv.CORAL_CLAUDE_EFFORT, 'CORAL_CLAUDE_EFFORT')
-    ?? parseEffortLevel(request.coralEnv.CORAL_EFFORT, 'CORAL_EFFORT')
-    ?? CLAUDE_DEFAULT_EFFORT;
+  const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
   if (resolved !== 'xhigh') return resolved;
   return isOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';
 }

@@ -1,9 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderRequest } from '../../shared/types.js';
-import { parseEffortLevel, resolveModelTier, type EffortLevel } from '../../shared/schemas.js';
-import type { ProviderServerSpec } from '../types.js';
+import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
+import type { ProviderRuntime, ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
 export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {
@@ -18,21 +16,17 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
   return parts.join('\n\n---\n\n');
 }
 
+// Codex ceiling is 'xhigh'; 'max' collapses to it.
 const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
-type CodexServiceTier = 'fast' | 'flex';
+export type CodexServiceTier = 'fast' | 'flex';
 
 /**
  * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
  * Codex default (`xhigh`, matching the official guide).
  */
 function resolveCodexEffort(request: ProviderRequest): EffortLevel {
-  return (
-    request.effort
-    ?? parseEffortLevel(request.coralEnv.CORAL_CODEX_EFFORT, 'CORAL_CODEX_EFFORT')
-    ?? parseEffortLevel(request.coralEnv.CORAL_EFFORT, 'CORAL_EFFORT')
-    ?? CODEX_DEFAULT_EFFORT
-  );
+  return resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
 }
 
 function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
@@ -79,10 +73,14 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
  * Profile-scoped values under `[profiles.xxx]` are intentionally ignored —
  * the scan halts at the first section header.
  */
-function readCodexConfigServiceTier(): CodexServiceTier | undefined {
+function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'storage'>): CodexServiceTier | undefined {
+  if (!runtime.env || !runtime.storage) {
+    return undefined;
+  }
+
   try {
-    const configPath = join(homedir(), '.codex', 'config.toml');
-    const content = readFileSync(configPath, 'utf-8');
+    const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+    const content = runtime.storage.readFileSync(configPath, 'utf-8');
     const lines = content.split(/\r?\n/);
 
     for (const line of lines) {
@@ -106,11 +104,14 @@ function readCodexConfigServiceTier(): CodexServiceTier | undefined {
   return undefined;
 }
 
-function resolveCodexServiceTier(request: ProviderRequest): CodexServiceTier | undefined {
+export function resolveCodexServiceTier(
+  request: ProviderRequest,
+  runtime?: Pick<ProviderRuntime, 'env' | 'storage'>,
+): CodexServiceTier | undefined {
   const rawEnvTier = request.coralEnv['CORAL_CODEX_FAST'];
   // Blank env = unset; fall through to config.toml. Non-blank but unrecognized = explicit rejection (no fallback).
   if (rawEnvTier === undefined || rawEnvTier.trim() === '') {
-    return readCodexConfigServiceTier();
+    return runtime ? readCodexConfigServiceTier(runtime) : undefined;
   }
   return normalizeServiceTierEnv(rawEnvTier);
 }
@@ -119,20 +120,22 @@ function resolveCodexModel(request: ProviderRequest): string {
   return resolveModelTier(request.model) ?? request.coralEnv['CORAL_CODEX_MODEL'] ?? DEFAULT_CODEX_MODEL;
 }
 
-export function mapThreadStartParams(request: ProviderRequest): ThreadStartParams {
-  const tier = resolveCodexServiceTier(request);
+export function mapThreadStartParams(request: ProviderRequest, serviceTier?: CodexServiceTier): ThreadStartParams {
   return {
     cwd: request.cwd,
     model: resolveCodexModel(request),
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
-    ...(tier && { serviceTier: tier }),
+    ...(serviceTier && { serviceTier }),
   };
 }
 
-export function mapThreadResumeParams(request: ProviderRequest, threadId: string): ThreadResumeParams {
-  const tier = resolveCodexServiceTier(request);
+export function mapThreadResumeParams(
+  request: ProviderRequest,
+  threadId: string,
+  serviceTier?: CodexServiceTier,
+): ThreadResumeParams {
   return {
     threadId,
     cwd: request.cwd,
@@ -141,17 +144,20 @@ export function mapThreadResumeParams(request: ProviderRequest, threadId: string
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
     // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).
     sandbox: resolveCodexSandbox(request.bypassPermissions),
-    ...(tier && { serviceTier: tier }),
+    ...(serviceTier && { serviceTier }),
   };
 }
 
-export function mapTurnStartParams(request: ProviderRequest, threadId: string): TurnStartParams {
-  const tier = resolveCodexServiceTier(request);
+export function mapTurnStartParams(
+  request: ProviderRequest,
+  threadId: string,
+  serviceTier?: CodexServiceTier,
+): TurnStartParams {
   return {
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
     model: resolveCodexModel(request),
     effort: CODEX_EFFORT[resolveCodexEffort(request)],
-    ...(tier && { serviceTier: tier }),
+    ...(serviceTier && { serviceTier }),
   };
 }

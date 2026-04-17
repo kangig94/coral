@@ -1,4 +1,4 @@
-import { phaseForOutcome, type TerminalOutcome } from '../../shared/coral-fault.js';
+import { phaseForOutcome, type TerminalOutcome, wrapperCrashedFault } from '../../shared/coral-fault.js';
 import { formatError } from '../../shared/utils.js';
 import {
   isAppServerRuntime,
@@ -201,15 +201,11 @@ export function finalizeDeadAdoptedJob({
       exitRecord.exitCode === null
         ? {
             kind: 'coral_fault',
-            fault: {
-              kind: 'wrapper_crashed',
-              cause: {
-                message:
-                  exitRecord.signal !== null
-                    ? `Provider wrapper exited via signal ${exitRecord.signal} without a terminal outcome`
-                    : 'Provider wrapper exited without a numeric exit code or terminal outcome',
-              },
-            },
+            fault: wrapperCrashedFault(
+              exitRecord.signal !== null
+                ? `Provider wrapper exited via signal ${exitRecord.signal} without a terminal outcome`
+                : 'Provider wrapper exited without a numeric exit code or terminal outcome',
+            ),
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
     service.completeRecoveredJob(

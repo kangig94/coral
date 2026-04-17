@@ -1,7 +1,7 @@
 import { MAX_INLINE } from '../shared/schemas.js';
 import { describeCoralFault } from '../shared/coral-fault.js';
 import type { JobsListResponse } from '../client/http-client.js';
-import { isRecord } from '../shared/utils.js';
+import { assertNever, isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
 import type {
   AcceptedLaunchResponse,
@@ -59,10 +59,6 @@ export type WaitRenderContext = {
   isTTY: boolean;
   columns: number;
 };
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled value: ${String(value)}`);
-}
 
 function joinLines(lines: Array<string | undefined>): string {
   return lines.filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');

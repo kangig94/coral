@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { assertNever } from './utils.js';
 
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
-type ProviderName = 'claude' | 'codex';
+export type ProviderName = 'claude' | 'codex';
 type AppServerTrigger = 'restart' | 'handoff';
 type AppServerContinuity =
   | 'verified'
@@ -146,8 +147,11 @@ export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('coral_fault'), fault: coralFaultSchema }).strict(),
 ]);
 
-function assertNever(value: never): never {
-  throw new Error(`Unexpected value: ${JSON.stringify(value)}`);
+export function wrapperCrashedFault(message: string): CoralFault {
+  return {
+    kind: 'wrapper_crashed',
+    cause: { message },
+  };
 }
 
 function providerDisplayName(provider: ProviderName): string {

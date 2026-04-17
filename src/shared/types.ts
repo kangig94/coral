@@ -363,10 +363,12 @@ export interface WorkflowCheckpoint {
   staleRetries: Record<string, number>; // atomKey -> retry count
   expectedStaleAborts: string[]; // jobIds
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
-    failedStep?: number;
-    failedAtom?: string;
+    firstFailure: {
+      aborted: boolean;
+      message: string;
+      failedStep?: number;
+      failedAtom?: string;
+    };
     abortRequested: boolean;
     drainDeadline: number;
   };

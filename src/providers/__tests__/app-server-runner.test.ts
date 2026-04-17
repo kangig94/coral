@@ -110,6 +110,7 @@ function createDriver(options: {
     stateRef: () => stateRef,
     driver: {
       name: 'runner-test',
+      faultProviderName: 'claude',
       subscriptionPhase: options.subscriptionPhase ?? 'beforeInitialize',
       buildServerSpec() {
         return {

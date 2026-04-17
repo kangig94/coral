@@ -150,6 +150,18 @@ export function resolveEffort(requestEffort: string | undefined): EffortLevel | 
   return parseEffortLevel(requestEffort, 'effort');
 }
 
+export function resolveProviderEffort(
+  request: { effort?: EffortLevel | undefined },
+  providerEnvKey: string,
+  env: Record<string, string>,
+): EffortLevel | undefined {
+  return (
+    request.effort
+    ?? parseEffortLevel(env[providerEnvKey], providerEnvKey)
+    ?? parseEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
+  );
+}
+
 /** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */
 export function resolveModelTier(model: string | undefined, cap?: string): string | undefined {
   if (model === undefined) return undefined;

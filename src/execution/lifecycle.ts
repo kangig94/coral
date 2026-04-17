@@ -22,7 +22,7 @@ import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import type { RecoveredDiscussResume } from './discuss/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
-import type { CoralFault } from '../shared/coral-fault.js';
+import { wrapperCrashedFault } from '../shared/coral-fault.js';
 import { isTerminalPhase } from '../shared/types.js';
 import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
@@ -116,11 +116,7 @@ export function cleanupStaleJobs(
 export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      const fault: CoralFault = {
-        kind: 'wrapper_crashed',
-        cause: { message },
-      };
-      markJobAsError(progressStore, status, fault, () => {});
+      markJobAsError(progressStore, status, wrapperCrashedFault(message), () => {});
     } catch {
       // fail-isolated: skip this job, continue with others
     }

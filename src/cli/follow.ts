@@ -13,7 +13,7 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { isTransientStreamError } from '../shared/utils.js';
+import { assertNever, isTransientStreamError } from '../shared/utils.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
@@ -30,10 +30,6 @@ type LaunchAndFollowOptions = {
   isTTY: boolean;
   columns: number;
 };
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled value: ${JSON.stringify(value)}`);
-}
 
 function emitLaunch(decision: FollowLaunchDecision): void {
   process.stdout.write(formatLaunch(decision) + '\n');

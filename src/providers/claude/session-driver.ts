@@ -4,7 +4,13 @@ import type { ProviderRequest } from '../../shared/types.js';
 import { resolveModelTier } from '../../shared/schemas.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
 import { brokerNotificationMethods } from '../claude-appserver/protocol.js';
-import type { AppServerSessionDriver, DriverContext, DriverStepOutcome, TurnOutcome } from '../app-server/driver.js';
+import {
+  buildProviderFailureMessage,
+  type AppServerSessionDriver,
+  type DriverContext,
+  type DriverStepOutcome,
+  type TurnOutcome,
+} from '../app-server/driver.js';
 import type { ProviderServerLease } from '../types.js';
 import {
   buildClaudeContinuity,
@@ -133,16 +139,6 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: TurnOutcome): void
   state.resolveTerminal(outcome);
 }
 
-function buildClaudeFailureMessage(message?: string, status?: string): string {
-  if (typeof message === 'string' && message.trim().length > 0) {
-    return message.trim();
-  }
-  if (typeof status === 'string' && status.trim().length > 0) {
-    return `Claude turn failed with status ${status.trim()}.`;
-  }
-  return 'Claude session driver reported a failed turn.';
-}
-
 function readTurnConversationRef(value: unknown): string | undefined {
   if (!isRecord(value)) {
     return undefined;
@@ -159,6 +155,7 @@ function readErrors(value: unknown): string[] {
 
 export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
   name: 'Claude persistent',
+  faultProviderName: 'claude',
   subscriptionPhase: 'beforeInitialize',
 
   buildServerSpec(_request, _persistedContinuity) {
@@ -294,7 +291,7 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
       checkpoint(state);
       resolveTerminalOnce(state, {
         kind: 'failed',
-        message: buildClaudeFailureMessage(readString(params.message), readString(params.status)),
+        message: buildProviderFailureMessage('Claude', readString(params.message), readString(params.status)),
       });
     }
   },
@@ -328,13 +325,12 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
   finalize(state, outcome) {
     if (outcome.kind === 'completed') {
       const turn = outcome.turn as ClaudeCompletedTurn;
-      const failureMessage = turn.isError ? buildClaudeFailureMessage(turn.errors.join(' ')) : undefined;
+      const failureMessage = turn.isError ? buildProviderFailureMessage('Claude', turn.errors.join(' ')) : undefined;
       return {
         content: turn.content,
         conversationRef: state.conversationRef,
         model: turn.model,
         durationMs: turn.durationMs,
-        exitCode: 0,
         outcome: turn.isError
           ? {
               kind: 'coral_fault',
@@ -377,21 +373,12 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
       };
     }
 
-    // `failed` outcome: runner.ts:66-83 normally wraps this into provider_request_failed
-    // before finalize returns, so this branch is defense-in-depth for direct callers.
     return {
       content: '',
       conversationRef: state.conversationRef,
       model: state.prepared.model,
       durationMs: Date.now() - state.startedAt,
-      outcome: {
-        kind: 'coral_fault',
-        fault: {
-          kind: 'provider_request_failed',
-          provider: 'claude',
-          message: buildClaudeFailureMessage(outcome.message),
-        },
-      },
+      outcome: { kind: 'completed' },
     };
   },
 };

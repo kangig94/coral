@@ -116,6 +116,8 @@ export interface ProviderRuntime {
   signal: AbortSignal;
   onEvent: (event: ProviderProgressEvent) => void;
   runCli: ProviderCliRunner;
+  storage?: Pick<Runtime['storage'], 'readFileSync'>;
+  env?: Pick<Runtime['env'], 'homedir'>;
   acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   checkpointRecovery?: (update: {

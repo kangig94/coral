@@ -6,7 +6,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../providers/types.js';
-import { describeCoralFault, phaseForOutcome, type AbortReason, type CoralFault } from '../shared/coral-fault.js';
+import { describeCoralFault, phaseForOutcome, type AbortReason, type CoralFault, wrapperCrashedFault } from '../shared/coral-fault.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import {
@@ -79,7 +79,7 @@ export interface LaunchOrchestratorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
-  runtime: Pick<Runtime, 'time' | 'ids'>;
+  runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;
   backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
@@ -401,10 +401,7 @@ export class LaunchOrchestrator {
       return;
     }
 
-    this.failJob(jobId, sessionId, 'error', {
-      kind: 'wrapper_crashed',
-      cause: { message: errorMessage(error) },
-    });
+    this.failJob(jobId, sessionId, 'error', wrapperCrashedFault(errorMessage(error)));
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
@@ -430,6 +427,8 @@ export class LaunchOrchestrator {
         pool,
         this.deps.progressStore.jobDir(jobId),
       ),
+      storage: this.deps.runtime.storage,
+      env: this.deps.runtime.env,
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
       checkpointRecovery: (update) => {
@@ -686,9 +685,13 @@ export class WaitCoordinator {
           continue;
         }
 
-        const currentStatus = progressStore.readStatus(jobId);
-        // No per-job first-observation bookkeeping needed: the outer deadline guard (line 703) stops the loop before a second poll can reach this branch under different eligibility.
-        if (currentStatus && isTerminalPhase(currentStatus.phase) && this.deps.time.now() <= deadlineMs) {
+        // Emit a direct terminal snapshot only while this poll iteration is still inside the wait deadline.
+        const currentStatus = isTerminalPhase(status.phase) ? status : progressStore.readStatus(jobId);
+        if (currentStatus && isTerminalPhase(currentStatus.phase)) {
+          const now = this.deps.time.now();
+          if (now > deadlineMs) {
+            continue;
+          }
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
@@ -705,12 +708,13 @@ export class WaitCoordinator {
         return;
       }
 
-      if (this.deps.time.now() > deadlineMs) {
+      const now = this.deps.time.now();
+      if (now > deadlineMs) {
         yield { type: 'waiting', waitingJobIds: [...pending] };
         return;
       }
 
-      const remainingMs = deadlineMs - this.deps.time.now();
+      const remainingMs = deadlineMs - now;
       await Promise.race([
         progressStore.waitForChange(seq),
         this.deps.time.sleep(remainingMs),

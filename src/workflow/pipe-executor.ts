@@ -4,7 +4,7 @@ import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } 
 import type { PipeAtom, PipelineAST, WorkflowExecutionPort, WorkflowSessionHandle } from './types.js';
 import { describeCoralFault, phaseForOutcome } from '../shared/coral-fault.js';
 import { truncate } from '../shared/format-progress.js';
-import { errorMessage } from '../shared/utils.js';
+import { assertNever, errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export const BOOTSTRAP_TIMEOUT_MS = 2_000;
@@ -120,10 +120,7 @@ type CheckpointState = {
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
-    failedStep?: number;
-    failedAtom?: string;
+    firstFailure: WaitFailure;
     abortRequested: boolean;
     drainDeadline: number;
   };
@@ -253,12 +250,8 @@ function describeTerminalFailure(result: TerminalResult): string {
       return exitCode === undefined || exitCode === null ? 'unknown error' : `exited with code ${exitCode}`;
     }
     default:
-      return assertNeverOutcome(result.outcome);
+      return assertNever(result.outcome);
   }
-}
-
-function assertNeverOutcome(outcome: never): never {
-  throw new Error(`Unhandled terminal outcome: ${JSON.stringify(outcome)}`);
 }
 
 function buildStepDetailsForAtoms(atoms: LaunchedAtom[], results: Map<string, string>): StepDetail[] {
@@ -421,10 +414,7 @@ export type WaitInternalState = {
   staleRetries: Map<string, number>;
   expectedStaleAborts: Set<string>;
   failureDrain?: {
-    firstFailureMessage: string;
-    aborted: boolean;
-    failedStep?: number;
-    failedAtom?: string;
+    firstFailure: WaitFailure;
     abortRequested: boolean;
     drainDeadline: number;
   };
@@ -489,10 +479,7 @@ function snapshotWaitState(state: AwaitStepState): WaitInternalState {
       state.failureDrain === null
         ? undefined
         : {
-            firstFailureMessage: state.failureDrain.firstFailure.message,
-            aborted: state.failureDrain.firstFailure.aborted,
-            failedStep: state.failureDrain.firstFailure.failedStep,
-            failedAtom: state.failureDrain.firstFailure.failedAtom,
+            firstFailure: state.failureDrain.firstFailure,
             abortRequested: true,
             drainDeadline: state.failureDrain.drainDeadline,
           },
@@ -518,6 +505,15 @@ function enterFailureDrain(
     drainDeadline: Date.now() + SIBLING_DRAIN_TIMEOUT_MS,
   };
   executionSvc.abort([...state.pending.keys()]);
+}
+
+function failureMetadata(metadata: { failedStep?: number; failedAtom?: string }): { failedStep: number; failedAtom: string } | undefined {
+  return metadata.failedStep !== undefined && metadata.failedAtom !== undefined
+    ? {
+        failedStep: metadata.failedStep,
+        failedAtom: metadata.failedAtom,
+      }
+    : undefined;
 }
 
 async function recoverStaleAtom(
@@ -740,12 +736,7 @@ async function awaitStepCompletion(
         state.failureDrain.firstFailure.message,
         state.failureDrain.firstFailure.aborted,
         buildPartialStepDetailsForCycle(),
-        state.failureDrain.firstFailure.failedStep !== undefined && state.failureDrain.firstFailure.failedAtom !== undefined
-          ? {
-              failedStep: state.failureDrain.firstFailure.failedStep,
-              failedAtom: state.failureDrain.firstFailure.failedAtom,
-            }
-          : undefined,
+        failureMetadata(state.failureDrain.firstFailure),
       );
     }
 
@@ -920,14 +911,7 @@ async function handleStepLaunchFailure(
     message,
     aborted,
     [...baseStepDetails, ...drainedStepDetails],
-    launchError instanceof WorkflowExecutionError &&
-    launchError.failedStep !== undefined &&
-    launchError.failedAtom !== undefined
-      ? {
-          failedStep: launchError.failedStep,
-          failedAtom: launchError.failedAtom,
-        }
-      : undefined,
+    launchError instanceof WorkflowExecutionError ? failureMetadata(launchError) : undefined,
   );
 }
 

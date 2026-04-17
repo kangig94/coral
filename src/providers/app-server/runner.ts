@@ -3,10 +3,6 @@ import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
 import { requireAppServerRuntime, type ProviderRuntime } from '../types.js';
 import type { AppServerSessionDriver, DriverContext, TurnOutcome } from './driver.js';
 
-function faultProvider(driver: AppServerSessionDriver<unknown>): 'claude' | 'codex' {
-  return driver.name === 'Codex' ? 'codex' : 'claude';
-}
-
 export async function runAppServerTurn<TState>(
   driver: AppServerSessionDriver<TState>,
   request: ProviderRequest,
@@ -73,7 +69,7 @@ export async function runAppServerTurn<TState>(
           kind: 'coral_fault',
           fault: {
             kind: 'provider_request_failed',
-            provider: faultProvider(driver),
+            provider: driver.faultProviderName,
             message: outcome.message,
           },
         },

@@ -13,7 +13,7 @@ export type SseEventBlock = {
   id?: string;
 };
 
-const waitStreamEventTypeSchema = z.enum(['progress', 'queued', 'terminal', 'waiting']);
+const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'waiting']);
 
 const waitProgressEventSchema = z
   .object({
@@ -59,7 +59,7 @@ export const waitStreamEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export function parseWaitStreamEvent(eventType: string | undefined, rawData: string): WaitStreamEvent | null {
-  if (!eventType || !waitStreamEventTypeSchema.safeParse(eventType).success) {
+  if (!eventType || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(eventType)) {
     return null;
   }
 

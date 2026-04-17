@@ -1,9 +1,13 @@
-import type * as fs from 'node:fs';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mapThreadResumeParams, mapThreadStartParams, mapTurnStartParams } from '../codex/request-mapping.js';
+import {
+  mapThreadResumeParams,
+  mapThreadStartParams,
+  mapTurnStartParams,
+  resolveCodexServiceTier,
+} from '../codex/request-mapping.js';
 import type { ProviderRequest } from '../../shared/types.js';
 
 const tempHomes: string[] = [];
@@ -33,26 +37,31 @@ function useTempCodexConfig(content?: string): string {
   return home;
 }
 
-async function importRequestMappingWithMockedFs(readFileSyncImpl: typeof fs.readFileSync, variant: 'eio' | 'enoent') {
-  vi.resetModules();
-  vi.doMock('node:fs', async () => {
-    const actual = await vi.importActual<typeof fs>('node:fs');
-    return {
-      ...actual,
-      readFileSync: vi.fn(readFileSyncImpl),
-    };
-  });
+function makeTierRuntime(
+  home: string,
+  readFileSyncImpl: typeof readFileSync = readFileSync,
+): {
+  env: { homedir(): string };
+  storage: { readFileSync(path: string, encoding: 'utf-8'): string };
+} {
+  return {
+    env: { homedir: () => home },
+    storage: { readFileSync: readFileSyncImpl },
+  };
+}
 
-  void variant;
-  return import('../codex/request-mapping.js');
+function resolvedServiceTier(
+  request: ProviderRequest,
+  home: string,
+  readFileSyncImpl?: typeof readFileSync,
+): ReturnType<typeof resolveCodexServiceTier> {
+  return resolveCodexServiceTier(request, makeTierRuntime(home, readFileSyncImpl ?? readFileSync));
 }
 
 afterEach(() => {
   for (const home of tempHomes.splice(0)) {
     rmSync(home, { recursive: true, force: true });
   }
-  vi.doUnmock('node:fs');
-  vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
@@ -123,33 +132,37 @@ describe('resolveCodexServiceTier precedence', () => {
     ['1', 'fast'],
     ['0', 'flex'],
   ] as const)('maps CORAL_CODEX_FAST=%s to %s before config fallback', (envValue, expected) => {
-    useTempCodexConfig('service_tier = "flex"');
+    const home = useTempCodexConfig('service_tier = "flex"');
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: envValue } });
 
-    const params = mapThreadStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: envValue } }));
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe(expected);
   });
 
   it('returns undefined for unrecognized non-empty env values without silently falling through', () => {
-    useTempCodexConfig('service_tier = "fast"');
+    const home = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: 'garbage' } });
 
-    const params = mapThreadStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: 'garbage' } }));
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
 
   it('falls through to config when env is empty', () => {
-    useTempCodexConfig('service_tier = "fast"');
+    const home = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '' } });
 
-    const params = mapThreadStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '' } }));
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('falls through to config when env is whitespace only', () => {
-    useTempCodexConfig('service_tier = "fast"');
+    const home = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '   ' } });
 
-    const params = mapThreadStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '   ' } }));
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
@@ -157,16 +170,18 @@ describe('resolveCodexServiceTier precedence', () => {
 
 describe('mapThreadStartParams serviceTier', () => {
   it('includes serviceTier when resolved from env', () => {
-    useTempCodexConfig();
-    const params = mapThreadStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } }));
+    const home = useTempCodexConfig();
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } });
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('omits serviceTier when neither env nor config resolves one', () => {
-    useTempCodexConfig();
+    const home = useTempCodexConfig();
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
@@ -174,16 +189,18 @@ describe('mapThreadStartParams serviceTier', () => {
 
 describe('mapThreadResumeParams serviceTier', () => {
   it('includes serviceTier when resolved from env', () => {
-    useTempCodexConfig();
-    const params = mapThreadResumeParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '0' } }), 'thread-1');
+    const home = useTempCodexConfig();
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '0' } });
+    const params = mapThreadResumeParams(request, 'thread-1', resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('flex');
   });
 
   it('omits serviceTier when neither env nor config resolves one', () => {
-    useTempCodexConfig();
+    const home = useTempCodexConfig();
+    const request = makeRequest();
 
-    const params = mapThreadResumeParams(makeRequest(), 'thread-1');
+    const params = mapThreadResumeParams(request, 'thread-1', resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
@@ -191,16 +208,18 @@ describe('mapThreadResumeParams serviceTier', () => {
 
 describe('mapTurnStartParams serviceTier', () => {
   it('includes serviceTier when resolved from env', () => {
-    useTempCodexConfig();
-    const params = mapTurnStartParams(makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } }), 'thread-1');
+    const home = useTempCodexConfig();
+    const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } });
+    const params = mapTurnStartParams(request, 'thread-1', resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('omits serviceTier when neither env nor config resolves one', () => {
-    useTempCodexConfig();
+    const home = useTempCodexConfig();
+    const request = makeRequest();
 
-    const params = mapTurnStartParams(makeRequest(), 'thread-1');
+    const params = mapTurnStartParams(request, 'thread-1', resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
@@ -208,78 +227,84 @@ describe('mapTurnStartParams serviceTier', () => {
 
 describe('TOML fallback', () => {
   it('reads a top-level fast service_tier', () => {
-    useTempCodexConfig('service_tier = "fast"\n[profiles.dev]\nservice_tier = "flex"');
+    const home = useTempCodexConfig('service_tier = "fast"\n[profiles.dev]\nservice_tier = "flex"');
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('reads a top-level flex service_tier', () => {
-    useTempCodexConfig("service_tier = 'flex'");
+    const home = useTempCodexConfig("service_tier = 'flex'");
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('flex');
   });
 
   it('reads an unquoted top-level service_tier', () => {
-    useTempCodexConfig('service_tier = fast');
+    const home = useTempCodexConfig('service_tier = fast');
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('reads a top-level service_tier with a trailing comment', () => {
-    useTempCodexConfig('service_tier = "fast"  # note about priority');
+    const home = useTempCodexConfig('service_tier = "fast"  # note about priority');
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params.serviceTier).toBe('fast');
   });
 
   it('ignores profile-scoped service_tier values', () => {
-    useTempCodexConfig('[profiles.foo]\nservice_tier = "fast"');
+    const home = useTempCodexConfig('[profiles.foo]\nservice_tier = "fast"');
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
 
   it('swallows missing config file errors', () => {
-    useTempCodexConfig();
+    const home = useTempCodexConfig();
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
 
   it('returns undefined for garbled config content', () => {
-    useTempCodexConfig('service_tier = maybe-fast');
+    const home = useTempCodexConfig('service_tier = maybe-fast');
+    const request = makeRequest();
 
-    const params = mapThreadStartParams(makeRequest());
+    const params = mapThreadStartParams(request, resolvedServiceTier(request, home));
 
     expect(params).not.toHaveProperty('serviceTier');
   });
 
-  it('warns on non-ENOENT config read errors and stays silent on ENOENT', async () => {
+  it('warns on non-ENOENT config read errors and stays silent on ENOENT', () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const eioError = Object.assign(new Error('disk I/O failure'), { code: 'EIO' });
     const enoentError = Object.assign(new Error('missing file'), { code: 'ENOENT' });
-    const { mapThreadStartParams: mapWithEio } = await importRequestMappingWithMockedFs(() => {
-      throw eioError;
-    }, 'eio');
+    const home = useTempCodexConfig();
+    const request = makeRequest();
 
-    expect(mapWithEio(makeRequest())).not.toHaveProperty('serviceTier');
+    expect(mapThreadStartParams(request, resolvedServiceTier(request, home, () => {
+      throw eioError;
+    }))).not.toHaveProperty('serviceTier');
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_FAST'));
 
     stderrSpy.mockClear();
-    const { mapThreadStartParams: mapWithEnoent } = await importRequestMappingWithMockedFs(() => {
+    expect(mapThreadStartParams(request, resolvedServiceTier(request, home, () => {
       throw enoentError;
-    }, 'enoent');
-
-    expect(mapWithEnoent(makeRequest())).not.toHaveProperty('serviceTier');
+    }))).not.toHaveProperty('serviceTier');
     expect(stderrSpy).not.toHaveBeenCalled();
   });
 });
