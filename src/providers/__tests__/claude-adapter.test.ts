@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../../shared/types.js';
-import type { ProviderRuntime, ProviderServerLease } from '../../types.js';
+import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRuntime, ProviderServerLease } from '../types.js';
 
-vi.mock('../../cli-detection.js', () => ({
+vi.mock('../cli-detection.js', () => ({
   detectClaudeCli: vi.fn(async () => ({
     available: true,
     version: '1.0.0',
@@ -11,13 +11,13 @@ vi.mock('../../cli-detection.js', () => ({
   })),
 }));
 
-vi.mock('../../inject.js', () => ({
+vi.mock('../inject.js', () => ({
   resolveInjectMd: vi.fn(() => null),
 }));
 
 async function loadProvider() {
   vi.resetModules();
-  return import('../adapter.js');
+  return import('../claude/adapter.js');
 }
 
 const BROKER_SESSION_KEY = 'broker-session-1';
@@ -600,7 +600,7 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   });
 
   it('buildClaudeProviderServerSpec uses the shared broker key and backend launch context', async () => {
-    const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
+    const { buildClaudeProviderServerSpec } = await import('../claude/request-mapping.js');
 
     const spec = buildClaudeProviderServerSpec();
 
@@ -613,7 +613,7 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   });
 
   it('buildClaudeProviderServerSpec key stays fixed when sessionId changes', async () => {
-    const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
+    const { buildClaudeProviderServerSpec } = await import('../claude/request-mapping.js');
 
     const spec1 = buildClaudeProviderServerSpec();
     const spec2 = buildClaudeProviderServerSpec();
@@ -623,7 +623,7 @@ describe('request-mapping: spec.key is stable and must not be replaced', () => {
   });
 
   it('buildClaudeProviderServerSpec key stays fixed across bootstrap signatures', async () => {
-    const { buildClaudeProviderServerSpec } = await import('../request-mapping.js');
+    const { buildClaudeProviderServerSpec } = await import('../claude/request-mapping.js');
 
     const spec1 = buildClaudeProviderServerSpec();
     const spec2 = buildClaudeProviderServerSpec();

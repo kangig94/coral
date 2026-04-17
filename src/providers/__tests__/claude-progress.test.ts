@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { formatToolProgress } from '../../../shared/format-progress.js';
-import { extractClaudeProgressMessage } from '../progress.js';
-import type { ClaudeStreamEvent } from '../types.js';
+import { formatToolProgress } from '../../shared/format-progress.js';
+import { extractClaudeProgressMessage } from '../claude/progress.js';
+import type { ClaudeStreamEvent } from '../claude/types.js';
 
 function assistantEvent(contentBlocks: Array<{ type: string; [key: string]: unknown }>): ClaudeStreamEvent {
   return {

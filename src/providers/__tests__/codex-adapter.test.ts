@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { codexProvider } from '../adapter.js';
-import type { ProviderRequest } from '../../../shared/types.js';
-import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../../types.js';
+import { codexProvider } from '../codex/adapter.js';
+import type { ProviderRequest } from '../../shared/types.js';
+import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../types.js';
 
 type CodexPreflightRuntimeFixture = {
   runtime: PreflightRuntime;
@@ -102,7 +102,7 @@ function makeRuntime(
 
 async function loadProvider() {
   vi.resetModules();
-  return import('../adapter.js');
+  return import('../codex/adapter.js');
 }
 
 describe('codex adapter app-server flow', () => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ClaudeExecOptions } from '../claude-executor.js';
-import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from '../claude-executor.js';
+import type { ClaudeExecOptions } from '../claude/claude-executor.js';
+import { executeClaudeOneShot, executeClaudeResume, ClaudeExecParseError } from '../claude/claude-executor.js';
 
 const baseArgs = ['-p', '--verbose', '--output-format', 'stream-json'];
 

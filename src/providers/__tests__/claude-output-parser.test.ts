@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseClaudeStreamJson } from '../output-parser.js';
+import { parseClaudeStreamJson } from '../claude/output-parser.js';
 
 function ndjson(...events: object[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';

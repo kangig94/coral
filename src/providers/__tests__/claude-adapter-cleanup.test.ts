@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
-import type { ArtifactCleanupRuntime } from '../../types.js';
-import type { RuntimeDirentLike, RuntimeEnv, RuntimeStorage } from '../../../shared/runtime-ports.js';
-import { claudeProvider } from '../adapter.js';
+import type { ArtifactCleanupRuntime } from '../types.js';
+import type { RuntimeDirentLike, RuntimeEnv, RuntimeStorage } from '../../shared/runtime-ports.js';
+import { claudeProvider } from '../claude/adapter.js';
 
 function makeDirent(name: string, kind: 'file' | 'dir'): RuntimeDirentLike {
   return {

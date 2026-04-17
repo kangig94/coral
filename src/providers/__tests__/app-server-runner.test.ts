@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../../shared/types.js';
-import type { AppServerSessionDriver, DriverStepOutcome, TurnOutcome } from '../driver.js';
-import { runAppServerTurn } from '../runner.js';
-import type { ProviderRuntime, ProviderServerLease } from '../../types.js';
+import type { ProviderRequest } from '../../shared/types.js';
+import type { AppServerSessionDriver, DriverStepOutcome, TurnOutcome } from '../app-server/driver.js';
+import { runAppServerTurn } from '../app-server/runner.js';
+import type { ProviderRuntime, ProviderServerLease } from '../types.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

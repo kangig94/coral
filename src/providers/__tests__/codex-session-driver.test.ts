@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../../shared/types.js';
-import type { ProviderRuntime, ProviderServerLease } from '../../types.js';
-import { codexSessionDriver } from '../session-driver.js';
-import type { Turn } from '../protocol.js';
+import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRuntime, ProviderServerLease } from '../types.js';
+import { codexSessionDriver } from '../codex/session-driver.js';
+import type { Turn } from '../codex/protocol.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { mapTurnStartParams } from '../request-mapping.js';
-import type { ProviderRequest } from '../../../shared/types.js';
+import { mapTurnStartParams } from '../codex/request-mapping.js';
+import type { ProviderRequest } from '../../shared/types.js';
 
 describe('mapTurnStartParams effort mapping', () => {
   function makeRequest(effort: ProviderRequest['effort']): ProviderRequest {

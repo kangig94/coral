@@ -2,23 +2,23 @@ import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isRecord } from '../../../shared/utils.js';
-import { buildClaudeChildArgs, createClaudeBrokerServer } from '../server.js';
+import { isRecord } from '../../shared/utils.js';
+import { buildClaudeChildArgs, createClaudeBrokerServer } from '../claude-appserver/server.js';
 import {
   buildClaudeChildEnv,
   createBrokerSession,
   hashClaudeChildEnv,
   type ClaudeBrokerChild,
   type ClaudeBrokerSession,
-} from '../session.js';
+} from '../claude-appserver/session.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
-} from '../protocol.js';
-import { createDeferred } from '../../../shared/test-deferred.js';
+} from '../claude-appserver/protocol.js';
+import { createDeferred } from '../../shared/test-deferred.js';
 
 const BOOTSTRAP: SessionEnsureParams = {
   cwd: '/workspace',

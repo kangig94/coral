@@ -10,7 +10,7 @@ import {
   isSystemMessage,
   ndjsonSafeStringify,
   parseClaudeStdoutLine,
-} from '../control-protocol.js';
+} from '../claude/control-protocol.js';
 
 const sessionId = 'session-1';
 

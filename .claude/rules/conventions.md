@@ -63,7 +63,7 @@ PR procedure (dev → main):
 ## Testing
 
 - Framework: vitest
-- Test files: `src/codex/__tests__/<module>.test.ts` and `src/discuss/__tests__/<module>.test.ts`
+- Test files: `src/<module>/__tests__/<name>.test.ts` (e.g., `src/providers/__tests__/`, `src/discuss/__tests__/`)
 - One test file per source module
 - Test naming: `describe('<module>')` with `it('should <behavior>')`
 - Mock external dependencies (Codex CLI, filesystem) — never call real Codex in tests
