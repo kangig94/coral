@@ -252,27 +252,17 @@ describe('sessionForkSchema', () => {
 });
 
 describe('jobWaitSchema', () => {
-  it('parses a valid wait body with a strict cursor shape', () => {
+  it('parses a valid wait body without a cursor field', () => {
     const parsed = jobWaitSchema.parse({
       jobIds: ['job-1', 'job-2'],
       projectRoot: '/tmp/project',
       timeoutSeconds: 30,
-      cursor: {
-        jobs: {
-          'job-1': 4,
-        },
-      },
     });
 
     expect(parsed).toEqual({
       jobIds: ['job-1', 'job-2'],
       projectRoot: '/tmp/project',
       timeoutSeconds: 30,
-      cursor: {
-        jobs: {
-          'job-1': 4,
-        },
-      },
     });
   });
 
@@ -285,29 +275,24 @@ describe('jobWaitSchema', () => {
     ).toThrow('At least one job required');
   });
 
-  it('rejects invalid cursor values and unknown cursor keys', () => {
-    expect(
-      jobWaitSchema.safeParse({
-        jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
-        cursor: {
-          jobs: {
-            'job-1': -1,
-          },
+  it('rejects a body cursor via strict mode', () => {
+    const input = {
+      jobIds: ['job-1'],
+      projectRoot: '/tmp/project',
+      cursor: {
+        jobs: {
+          'job-1': 4,
         },
-      }).success,
-    ).toBe(false);
+      },
+    };
 
-    expect(
-      jobWaitSchema.safeParse({
-        jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
-        cursor: {
-          jobs: {},
-          extra: true,
-        },
-      }).success,
-    ).toBe(false);
+    expect(() => jobWaitSchema.parse(input)).toThrow();
+
+    const parsed = jobWaitSchema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.code).toBe('unrecognized_keys');
+    }
   });
 
   it('rejects legacy inline-only fields via strict mode', () => {

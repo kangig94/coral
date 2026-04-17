@@ -2080,14 +2080,12 @@ describe('ExecutionService', () => {
       {
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 'session-1',
         eventId: 1,
         message: 'step 1',
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -2121,8 +2119,7 @@ describe('ExecutionService', () => {
     expect(events).toEqual([
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -2167,8 +2164,7 @@ describe('ExecutionService', () => {
     expect(events).toEqual([
       {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done' },
@@ -2206,7 +2202,6 @@ describe('ExecutionService', () => {
     expect(events[1]).toMatchObject({
       type: 'progress',
       jobId: decision.job,
-      sessionId: decision.session,
       eventId: 1,
     });
     if (events[1]?.type === 'progress') {
@@ -3782,7 +3777,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe('terminal');
       if (events[0].type !== 'terminal') throw new Error('expected terminal');
-      expect(events[0].completedJobId).toBe(jobId);
+      expect(events[0].jobId).toBe(jobId);
       expect(events[0].resultPath).toBe(jobResultPath(jobId));
 
       const progressMessages = events

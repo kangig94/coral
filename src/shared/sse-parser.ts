@@ -24,7 +24,6 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
     case 'progress':
       if (
         typeof parsed.jobId === 'string' &&
-        typeof parsed.sessionId === 'string' &&
         Number.isInteger(parsed.eventId) &&
         typeof parsed.message === 'string'
       ) {
@@ -33,8 +32,7 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
       throw new Error('Invalid progress wait stream event');
     case 'terminal':
       if (
-        typeof parsed.completedJobId === 'string' &&
-        typeof parsed.sessionId === 'string' &&
+        typeof parsed.jobId === 'string' &&
         isStringArray(parsed.remainingJobIds) &&
         typeof parsed.resultPath === 'string' &&
         isRecord(parsed.result)

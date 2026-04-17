@@ -27,8 +27,8 @@ import {
   type ProviderResult,
   type SessionEntry,
   type TerminalResult,
-  type WaitRequest,
   type WaitStreamEvent,
+  type WaitStreamRequest,
   type WorkflowResultMeta,
 } from '../shared/types.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
@@ -1458,7 +1458,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   /** Async generator yielding queued/progress/terminal/timeout events for monitored jobs. */
-  async *waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
+  async *waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     yield* this.waitCoordinator.waitForJobs(req);
   }
 

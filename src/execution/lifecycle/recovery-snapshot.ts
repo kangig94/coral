@@ -9,7 +9,6 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../../shared/types.js';
-import type { TypedEventBus } from '../event-bus.js';
 import type { ProgressStore } from '../progress-store.js';
 import { listSessionShards, SessionManager } from '../session-manager.js';
 import type { JobStoreSnapshot } from '../recovery-core.js';
@@ -19,7 +18,6 @@ import { readSessionRefs, withBackendNamespace } from './job-helpers.js';
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,
   namespace: string,
-  eventBus: TypedEventBus,
   runtime: Runtime,
   log: (message: string) => void,
 ): JobStoreSnapshot {

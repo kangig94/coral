@@ -9,7 +9,6 @@ import {
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/types.js';
-import type { TypedEventBus } from '../event-bus.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { RecoveryAction } from '../recovery-core.js';
 import type { RecoveryRegistry } from '../recovery-registry.js';
@@ -32,14 +31,13 @@ type RecoveryActionContext = {
   queuedRecoverable: QueuedRecoverableJob[];
   runningRecoverable: RunningRecoverableJob[];
   log: (message: string) => void;
-  eventBus: TypedEventBus;
   runtime: Runtime;
   createCallerContext: (projectRoot: string) => CallerContext;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
 };
 
 export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionContext): void {
-  const { progressStore, recoveryRegistry, queuedRecoverable, runningRecoverable, log, eventBus, runtime, createCallerContext, getRecoveryService } = ctx;
+  const { progressStore, recoveryRegistry, queuedRecoverable, runningRecoverable, log, runtime, createCallerContext, getRecoveryService } = ctx;
 
   switch (action.type) {
     case 'deleteIncompleteDir':

@@ -29,11 +29,10 @@ function running(job: string, session: string) {
   };
 }
 
-function terminal(jobId: string, sessionId: string, result: TerminalResult): WaitStreamEvent {
+function terminal(jobId: string, _sessionId: string, result: TerminalResult): WaitStreamEvent {
   return {
     type: 'terminal',
-    completedJobId: jobId,
-    sessionId,
+    jobId,
     remainingJobIds: [],
     resultPath: `/tmp/coral-jobs/${jobId}/result.md`,
     result,

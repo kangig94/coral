@@ -37,7 +37,6 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
   return {
     type: 'progress',
     jobId: 'job-1',
-    sessionId: 'session-1',
     eventId: 1,
     message,
   };
@@ -66,8 +65,7 @@ function makeTerminalEvent(
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {
     type: 'terminal',
-    completedJobId: 'job-1',
-    sessionId: 'session-1',
+    jobId: 'job-1',
     remainingJobIds: [],
     resultPath: '/tmp/result.md',
     result: {
@@ -301,7 +299,7 @@ describe('cli follow', () => {
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
+        jobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
         result: {
@@ -389,7 +387,7 @@ describe('cli follow', () => {
       },
       {
         type: 'terminal',
-        completedJobId: 'job-1',
+        jobId: 'job-1',
         sessionId: 'session-1',
         remainingJobIds: [],
         result: {

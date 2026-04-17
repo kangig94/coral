@@ -20,8 +20,9 @@ import {
   type ProviderResult,
   type SessionEntry,
   type TerminalResult,
-  type WaitRequest,
   type WaitStreamEvent,
+  type WaitRequest,
+  type WaitStreamRequest,
 } from '../shared/types.js';
 import { type AbortRegistry } from './abort-controller-registry.js';
 import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
@@ -571,8 +572,8 @@ export class WaitCoordinator {
         }, JOB_TERMINAL_RELEASE_POLL_MS);
       };
 
-      const onJobCompleted = ({ jobId: completedJobId }: { jobId: string }): void => {
-        if (completedJobId === jobId) {
+      const onJobCompleted = ({ jobId: completedId }: { jobId: string }): void => {
+        if (completedId === jobId) {
           recheck();
         }
       };
@@ -600,7 +601,7 @@ export class WaitCoordinator {
     });
   }
 
-  async *waitForJobs(req: WaitRequest): AsyncGenerator<WaitStreamEvent> {
+  async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const { progressStore, launchCoordinator, jobPools } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor } = req;
     const startMs = this.deps.time.now();
@@ -648,7 +649,6 @@ export class WaitCoordinator {
             yield {
               type: 'progress',
               jobId,
-              sessionId: status.sessionId,
               eventId: event.eventId,
               message: event.message ?? '',
             };
@@ -658,8 +658,7 @@ export class WaitCoordinator {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
-            completedJobId: jobId,
-            sessionId: status.sessionId,
+            jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: event.result ?? { content: '' },
@@ -673,8 +672,7 @@ export class WaitCoordinator {
           const remainingJobIds = jobIds.filter((id) => id !== jobId && pending.has(id));
           yield {
             type: 'terminal',
-            completedJobId: jobId,
-            sessionId: currentStatus.sessionId,
+            jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '' },
@@ -706,7 +704,7 @@ export class WaitCoordinator {
     }
 
     for await (const event of this.waitForJobs(request)) {
-      if (event.type === 'terminal' && event.completedJobId === jobId) {
+      if (event.type === 'terminal' && event.jobId === jobId) {
         return {
           content: event.result.content,
           nonResumable: event.result.nonResumable ?? false,

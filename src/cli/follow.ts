@@ -42,20 +42,23 @@ function toLaunchEvent(decision: FollowLaunchDecision): Extract<CliStreamEvent, 
   };
 }
 
-function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { type: 'launch' }> {
+function toCliStreamEvent(
+  event: WaitStreamEvent,
+  sessionId: string,
+): Exclude<CliStreamEvent, { type: 'launch' }> {
   switch (event.type) {
     case 'progress':
       return {
         type: 'progress',
         jobId: event.jobId,
-        sessionId: event.sessionId,
+        sessionId,
         message: event.message,
       };
     case 'queued':
       return {
         type: 'queued',
         jobId: event.jobId,
-        sessionId: event.sessionId,
+        sessionId,
         queuePosition: event.queuePosition,
         runningJobIds: event.runningJobIds,
       };
@@ -63,8 +66,8 @@ function toCliStreamEvent(event: WaitStreamEvent): Exclude<CliStreamEvent, { typ
       const { content: _content, ...resultMeta } = event.result;
       return {
         type: 'terminal',
-        completedJobId: event.completedJobId,
-        sessionId: event.sessionId,
+        jobId: event.jobId,
+        sessionId,
         remainingJobIds: event.remainingJobIds,
         result: {
           ...resultMeta,
@@ -91,12 +94,13 @@ function emitLaunch(decision: FollowLaunchDecision, outputFormat: 'text' | 'json
 
 function emitWaitEvent(
   event: WaitStreamEvent,
+  sessionId: string,
   cursor: string | null,
   outputFormat: 'text' | 'json',
   renderContext: WaitRenderContext,
 ): void {
   if (outputFormat === 'json') {
-    process.stdout.write(JSON.stringify(toCliStreamEvent(event)) + '\n');
+    process.stdout.write(JSON.stringify(toCliStreamEvent(event, sessionId)) + '\n');
     return;
   }
 
@@ -223,7 +227,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           cursorRef,
         )) {
           const cursor = cursorRef.lastEventId ?? null;
-          emitWaitEvent(event, cursor, options.outputFormat, renderContext);
+          emitWaitEvent(event, options.launchResult.session, cursor, options.outputFormat, renderContext);
 
           if (event.type === 'running') {
             reconnect = true;

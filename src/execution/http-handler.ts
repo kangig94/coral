@@ -19,7 +19,7 @@ import {
   workflowRequestSchema,
 } from '../shared/schemas.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitRequest } from '../shared/types.js';
+import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitStreamRequest } from '../shared/types.js';
 import { belongsToNamespace, isLivePhase, jobPhaseSchema } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
@@ -411,12 +411,12 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
   }
 
   const inputCursor: WaitCursor = {
-    jobs: { ...(headerCursor ?? parsed.cursor ?? { jobs: {} }).jobs },
+    jobs: { ...(headerCursor ?? { jobs: {} }).jobs },
   };
   const currentCursor: WaitCursor = {
     jobs: { ...inputCursor.jobs },
   };
-  const waitRequest: WaitRequest = {
+  const waitRequest: WaitStreamRequest = {
     ...parsed,
     cursor: inputCursor,
   };

@@ -1,6 +1,12 @@
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { LaunchDecision, LaunchState, ProviderInstruction, WaitRequest, WaitStreamEvent } from '../shared/types.js';
+import type {
+  LaunchDecision,
+  LaunchState,
+  ProviderInstruction,
+  WaitStreamEvent,
+  WaitStreamRequest,
+} from '../shared/types.js';
 
 export type AgentAtom = {
   kind: 'agent';
@@ -55,7 +61,7 @@ export interface WorkflowExecutionPort {
   resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<LaunchDecision>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
-  waitStream(req: WaitRequest): AsyncGenerator<WaitStreamEvent>;
+  waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   /**
    * Dispatch post-workflow cleanup to each provider's `cleanupSessions` hook.

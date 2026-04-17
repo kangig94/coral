@@ -334,13 +334,17 @@ export interface PersistedProgressRecord {
 export interface WaitRequest {
   jobIds: string[];
   timeoutSeconds?: number;
-  cursor?: WaitCursor;
   projectRoot?: string;
+}
+
+/** Internal wait-stream request with optional replay cursor state. */
+export interface WaitStreamRequest extends WaitRequest {
+  cursor?: WaitCursor;
 }
 
 /** Events emitted by the wait stream. */
 export type WaitStreamEvent =
-  | { type: 'progress'; jobId: string; sessionId: string; eventId: number; message: string }
+  | { type: 'progress'; jobId: string; eventId: number; message: string }
   | {
       type: 'queued';
       jobId: string;
@@ -350,8 +354,7 @@ export type WaitStreamEvent =
     }
   | {
       type: 'terminal';
-      completedJobId: string;
-      sessionId: string;
+      jobId: string;
       remainingJobIds: string[];
       resultPath: string;
       result: TerminalResult;

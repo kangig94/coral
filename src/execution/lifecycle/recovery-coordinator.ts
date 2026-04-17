@@ -8,7 +8,6 @@ import type { ProviderRegistry } from '../../providers/registry.js';
 import type { DiscussContext } from '../discuss/context.js';
 import type { RecoveredDiscussResume } from '../discuss/operations.js';
 import type { DiscussSessionStore } from '../discuss/session-store.js';
-import type { TypedEventBus } from '../event-bus.js';
 import type { MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { ProgressStore } from '../progress-store.js';
 import { planRecovery } from '../recovery-core.js';
@@ -59,7 +58,6 @@ type StartupRecoveryContext = {
   bundleHash: string;
   runtime: Runtime;
   progressStore: ProgressStore;
-  eventBus: TypedEventBus;
   providerRegistry: ProviderRegistry;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;
@@ -296,7 +294,6 @@ export function createRecoveryCoordinator({
         bundleHash,
         runtime,
         progressStore,
-        eventBus,
         assertStartupStillActive,
         log,
         cleanupStaleJobs,
@@ -317,7 +314,7 @@ export function createRecoveryCoordinator({
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }
 
-      const snapshot = buildRecoverySnapshot(progressStore, namespace, eventBus, runtime, log);
+      const snapshot = buildRecoverySnapshot(progressStore, namespace, runtime, log);
       const plan = planRecovery(snapshot);
 
       for (const action of [...plan.register, ...plan.cleanup]) {
@@ -328,7 +325,6 @@ export function createRecoveryCoordinator({
             queuedRecoverable,
             runningRecoverable,
             log,
-            eventBus,
             runtime,
             createCallerContext,
             getRecoveryService,

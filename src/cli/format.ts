@@ -521,7 +521,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, cursor: string | null):
 export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {
   if (!inline) {
     return joinLines([
-      `[${event.completedJobId}] completed`,
+      `[${event.jobId}] completed`,
       `Result path: ${event.resultPath}`,
       `Remaining jobs: ${event.remainingJobIds.length}`,
       cursor === null ? undefined : `Cursor: ${cursor}`,
@@ -529,7 +529,7 @@ export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | nu
   }
 
   return joinLines([
-    `[${event.completedJobId}] completed`,
+    `[${event.jobId}] completed`,
     truncatePreview(pickTerminalPreviewSource(event.result)),
     cursor === null ? undefined : `Cursor: ${cursor}`,
   ]);

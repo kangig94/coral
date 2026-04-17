@@ -585,17 +585,17 @@ function handleWaitEvent(
     }
 
     case 'terminal': {
-      const atom = state.pending.get(event.completedJobId);
+      const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
-      state.pending.delete(event.completedJobId);
-      delete state.cursor.jobs[event.completedJobId];
+      state.pending.delete(event.jobId);
+      delete state.cursor.jobs[event.jobId];
 
       const terminalState = event.result.aborted || event.result.notice ? 'error' : 'done';
       options.onProgress(formatAtomProgress(atom, terminalState));
 
-      if (state.expectedStaleAborts.has(event.completedJobId)) {
-        state.expectedStaleAborts.delete(event.completedJobId);
+      if (state.expectedStaleAborts.has(event.jobId)) {
+        state.expectedStaleAborts.delete(event.jobId);
         return 'handled';
       }
 

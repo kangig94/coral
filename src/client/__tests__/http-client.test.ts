@@ -1006,7 +1006,7 @@ describe('client http-client', () => {
       sseResponse(
         [
           'event: progress',
-          'data: {"type":"progress","jobId":"job-1","sessionId":"session-1","eventId":1,"message":"working"}',
+          'data: {"type":"progress","jobId":"job-1","eventId":1,"message":"working"}',
           '',
           'event: running',
           'data: {"type":"running","runningJobIds":["job-1"]}',
@@ -1027,7 +1027,6 @@ describe('client http-client', () => {
     expect(first.value).toEqual({
       type: 'progress',
       jobId: 'job-1',
-      sessionId: 'session-1',
       eventId: 1,
       message: 'working',
     });

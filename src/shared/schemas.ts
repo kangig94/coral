@@ -94,7 +94,6 @@ export const jobWaitSchema = z
     jobIds: z.array(z.string().min(1)).min(1, 'At least one job required'),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
-    cursor: waitCursorSchema.optional(),
   })
   .strict();
 

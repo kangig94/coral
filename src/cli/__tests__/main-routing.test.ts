@@ -1178,14 +1178,12 @@ describe('cli main routing', () => {
       yield {
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 'session-1',
         eventId: 1,
         message: 'working',
       };
       yield {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: '/tmp/result.md',
         result: { content: 'done', exitCode: 0 },
@@ -1200,7 +1198,6 @@ describe('cli main routing', () => {
         event: {
           type: 'progress',
           jobId: 'job-1',
-          sessionId: 'session-1',
           eventId: 1,
           message: 'working',
         },
@@ -1209,8 +1206,7 @@ describe('cli main routing', () => {
         cursor: null,
         event: {
           type: 'terminal',
-          completedJobId: 'job-1',
-          sessionId: 'session-1',
+          jobId: 'job-1',
           remainingJobIds: [],
           result: {
             path: '/tmp/result.md',

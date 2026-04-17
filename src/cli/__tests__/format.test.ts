@@ -126,7 +126,6 @@ const notYourTurnResult = {
 const waitProgressEvent = {
   type: 'progress',
   jobId: 'job-1',
-  sessionId: 'session-1',
   eventId: 4,
   message: 'Still running',
 } satisfies Extract<WaitStreamEvent, { type: 'progress' }>;
@@ -141,8 +140,7 @@ const waitQueuedEvent = {
 
 const waitTerminalEvent = {
   type: 'terminal',
-  completedJobId: 'job-1',
-  sessionId: 'session-1',
+  jobId: 'job-1',
   remainingJobIds: ['job-2'],
   resultPath: '/tmp/result.md',
   result: {

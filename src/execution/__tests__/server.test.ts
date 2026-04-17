@@ -97,14 +97,12 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       yield {
         type: 'progress',
         jobId: 'job-1',
-        sessionId: 'session-1',
         eventId: 7,
         message: 'working',
       };
       yield {
         type: 'terminal',
-        completedJobId: 'job-1',
-        sessionId: 'session-1',
+        jobId: 'job-1',
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
         result: { content: 'done' },
@@ -3066,7 +3064,7 @@ describe('execution backend server', () => {
     );
   });
 
-  it('streams SSE wait events and closes after terminal completion for found/missing mixes', async () => {
+  it('defaults an absent /jobs/wait cursor to an empty replay state', async () => {
     const fakeService = createFakeExecutionService();
     const progressStore = new ProgressStore('test-ns', runtime);
     createdJobIds.add('job-1');
@@ -3104,6 +3102,7 @@ describe('execution backend server', () => {
     expect(body).toContain('event: terminal');
     expect(body).toContain('"message":"working"');
     expect(body).toContain('"content":"done"');
+    expect(body).not.toContain('"sessionId":"session-1"');
 
     const firstIdLine = body.split('\n').find((line) => line.startsWith('id: '));
     expect(firstIdLine).toBeTruthy();
@@ -3115,6 +3114,58 @@ describe('execution backend server', () => {
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
       cursor: { jobs: {} },
+      projectRoot: '/tmp/project',
+    });
+  });
+
+  it('honors the /jobs/wait Last-Event-ID header cursor', async () => {
+    const fakeService = createFakeExecutionService();
+    const progressStore = new ProgressStore('test-ns', runtime);
+    createdJobIds.add('job-1');
+    progressStore.initJob({
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+      progressStore,
+    });
+    const encodedCursor = Buffer.from(
+      JSON.stringify({
+        jobs: {
+          'job-1': 4,
+        },
+      }),
+      'utf-8',
+    ).toString('base64url');
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Last-Event-ID': encodedCursor,
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(fakeService.waitStream).toHaveBeenCalledWith({
+      jobIds: ['job-1'],
+      timeoutSeconds: 1,
+      cursor: {
+        jobs: {
+          'job-1': 4,
+        },
+      },
       projectRoot: '/tmp/project',
     });
   });
@@ -3566,6 +3617,35 @@ describe('execution backend server', () => {
     expect(await missingResponse.json()).toMatchObject({ code: 'invalid_request' });
     expect(emptyResponse.status).toBe(400);
     expect(await emptyResponse.json()).toMatchObject({ code: 'invalid_request' });
+  });
+
+  it('returns 400 when /jobs/wait includes a body cursor', async () => {
+    const fakeService = createFakeExecutionService();
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+        cursor: {
+          jobs: {
+            'job-1': 4,
+          },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    expect(fakeService.waitStream).not.toHaveBeenCalled();
   });
 
   it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
