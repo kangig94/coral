@@ -2,14 +2,16 @@
 //
 // PreToolUse:Bash hook for coral-cli command resolution.
 //
+// Invocation detection and wait-subcommand helpers live in
+// hooks/lib/coral-invocation.mjs so cli-monitor-guard can share them.
+//
 // Sections:
 //   1. Entry-point constants
-//   2. Invocation detection (bare coral-cli vs node <bridge>)
-//   3. Command-shape helpers (global options, subcommand classification)
-//   4. Rewriting primitives (bare → node, stale bridge → active)
-//   5. Post-processing (inline text → tempfile, unsafe metachars, wait timeout)
-//   6. Top-level orchestration (splitter + per-segment pipeline)
-//   7. Main I/O
+//   2. Subcommand shape detection (workflow / provider classification)
+//   3. Rewriting primitives (bare → node, stale bridge → active)
+//   4. Post-processing (inline text → tempfile, unsafe metachars)
+//   5. Top-level orchestration (splitter + per-segment pipeline)
+//   6. Main I/O
 
 import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
@@ -30,6 +32,11 @@ import {
   isExactToken,
 } from './lib/flag-helpers.mjs';
 import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
+import {
+  detectCoralInvocation,
+  detectWaitTimeoutSeconds,
+  skipGlobalOptions,
+} from './lib/coral-invocation.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -43,6 +50,12 @@ const KNOWN_PROVIDER_COMMANDS = new Set(['codex', 'claude']);
 const RESERVED_TOP_LEVEL_COMMANDS = new Set(['workflow', 'wait', 'abort', 'backend', 'discuss', 'kb', 'list']);
 const SHORT_FLAGS_WITH_VALUES = new Set(['f', 'i', 's', 'w', 'm', 'o', 'e', 'c', 'p']);
 const SHORT_BOOLEAN_FLAGS = new Set(['b', 'd']);
+
+// Bash tool rejects timeouts above 600_000 ms. Cap the injected wait
+// timeout here — if the requested wait exceeds the Bash ceiling the
+// process will be killed before wait returns, but the job state remains
+// on the server and Claude can resume on the next turn.
+const BASH_MAX_TIMEOUT_MS = 600_000;
 
 // Shell-grammar characters that cause parse errors when they appear in an unquoted token.
 // Parentheses open subshells and braces start brace-expansion / function blocks — both can
@@ -84,58 +97,7 @@ function hasAmbiguousShortCluster(token) {
   return !SHORT_FLAGS_WITH_VALUES.has(firstFlag);
 }
 
-// === 2. Invocation detection ===
-
-function detectCoralInvocation(tokens) {
-  if (tokens.length < 1) return null;
-  const first = tokens[0];
-
-  if (
-    first.value === 'coral-cli'
-    && first.segments.length === 1
-    && first.segments[0].kind === 'unquoted'
-  ) {
-    return { kind: 'bare' };
-  }
-
-  if (
-    first.value === 'node'
-    && tokens.length >= 2
-    && tokens[1].value.endsWith(BRIDGE_SUFFIX)
-  ) {
-    return { kind: 'node' };
-  }
-
-  return null;
-}
-
-// === 3. Command-shape helpers ===
-
-function getGlobalOptionWidth(tokens, index) {
-  const token = tokens[index];
-  if (token === undefined) return null;
-
-  if (isExactToken(token, '--output-format') || isExactToken(token, '-f')) {
-    return tokens[index + 1] === undefined ? null : 2;
-  }
-
-  if (getInlineValueSegments(token, '--output-format=') !== null || getInlineValueSegments(token, '-f') !== null) {
-    return 1;
-  }
-
-  return 0;
-}
-
-function skipGlobalOptions(tokens, startIndex) {
-  let index = startIndex;
-  while (index < tokens.length) {
-    const width = getGlobalOptionWidth(tokens, index);
-    if (width === null) return null;
-    if (width === 0) return index;
-    index += width;
-  }
-  return index;
-}
+// === 2. Subcommand shape detection ===
 
 function detectCommandShape(tokens) {
   const index = skipGlobalOptions(tokens, 2);
@@ -151,7 +113,7 @@ function detectCommandShape(tokens) {
   return null;
 }
 
-// === 4. Rewriting primitives ===
+// === 3. Rewriting primitives ===
 
 function replaceBareCoralCli(segText, tokens) {
   const first = tokens[0];
@@ -182,7 +144,7 @@ function rewriteStaleBridge(segText, tokens) {
   }]);
 }
 
-// === 5. Post-processing ===
+// === 4. Post-processing ===
 
 function writeInlineTextFile(value) {
   const hash = createHash('sha256').update(value).digest('hex').slice(0, 12);
@@ -259,37 +221,7 @@ function wrapUnsafeUnquotedTokens(command) {
   return applyReplacements(command, replacements);
 }
 
-function detectWaitTimeoutSeconds(command) {
-  const tokens = tokenizeShell(command);
-  if (tokens === null || tokens.length < 3) return null;
-
-  const index = skipGlobalOptions(tokens, 2);
-  if (index === null || index >= tokens.length || tokens[index].value !== 'wait') return null;
-
-  const DEFAULT_WAIT_TIMEOUT = 600;
-
-  for (let i = index + 1; i < tokens.length; i += 1) {
-    if (isExactToken(tokens[i], '--timeout')) {
-      const next = tokens[i + 1];
-      if (next === undefined) return DEFAULT_WAIT_TIMEOUT;
-      const parsed = parseInt(next.value, 10);
-      return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-    }
-    const inline = getInlineValueSegments(tokens[i], '--timeout=');
-    if (inline !== null) {
-      const analysis = analyzeValueSegments(inline);
-      if (analysis.value !== undefined) {
-        const parsed = parseInt(analysis.value, 10);
-        return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-      }
-      return DEFAULT_WAIT_TIMEOUT;
-    }
-  }
-
-  return DEFAULT_WAIT_TIMEOUT;
-}
-
-// === 6. Top-level orchestration ===
+// === 5. Top-level orchestration ===
 
 function processSegment(segText, input) {
   const tokens = tokenizeShell(segText);
@@ -346,7 +278,7 @@ function processCommand(command, input) {
   return { command: result, waitTimeout: maxWaitTimeout, changed: anyChange };
 }
 
-// === 7. Main I/O (fail-open: any error → silent exit 0) ===
+// === 6. Main I/O (fail-open: any error → silent exit 0) ===
 
 try {
   const input = JSON.parse(await readStdin());
@@ -364,7 +296,7 @@ try {
 
   const updatedInput = { ...input.tool_input, command: result.command };
   if (result.waitTimeout !== null) {
-    updatedInput.timeout = (result.waitTimeout + 10) * 1000;
+    updatedInput.timeout = Math.min((result.waitTimeout + 10) * 1000, BASH_MAX_TIMEOUT_MS);
     updatedInput.run_in_background = false;
   }
 

@@ -121,6 +121,13 @@ await test('wait --timeout=300 injects Bash timeout 310000ms', async () => {
   assert.equal(out.hookSpecificOutput.updatedInput.run_in_background, false);
 });
 
+await test('wait --timeout=600 is capped at Bash max (600000ms)', async () => {
+  const { stdout } = await runHook(bash('coral-cli wait --timeout=600'));
+  const out = parseOutput(stdout);
+  assert.equal(out.hookSpecificOutput.updatedInput.timeout, 600_000);
+  assert.equal(out.hookSpecificOutput.updatedInput.run_in_background, false);
+});
+
 await test('pipe: coral-cli kb principles | grep foo rewrites coral stage only', async () => {
   const { stdout } = await runHook(bash('coral-cli kb principles | grep foo'));
   const out = parseOutput(stdout);
