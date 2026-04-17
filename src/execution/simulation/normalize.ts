@@ -86,6 +86,7 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
 
   return {
     name: config.name,
+    faultProvider: config.faultProvider,
     cli: config.cli
       ? {
           command: config.cli.command,

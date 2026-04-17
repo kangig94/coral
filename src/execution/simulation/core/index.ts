@@ -11,7 +11,7 @@ import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
-import type { TerminalOutcome } from '../../../shared/coral-fault.js';
+import type { ProviderName, TerminalOutcome } from '../../../shared/coral-fault.js';
 import { composeChildEnv } from '../../../shared/env-sanitize.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../../shared/process-constants.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
@@ -64,6 +64,7 @@ export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } fr
 
 export type FakeProviderScenario = {
   name?: string;
+  faultProvider?: ProviderName;
   cli?: {
     command?: string;
     args?: string[];
@@ -369,14 +370,6 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
   };
 }
 
-function resolveScenarioFaultProvider(
-  scenario: FakeProviderScenario | undefined,
-  providerName: string,
-): 'claude' | 'codex' {
-  const resolved = (scenario?.name ?? scenario?.cli?.command ?? providerName).toLowerCase();
-  return resolved === 'codex' ? 'codex' : 'claude';
-}
-
 function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null | undefined): TerminalOutcome {
   if (aborted) {
     return { kind: 'aborted', reason: 'signal_abort' };
@@ -389,14 +382,13 @@ function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null 
 
 function buildRecoveredArtifactFailureOutcome(
   scenario: FakeProviderScenario | undefined,
-  providerName: string,
   message: string,
 ): TerminalOutcome {
   return {
     kind: 'coral_fault',
     fault: {
       kind: 'provider_request_failed',
-      provider: resolveScenarioFaultProvider(scenario, providerName),
+      provider: scenario?.faultProvider ?? 'claude',
       message,
     },
   };
@@ -459,11 +451,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
         const outcome =
           scenario?.result?.outcome ??
           (recoveredArtifactFailed
-            ? buildRecoveredArtifactFailureOutcome(
-                scenario,
-                providerName,
-                `artifact recovery failed: ${stderr}`,
-              )
+            ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
             : buildDefaultExecutionOutcome(signal !== null, exitCode));
         const result: ProviderResult = {
           ...scenario?.result,

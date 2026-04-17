@@ -103,6 +103,7 @@ const fakeProviderResultSchema = z.object({
 
 const fakeProviderSchema = z.object({
   name: z.string().optional(),
+  faultProvider: z.enum(['claude', 'codex']).optional(),
   cli: fakeProviderCliSchema.optional(),
   progress: z.array(fakeProviderProgressSchema).optional(),
   result: fakeProviderResultSchema.optional(),
