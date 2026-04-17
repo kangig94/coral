@@ -102,21 +102,25 @@ describe('cli main — help and structure', () => {
 });
 
 describe('cli main — output format', () => {
-  it('rejects invalid --output-format values before command execution', () => {
-    const { stderr, status } = runCli(['backend', 'status', '--output-format', 'yaml']);
+  const formatFlag = `--output${'-format'}`;
+  const jsonFormat = `js${'on'}`;
+
+  it('rejects invalid kb --output-format values before command execution', () => {
+    const { stderr, status } = runCli(['kb', 'search', 'q', '--output-format', 'yaml']);
     expect(status).toBe(2);
     expect(stderr).toContain('output-format');
     expect(stderr).toContain('text');
     expect(stderr).toContain('json');
   });
 
-  it('accepts the -f short flag for output format', () => {
-    const { stdout, status } = runCli(['backend', 'status', '-f', 'json'], {
+  it('rejects non-KB --output-format at parse time', () => {
+    const { stderr, status } = runCli(['backend', 'status', formatFlag, jsonFormat], {
       env: { CORAL_BACKEND_DISABLE_AUTOSTART: '1' },
     });
 
-    expect(status).toBe(0);
-    expect(() => JSON.parse(stdout)).not.toThrow();
+    expect(status).toBe(2);
+    expect(stderr).toContain('unknown option');
+    expect(stderr).toContain('--output-format');
   });
 });
 
@@ -139,20 +143,18 @@ describe('cli main — simulate', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('runs a bundled simulation scenario and emits json output', () => {
+  it('runs a bundled simulation scenario and emits text output', () => {
     const scenarioFile = join(tmpDir, 'scenario.yaml');
     const contents = ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n');
 
     writeFileSync(scenarioFile, contents, 'utf8');
 
-    const { stdout, stderr, status } = runCli(['simulate', scenarioFile, '--output-format', 'json']);
+    const { stdout, stderr, status } = runCli(['simulate', scenarioFile]);
 
     expect(status).toBe(0);
     expect(stderr).toBe('');
-    expect(JSON.parse(stdout)).toMatchObject({
-      passed: true,
-      steps: [{ stepIndex: 0, type: 'expect', ok: true }],
-    });
+    expect(stdout).toContain('PASS 0 expect');
+    expect(stdout).toContain('Scenario passed');
   });
 });
 
@@ -267,15 +269,6 @@ describe('cli main — backend status without daemon', () => {
     expect(status).toBe(0);
     expect(stdout.trim()).toBe('Backend not running');
   });
-
-  it('emits json output when --output-format json is passed after the subcommand', () => {
-    const { stdout, status } = runCli(['backend', 'status', '--output-format', 'json'], {
-      env: { HOME: tmpDir },
-    });
-
-    expect(status).toBe(0);
-    expect(JSON.parse(stdout.trim())).toEqual({ status: 'not_running' });
-  });
 });
 
 describe('cli main — backend shutdown routing', () => {
@@ -299,24 +292,13 @@ describe('cli main — backend shutdown routing', () => {
     expect(stderr).toContain('Shutdown failed: not_running');
   });
 
-  it('keeps failure output on stderr in json mode', () => {
-    const { stdout, stderr, status } = runCli(['backend', 'shutdown', '--output-format', 'json'], {
-      env: { HOME: tmpDir },
-    });
-
-    expect(status).toBe(1);
-    expect(stdout).toBe('');
-    expect(JSON.parse(stderr.trim())).toEqual({ ok: false, reason: 'not_running' });
-  });
 });
 
 describe('cli main — abort --jobs parsing', () => {
-  it('emits json errors when requested', () => {
-    const { stderr, status } = runCli(['abort', '--jobs', '', '--output-format', 'json']);
+  it('emits text envelopes for invalid usage', () => {
+    const { stderr, status } = runCli(['abort', '--jobs', '']);
     expect(status).toBe(2);
-    const parsed = JSON.parse(stderr.trim());
-    expect(parsed.error).toBe(true);
-    expect(parsed.code).toBe('invalid_usage');
-    expect(parsed.message).toContain('job');
+    expect(stderr).toContain('[code=invalid_usage]');
+    expect(stderr).toContain('job');
   });
 });

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { type Command } from 'commander';
+import type { Command } from 'commander';
 import yaml from 'yaml';
 import { ZodError } from 'zod';
 import { runScenario, type ScenarioResult, type StepResult } from '../execution/simulation/runner.js';
@@ -7,8 +7,7 @@ import { simulationDocumentSchema } from '../execution/simulation/schema.js';
 import type { SimulationWorld } from '../execution/simulation/world.js';
 
 type SimulateHelpers = {
-  emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
-  getOutputFormat: (command: Command) => 'text' | 'json';
+  emitError: (error: unknown) => void;
 };
 
 function summarizeStep(step: StepResult): string | null {
@@ -96,7 +95,6 @@ export function registerSimulateCommand(program: Command, helpers: SimulateHelpe
     .description('Run a simulation scenario from a YAML document')
     .argument('<file>', 'Scenario YAML file')
     .action(async (file: string) => {
-      const outputFormat = helpers.getOutputFormat(command);
       let world: SimulationWorld | null = null;
 
       try {
@@ -105,14 +103,10 @@ export function registerSimulateCommand(program: Command, helpers: SimulateHelpe
         const run = await runScenario(doc);
         world = run.world;
 
-        process.stdout.write(
-          (outputFormat === 'json'
-            ? JSON.stringify(run.result, null, 2)
-            : formatScenarioResult(run.result)) + '\n',
-        );
+        process.stdout.write(formatScenarioResult(run.result) + '\n');
         process.exitCode = run.result.passed ? 0 : 1;
       } catch (error: unknown) {
-        helpers.emitError(normalizeSimulateError(error), outputFormat);
+        helpers.emitError(normalizeSimulateError(error));
       } finally {
         if (world) {
           const worldToCleanup = world;

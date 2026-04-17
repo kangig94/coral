@@ -1,6 +1,6 @@
 import { CommanderError } from 'commander';
 
-import { buildProgram, emitError, getOutputFormat } from './main.js';
+import { buildProgram, emitError } from './main.js';
 
 const program = buildProgram();
 
@@ -10,6 +10,6 @@ program.parseAsync(process.argv).catch((error) => {
     return;
   }
 
-  emitError(error, getOutputFormat(program));
+  emitError(error);
   process.exit(process.exitCode ?? 1);
 });

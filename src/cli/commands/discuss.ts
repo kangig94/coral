@@ -3,9 +3,7 @@ import type { Command } from 'commander';
 import type { BackendClient } from '../../client/http-client.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
 import {
-  emit,
   emitError,
-  getOutputFormat,
   makeClient,
   parseIntegerFlag,
   type DiscussAbortOptions,
@@ -37,8 +35,6 @@ export function registerDiscussCommands(program: Command): void {
     .option('--count <n>', 'Number of personas')
     .option('--seed <n>', 'Random seed')
     .action(async (opts: DiscussSeedOptions) => {
-      const outputFormat = getOutputFormat(discussSeedCommand);
-
       try {
         const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
         const axes = opts.axis?.map(parseAxisSpec);
@@ -51,9 +47,9 @@ export function registerDiscussCommands(program: Command): void {
         discussSeedSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
-        emit(result, outputFormat, formatPersonaSeed);
+        process.stdout.write(formatPersonaSeed(result) + '\n');
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -67,8 +63,6 @@ export function registerDiscussCommands(program: Command): void {
     ])
     .option('--topic <text>', 'Discussion topic')
     .action(async (opts: DiscussStartOptions) => {
-      const outputFormat = getOutputFormat(discussStartCommand);
-
       try {
         const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
         const agents = opts.agent?.map(parseAgentSpec);
@@ -80,9 +74,9 @@ export function registerDiscussCommands(program: Command): void {
         discussStartSchema.parse(args);
         const client = makeClient(process.cwd());
         const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
-        emit(result, outputFormat, formatDiscussStart);
+        process.stdout.write(formatDiscussStart(result) + '\n');
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -92,15 +86,13 @@ export function registerDiscussCommands(program: Command): void {
     .requiredOption('--session <id>', 'Session ID')
     .option('--cursor <seq>', 'Resume from sequence number (integer event offset)')
     .action(async (opts: DiscussWatchOptions) => {
-      const outputFormat = getOutputFormat(discussWatchCommand);
-
       try {
         const cursor = opts.cursor !== undefined ? parseIntegerFlag('--cursor', opts.cursor) : undefined;
         const client = makeClient(process.cwd());
         const result = await client.discussWatch(opts.session, cursor);
-        emit(result, outputFormat, formatDiscussWatch);
+        process.stdout.write(formatDiscussWatch(result) + '\n');
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -114,8 +106,6 @@ export function registerDiscussCommands(program: Command): void {
     .option('--thought <text>', 'Bid thought')
     .option('--content <text>', 'Speech content')
     .action(async (opts: DiscussParticipateOptions) => {
-      const outputFormat = getOutputFormat(discussParticipateCommand);
-
       try {
         const stdinBase: JsonObject = await parseInputJson(opts.inputJson);
         const args = {
@@ -136,9 +126,9 @@ export function registerDiscussCommands(program: Command): void {
         const result = isSpeech
           ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
           : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
-        emit(result, outputFormat, formatDiscussParticipate);
+        process.stdout.write(formatDiscussParticipate(result) + '\n');
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 
@@ -147,14 +137,12 @@ export function registerDiscussCommands(program: Command): void {
     .description('Abort a discussion session')
     .requiredOption('--session <id>', 'Session ID')
     .action(async (opts: DiscussAbortOptions) => {
-      const outputFormat = getOutputFormat(discussAbortCommand);
-
       try {
         const client = makeClient(process.cwd());
         const result = await client.discussAbort(opts.session);
-        emit(result, outputFormat, formatDiscussAbort);
+        process.stdout.write(formatDiscussAbort(result) + '\n');
       } catch (error) {
-        emitError(error, outputFormat);
+        emitError(error);
       }
     });
 }

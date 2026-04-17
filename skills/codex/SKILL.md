@@ -15,7 +15,7 @@ routing logic — execute them silently.
 
 If the argument asks to inspect active Codex work, handle directly:
 
-- Run `coral-cli jobs --provider codex --output-format json`
+- Run `coral-cli jobs --provider codex`
 - Present: list → table (`jobId`, `phase`, `provider`, `cwd`, `age`)
 Never show raw `session` UUID, `model`, or `duration_ms` unless asked.
 If the user asks to branch an existing session or create a named branch, explain that Codex session branching is unsupported and stop.
@@ -43,11 +43,11 @@ Note: routes 4b and 4c delegate to other skills that manage their own sessions.
 ## 4a. Review (parallel Codex ops)
 
 Dispatch TWO Codex jobs in parallel:
-- `coral-cli codex architect -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json`
-- `coral-cli codex critic -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json`
+- `coral-cli codex architect -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d`
+- `coral-cli codex critic -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d`
 
 Use `session` only when available from step 2. Omit it for fresh review sessions.
-Collect both `job` values from the detached launch JSON, then run `coral-cli wait --jobs "<job-id list>" --output-format json --embed` until both terminal events arrive; read `event.result.content` when present, otherwise `Read(event.result.path)` as best-effort recovery.
+Collect both `job` values from the detached launch text (`Job <job> <launchState> (session <session>)`), then run `coral-cli wait --jobs "<job-id list>" --embed` until both terminal blocks arrive. Each block always includes `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience.
 
 After both return, synthesize:
 1. Merge findings, deduplicate
@@ -70,14 +70,12 @@ Launch through Coral CLI. Pass prompt **verbatim**. Never rephrase, filter, or r
 
 | Condition | Action |
 |-----------|--------|
-| No session | `coral-cli codex -i "<prompt>" --work-dir "<path>" -d --output-format json` → `{ job, session }` |
-| Session exists | `coral-cli codex --session "<session>" -i "<prompt>" --work-dir "<path>" -d --output-format json` → `{ job, session }` |
+| No session | `coral-cli codex -i "<prompt>" --work-dir "<path>" -d` → capture `job` and `session` from `Job <job> <launchState> (session <session>)` |
+| Session exists | `coral-cli codex --session "<session>" -i "<prompt>" --work-dir "<path>" -d` → capture `job` and `session` from `Job <job> <launchState> (session <session>)` |
 
-Run `coral-cli wait --jobs "<job>" --output-format json --embed`; read the terminal JSON line, prefer `event.result.content`, and fall back to `Read(event.result.path)`.
+Run `coral-cli wait --jobs "<job>" --embed`; the terminal output always includes `Result path: <path>`, so read that path for the full artifact and treat inline preview text as optional convenience.
 Keep using the `session` UUID from the detached launch response for continuity.
-Show the response, then append: `session: <session_name>` when the launch JSON includes `session_name`.
 On error, show the error and suggest resuming with /codex.
 
-Always show `session_name` when the launch response includes it so the user can see what session they are in.
-For session continuity, store the `session` UUID from the detached launch response — NOT `session_name`.
+For session continuity, store the `session` UUID from the detached launch text.
 Never show raw `session` UUID, `model`, or `duration_ms` unless the user asks.

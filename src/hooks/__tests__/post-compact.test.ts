@@ -75,7 +75,7 @@ describe('post-compact.mjs', () => {
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
     expect(output.hookSpecificOutput.additionalContext).toContain('Pending:');
     expect(output.hookSpecificOutput.additionalContext).toContain(
-      'Run coral-cli wait --jobs test-job-pending-a,test-job-pending-b --output-format json to resume monitoring.',
+      'Run coral-cli wait --jobs test-job-pending-a,test-job-pending-b to resume monitoring.',
     );
     expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-a');
     expect(output.hookSpecificOutput.additionalContext).toContain('test-job-pending-b');
@@ -115,10 +115,10 @@ describe('post-compact.mjs', () => {
     const output = expectHookOutput(result);
     expect(output.hookSpecificOutput.additionalContext).toContain('Completed during compaction:');
     expect(output.hookSpecificOutput.additionalContext).toContain(
-      'Use coral-cli wait --jobs "test-job-complete-no-artifact" --output-format json --embed to attempt replay.',
+      'Use coral-cli wait --jobs "test-job-complete-no-artifact" --embed to attempt replay.',
     );
     expect(output.hookSpecificOutput.additionalContext).toContain(
-      'Read event.result.content from the terminal JSON line if present; otherwise Read(event.result.path) for the full artifact.',
+      'Read the Result path: line from wait output for the artifact path; if preview text is incomplete, Read(<path>) for the full artifact.',
     );
   });
 

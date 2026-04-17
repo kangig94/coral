@@ -96,10 +96,10 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 ### Wait / follow
 
-1. Detached launches return `{ session, job, launchState }` (201 or 202)
-2. `coral-cli wait --jobs "<ids>" --output-format json [--embed]` calls `streamWait()`
+1. Detached launches print `Job <job> <launchState> (session <session>)`
+2. `coral-cli wait --jobs "<ids>" [--embed]` calls `streamWait()`
 3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
-4. Terminal events always include `result.path`; `result.content` is optional inline enrichment
+4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 
 ### Job inspection and control
 
@@ -125,7 +125,7 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 | Area | Key modules | Role |
 | --- | --- | --- |
-| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, human/JSON formatting |
+| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, text formatting, KB JSON formatting |
 | Client | `src/client/http-client.ts`, `src/client/backend-lifecycle.ts`, `src/client/backend-helpers.ts` | Backend startup, HTTP requests, wait/admin helpers |
 | Backend HTTP | `src/execution/server.ts`, `src/execution/http-handler.ts` | Backend composition root and route registration |
 | Provider execution | `src/execution/service.ts`, `src/execution/engine.ts`, `src/providers/*` | Launch orchestration, provider spawning, host/runtime management |

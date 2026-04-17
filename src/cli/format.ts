@@ -28,6 +28,7 @@ import type {
 } from '../kb/types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { PersistedStatusRecord, TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { CliErrorEnvelope } from './errors.js';
 
 type DiscussAbortResult = {
   ok: boolean;
@@ -493,6 +494,17 @@ export function formatShutdown(result: ShutdownResult): string {
   return result.ok ? 'Backend shutdown initiated' : `Shutdown failed: ${result.reason}`;
 }
 
+export function formatErrorEnvelope(
+  envelope: CliErrorEnvelope,
+  statusCode?: number,
+): string {
+  const tags = [`code=${envelope.code}`];
+  if (statusCode !== undefined) tags.push(`http=${statusCode}`);
+  const head = `${envelope.message} [${tags.join(', ')}]`;
+  if (envelope.detail === undefined) return head;
+  return `${head}\nDetail: ${JSON.stringify(envelope.detail)}`;
+}
+
 export function formatError(error: unknown): string {
   if (isBackendToolHttpError(error)) {
     const detail = error.body === null || error.body === undefined ? error.message : formatUnknown(error.body);
@@ -510,26 +522,62 @@ export function formatError(error: unknown): string {
   return String(error);
 }
 
-export function formatWaitProgress(event: WaitProgressEvent): string {
-  return `[${event.jobId}] ${event.message}`;
+// Progress messages from the backend workflow runner conventionally start
+// with a time bracket like "[ 0m  2s] 0-arc ...". When a caller needs to
+// attribute an event to one of several jobs, we insert "<label> - " AFTER
+// the closing time bracket so the time stays first. Messages without a
+// leading bracket fall back to a plain "<label> - <message>" prefix.
+const TIME_BRACKET_RE = /^(\[[^\]]*\])\s+([\s\S]*)$/;
+
+function injectProgressLabel(message: string, label: string): string {
+  const match = TIME_BRACKET_RE.exec(message);
+  if (match === null) return `${label} - ${message}`;
+  return `${match[1]} ${label} - ${match[2]}`;
 }
 
-export function formatWaitQueued(event: WaitQueuedEvent): string {
-  return `[${event.jobId}] queued at position ${event.queuePosition}`;
+export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
+  if (label === undefined) return event.message;
+  return injectProgressLabel(event.message, label);
+}
+
+export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string {
+  const body = `queued at position ${event.queuePosition}`;
+  return label === undefined ? body : `${label} - ${body}`;
+}
+
+function terminalOutcomeHeader(jobId: string, result: TerminalResult): string {
+  if (result.aborted === true) return `Job ${jobId} aborted`;
+
+  const notice = typeof result.notice === 'string' && result.notice.length > 0 ? result.notice : undefined;
+  const exitCode = result.exitCode;
+
+  if (exitCode !== undefined && exitCode !== null && exitCode !== 0) {
+    const base = `Job ${jobId} provider exited ${exitCode}`;
+    return notice === undefined ? base : `${base}: ${notice}`;
+  }
+
+  if (notice !== undefined) {
+    return `Job ${jobId} coral errored: ${notice}`;
+  }
+
+  return `Job ${jobId} completed`;
 }
 
 export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {
+  const header = terminalOutcomeHeader(event.jobId, event.result);
   if (!inline) {
+    const remaining = event.remainingJobIds.length > 0 ? event.remainingJobIds.join(', ') : 'none';
     return joinLines([
-      `[${event.jobId}] completed`,
+      header,
       `Result path: ${event.resultPath}`,
-      `Remaining jobs: ${event.remainingJobIds.length}`,
+      `Remaining jobs: ${remaining}`,
       cursor === null ? undefined : `Cursor: ${cursor}`,
     ]);
   }
 
   return joinLines([
-    `[${event.jobId}] completed`,
+    header,
+    `Result path: ${event.resultPath}`,
     truncatePreview(pickTerminalPreviewSource(event.result)),
     cursor === null ? undefined : `Cursor: ${cursor}`,
   ]);

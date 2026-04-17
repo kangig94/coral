@@ -131,11 +131,10 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     expression = "(coral:architect, coral:critic)" or "(coral:architect, coral:critic) -> coral:resolver" when --deep
     startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
     sharedContext = (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes."
-    launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d --output-format json`)
+    launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
-    - **If `--deep`**: `coral-cli wait --jobs "<job>" --output-format json` →
-      read the terminal JSON line, then `{ start, end } = event.result.workflow.steps.find(s => s.agent === "resolver")` → `Read(event.result.path, start, end - start + 1)`.
-    - **Otherwise**: `coral-cli wait --jobs "<job>" --output-format json --embed` → use `event.result.content ?? Read(event.result.path)`.
+    - **If `--deep`**: `coral-cli wait --jobs "<job>"` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver section there.
+    - **Otherwise**: `coral-cli wait --jobs "<job>" --embed` → the terminal output still prints `Result path: <path>`; use inline preview text if it is helpful, but read the printed path for the full result.
 
     **4b. Post-Round Processing**
 
@@ -145,7 +144,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
     ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision, revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
 
-    **Otherwise**: the terminal JSON line from `coral-cli wait` yields `<architect>…</architect>` + `<critic>…</critic>` in `event.result.content`; if it is absent, read `event.result.path`.
+    **Otherwise**: `coral-cli wait --embed` may preview `<architect>…</architect>` + `<critic>…</critic>` inline, but the durable artifact is always the printed `Result path: <path>`.
     Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
     If findings invalidate the current approach, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round.
 

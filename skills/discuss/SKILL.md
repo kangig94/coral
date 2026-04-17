@@ -23,7 +23,7 @@ Pass `--user` to participate as a human observer.
    - Assign a distinct name culture per slot.
 
 3. **Generate persona seeds** with:
-   `coral-cli discuss seed --input-json - --output-format json`
+   `coral-cli discuss seed --input-json -`
    using the prepared `{ controversy_axes, n, demographics?, seed }` payload on stdin.
 
 4. **Turn the seed output into personas**.
@@ -36,27 +36,26 @@ Pass `--user` to participate as a human observer.
    - If `--user`, add:
      `{ name: 'user', persona: '# User — Human Participant\nHuman observer with real-time participation via /bid skill.', participation: 'observer' }`
    - Start with:
-     `coral-cli discuss start --input-json - --output-format json` for the full `{ topic, agents, config? }` payload.
+     `coral-cli discuss start --input-json -` for the full `{ topic, agents, config? }` payload.
      Include `config: { min_bid_delay_ms: 10000 }` for `--user`; omit `config` otherwise.
-   - Save the returned `session` as `session_id`.
+   - Save the session from `Session started: <session_id>`.
 
 6. **If `--user`**, write `CORAL_PROJECT/discuss/active-user-session.json`
    with `{ session_id }`.
    This keeps `/bid` pointed at the active observer session.
 
 7. **Monitor progress** by polling:
-   `coral-cli discuss watch --session "<session_id>" --output-format json`
-   - First poll: omit `cursor` to get full history.
-   - Subsequent polls: pass the returned `cursor` value to get only new events:
-     `coral-cli discuss watch --session "<session_id>" --cursor <previous_cursor> --output-format json`
-   - Show new `speech_done` events as they appear.
-   - Watch for `epoch_transition` and `session_ended`.
-   - Do not expect sealed-bid internals in this payload.
+   `coral-cli discuss watch --session "<session_id>"`
+   - First poll: omit `cursor`.
+   - Subsequent polls: pass the `Cursor: <n>` value printed in the watch output:
+     `coral-cli discuss watch --session "<session_id>" --cursor <previous_cursor>`
+   - Use the watch summary to track session status, epoch, step, and cursor progression.
 
 8. **If `--user`**, return immediately:
    "Discussion started! Use `/bid <score>, <thought>` to submit a bid, or `/bid <your speech>` when you win the floor."
 
 9. **When the session ends**, report the end reason from `discuss_watch`.
+   Session end is surfaced in the watch status line.
    - If `--user`, delete `CORAL_PROJECT/discuss/active-user-session.json`.
 
 ## Context Enhancement

@@ -49,9 +49,9 @@ These are protocols, not standalone agent files.
 Codex-backed agent launches use the provider route, not a protocol-specific transport:
 
 ```bash
-coral-cli codex architect -i "<prompt>" --work-dir "<path>" -d --output-format json
-coral-cli codex critic -i "<prompt>" --work-dir "<path>" -d --output-format json
-coral-cli wait --jobs "<job-id list>" --output-format json --embed
+coral-cli codex architect -i "<prompt>" --work-dir "<path>" -d
+coral-cli codex critic -i "<prompt>" --work-dir "<path>" -d
+coral-cli wait --jobs "<job-id list>" --embed
 ```
 
 Behavior:
@@ -59,7 +59,8 @@ Behavior:
 1. `ExecutionService.coralDispatch()` resolves `agents/<name>.md`.
 2. `src/execution/instruction.ts` builds the provider instruction.
 3. The provider adapter injects that instruction into the provider launch.
-4. The job is persisted like any other provider execution.
+4. Detached launches print `Job <job> <launchState> (session <session>)`, and `wait --embed` always prints `Result path: <path>` for durable artifact recovery.
+5. The job is persisted like any other provider execution.
 
 Unknown agent names fail through the normal provider/domain error path.
 
@@ -90,8 +91,8 @@ Create `agents/<name>.md` and route to it through Claude Code's normal agent sel
 Create `agents/<name>.md` and invoke it through the Codex provider surface:
 
 ```bash
-coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d --output-format json
-coral-cli wait --jobs "<job>" --output-format json --embed
+coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d
+coral-cli wait --jobs "<job>" --embed
 ```
 
 ### Prompt design guidance

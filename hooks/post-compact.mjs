@@ -136,7 +136,7 @@ try {
     }
 
     const pendingJobIds = pending.map(({ job }) => job.jobId).join(',');
-    lines.push(`Run coral-cli wait --jobs ${pendingJobIds} --output-format json to resume monitoring.`);
+    lines.push(`Run coral-cli wait --jobs ${pendingJobIds} to resume monitoring.`);
   }
 
   if (terminal.length > 0) {
@@ -153,7 +153,7 @@ try {
       }
 
       if (!entry.isWorkflow) {
-        lines.push(`- ${entry.job.jobId} (${entry.status.phase}, ${provider}). Use coral-cli wait --jobs ${JSON.stringify(entry.job.jobId)} --output-format json --embed to attempt replay. Read event.result.content from the terminal JSON line if present; otherwise Read(event.result.path) for the full artifact.`);
+        lines.push(`- ${entry.job.jobId} (${entry.status.phase}, ${provider}). Use coral-cli wait --jobs ${JSON.stringify(entry.job.jobId)} --embed to attempt replay. Read the Result path: line from wait output for the artifact path; if preview text is incomplete, Read(<path>) for the full artifact.`);
         continue;
       }
 

@@ -1,40 +1,28 @@
 # CLI Errors
 
-`coral-cli` has a stable machine-readable error contract when `--output-format json` is selected. Errors are written to `stderr` as a single flat JSON object. Text-mode errors remain human-oriented and are not a stable parsing surface.
+`coral-cli` writes a text error envelope to `stderr` for all commands. The envelope is human/LLM-facing: parsers should locate `\nDetail: ` as the boundary between the head and the JSON detail payload when detail is present, and should not assume the message/head portion is single-line because Commander-surfaced errors may contain newlines.
 
-`wait` and follow-mode commands keep successful NDJSON events on `stdout`. Only failures move to `stderr`.
+`wait` and follow-mode commands keep successful human-readable text on `stdout`. Only failures move to `stderr`.
 
 ## Envelope
 
 CLI errors use this shape:
 
-```json
-{
-  "error": true,
-  "code": "invalid_request",
-  "message": "timeoutSeconds: Number must be less than or equal to 1200",
-  "detail": {
-    "issues": [
-      {
-        "code": "too_big",
-        "path": ["timeoutSeconds"],
-        "message": "Number must be less than or equal to 1200"
-      }
-    ]
-  }
-}
+```text
+timeoutSeconds: Number must be less than or equal to 1200 [code=invalid_request, http=400]
+Detail: {"issues":[{"code":"too_big","path":["timeoutSeconds"],"message":"Number must be less than or equal to 1200"}]}
 ```
 
 Fields:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `error` | `true` | Constant marker for error envelopes |
-| `code` | string | Stable programmatic error code |
-| `message` | string | Short human-readable summary |
-| `detail` | unknown, optional | Extra structured detail. For backend schema validation this includes `detail.issues` from Zod |
+| `message` | string | Human-readable summary. It is not guaranteed to stay on one line |
+| `code` | string | Stable programmatic error code, emitted inside the trailing tag block |
+| `http` | number, optional | HTTP status when the error came from a backend HTTP response |
+| `detail` | JSON payload, optional | Extra structured detail emitted after the `Detail: ` prefix. For backend schema validation this includes `detail.issues` from Zod |
 
-Backend HTTP errors are lifted into the same flat CLI shape. There is no nested `body` wrapper in CLI JSON output.
+Backend HTTP errors are lifted into the same envelope. There is no nested `body` wrapper in the CLI detail payload.
 
 When a backend HTTP response body is missing, non-JSON, or does not carry a `code`/`message` field, the CLI falls back to:
 
@@ -76,19 +64,15 @@ Two failures can both mean "bad input" and still produce different exit codes be
 
 Client-caught example: local CLI validation (e.g. `parseIntegerFlag`) fails before any backend request, producing `invalid_usage` and exit code `2`.
 
-```json
-{"error":true,"code":"invalid_usage","message":"--<flag> must be an integer"}
+```text
+--<flag> must be an integer [code=invalid_usage]
 ```
 
 Server-caught example: the CLI accepts the flag shape, but backend Zod schema validation rejects the value. The call reaches the backend, which returns `invalid_request` and exit code `1` with the full issue list.
 
-```json
-{
-  "error": true,
-  "code": "invalid_request",
-  "message": "<field>: <constraint>",
-  "detail": { "issues": [{ "code": "<zod-code>", "path": ["<field>"], "message": "<constraint>" }] }
-}
+```text
+<field>: <constraint> [code=invalid_request, http=400]
+Detail: {"issues":[{"code":"<zod-code>","path":["<field>"],"message":"<constraint>"}]}
 ```
 
 The input is wrong in both cases. The exit code differs because `invalid_usage` is rejected locally, while `invalid_request` is rejected by backend schema validation.
@@ -102,14 +86,14 @@ Two "service unavailable" cases also differ on purpose:
 
 Drain-in-progress example:
 
-```json
-{"error":true,"code":"backend_shutting_down","message":"Backend shutting down"}
+```text
+Backend shutting down [code=backend_shutting_down, http=503]
 ```
 
 Backend-not-running example:
 
-```json
-{"error":true,"code":"backend_unreachable","message":"fetch failed"}
+```text
+fetch failed [code=backend_unreachable]
 ```
 
 ## Consumer Examples
@@ -121,30 +105,43 @@ Retry only on retry-later failures:
 set -o pipefail
 
 stderr_file="$(mktemp)"
-if coral-cli wait --jobs "$JOB_ID" --output-format json 2>"$stderr_file"; then
+if coral-cli wait --jobs "$JOB_ID" 2>"$stderr_file"; then
   rm -f "$stderr_file"
   exit 0
 fi
 
-code="$(jq -r '.code // empty' <"$stderr_file")"
-case "$code" in
-  transient|backend_shutting_down)
+stderr_text="$(cat "$stderr_file")"
+case "$stderr_text" in
+  *"[code=transient"*|*"[code=backend_shutting_down"*)
     sleep 2
     exec "$0" "$@"
     ;;
-  backend_unreachable)
+  *"[code=backend_unreachable"*)
     echo "Coral backend is not reachable; restart it first." >&2
     ;;
   *)
-    cat "$stderr_file" >&2
+    printf '%s\n' "$stderr_text" >&2
     ;;
 esac
 ```
 
-Branch in an LLM/tool wrapper by `code`:
+Branch in an LLM/tool wrapper by `code` after splitting on `\nDetail: `:
 
 ```ts
-type CliError = { error: true; code: string; message: string; detail?: unknown };
+type CliError = { message: string; code: string; detail?: unknown };
+
+function parseCliError(stderr: string): CliError {
+  const boundary = '\nDetail: ';
+  const splitAt = stderr.indexOf(boundary);
+  const head = splitAt === -1 ? stderr : stderr.slice(0, splitAt);
+  const detailText = splitAt === -1 ? undefined : stderr.slice(splitAt + boundary.length);
+  const match = head.match(/\[code=([^,\]]+)/);
+  return {
+    message: head,
+    code: match?.[1] ?? 'unknown',
+    detail: detailText === undefined ? undefined : JSON.parse(detailText),
+  };
+}
 
 function classify(error: CliError): 'fix-input' | 'retry' | 'restart-backend' | 'escalate' {
   switch (error.code) {

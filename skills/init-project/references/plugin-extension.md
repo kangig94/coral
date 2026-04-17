@@ -91,19 +91,19 @@
 ### Required Agents
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
-| integration-guardian | 1 | opus | CLI/backend contract validation, JSON output stability, error handling |
+| integration-guardian | 1 | opus | CLI/backend contract validation, text/KB JSON output contract checks, error handling |
 | hook-safety | 2 | sonnet | Hook timeout safety, side effect management, matcher correctness |
 | skill-quality | 2 | sonnet | SKILL.md quality, frontmatter correctness, reference resolution |
 
 ### Mandatory Concerns
-- **CLI/backend contract**: Documented commands, flags, and JSON output must match the implementation
+- **CLI/backend contract**: Documented commands, flags, and output contracts must match the implementation
 - **Hooks**: Timeouts must be reasonable, commands must handle failure gracefully
 - **Skills**: Frontmatter fields correct, instructions clear and unambiguous
 - **Agent definitions**: YAML frontmatter valid, model assignment appropriate
 
 ### Validation Checklist
 #### BLOCKING
-- [ ] Documented CLI commands return valid JSON with `--output-format json`
+- [ ] Documented KB CLI commands return valid JSON with `kb --output-format json`, and documented non-KB commands match their text contracts
 - [ ] Hook scripts handle errors (don't crash the session)
 - [ ] Plugin.json and marketplace.json versions match package.json
 #### STRONG

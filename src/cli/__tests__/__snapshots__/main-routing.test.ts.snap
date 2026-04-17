@@ -96,19 +96,21 @@ exports[`cli main routing > preserves help output for 'kb' via snapshot 1`] = `
 Knowledge base operations
 
 Options:
-  -h, --help                display help for command
+  -f, --output-format <format>  Output format (choices: "text", "json", default:
+                                "text")
+  -h, --help                    display help for command
 
 Commands:
-  search [options] <query>  Search KB entries
-  principles [options]      List KB principles
-  source                    Manage KB sources
-  memo                      Manage project memos
-  read <note>               Read a KB entry by slug or explicit selector
-  promote [options]         Promote a memo into a KB note
-  update [options] <note>   Update an existing KB note
-  delete <note>             Delete a KB note
-  reindex                   Rebuild the KB index
-  help [command]            display help for command
+  search [options] <query>      Search KB entries
+  principles [options]          List KB principles
+  source                        Manage KB sources
+  memo                          Manage project memos
+  read <note>                   Read a KB entry by slug or explicit selector
+  promote [options]             Promote a memo into a KB note
+  update [options] <note>       Update an existing KB note
+  delete <note>                 Delete a KB note
+  reindex                       Rebuild the KB index
+  help [command]                display help for command
 "
 `;
 
@@ -140,22 +142,20 @@ exports[`cli main routing > preserves top-level help output via snapshot 1`] = `
 Coral CLI — invoke providers, monitor jobs, and manage discuss sessions
 
 Options:
-  -V, --version                 output the version number
-  -f, --output-format <format>  Output format (choices: "text", "json", default:
-                                "text")
-  -h, --help                    display help for command
+  -V, --version             output the version number
+  -h, --help                display help for command
 
 Commands:
-  codex [options] [agent]       codex provider operations
-  claude [options] [agent]      claude provider operations
-  simulate <file>               Run a simulation scenario from a YAML document
-  jobs [options]                List jobs for the current project
-  wait [options]                Stream job progress (NDJSON output)
-  abort [options]               Abort running jobs
-  workflow [options]            Execute a workflow pipeline
-  backend                       Backend daemon control
-  discuss                       Discussion operations
-  kb                            Knowledge base operations
-  help [command]                display help for command
+  codex [options] [agent]   codex provider operations
+  claude [options] [agent]  claude provider operations
+  simulate <file>           Run a simulation scenario from a YAML document
+  jobs [options]            List jobs for the current project
+  wait [options]            Stream job progress (text output)
+  abort [options]           Abort running jobs
+  workflow [options]        Execute a workflow pipeline
+  backend                   Backend daemon control
+  discuss                   Discussion operations
+  kb [options]              Knowledge base operations
+  help [command]            display help for command
 "
 `;

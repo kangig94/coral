@@ -34,9 +34,9 @@ describe('cli-resolve.mjs', () => {
     return command.replace(/^(\s*)coral-cli(\s|$)(.*)$/s, `$1node "${cliBundle}"$2$3`);
   }
 
-  it('extracts provider -i quoted text to a temp file, skips top-level --output-format, and leaves provider -s untouched', () => {
+  it('leaves invalid top-level -f untouched for Commander to reject at parse time', () => {
     const fixture = createFixture();
-    const command = 'coral-cli --output-format json codex -s session-1 -i "text with $HOME and `backticks`"';
+    const command = 'coral-cli -f json codex -s session-1 -i "text with $HOME and `backticks`"';
 
     const result = runHook(CLI_RESOLVE_HOOK, {
       hook_event_name: 'PreToolUse',
@@ -49,19 +49,17 @@ describe('cli-resolve.mjs', () => {
 
     const output = expectCliResolveOutput(result);
     const rewritten = output.hookSpecificOutput.updatedInput.command;
-    const tempPaths = rememberTempInputs(rewritten);
 
-    expect(rewritten).toContain(`node "${cliBundle}" --output-format json codex`);
-    expect(rewritten).toContain('-s session-1');
-    expect(rewritten).not.toContain('text with $HOME and `backticks`');
-    expect(tempPaths).toHaveLength(1);
-    expect(existsSync(tempPaths[0])).toBe(true);
-    expect(readFileSync(tempPaths[0], 'utf-8')).toBe('text with $HOME and `backticks`');
+    // -f json stays before codex so Commander rejects the unknown top-level flag.
+    expect(rewritten).toContain('-f json codex');
+    // The hook bails out of inline rewriting when a non-KB leading flag is present,
+    // so the raw -i text stays in the command. Commander will surface the parse error.
+    expect(rewritten).toContain('text with $HOME and `backticks`');
   });
 
-  it('extracts workflow -s and -c text with mixed quote forms while skipping top-level -f', () => {
+  it('extracts workflow -s and -c text with mixed quote forms', () => {
     const fixture = createFixture();
-    const command = 'coral-cli -f json workflow architect -s\'start prompt\' --context="ctx \\\"quoted\\\""';
+    const command = 'coral-cli workflow -e architect -s\'start prompt\' --context="ctx \\\"quoted\\\""';
 
     const result = runHook(CLI_RESOLVE_HOOK, {
       hook_event_name: 'PreToolUse',
@@ -76,12 +74,36 @@ describe('cli-resolve.mjs', () => {
     const rewritten = output.hookSpecificOutput.updatedInput.command;
     const tempPaths = rememberTempInputs(rewritten);
 
-    expect(rewritten).toContain(`node "${cliBundle}" -f json workflow architect`);
+    expect(rewritten).toContain(`node "${cliBundle}" workflow -e architect`);
     expect(tempPaths).toHaveLength(2);
     expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8'))).toEqual([
       'start prompt',
       'ctx "quoted"',
     ]);
+  });
+
+  it('preserves kb-local -f json during rewrite', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli kb search q -f json' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    expect(output.hookSpecificOutput.updatedInput.command).toBe(`node "${cliBundle}" kb search q -f json`);
+  });
+
+  it('preserves kb-local --output-format json during rewrite', () => {
+    const result = runHook(CLI_RESOLVE_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'coral-cli kb search q --output-format json' },
+    });
+
+    const output = expectCliResolveOutput(result);
+    expect(output.hookSpecificOutput.updatedInput.command).toBe(
+      `node "${cliBundle}" kb search q --output-format json`,
+    );
   });
 
   it('preserves quoted existing file paths for provider -i relative to input.cwd', () => {
@@ -380,7 +402,7 @@ describe('cli-resolve.mjs', () => {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: {
-        command: `node "${cliBundle}" -f json wait --jobs jb-1 --embed > /tmp/out.jsonl 2>&1`,
+        command: `node "${cliBundle}" wait --jobs jb-1 --embed > /tmp/out.txt 2>&1`,
       },
     });
 

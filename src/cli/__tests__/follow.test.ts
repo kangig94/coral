@@ -4,6 +4,7 @@ import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { TerminalResult, WaitStreamEvent } from '../../shared/types.js';
 import type * as FollowMod from '../follow.js';
 import { createDeferred } from '../../shared/test-deferred.js';
+import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '../format.js';
 
 const mockState = vi.hoisted(() => ({
   ensureBackend: vi.fn(),
@@ -76,18 +77,19 @@ function makeTerminalEvent(
   };
 }
 
+type TestLaunchAndFollowOptions = {
+  launchResult: AcceptedLaunchResponse;
+  abortJob: (jobId: string) => Promise<unknown>;
+  pluginRoot: string;
+  projectRoot: string;
+  emitError: (error: unknown) => void;
+  isTTY: boolean;
+  columns: number;
+};
+
 function makeOptions(
-  overrides: Partial<{
-    launchResult: AcceptedLaunchResponse;
-    abortJob: (jobId: string) => Promise<unknown>;
-    pluginRoot: string;
-    projectRoot: string;
-    outputFormat: 'text' | 'json';
-    emitError: (error: unknown, outputFormat: 'text' | 'json') => void;
-    isTTY: boolean;
-    columns: number;
-  }> = {},
-) {
+  overrides: Partial<TestLaunchAndFollowOptions> = {},
+): TestLaunchAndFollowOptions {
   return {
     launchResult: {
       launchState: 'running',
@@ -97,14 +99,9 @@ function makeOptions(
     abortJob: async () => undefined,
     pluginRoot: '/plugin/root',
     projectRoot: '/project/root',
-    outputFormat: 'text' as const,
-    emitError: (error: unknown, outputFormat: 'text' | 'json') => {
+    emitError: (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      if (outputFormat === 'json') {
-        process.stderr.write(JSON.stringify({ error: true, code: 'internal', message }) + '\n');
-      } else {
-        process.stderr.write(message + '\n');
-      }
+      process.stderr.write(message + '\n');
       process.exitCode = 70;
     },
     isTTY: false,
@@ -166,20 +163,16 @@ describe('cli follow', () => {
   it('writes launch output and a path-first terminal summary in text mode', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const backend = makeBackend();
+    const options = makeOptions();
 
     mockState.ensureBackend.mockResolvedValueOnce(backend);
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield makeTerminalEvent();
     });
 
-    await expect(launchAndFollow(makeOptions())).resolves.toBe(0);
+    await expect(launchAndFollow(options)).resolves.toBe(0);
 
-    expect(stdout).toBe(
-      'Job job-1 running (session session-1)\n' +
-        '[job-1] completed\n' +
-        'Result path: /tmp/result.md\n' +
-        'Remaining jobs: 0\n',
-    );
+    expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n${formatWaitTerminal(makeTerminalEvent(), null, false)}\n`);
     expect(stderr).toBe('');
     expect(mockState.ensureBackend).toHaveBeenCalledWith('/plugin/root');
     expect(mockState.streamWait).toHaveBeenCalledWith(
@@ -193,8 +186,33 @@ describe('cli follow', () => {
     );
   });
 
-  it('emits launch, running, and terminal NDJSON records with cursor resume', async () => {
+  it('emits launch, running, and terminal text output with cursor resume', async () => {
     const { launchAndFollow } = await loadFollowModule();
+    const launchResult = {
+      launchState: 'queued',
+      job: 'job-1',
+      session: 'session-1',
+    } satisfies AcceptedLaunchResponse;
+    const queuedEvent = makeQueuedEvent();
+    const waitingEvent = makeRunningEvent();
+    const progressEvent = makeProgressEvent('Halfway there');
+    const terminalEvent = makeTerminalEvent({
+      content: 'secret result body',
+      warnings: ['be careful'],
+      usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 1,
+            atom: 1,
+            provider: 'codex',
+            start: 10,
+            end: 20,
+          },
+        ],
+      },
+    });
 
     mockState.ensureBackend
       .mockResolvedValueOnce(makeBackend('backend-1'))
@@ -213,11 +231,11 @@ describe('cli follow', () => {
         if (cursorRef) {
           cursorRef.lastEventId = 'cursor-queued';
         }
-        yield makeQueuedEvent();
+        yield queuedEvent;
         if (cursorRef) {
           cursorRef.lastEventId = 'cursor-running';
         }
-        yield makeRunningEvent();
+        yield waitingEvent;
       })
       .mockImplementationOnce(async function* (
         _jobIds: string[],
@@ -232,96 +250,22 @@ describe('cli follow', () => {
         if (cursorRef) {
           cursorRef.lastEventId = 'cursor-progress';
         }
-        yield makeProgressEvent('Halfway there');
+        yield progressEvent;
         if (cursorRef) {
           cursorRef.lastEventId = 'cursor-terminal';
         }
-        yield makeTerminalEvent({
-          content: 'secret result body',
-          warnings: ['be careful'],
-          usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
-          workflow: {
-            steps: [
-              {
-                agent: 'architect',
-                step: 1,
-                atom: 1,
-                provider: 'codex',
-                start: 10,
-                end: 20,
-              },
-            ],
-          },
-        });
+        yield terminalEvent;
       });
 
-    await expect(
-      launchAndFollow(
-        makeOptions({
-          launchResult: {
-            launchState: 'queued',
-            job: 'job-1',
-            session: 'session-1',
-          },
-          outputFormat: 'json',
-        }),
-      ),
-    ).resolves.toBe(0);
+    await expect(launchAndFollow(makeOptions({ launchResult }))).resolves.toBe(0);
 
-    const records = stdout
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-
-    expect(records).toEqual([
-      {
-        type: 'launch',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        status: 'queued',
-      },
-      {
-        type: 'queued',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        queuePosition: 2,
-        runningJobIds: ['job-9'],
-      },
-      {
-        type: 'waiting',
-        waitingJobIds: ['job-1'],
-      },
-      {
-        type: 'progress',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        message: 'Halfway there',
-      },
-      {
-        type: 'terminal',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        remainingJobIds: [],
-        result: {
-          path: '/tmp/result.md',
-          warnings: ['be careful'],
-          usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
-          workflow: {
-            steps: [
-              {
-                agent: 'architect',
-                step: 1,
-                atom: 1,
-                provider: 'codex',
-                start: 10,
-                end: 20,
-              },
-            ],
-          },
-        },
-      },
-    ]);
-    expect(records[4].result).not.toHaveProperty('content');
+    expect(stdout).toBe(
+      `${formatLaunch(launchResult)}\n` +
+        `${formatWaitQueued(queuedEvent)}\n` +
+        `${formatWaitWaiting(waitingEvent, 'cursor-running')}\n` +
+        `${formatWaitProgress(progressEvent)}\n` +
+        `${formatWaitTerminal(terminalEvent, 'cursor-terminal', false)}\n`,
+    );
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
     expect(mockState.streamWait.mock.calls[1]?.[3]).toBe('cursor-running');
   });
@@ -330,6 +274,7 @@ describe('cli follow', () => {
     vi.useFakeTimers();
 
     const { launchAndFollow } = await loadFollowModule();
+    const options = makeOptions();
 
     mockState.ensureBackend
       .mockResolvedValueOnce(makeBackend('backend-1'))
@@ -360,7 +305,7 @@ describe('cli follow', () => {
         yield makeTerminalEvent({ exitCode: 7 });
       });
 
-    const followPromise = launchAndFollow(makeOptions({ outputFormat: 'json' }));
+    const followPromise = launchAndFollow(options);
 
     await Promise.resolve();
     await Promise.resolve();
@@ -368,34 +313,11 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(7);
 
-    const records = stdout
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(records).toEqual([
-      {
-        type: 'launch',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        status: 'running',
-      },
-      {
-        type: 'progress',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        message: 'Booting',
-      },
-      {
-        type: 'terminal',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        remainingJobIds: [],
-        result: {
-          path: '/tmp/result.md',
-          exitCode: 7,
-        },
-      },
-    ]);
+    expect(stdout).toBe(
+      `${formatLaunch(options.launchResult)}\n` +
+        `${formatWaitProgress(makeProgressEvent('Booting'))}\n` +
+        `${formatWaitTerminal(makeTerminalEvent({ exitCode: 7 }), 'cursor-progress', false)}\n`,
+    );
     expect(stderr).toBe('');
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
     expect(mockState.streamWait).toHaveBeenCalledTimes(2);
@@ -436,16 +358,14 @@ describe('cli follow', () => {
         throw new FreshBackendUnreachableError('fetch failed');
       });
 
-    const followPromise = launchAndFollow(
-      makeOptions({
-        outputFormat: 'json',
-        emitError: (_error: unknown, outputFormat: 'text' | 'json') => {
-          expect(outputFormat).toBe('json');
-          process.stderr.write(JSON.stringify({ error: true, code: 'backend_unreachable', message: 'fetch failed' }) + '\n');
-          process.exitCode = 69;
-        },
-      }),
-    );
+    const options = makeOptions({
+      emitError: (error: unknown) => {
+        expect(error).toBeInstanceOf(FreshBackendUnreachableError);
+        process.stderr.write('fetch failed [code=backend_unreachable]\n');
+        process.exitCode = 69;
+      },
+    });
+    const followPromise = launchAndFollow(options);
 
     for (let i = 0; i < 3; i += 1) {
       await Promise.resolve();
@@ -455,15 +375,8 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(69);
 
-    expect(stdout.trim().split('\n').map((line) => JSON.parse(line))).toEqual([
-      {
-        type: 'launch',
-        jobId: 'job-1',
-        sessionId: 'session-1',
-        status: 'running',
-      },
-    ]);
-    expect(stderr.trim()).toBe(JSON.stringify({ error: true, code: 'backend_unreachable', message: 'fetch failed' }));
+    expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
+    expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
     expect(mockState.ensureBackend).toHaveBeenCalledTimes(3);
     expect(mockState.streamWait).toHaveBeenCalledTimes(3);
   });
@@ -521,6 +434,6 @@ describe('cli follow', () => {
       yield makeTerminalEvent(result);
     });
 
-    await expect(launchAndFollow(makeOptions({ outputFormat: 'json' }))).resolves.toBe(expected);
+    await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
   });
 });

@@ -53,11 +53,11 @@ Two hooks run after compaction:
 
 `post-compact.mjs` now describes recovery in CLI terms:
 
-- pending jobs: `coral-cli wait --jobs "<job-id list>" --output-format json`
-- terminal jobs without inline artifacts: `coral-cli wait --jobs "<job>" --output-format json --embed`
+- pending jobs: `coral-cli wait --jobs "<job-id list>"`
+- terminal jobs without inline artifacts: `coral-cli wait --jobs "<job>" --embed`
 - missing or unreadable job state: do not rerun `wait` unless a verified artifact path exists
 
-The wait guidance matches the current CLI contract: terminal JSON lines may include `event.result.content`, while `event.result.path` is the stable recovery path.
+The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
 
 ## SubagentStart
 

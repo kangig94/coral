@@ -61,11 +61,11 @@ describe('cli-monitor-guard.mjs', () => {
     expect(out?.reason).toMatch(/Bash/);
   });
 
-  it('denies Monitor spawning a node <bridge> wait invocation', () => {
+  it('denies Monitor spawning a node <bridge> wait invocation with wait flags intact', () => {
     const result = runHook(CLI_MONITOR_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Monitor',
-      tool_input: { command: `node "${cliBundle}" wait --jobs jb-1` },
+      tool_input: { command: `node "${cliBundle}" wait --jobs jb-1 --embed` },
     });
 
     expect(parseDenyOutput(result.stdout)?.decision).toBe('deny');

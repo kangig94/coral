@@ -58,12 +58,12 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 ```
 Caller invokes Coral CLI:
-  -> coral-cli codex <agent> -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d --output-format json
+  -> coral-cli codex <agent> -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d
   -> CLI validates args and dispatches the provider launch
   -> backend resolves agents/<agent>.md
-  -> launch returns { job, session, ... }
-  -> coral-cli wait --jobs "<job>" --output-format json --embed
-  -> use event.result.content ?? Read(event.result.path)
+  -> detached launch prints `Job <job> <launchState> (session <session>)`
+  -> coral-cli wait --jobs "<job>" --embed
+  -> read the printed `Result path: <path>` for the full artifact
 ```
 
 `ensureMultiAgent()` runs in `codex-executor.ts` before Codex spawn. No SubagentStart hook is involved in Codex delegation.
