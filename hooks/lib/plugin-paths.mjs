@@ -25,3 +25,11 @@ export function projectSlug(projectDir) {
 export function projectTmpDir(projectDir) {
   return join(tmpdir(), 'coral', projectSlug(projectDir));
 }
+
+// Resolves the project directory for hooks that mutate per-project state.
+// CLAUDE_PROJECT_DIR is the primary source; hook payloads always carry `cwd`
+// as a fallback (per Claude Code common-input-fields contract); '.' is the
+// final escape hatch so downstream projectSlug/path calls don't see undefined.
+export function projectDirFromInput(input, fallback = '.') {
+  return process.env.CLAUDE_PROJECT_DIR ?? input?.cwd ?? fallback;
+}

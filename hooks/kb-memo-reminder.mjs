@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isOwnerId } from './lib/hook-utils.mjs';
-import { activeBridgeCommand, projectTmpDir } from './lib/plugin-paths.mjs';
+import { activeBridgeCommand, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -22,7 +22,7 @@ try {
   if (!sessionId) process.exit(0);
   if (!isOwnerId(sessionId)) process.exit(0);
 
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+  const projectDir = projectDirFromInput(input);
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
   const cliPath = activeBridgeCommand(PLUGIN_ROOT);
   const flagDir = projectTmpDir(projectDir);

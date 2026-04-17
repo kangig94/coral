@@ -15,7 +15,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, sweepStale } from './lib/hook-utils.mjs';
-import { projectTmpDir } from './lib/plugin-paths.mjs';
+import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { RALPH_MESSAGE_RE, RALPH_FIELD_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -31,7 +31,7 @@ try {
   const input = JSON.parse(await readStdin());
   const event = input.hook_event_name;
   const sessionId = input.session_id || input.sessionId;
-  const projectDir = resolve(process.env.CLAUDE_PROJECT_DIR || '.');
+  const projectDir = resolve(projectDirFromInput(input));
 
   if (event === 'UserPromptSubmit') {
     if (!sessionId) process.exit(0);

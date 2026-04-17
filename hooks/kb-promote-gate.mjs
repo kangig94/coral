@@ -13,7 +13,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isOwnerId, readMemoOwnerFromFrontmatter } from './lib/hook-utils.mjs';
-import { projectTmpDir } from './lib/plugin-paths.mjs';
+import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { KB_SKILL_MESSAGE_RE, KB_SKILL_FIELD_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -30,7 +30,7 @@ try {
   const input = JSON.parse(await readStdin());
   const event = input.hook_event_name;
   const sessionId = input.session_id;
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
+  const projectDir = projectDirFromInput(input);
   const flagDir = projectTmpDir(projectDir);
 
   // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
