@@ -13,9 +13,9 @@ import {
   getProviderNames,
   getTerminalContext,
   makeClient,
-  parseIntegerFlag,
   parseJobIds,
   shapeWaitOutputRecord,
+  WAIT_TIMEOUT_SECONDS,
   type AbortOptions,
   type WaitOptions,
 } from '../command-helpers.js';
@@ -194,7 +194,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   waitCommand
     .description('Stream job progress (NDJSON output)')
     .requiredOption('--jobs <ids>', 'Comma-separated job IDs')
-    .option('--timeout <seconds>', 'Timeout in seconds', '600')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
     .option('--embed', 'Embed terminal result content when size permits (path is always present)')
     .action(async (opts: WaitOptions) => {
@@ -202,7 +201,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
       try {
         const jobIds = parseJobIds(opts.jobs);
-        const timeoutSeconds = parseIntegerFlag('--timeout', opts.timeout);
+        const timeoutSeconds = WAIT_TIMEOUT_SECONDS;
         const projectRoot = process.cwd();
         const embed = opts.embed === true;
         const { port, host, token } = await ensureBackend(getPluginRoot() || undefined);

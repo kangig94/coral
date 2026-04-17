@@ -243,20 +243,7 @@ describe('cli-resolve.mjs', () => {
     expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8')).sort()).toEqual(['ctx', 'do thing']);
   });
 
-  it('forces timeout and run_in_background on wait commands with explicit --timeout', () => {
-    const result = runHook(CLI_RESOLVE_HOOK, {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'coral-cli wait --jobs jb-1 --timeout 30' },
-    });
-
-    const output = expectCliResolveOutput(result);
-    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.timeout).toBe(40_000);
-    expect(updatedInput.run_in_background).toBe(false);
-  });
-
-  it('forces default timeout on wait commands without --timeout flag', () => {
+  it('forces fixed timeout and run_in_background on wait commands', () => {
     const result = runHook(CLI_RESOLVE_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
@@ -265,8 +252,8 @@ describe('cli-resolve.mjs', () => {
 
     const output = expectCliResolveOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
-    // The default wait timeout is 600s; with +10s margin the computed value is
-    // 610_000ms, but the Bash tool caps timeout at 600_000ms.
+    // Fixed Bash ceiling; wait CLI emits its final event at 590s so the
+    // process flushes and exits before the 600_000ms kill.
     expect(updatedInput.timeout).toBe(600_000);
     expect(updatedInput.run_in_background).toBe(false);
   });
@@ -387,17 +374,6 @@ describe('cli-resolve.mjs', () => {
     expect(parseJsonOutput<unknown>(second.stdout)).toBeNull();
   });
 
-  it('caps Bash timeout at 600_000ms even for wait --timeout=600', () => {
-    const result = runHook(CLI_RESOLVE_HOOK, {
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'coral-cli wait --jobs jb-1 --timeout 600' },
-    });
-
-    const output = expectCliResolveOutput(result);
-    const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.timeout).toBe(600_000);
-  });
 
   it('injects Bash timeout for coral-cli wait even when the command has shell redirection', () => {
     const result = runHook(CLI_RESOLVE_HOOK, {
@@ -419,13 +395,13 @@ describe('cli-resolve.mjs', () => {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: {
-        command: `node "${cliBundle}" wait --jobs jb-1 --timeout 30 > /tmp/out.jsonl 2>&1; echo "exit=$?"`,
+        command: `node "${cliBundle}" wait --jobs jb-1 > /tmp/out.jsonl 2>&1; echo "exit=$?"`,
       },
     });
 
     const output = expectCliResolveOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.timeout).toBe(40_000);
+    expect(updatedInput.timeout).toBe(600_000);
     expect(updatedInput.run_in_background).toBe(false);
   });
 });

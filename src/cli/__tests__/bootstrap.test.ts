@@ -64,14 +64,14 @@ describe('cli bootstrap', () => {
   });
 
   it('routes non-zero CommanderError through emitError and preserves exit 2', async () => {
-    process.argv = ['node', 'coral-cli', 'wait', '--timeout', 'bogus'];
+    process.argv = ['node', 'coral-cli', 'wait'];
 
     const emitError = vi.fn((_error: unknown, _outputFormat: 'text' | 'json') => {
       // Simulate real emitError setting exit code for CommanderError → 2.
       process.exitCode = 2;
     });
     const parseAsync = vi.fn().mockRejectedValue(
-      new CommanderError(2, 'commander.invalidArgument', "option '--timeout <seconds>' argument 'bogus' is invalid"),
+      new CommanderError(2, 'commander.missingMandatoryOptionValue', "error: required option '--jobs <ids>' not specified"),
     );
     const program = { parseAsync };
     vi.doMock('../main.js', () => ({

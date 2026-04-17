@@ -4,10 +4,8 @@
 // shell-parser plus the flag-helpers semantic layer.
 
 import { splitTopLevelCommands, tokenizeShell } from './shell-parser.mjs';
-import { analyzeValueSegments, getInlineValueSegments, isExactToken } from './flag-helpers.mjs';
+import { getInlineValueSegments, isExactToken } from './flag-helpers.mjs';
 import { BRIDGE_SUFFIX } from './plugin-paths.mjs';
-
-const DEFAULT_WAIT_TIMEOUT = 600;
 
 // Classifies the first tokens as a coral-cli invocation. Returns
 // { kind: 'bare', subcommandStart: 1 } for `coral-cli ...` and
@@ -69,55 +67,25 @@ export function skipGlobalOptions(tokens, startIndex) {
   return index;
 }
 
-// If the command invokes `coral-cli wait`, returns its --timeout value in
-// seconds (falling back to DEFAULT_WAIT_TIMEOUT when the flag is absent or
-// unparseable); otherwise returns null.
-export function detectWaitTimeoutSeconds(command) {
-  const tokens = tokenizeShell(command);
-  if (tokens === null) return null;
-
+// Returns true when the given token stream invokes `coral-cli wait`.
+// Used by cli-resolve to decide whether to inject a foreground Bash timeout.
+export function tokensInvokeCoralWait(tokens) {
   const invocation = detectCoralInvocation(tokens);
-  if (invocation === null) return null;
+  if (invocation === null) return false;
 
   const subIdx = skipGlobalOptions(tokens, invocation.subcommandStart);
-  if (subIdx === null || subIdx >= tokens.length || tokens[subIdx].value !== 'wait') return null;
-
-  for (let i = subIdx + 1; i < tokens.length; i += 1) {
-    if (isExactToken(tokens[i], '--timeout')) {
-      const next = tokens[i + 1];
-      if (next === undefined) return DEFAULT_WAIT_TIMEOUT;
-      const parsed = parseInt(next.value, 10);
-      return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-    }
-    const inline = getInlineValueSegments(tokens[i], '--timeout=');
-    if (inline !== null) {
-      const analysis = analyzeValueSegments(inline);
-      if (analysis.value !== undefined) {
-        const parsed = parseInt(analysis.value, 10);
-        return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-      }
-      return DEFAULT_WAIT_TIMEOUT;
-    }
-  }
-
-  return DEFAULT_WAIT_TIMEOUT;
+  if (subIdx === null || subIdx >= tokens.length) return false;
+  return tokens[subIdx].value === 'wait';
 }
 
-// Regex-based `wait` timeout detection for text that our tokenizer won't
-// parse (redirections, `$?` expansions, etc.). Safe to call on any text —
-// returns null when no coral-cli wait invocation is present. Read-only, so
-// failing to fire leaves behavior unchanged rather than corrupting the
-// command like a blind rewrite would.
+// Regex-based `coral-cli wait` detection for text that our tokenizer won't
+// parse (redirections, `$?` expansions, etc.). Read-only, so failing to
+// fire leaves behavior unchanged rather than corrupting the command.
 const WAIT_INVOCATION_RE =
   /(?:^|[\s;|&])(?:coral-cli|node\s+["']?[^\s"']*coral-cli\.cjs["']?)(?:\s+(?:-f\s+\S+|--output-format(?:=|\s+)\S+))*\s+wait\b/;
-const WAIT_TIMEOUT_FLAG_RE = /--timeout(?:=|\s+)(\d+)/;
 
-export function detectWaitTimeoutFallback(text) {
-  if (!WAIT_INVOCATION_RE.test(text)) return null;
-  const match = text.match(WAIT_TIMEOUT_FLAG_RE);
-  if (match === null) return DEFAULT_WAIT_TIMEOUT;
-  const parsed = parseInt(match[1], 10);
-  return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+export function textInvokesCoralWait(text) {
+  return WAIT_INVOCATION_RE.test(text);
 }
 
 // Returns true when any top-level command segment invokes `coral-cli wait`.
@@ -129,11 +97,7 @@ export function commandHasCoralWait(command) {
   for (const { start, end } of segments) {
     const tokens = tokenizeShell(command.slice(start, end));
     if (tokens === null) continue;
-    const invocation = detectCoralInvocation(tokens);
-    if (invocation === null) continue;
-    const subIdx = skipGlobalOptions(tokens, invocation.subcommandStart);
-    if (subIdx === null || subIdx >= tokens.length) continue;
-    if (tokens[subIdx].value === 'wait') return true;
+    if (tokensInvokeCoralWait(tokens)) return true;
   }
 
   return false;

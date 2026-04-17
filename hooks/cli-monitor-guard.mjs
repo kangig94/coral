@@ -13,7 +13,7 @@ exitIfWrongFlavor();
 
 const DENY_REASON = 'coral-cli wait must run via the Bash tool, not Monitor. '
   + 'Monitor streams lines as discrete events — wait is a one-shot blocking call. '
-  + 'The cli-resolve hook automatically extends the Bash timeout and forces foreground for coral-cli wait.';
+  + 'The cli-resolve hook sets the Bash timeout ceiling and forces foreground for coral-cli wait.';
 
 try {
   const input = JSON.parse(await readStdin());

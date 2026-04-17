@@ -74,38 +74,20 @@ This only affects malformed or truncated backend responses. In normal operation 
 
 Two failures can both mean "bad input" and still produce different exit codes because they were caught at different stages.
 
-Client-caught example: local CLI validation fails before any backend request.
-
-```bash
-coral-cli wait --jobs job-123 --timeout abc --output-format json
-echo $?  # 2
-```
+Client-caught example: local CLI validation (e.g. `parseIntegerFlag`) fails before any backend request, producing `invalid_usage` and exit code `2`.
 
 ```json
-{"error":true,"code":"invalid_usage","message":"--timeout must be an integer"}
+{"error":true,"code":"invalid_usage","message":"--<flag> must be an integer"}
 ```
 
-Server-caught example: the CLI accepted the flag shape, but backend schema validation rejected the value.
-
-```bash
-coral-cli wait --jobs job-123 --timeout 1800 --output-format json
-echo $?  # 1
-```
+Server-caught example: the CLI accepts the flag shape, but backend Zod schema validation rejects the value. The call reaches the backend, which returns `invalid_request` and exit code `1` with the full issue list.
 
 ```json
 {
   "error": true,
   "code": "invalid_request",
-  "message": "timeoutSeconds: Number must be less than or equal to 1200",
-  "detail": {
-    "issues": [
-      {
-        "code": "too_big",
-        "path": ["timeoutSeconds"],
-        "message": "Number must be less than or equal to 1200"
-      }
-    ]
-  }
+  "message": "<field>: <constraint>",
+  "detail": { "issues": [{ "code": "<zod-code>", "path": ["<field>"], "message": "<constraint>" }] }
 }
 ```
 

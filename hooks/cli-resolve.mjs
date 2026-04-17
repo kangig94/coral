@@ -34,9 +34,9 @@ import {
 import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
 import {
   detectCoralInvocation,
-  detectWaitTimeoutFallback,
-  detectWaitTimeoutSeconds,
   skipGlobalOptions,
+  textInvokesCoralWait,
+  tokensInvokeCoralWait,
 } from './lib/coral-invocation.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -52,11 +52,11 @@ const RESERVED_TOP_LEVEL_COMMANDS = new Set(['workflow', 'wait', 'abort', 'backe
 const SHORT_FLAGS_WITH_VALUES = new Set(['f', 'i', 's', 'w', 'm', 'o', 'e', 'c', 'p']);
 const SHORT_BOOLEAN_FLAGS = new Set(['b', 'd']);
 
-// Bash tool rejects timeouts above 600_000 ms. Cap the injected wait
-// timeout here — if the requested wait exceeds the Bash ceiling the
-// process will be killed before wait returns, but the job state remains
-// on the server and Claude can resume on the next turn.
-const BASH_MAX_TIMEOUT_MS = 600_000;
+// Bash tool rejects timeouts above 600_000 ms. The wait command emits its
+// final `waiting`/`terminal` event at WAIT_TIMEOUT_SECONDS (590s on the
+// server side) so this ceiling leaves ~10s for the process to flush and
+// exit before Bash kills it.
+const WAIT_BASH_TIMEOUT_MS = 600_000;
 
 // Shell-grammar characters that cause parse errors when they appear in an unquoted token.
 // Parentheses open subshells and braces start brace-expansion / function blocks — both can
@@ -228,15 +228,15 @@ function wrapUnsafeUnquotedTokens(command) {
 // `$(...)`, unquoted `\`, ambiguous short cluster, unterminated quote),
 // we still want to rewrite a leading bare `coral-cli` so the command is
 // actually runnable. The flag-aware post-processing (inline text,
-// metachar wrapping, wait timeout) is skipped for these segments.
+// metachar wrapping) is skipped for these segments.
 const BARE_CORAL_CLI_RE = /^(\s*)coral-cli(\s|$)(.*)$/s;
 
 function fallbackBareRewrite(segText) {
-  const waitTimeout = detectWaitTimeoutFallback(segText);
+  const invokesWait = textInvokesCoralWait(segText);
   const match = segText.match(BARE_CORAL_CLI_RE);
-  if (match === null) return { text: segText, waitTimeout, changed: false };
+  if (match === null) return { text: segText, invokesWait, changed: false };
   const text = `${match[1]}node "${ACTIVE_BRIDGE}"${match[2]}${match[3]}`;
-  return { text, waitTimeout, changed: true };
+  return { text, invokesWait, changed: true };
 }
 
 function processSegment(segText, input) {
@@ -244,7 +244,7 @@ function processSegment(segText, input) {
   if (tokens === null) return fallbackBareRewrite(segText);
 
   const invocation = detectCoralInvocation(tokens);
-  if (invocation === null) return { text: segText, waitTimeout: null, changed: false };
+  if (invocation === null) return { text: segText, invokesWait: false, changed: false };
 
   let current = segText;
   if (invocation.kind === 'bare') {
@@ -256,11 +256,9 @@ function processSegment(segText, input) {
   current = rewriteInlineTextArgs(current, input);
   current = wrapUnsafeUnquotedTokens(current);
 
-  const waitTimeout = detectWaitTimeoutSeconds(current);
-
   return {
     text: current,
-    waitTimeout,
+    invokesWait: tokensInvokeCoralWait(tokens),
     changed: current !== segText,
   };
 }
@@ -269,37 +267,35 @@ function processCommand(command, input) {
   const segments = splitTopLevelCommands(command);
   if (segments === null) {
     const fallback = fallbackBareRewrite(command);
-    if (!fallback.changed && fallback.waitTimeout === null) return null;
+    if (!fallback.changed && !fallback.invokesWait) return null;
     return {
       command: fallback.changed ? fallback.text : command,
-      waitTimeout: fallback.waitTimeout,
+      invokesWait: fallback.invokesWait,
       changed: fallback.changed,
     };
   }
 
   let result = '';
   let cursor = 0;
-  let maxWaitTimeout = null;
+  let invokesWait = false;
   let anyChange = false;
 
   for (const { start, end } of segments) {
     if (start > cursor) result += command.slice(cursor, start);
 
     const segText = command.slice(start, end);
-    const { text, waitTimeout, changed } = processSegment(segText, input);
-    result += text;
+    const segResult = processSegment(segText, input);
+    result += segResult.text;
 
-    if (waitTimeout !== null) {
-      maxWaitTimeout = maxWaitTimeout === null ? waitTimeout : Math.max(maxWaitTimeout, waitTimeout);
-    }
-    if (changed) anyChange = true;
+    if (segResult.invokesWait) invokesWait = true;
+    if (segResult.changed) anyChange = true;
 
     cursor = end;
   }
 
   if (cursor < command.length) result += command.slice(cursor);
 
-  return { command: result, waitTimeout: maxWaitTimeout, changed: anyChange };
+  return { command: result, invokesWait, changed: anyChange };
 }
 
 // === 6. Main I/O (fail-open: any error → silent exit 0) ===
@@ -316,11 +312,11 @@ try {
 
   const result = processCommand(command, input);
   if (result === null) process.exit(0);
-  if (!result.changed && result.waitTimeout === null) process.exit(0);
+  if (!result.changed && !result.invokesWait) process.exit(0);
 
   const updatedInput = { ...input.tool_input, command: result.command };
-  if (result.waitTimeout !== null) {
-    updatedInput.timeout = Math.min((result.waitTimeout + 10) * 1000, BASH_MAX_TIMEOUT_MS);
+  if (result.invokesWait) {
+    updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
     updatedInput.run_in_background = false;
   }
 

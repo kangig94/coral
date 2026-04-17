@@ -35,7 +35,6 @@ export type ProviderRunOptions = {
 
 export type WaitOptions = {
   jobs: string;
-  timeout: string;
   cursor?: string;
   embed?: boolean;
 };
@@ -139,6 +138,11 @@ type WaitOutputRecord = {
   cursor: string | null;
   event: unknown;
 };
+
+// Wait emits a `waiting` event at this deadline so the process exits before
+// the cli-resolve hook's Bash timeout (600_000ms) kills it — leaving room
+// for the final event (and its resume cursor) to reach stdout.
+export const WAIT_TIMEOUT_SECONDS = 590;
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
