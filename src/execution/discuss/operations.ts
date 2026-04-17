@@ -243,6 +243,25 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
+  // Synthesize-window abort: ended session that has not yet synthesized; recovery would otherwise re-attach it, so persist an abort marker for shutdown-parity.
+  if (
+    committed.ok &&
+    committed.previous.state.status === 'ended' &&
+    committed.previous.runtime.controlPhase !== 'idle'
+  ) {
+    // Idle ended sessions are already synthesized, so skip the shutdown-parity abort marker append.
+    try {
+      const events = readSessionEvents(ctx, sessionId);
+      if (!isAbortEnded(events)) {
+        await appendRuntimeEvents(ctx, sessionId, (current) =>
+          buildAbortEndEventsForShutdown(ctx, sessionId, current),
+        );
+      }
+    } catch (error: unknown) {
+      logShutdownPersistFailure(sessionId, error);
+    }
+  }
+
   session.controller.abort();
   detachSession(ctx, sessionId);
 }
