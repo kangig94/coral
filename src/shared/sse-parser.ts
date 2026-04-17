@@ -40,11 +40,11 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
         return parsed as WaitStreamEvent;
       }
       throw new Error('Invalid terminal wait stream event');
-    case 'running':
-      if (isStringArray(parsed.runningJobIds)) {
+    case 'waiting':
+      if (isStringArray(parsed.waitingJobIds)) {
         return parsed as WaitStreamEvent;
       }
-      throw new Error('Invalid running wait stream event');
+      throw new Error('Invalid waiting wait stream event');
     case 'queued':
       if (
         typeof parsed.jobId === 'string' &&

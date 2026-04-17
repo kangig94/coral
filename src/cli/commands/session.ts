@@ -25,8 +25,8 @@ import {
   formatJobsList,
   formatWaitProgress,
   formatWaitQueued,
-  formatWaitRunning,
   formatWaitTerminal,
+  formatWaitWaiting,
   renderJobsList,
   renderWaitLine,
   type WaitRenderContext,
@@ -230,21 +230,21 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
           switch (event.type) {
             case 'progress':
-              formatted = formatWaitProgress(event, cursor);
+              formatted = formatWaitProgress(event);
               break;
             case 'queued':
-              formatted = formatWaitQueued(event, cursor);
+              formatted = formatWaitQueued(event);
               break;
             case 'terminal':
               formatted = formatWaitTerminal(event, cursor, embed);
               break;
-            case 'running':
-              formatted = formatWaitRunning(event, cursor);
+            case 'waiting':
+              formatted = formatWaitWaiting(event, cursor);
               break;
           }
 
           process.stdout.write(renderWaitLine(formatted, ctx));
-          if ((event.type === 'terminal' || event.type === 'running') && ctx.isTTY) {
+          if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
             process.stdout.write('\n');
           }
         }

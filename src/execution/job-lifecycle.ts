@@ -614,7 +614,7 @@ export class WaitCoordinator {
 
     while (pending.size > 0) {
       if (this.deps.time.now() - startMs >= timeoutMs) {
-        yield { type: 'running', runningJobIds: [...pending] };
+        yield { type: 'waiting', waitingJobIds: [...pending] };
         return;
       }
 
@@ -710,7 +710,7 @@ export class WaitCoordinator {
           nonResumable: event.result.nonResumable ?? false,
         };
       }
-      if (event.type === 'running') {
+      if (event.type === 'waiting') {
         throw new Error('Wait expired while job still running');
       }
     }

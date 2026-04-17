@@ -32,7 +32,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitRunning,
+  formatWaitWaiting,
   renderWaitLine,
 } from '../format.js';
 
@@ -148,10 +148,10 @@ const waitTerminalEvent = {
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
-const waitRunningEvent = {
-  type: 'running',
-  runningJobIds: ['job-1', 'job-2'],
-} satisfies Extract<WaitStreamEvent, { type: 'running' }>;
+const waitWaitingEvent = {
+  type: 'waiting',
+  waitingJobIds: ['job-1', 'job-2'],
+} satisfies Extract<WaitStreamEvent, { type: 'waiting' }>;
 
 describe('cli format', () => {
   describe('formatLaunch', () => {
@@ -507,20 +507,12 @@ describe('cli format', () => {
   });
 
   describe('wait formatters', () => {
-    it('formats progress events with a cursor', () => {
-      expect(formatWaitProgress(waitProgressEvent, 'cursor-1')).toBe('[job-1] Still running (cursor: cursor-1)');
+    it('formats progress events', () => {
+      expect(formatWaitProgress(waitProgressEvent)).toBe('[job-1] Still running');
     });
 
-    it('formats progress events without a cursor', () => {
-      expect(formatWaitProgress(waitProgressEvent, null)).toBe('[job-1] Still running');
-    });
-
-    it('formats queued events with a cursor', () => {
-      expect(formatWaitQueued(waitQueuedEvent, 'cursor-2')).toBe('[job-1] queued at position 2 (cursor: cursor-2)');
-    });
-
-    it('formats queued events without a cursor', () => {
-      expect(formatWaitQueued(waitQueuedEvent, null)).toBe('[job-1] queued at position 2');
+    it('formats queued events', () => {
+      expect(formatWaitQueued(waitQueuedEvent)).toBe('[job-1] queued at position 2');
     });
 
     it('formats a non-inline terminal event with the result path', () => {
@@ -539,15 +531,15 @@ describe('cli format', () => {
       );
     });
 
-    it('formats running output with active jobs', () => {
-      expect(formatWaitRunning(waitRunningEvent, 'cursor-4')).toBe(
-        'Still running; jobs: job-1, job-2 (cursor: cursor-4)',
+    it('formats waiting output with pending jobs', () => {
+      expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4')).toBe(
+        'Still waiting; jobs: job-1, job-2 (cursor: cursor-4)',
       );
     });
 
-    it('formats running output without active jobs', () => {
-      expect(formatWaitRunning({ type: 'running', runningJobIds: [] }, null)).toBe(
-        'Still running; jobs: none',
+    it('formats waiting output without pending jobs', () => {
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe(
+        'Still waiting; jobs: none',
       );
     });
 

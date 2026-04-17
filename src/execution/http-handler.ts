@@ -465,7 +465,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
       continue;
     }
 
-    writeSseEvent(res, 'running', event);
+    writeSseEvent(res, 'waiting', event);
   }
 
   if (!closed && !res.writableEnded) {

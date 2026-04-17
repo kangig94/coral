@@ -12,4 +12,4 @@ export type CliStreamEvent =
       remainingJobIds: string[];
       result: Omit<TerminalResult, 'content'> & { path: string };
     }
-  | { type: 'running'; runningJobIds: string[] };
+  | { type: 'waiting'; waitingJobIds: string[] };

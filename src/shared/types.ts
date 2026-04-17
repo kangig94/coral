@@ -359,4 +359,4 @@ export type WaitStreamEvent =
       resultPath: string;
       result: TerminalResult;
     }
-  | { type: 'running'; runningJobIds: string[] };
+  | { type: 'waiting'; waitingJobIds: string[] };

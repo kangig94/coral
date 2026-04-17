@@ -612,7 +612,7 @@ function handleWaitEvent(
       return 'handled';
     }
 
-    case 'running':
+    case 'waiting':
       return 'check-stale';
   }
 }

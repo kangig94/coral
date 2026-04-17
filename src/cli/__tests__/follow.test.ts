@@ -52,10 +52,10 @@ function makeQueuedEvent(): Extract<WaitStreamEvent, { type: 'queued' }> {
   };
 }
 
-function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'running' }> {
+function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'waiting' }> {
   return {
-    type: 'running',
-    runningJobIds: ['job-1'],
+    type: 'waiting',
+    waitingJobIds: ['job-1'],
   };
 }
 
@@ -288,8 +288,8 @@ describe('cli follow', () => {
         runningJobIds: ['job-9'],
       },
       {
-        type: 'running',
-        runningJobIds: ['job-1'],
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
       },
       {
         type: 'progress',

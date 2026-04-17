@@ -279,6 +279,10 @@ export function shapeWaitOutputRecord(
   cursor: string | null,
   embed: boolean,
 ): WaitOutputRecord {
+  if (event.type === 'progress' || event.type === 'queued') {
+    return { cursor: null, event };
+  }
+
   if (event.type !== 'terminal') {
     return { cursor, event };
   }

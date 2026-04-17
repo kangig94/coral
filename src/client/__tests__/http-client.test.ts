@@ -1008,8 +1008,8 @@ describe('client http-client', () => {
           'event: progress',
           'data: {"type":"progress","jobId":"job-1","eventId":1,"message":"working"}',
           '',
-          'event: running',
-          'data: {"type":"running","runningJobIds":["job-1"]}',
+          'event: waiting',
+          'data: {"type":"waiting","waitingJobIds":["job-1"]}',
           '',
         ].join('\n'),
       ),
@@ -1031,8 +1031,8 @@ describe('client http-client', () => {
       message: 'working',
     });
     expect(second.value).toEqual({
-      type: 'running',
-      runningJobIds: ['job-1'],
+      type: 'waiting',
+      waitingJobIds: ['job-1'],
     });
     expect(done.done).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(

@@ -9,7 +9,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
-  formatWaitRunning,
+  formatWaitWaiting,
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
@@ -75,10 +75,10 @@ function toCliStreamEvent(
         },
       };
     }
-    case 'running':
+    case 'waiting':
       return {
-        type: 'running',
-        runningJobIds: event.runningJobIds,
+        type: 'waiting',
+        waitingJobIds: event.waitingJobIds,
       };
   }
 }
@@ -107,21 +107,21 @@ function emitWaitEvent(
   let line: string;
   switch (event.type) {
     case 'progress':
-      line = formatWaitProgress(event, cursor);
+      line = formatWaitProgress(event);
       break;
     case 'queued':
-      line = formatWaitQueued(event, cursor);
+      line = formatWaitQueued(event);
       break;
     case 'terminal':
       line = formatWaitTerminal(event, cursor, false);
       break;
-    case 'running':
-      line = formatWaitRunning(event, cursor);
+    case 'waiting':
+      line = formatWaitWaiting(event, cursor);
       break;
   }
 
   process.stdout.write(renderWaitLine(line, renderContext));
-  if ((event.type === 'terminal' || event.type === 'running') && renderContext.isTTY) {
+  if ((event.type === 'terminal' || event.type === 'waiting') && renderContext.isTTY) {
     process.stdout.write('\n');
   }
 }
@@ -229,7 +229,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           const cursor = cursorRef.lastEventId ?? null;
           emitWaitEvent(event, options.launchResult.session, cursor, options.outputFormat, renderContext);
 
-          if (event.type === 'running') {
+          if (event.type === 'waiting') {
             reconnect = true;
             break;
           }

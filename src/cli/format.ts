@@ -37,7 +37,7 @@ type DiscussAbortResult = {
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
-type WaitRunningEvent = Extract<WaitStreamEvent, { type: 'running' }>;
+type WaitWaitingEvent = Extract<WaitStreamEvent, { type: 'waiting' }>;
 type KbReadDisplayResult = KbReadResult & { age?: string };
 export type JobsListDisplayRow = {
   jobId: string;
@@ -510,12 +510,12 @@ export function formatError(error: unknown): string {
   return String(error);
 }
 
-export function formatWaitProgress(event: WaitProgressEvent, cursor: string | null): string {
-  return appendCursor(`[${event.jobId}] ${event.message}`, cursor);
+export function formatWaitProgress(event: WaitProgressEvent): string {
+  return `[${event.jobId}] ${event.message}`;
 }
 
-export function formatWaitQueued(event: WaitQueuedEvent, cursor: string | null): string {
-  return appendCursor(`[${event.jobId}] queued at position ${event.queuePosition}`, cursor);
+export function formatWaitQueued(event: WaitQueuedEvent): string {
+  return `[${event.jobId}] queued at position ${event.queuePosition}`;
 }
 
 export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {
@@ -535,10 +535,10 @@ export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | nu
   ]);
 }
 
-export function formatWaitRunning(event: WaitRunningEvent, cursor: string | null): string {
-  const jobs = event.runningJobIds.length > 0 ? event.runningJobIds.join(', ') : 'none';
+export function formatWaitWaiting(event: WaitWaitingEvent, cursor: string | null): string {
+  const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
 
-  return appendCursor(`Still running; jobs: ${jobs}`, cursor);
+  return appendCursor(`Still waiting; jobs: ${jobs}`, cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {
