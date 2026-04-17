@@ -1,65 +1,64 @@
 #!/usr/bin/env node
+//
+// PreToolUse:Bash hook for coral-cli command resolution.
+//
+// Sections:
+//   1. Entry-point constants
+//   2. Invocation detection (bare coral-cli vs node <bridge>)
+//   3. Command-shape helpers (global options, subcommand classification)
+//   4. Rewriting primitives (bare → node, stale bridge → active)
+//   5. Post-processing (inline text → tempfile, unsafe metachars, wait timeout)
+//   6. Top-level orchestration (splitter + per-segment pipeline)
+//   7. Main I/O
 
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import {
+  applyReplacements,
+  shellQuote,
+  splitTopLevelCommands,
+  tokenizeShell as parseShellTokens,
+} from './lib/shell-parser.mjs';
+import {
+  analyzeFlag,
+  analyzeValueSegments,
+  getInlineValueSegments,
+  isExactToken,
+} from './lib/flag-helpers.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
+// === 1. Entry-point constants ===
+
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const BRIDGE_SUFFIX = '/bridge/coral-cli.cjs';
+const ACTIVE_BRIDGE = `${PLUGIN_ROOT}${BRIDGE_SUFFIX}`;
+const BRIDGE_PREFIX = dirname(PLUGIN_ROOT);
+
 const KNOWN_PROVIDER_COMMANDS = new Set(['codex', 'claude']);
 const RESERVED_TOP_LEVEL_COMMANDS = new Set(['workflow', 'wait', 'abort', 'backend', 'discuss', 'kb', 'list']);
 const SHORT_FLAGS_WITH_VALUES = new Set(['f', 'i', 's', 'w', 'm', 'o', 'e', 'c', 'p']);
 const SHORT_BOOLEAN_FLAGS = new Set(['b', 'd']);
 
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
-}
+// Shell-grammar characters that cause parse errors when they appear in an unquoted token.
+// Parentheses open subshells and braces start brace-expansion / function blocks — both can
+// abort zsh parsing before the command runs. Glob characters like `*` and `?` are omitted
+// because unmatched globs fall back to literal under default shell options rather than
+// breaking the grammar.
+const UNSAFE_UNQUOTED_METACHARS = /[()[\]{}]/u;
 
-function readQuotedSegment(command, start) {
-  const quote = command[start];
-  let index = start + 1;
-  let value = '';
-
-  while (index < command.length) {
-    const char = command[index];
-
-    if (quote === '"' && char === '\\') {
-      const next = command[index + 1];
-      if (next === undefined) return null;
-
-      if (next === '"' || next === '\\' || next === '$' || next === '`') {
-        value += next;
-      } else if (next === '\n') {
-        // Shell line-continuation inside double quotes.
-      } else {
-        value += `\\${next}`;
-      }
-
-      index += 2;
-      continue;
-    }
-
-    if (char === quote) {
-      index += 1;
-      return {
-        nextIndex: index,
-        segment: {
-          kind: quote === '"' ? 'double' : 'single',
-          raw: command.slice(start, index),
-          value,
-        },
-      };
-    }
-
-    value += char;
-    index += 1;
-  }
-
-  return null;
+// Wraps the generic shell tokenizer with coral-specific validation:
+// short-flag clusters that mix value-taking and boolean flags are ambiguous
+// enough to be treated as non-parseable.
+function tokenizeShell(command) {
+  const tokens = parseShellTokens(command);
+  if (tokens === null) return null;
+  if (tokens.some(hasAmbiguousShortCluster)) return null;
+  return tokens;
 }
 
 function hasAmbiguousShortCluster(token) {
@@ -85,124 +84,32 @@ function hasAmbiguousShortCluster(token) {
   return !SHORT_FLAGS_WITH_VALUES.has(firstFlag);
 }
 
-function tokenizeShell(command) {
-  const tokens = [];
-  let index = 0;
+// === 2. Invocation detection ===
 
-  while (index < command.length) {
-    while (index < command.length && /\s/u.test(command[index])) {
-      index += 1;
-    }
-    if (index >= command.length) break;
+function detectCoralInvocation(tokens) {
+  if (tokens.length < 1) return null;
+  const first = tokens[0];
 
-    const start = index;
-    const segments = [];
-    let value = '';
-
-    while (index < command.length && !/\s/u.test(command[index])) {
-      const char = command[index];
-
-      if (char === '\'' || char === '"') {
-        const quoted = readQuotedSegment(command, index);
-        if (quoted === null) return null;
-        segments.push(quoted.segment);
-        value += quoted.segment.value;
-        index = quoted.nextIndex;
-        continue;
-      }
-
-      if (
-        char === '\\'
-        || char === '$'
-        || char === '`'
-        || char === ';'
-        || char === '<'
-        || char === '>'
-        || char === '|'
-        || char === '&'
-      ) {
-        return null;
-      }
-
-      const segmentStart = index;
-      while (index < command.length) {
-        const current = command[index];
-        if (/\s/u.test(current) || current === '\'' || current === '"') break;
-        if (
-          current === '\\'
-          || current === '$'
-          || current === '`'
-          || current === ';'
-          || current === '<'
-          || current === '>'
-          || current === '|'
-          || current === '&'
-        ) {
-          return null;
-        }
-        index += 1;
-      }
-
-      const raw = command.slice(segmentStart, index);
-      segments.push({ kind: 'unquoted', raw, value: raw });
-      value += raw;
-    }
-
-    const token = {
-      start,
-      end: index,
-      raw: command.slice(start, index),
-      value,
-      segments,
-    };
-
-    if (hasAmbiguousShortCluster(token)) return null;
-    tokens.push(token);
+  if (
+    first.value === 'coral-cli'
+    && first.segments.length === 1
+    && first.segments[0].kind === 'unquoted'
+  ) {
+    return { kind: 'bare' };
   }
 
-  return tokens;
-}
-
-function isExactToken(token, value) {
-  return token.segments.length === 1 && token.segments[0].kind === 'unquoted' && token.value === value;
-}
-
-function getInlineValueSegments(token, prefix) {
-  const firstSegment = token.segments[0];
-  if (firstSegment?.kind !== 'unquoted') return null;
-  if (!firstSegment.value.startsWith(prefix)) return null;
-  if (firstSegment.value === prefix && token.segments.length === 1) return null;
-
-  const valueSegments = [];
-  const remainder = firstSegment.value.slice(prefix.length);
-  if (remainder.length > 0) {
-    valueSegments.push({
-      kind: 'unquoted',
-      raw: firstSegment.raw.slice(prefix.length),
-      value: remainder,
-    });
+  if (
+    first.value === 'node'
+    && tokens.length >= 2
+    && tokens[1].value.endsWith(BRIDGE_SUFFIX)
+  ) {
+    return { kind: 'node' };
   }
 
-  valueSegments.push(...token.segments.slice(1));
-  return valueSegments;
+  return null;
 }
 
-function analyzeValueSegments(segments) {
-  if (segments.length === 0) {
-    return { kind: 'unquoted', value: '' };
-  }
-
-  if (segments.length === 1) {
-    const [segment] = segments;
-    return segment.kind === 'unquoted'
-      ? { kind: 'unquoted', value: segment.value }
-      : { kind: 'quoted', value: segment.value };
-  }
-
-  return segments.some((segment) => segment.kind !== 'unquoted')
-    ? { kind: 'complex' }
-    : { kind: 'unquoted', value: segments.map((segment) => segment.value).join('') };
-}
+// === 3. Command-shape helpers ===
 
 function getGlobalOptionWidth(tokens, index) {
   const token = tokens[index];
@@ -219,157 +126,69 @@ function getGlobalOptionWidth(tokens, index) {
   return 0;
 }
 
-function detectCommandShape(tokens) {
-  let index = 2;
-
+function skipGlobalOptions(tokens, startIndex) {
+  let index = startIndex;
   while (index < tokens.length) {
-    const globalOptionWidth = getGlobalOptionWidth(tokens, index);
-    if (globalOptionWidth === null) return null;
-    if (globalOptionWidth > 0) {
-      index += globalOptionWidth;
-      continue;
-    }
+    const width = getGlobalOptionWidth(tokens, index);
+    if (width === null) return null;
+    if (width === 0) return index;
+    index += width;
+  }
+  return index;
+}
 
-    const subcommand = tokens[index].value;
-    if (subcommand.startsWith('-')) return null;
-    if (subcommand === 'workflow') return { kind: 'workflow', startIndex: index + 1 };
-    if (KNOWN_PROVIDER_COMMANDS.has(subcommand) || !RESERVED_TOP_LEVEL_COMMANDS.has(subcommand)) {
-      return { kind: 'provider', startIndex: index + 1 };
-    }
+function detectCommandShape(tokens) {
+  const index = skipGlobalOptions(tokens, 2);
+  if (index === null || index >= tokens.length) return null;
 
-    return null;
+  const subcommand = tokens[index].value;
+  if (subcommand.startsWith('-')) return null;
+  if (subcommand === 'workflow') return { kind: 'workflow', startIndex: index + 1 };
+  if (KNOWN_PROVIDER_COMMANDS.has(subcommand) || !RESERVED_TOP_LEVEL_COMMANDS.has(subcommand)) {
+    return { kind: 'provider', startIndex: index + 1 };
   }
 
   return null;
 }
 
-function detectWaitTimeoutSeconds(command) {
-  const tokens = tokenizeShell(command);
-  if (tokens === null || tokens.length < 3) return null;
+// === 4. Rewriting primitives ===
 
-  let index = 2;
-  while (index < tokens.length) {
-    const width = getGlobalOptionWidth(tokens, index);
-    if (width === null) return null;
-    if (width > 0) { index += width; continue; }
-    break;
-  }
-
-  if (index >= tokens.length || tokens[index].value !== 'wait') return null;
-
-  const DEFAULT_WAIT_TIMEOUT = 600;
-
-  for (let i = index + 1; i < tokens.length; i += 1) {
-    if (isExactToken(tokens[i], '--timeout')) {
-      const next = tokens[i + 1];
-      if (next === undefined) return DEFAULT_WAIT_TIMEOUT;
-      const parsed = parseInt(next.value, 10);
-      return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-    }
-    const inline = getInlineValueSegments(tokens[i], '--timeout=');
-    if (inline !== null) {
-      const analysis = analyzeValueSegments(inline);
-      if (analysis.value !== undefined) {
-        const parsed = parseInt(analysis.value, 10);
-        return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
-      }
-      return DEFAULT_WAIT_TIMEOUT;
-    }
-  }
-
-  return DEFAULT_WAIT_TIMEOUT;
+function replaceBareCoralCli(segText, tokens) {
+  const first = tokens[0];
+  return applyReplacements(segText, [{
+    start: first.start,
+    end: first.end,
+    text: `node ${shellQuote(ACTIVE_BRIDGE)}`,
+  }]);
 }
 
-function resolveExistingPath(candidate, cwd) {
-  return existsSync(resolve(cwd, candidate));
+function rewriteStaleBridge(segText, tokens) {
+  const scriptToken = tokens[1];
+  if (existsSync(scriptToken.value)) return segText;
+  if (!scriptToken.value.startsWith(`${BRIDGE_PREFIX}/`)) return segText;
+  if (!scriptToken.value.endsWith(BRIDGE_SUFFIX)) return segText;
+
+  const versionSeg = scriptToken.value.slice(
+    BRIDGE_PREFIX.length + 1,
+    -BRIDGE_SUFFIX.length,
+  );
+  if (!versionSeg || versionSeg.includes('/')) return segText;
+  if (scriptToken.value === ACTIVE_BRIDGE) return segText;
+
+  return applyReplacements(segText, [{
+    start: scriptToken.start,
+    end: scriptToken.end,
+    text: shellQuote(ACTIVE_BRIDGE),
+  }]);
 }
+
+// === 5. Post-processing ===
 
 function writeInlineTextFile(value) {
   const hash = createHash('sha256').update(value).digest('hex').slice(0, 12);
   const filePath = join(tmpdir(), `coral-input-${hash}.txt`);
   writeFileSync(filePath, value, { encoding: 'utf8', mode: 0o600 });
-  chmodSync(filePath, 0o600);
   return filePath;
-}
-
-function applyReplacements(command, replacements) {
-  if (replacements.length === 0) return command;
-
-  let output = command;
-  for (const replacement of [...replacements].sort((left, right) => right.start - left.start)) {
-    output = `${output.slice(0, replacement.start)}${replacement.text}${output.slice(replacement.end)}`;
-  }
-  return output;
-}
-
-// Shell-grammar characters that cause parse errors when they appear in an unquoted token.
-// Parentheses open subshells and braces start brace-expansion / function blocks — both can
-// abort zsh parsing before the command runs. Glob characters like `*` and `?` are omitted
-// because unmatched globs fall back to literal under default shell options rather than
-// breaking the grammar.
-const UNSAFE_UNQUOTED_METACHARS = /[()[\]{}]/u;
-
-function wrapUnsafeUnquotedTokens(command) {
-  const tokens = tokenizeShell(command);
-  if (tokens === null) return command;
-
-  const replacements = [];
-  for (const token of tokens) {
-    const hasUnsafeUnquotedSegment = token.segments.some(
-      (segment) => segment.kind === 'unquoted' && UNSAFE_UNQUOTED_METACHARS.test(segment.value),
-    );
-    if (!hasUnsafeUnquotedSegment) continue;
-
-    replacements.push({
-      start: token.start,
-      end: token.end,
-      text: shellQuote(token.value),
-    });
-  }
-
-  return applyReplacements(command, replacements);
-}
-
-function analyzeSeparateValue(tokens, index) {
-  const valueToken = tokens[index + 1];
-  if (valueToken === undefined) return null;
-
-  const analysis = analyzeValueSegments(valueToken.segments);
-  return {
-    ...analysis,
-    nextIndex: index + 1,
-    replacement: {
-      start: valueToken.start,
-      end: valueToken.end,
-      prefix: '',
-    },
-  };
-}
-
-function analyzeInlineValue(token, prefix) {
-  const segments = getInlineValueSegments(token, prefix);
-  if (segments === null) return null;
-
-  const analysis = analyzeValueSegments(segments);
-  return {
-    ...analysis,
-    replacement: {
-      start: token.start,
-      end: token.end,
-      prefix,
-    },
-  };
-}
-
-function analyzeFlag(tokens, index, { short, long }) {
-  const token = tokens[index];
-  if (token === undefined) return null;
-
-  if (isExactToken(token, short) || isExactToken(token, long)) {
-    return analyzeSeparateValue(tokens, index);
-  }
-
-  return analyzeInlineValue(token, `${long}=`) ?? analyzeInlineValue(token, short);
 }
 
 function rewriteInlineTextArgs(command, input) {
@@ -403,7 +222,7 @@ function rewriteInlineTextArgs(command, input) {
     if (matched === null) continue;
     if (matched.kind === 'complex') return command;
 
-    if (matched.kind === 'quoted' && !resolveExistingPath(matched.value, cwd)) {
+    if (matched.kind === 'quoted' && !existsSync(resolve(cwd, matched.value))) {
       const tempPath = writeInlineTextFile(matched.value);
       const quotedPath = shellQuote(tempPath);
       replacements.push({
@@ -419,11 +238,119 @@ function rewriteInlineTextArgs(command, input) {
   return applyReplacements(command, replacements);
 }
 
-// Fail-open: any error -> silent exit 0
+function wrapUnsafeUnquotedTokens(command) {
+  const tokens = tokenizeShell(command);
+  if (tokens === null) return command;
+
+  const replacements = [];
+  for (const token of tokens) {
+    const hasUnsafeUnquotedSegment = token.segments.some(
+      (segment) => segment.kind === 'unquoted' && UNSAFE_UNQUOTED_METACHARS.test(segment.value),
+    );
+    if (!hasUnsafeUnquotedSegment) continue;
+
+    replacements.push({
+      start: token.start,
+      end: token.end,
+      text: shellQuote(token.value),
+    });
+  }
+
+  return applyReplacements(command, replacements);
+}
+
+function detectWaitTimeoutSeconds(command) {
+  const tokens = tokenizeShell(command);
+  if (tokens === null || tokens.length < 3) return null;
+
+  const index = skipGlobalOptions(tokens, 2);
+  if (index === null || index >= tokens.length || tokens[index].value !== 'wait') return null;
+
+  const DEFAULT_WAIT_TIMEOUT = 600;
+
+  for (let i = index + 1; i < tokens.length; i += 1) {
+    if (isExactToken(tokens[i], '--timeout')) {
+      const next = tokens[i + 1];
+      if (next === undefined) return DEFAULT_WAIT_TIMEOUT;
+      const parsed = parseInt(next.value, 10);
+      return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+    }
+    const inline = getInlineValueSegments(tokens[i], '--timeout=');
+    if (inline !== null) {
+      const analysis = analyzeValueSegments(inline);
+      if (analysis.value !== undefined) {
+        const parsed = parseInt(analysis.value, 10);
+        return Number.isNaN(parsed) ? DEFAULT_WAIT_TIMEOUT : parsed;
+      }
+      return DEFAULT_WAIT_TIMEOUT;
+    }
+  }
+
+  return DEFAULT_WAIT_TIMEOUT;
+}
+
+// === 6. Top-level orchestration ===
+
+function processSegment(segText, input) {
+  const tokens = tokenizeShell(segText);
+  if (tokens === null) return { text: segText, waitTimeout: null, changed: false };
+
+  const invocation = detectCoralInvocation(tokens);
+  if (invocation === null) return { text: segText, waitTimeout: null, changed: false };
+
+  let current = segText;
+  if (invocation.kind === 'bare') {
+    current = replaceBareCoralCli(current, tokens);
+  } else {
+    current = rewriteStaleBridge(current, tokens);
+  }
+
+  current = rewriteInlineTextArgs(current, input);
+  current = wrapUnsafeUnquotedTokens(current);
+
+  const waitTimeout = detectWaitTimeoutSeconds(current);
+
+  return {
+    text: current,
+    waitTimeout,
+    changed: current !== segText,
+  };
+}
+
+function processCommand(command, input) {
+  const segments = splitTopLevelCommands(command);
+  if (segments === null) return null;
+
+  let result = '';
+  let cursor = 0;
+  let maxWaitTimeout = null;
+  let anyChange = false;
+
+  for (const { start, end } of segments) {
+    if (start > cursor) result += command.slice(cursor, start);
+
+    const segText = command.slice(start, end);
+    const { text, waitTimeout, changed } = processSegment(segText, input);
+    result += text;
+
+    if (waitTimeout !== null) {
+      maxWaitTimeout = maxWaitTimeout === null ? waitTimeout : Math.max(maxWaitTimeout, waitTimeout);
+    }
+    if (changed) anyChange = true;
+
+    cursor = end;
+  }
+
+  if (cursor < command.length) result += command.slice(cursor);
+
+  return { command: result, waitTimeout: maxWaitTimeout, changed: anyChange };
+}
+
+// === 7. Main I/O (fail-open: any error → silent exit 0) ===
+
 try {
   const input = JSON.parse(await readStdin());
 
-  // Only handle Bash PreToolUse
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') {
     process.exit(0);
   }
@@ -431,29 +358,21 @@ try {
   const command = input.tool_input?.command;
   if (typeof command !== 'string') process.exit(0);
 
-  // Match ONLY when the first executable token (after optional leading whitespace)
-  // is the bare, unquoted word "coral-cli" followed by whitespace or end-of-string.
-  // Do NOT match: "coral-cli" (quoted), 'coral-cli' (quoted), env=val coral-cli,
-  // bash -c '...coral-cli...', or coral-cli appearing later in pipeline.
-  const match = command.match(/^(\s*)coral-cli(\s|$)(.*)/s);
-  if (!match) process.exit(0);
+  const result = processCommand(command, input);
+  if (result === null) process.exit(0);
+  if (!result.changed && result.waitTimeout === null) process.exit(0);
 
-  const cliPath = join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs');
-  const rewritten = `${match[1]}node "${cliPath}"${match[2]}${match[3]}`;
-  const commandWithInlineTextResolved = rewriteInlineTextArgs(rewritten, input);
-  const commandSafeForShell = wrapUnsafeUnquotedTokens(commandWithInlineTextResolved);
-
-  const updatedInput = { ...input.tool_input, command: commandSafeForShell };
-
-  const waitTimeoutSeconds = detectWaitTimeoutSeconds(commandSafeForShell);
-  if (waitTimeoutSeconds !== null) {
-    updatedInput.timeout = (waitTimeoutSeconds + 10) * 1000;
+  const updatedInput = { ...input.tool_input, command: result.command };
+  if (result.waitTimeout !== null) {
+    updatedInput.timeout = (result.waitTimeout + 10) * 1000;
     updatedInput.run_in_background = false;
   }
 
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+      permissionDecisionReason: 'coral-cli auto-rewrite',
       updatedInput,
     },
   }) + '\n');
