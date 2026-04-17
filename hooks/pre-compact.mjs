@@ -2,14 +2,12 @@
 
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { JOBS_DIR, projectTmpDir } from './lib/plugin-paths.mjs';
+import { isLivePhase, snapshotFileName } from './lib/jobs-state.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
-
-const JOBS_DIR = join(tmpdir(), 'coral-jobs');
-const LIVE_PHASES = new Set(['queued', 'launching', 'running']);
 
 try {
   const input = JSON.parse(await readStdin());
@@ -27,7 +25,7 @@ try {
     const status = safeReadStatus(entry.name);
     if (!status) continue;
     if (status.projectRoot !== projectRoot) continue;
-    if (!LIVE_PHASES.has(status.phase)) continue;
+    if (!isLivePhase(status.phase)) continue;
     if (typeof status.jobId !== 'string') continue;
     if (typeof status.sessionId !== 'string') continue;
 
@@ -42,14 +40,13 @@ try {
 
   if (jobs.length === 0) process.exit(0);
 
-  const projectSlug = projectRoot.replace(/\//g, '-');
-  const snapshotDir = join(tmpdir(), 'coral', projectSlug);
+  const snapshotDir = projectTmpDir(projectRoot);
   const capturedAtMs = Date.now();
   mkdirSync(snapshotDir, { recursive: true });
 
   const snapshotPath = join(
     snapshotDir,
-    `active-jobs-${capturedAtMs}-${randomBytes(4).toString('hex')}.json`,
+    snapshotFileName(capturedAtMs, randomBytes(4).toString('hex')),
   );
 
   writeFileSync(snapshotPath, JSON.stringify({

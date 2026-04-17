@@ -13,6 +13,8 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isOwnerId, readMemoOwnerFromFrontmatter } from './lib/hook-utils.mjs';
+import { projectTmpDir } from './lib/plugin-paths.mjs';
+import { KB_SKILL_MESSAGE_RE, KB_SKILL_FIELD_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -23,21 +25,19 @@ function trace(msg) {
 }
 
 const FLAG_PREFIX = 'kb-active-';
-const KB_SKILL_RE = /\/(?:coral:)?ralph|\/(?:coral:)?bugfix/;
 
 try {
   const input = JSON.parse(await readStdin());
   const event = input.hook_event_name;
   const sessionId = input.session_id;
   const projectDir = process.env.CLAUDE_PROJECT_DIR || '.';
-  const projectSlug = projectDir.replace(/\//g, '-');
-  const flagDir = join(tmpdir(), 'coral', projectSlug);
+  const flagDir = projectTmpDir(projectDir);
 
   // UserPromptSubmit: user typed /coral:ralph or /coral:bugfix directly
   if (event === 'UserPromptSubmit') {
     if (!sessionId) process.exit(0);
     const msg = input.user_message || input.message || input.prompt || '';
-    if (!KB_SKILL_RE.test(msg)) process.exit(0);
+    if (!KB_SKILL_MESSAGE_RE.test(msg)) process.exit(0);
     mkdirSync(flagDir, { recursive: true });
     writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
     trace(`UserPromptSubmit: flag created session=${sessionId}`);
@@ -48,7 +48,7 @@ try {
   if (event === 'PreToolUse') {
     if (!sessionId) process.exit(0);
     const skill = input.tool_input?.skill || '';
-    if (!/coral:ralph|coral:bugfix/.test(skill)) process.exit(0);
+    if (!KB_SKILL_FIELD_RE.test(skill)) process.exit(0);
     mkdirSync(flagDir, { recursive: true });
     writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
     trace(`PreToolUse: flag created session=${sessionId} skill=${skill}`);

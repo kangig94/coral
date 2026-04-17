@@ -29,14 +29,14 @@ import {
   getInlineValueSegments,
   isExactToken,
 } from './lib/flag-helpers.mjs';
+import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
 // === 1. Entry-point constants ===
 
 const PLUGIN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const BRIDGE_SUFFIX = '/bridge/coral-cli.cjs';
-const ACTIVE_BRIDGE = `${PLUGIN_ROOT}${BRIDGE_SUFFIX}`;
+const ACTIVE_BRIDGE = activeBridgePath(PLUGIN_ROOT);
 const BRIDGE_PREFIX = dirname(PLUGIN_ROOT);
 
 const KNOWN_PROVIDER_COMMANDS = new Set(['codex', 'claude']);

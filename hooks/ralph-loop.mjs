@@ -12,9 +12,11 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import { projectTmpDir } from './lib/plugin-paths.mjs';
+import { RALPH_MESSAGE_RE, RALPH_FIELD_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -34,7 +36,7 @@ try {
   if (event === 'UserPromptSubmit') {
     if (!sessionId) process.exit(0);
     const message = input.user_message || input.message || input.prompt || '';
-    if (!/\/(?:coral:)?ralph\b/.test(message)) process.exit(0);
+    if (!RALPH_MESSAGE_RE.test(message)) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
@@ -48,7 +50,7 @@ try {
   if (event === 'PreToolUse') {
     if (!sessionId) process.exit(0);
     const skill = input.tool_input?.skill || '';
-    if (!/coral:ralph|^ralph$/.test(skill)) process.exit(0);
+    if (!RALPH_FIELD_RE.test(skill)) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
     writeJson({
       hookSpecificOutput: {
@@ -138,8 +140,7 @@ function createStateFile(projectDir, sessionId) {
 }
 
 function getStatePath(projectDir, sessionId) {
-  const projectSlug = projectDir.replace(/\//g, '-');
-  return join(tmpdir(), 'coral', projectSlug, `ralph-state-${sessionId}.json`);
+  return join(projectTmpDir(projectDir), `ralph-state-${sessionId}.json`);
 }
 
 function buildAdditionalContext(statePath) {

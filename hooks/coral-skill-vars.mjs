@@ -2,10 +2,9 @@
 
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir } from './lib/hook-utils.mjs';
+import { CORAL_SKILL_MESSAGE_RE, CORAL_SKILL_FIELD_PREFIX_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
-
-const CORAL_SKILLS = /\/(?:coral:)?(?:plan|preplan|analyze|ralph|bid|discuss|init-project|bugfix|code-simplify)\b/;
 
 try {
   const input = JSON.parse(await readStdin());
@@ -19,10 +18,10 @@ try {
 
   if (event === 'UserPromptSubmit') {
     const message = input.user_message || input.message || input.prompt || '';
-    matched = CORAL_SKILLS.test(message);
+    matched = CORAL_SKILL_MESSAGE_RE.test(message);
   } else if (event === 'PreToolUse') {
     const skill = input.tool_input?.skill || '';
-    matched = /^coral:/.test(skill);
+    matched = CORAL_SKILL_FIELD_PREFIX_RE.test(skill);
   }
 
   if (!matched) process.exit(0);

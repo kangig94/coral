@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot, isOwnerId } from './lib/hook-utils.mjs';
+import { activeBridgeCommand } from './lib/plugin-paths.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -17,7 +18,7 @@ try {
   const sessionId = input.session_id;
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
+  const cliPath = activeBridgeCommand(PLUGIN_ROOT);
 
 
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);

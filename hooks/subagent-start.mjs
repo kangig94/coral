@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveProjectSource, coralProjectDir, resolveKbRoot } from './lib/hook-utils.mjs';
+import { activeBridgeCommand } from './lib/plugin-paths.mjs';
 
 function stripSessionIdOnly(text) {
   return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
@@ -19,7 +20,7 @@ try {
   await readStdin();
   const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || '';
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  const cliPath = `node "${join(PLUGIN_ROOT, 'bridge', 'coral-cli.cjs')}"`;
+  const cliPath = activeBridgeCommand(PLUGIN_ROOT);
 
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
