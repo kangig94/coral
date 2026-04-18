@@ -21,6 +21,7 @@ const SUBSYSTEM_PREFIXES = [
   'cli',
   'infra',
   'shared',
+  'providers/middleware',
   'providers',
   'workflow',
   'kb',
@@ -28,6 +29,15 @@ const SUBSYSTEM_PREFIXES = [
   'coral',
   'hooks',
   'skills',
+  'store',
+  'coordinator',
+  'jobs',
+  'sessions',
+  'transport/ipc',
+  'transport/http',
+  'transport',
+  'simulation',
+  'testing',
 ] as const;
 
 type Subsystem = (typeof SUBSYSTEM_PREFIXES)[number];
