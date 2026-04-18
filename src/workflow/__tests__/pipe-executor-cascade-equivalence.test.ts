@@ -77,7 +77,8 @@ describe('workflow cascade equivalence golden master (AC4)', () => {
     const executionSvc = createExecutionService();
     const prompts: string[] = [];
 
-    executionSvc.coralDispatch.mockImplementation(async (_provider, _name, input) => {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    executionSvc.coralDispatch.mockImplementation(async (_provider: string, _name: string, input: { prompt: string }) => {
       prompts.push(String(input.prompt));
       const jobNumber = prompts.length;
       return running(`job-${jobNumber}`, `session-${jobNumber}`);

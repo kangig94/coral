@@ -1,5 +1,4 @@
 import type { CallerContext } from '../shared/request-context.js';
-import { errorMessage } from '../shared/utils.js';
 import type { WorkflowPlan, PlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,

@@ -9,7 +9,7 @@ import type { Runtime } from '../runtime/ports.js';
 import type { RecoveryCapableService } from '../execution/service.js';
 import type { JobPhase } from './phase.js';
 import type { TerminalOutcome } from './outcome.js';
-import { createRecoveryCoordinator } from './reconcile/coordinator.js';
+import type { createRecoveryCoordinator } from './reconcile/coordinator.js';
 
 export type JobStatusRow = {
   jobId: string;

@@ -3,9 +3,10 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type { CallerContext } from '../shared/request-context.js';
 import type { JobTerminalRecord } from '../shared/types.js';
 import { jobsQueries } from '../jobs/api.js';
+import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
+import type { ProgressStore } from '../execution/progress-store.js';
 import {
-  WorkflowExecutionError,
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
   type LaunchedAtom,
@@ -27,7 +28,7 @@ const STALE_ABORT_TIMEOUT_MS = 30_000;
 const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type JobDetailReader = Pick<
-  import('../execution/progress-store.js').ProgressStore,
+  ProgressStore,
   'listJobIds' | 'readStatus' | 'readLaunchRecord' | 'readTerminalPayload'
 >;
 
@@ -125,8 +126,8 @@ function firstTerminalFailure(
   failedAtom?: string;
   failedJobId?: string;
   failedSlotId?: string;
-  causeRef?: import('../jobs/outcome.js').CauseRef;
-  terminalOutcome?: import('../jobs/outcome.js').TerminalOutcome;
+  causeRef?: CauseRef;
+  terminalOutcome?: TerminalOutcome;
   drainDeadline?: number;
 } | null {
   const targetSlot =

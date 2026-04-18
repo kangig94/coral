@@ -29,7 +29,7 @@ import {
   type WaitRequest,
   type WaitStreamRequest,
 } from '../../shared/types.js';
-import { describeTerminalOutcome, phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
+import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../execution/engine.js';

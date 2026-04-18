@@ -2,7 +2,6 @@ import type { CallerContext } from '../shared/request-context.js';
 import type { WaitCursor, WaitStreamEvent } from '../shared/types.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
-  WorkflowExecutionError,
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
   type LaunchedAtom,

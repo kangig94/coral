@@ -2,11 +2,6 @@ import { z } from 'zod';
 import { JOB_PHASES, isLivePhase, isTerminalPhase, jobPhaseSchema, type JobPhase } from '../jobs/phase.js';
 import { type TerminalOutcome, terminalOutcomeSchema } from '../jobs/outcome.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
-import type {
-  SessionControllerProfile,
-  SessionEntry,
-  SessionState,
-} from '../sessions/entry.js';
 import { type LegacyTerminalOutcome, legacyTerminalOutcomeSchema } from './legacy-terminal-outcome-compat.js';
 
 /**

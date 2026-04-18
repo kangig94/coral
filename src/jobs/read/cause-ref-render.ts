@@ -1,4 +1,4 @@
-import { CoralStore, type CoralEvent } from '../../store/index.js';
+import type { CoralStore, CoralEvent } from '../../store/index.js';
 import { isRecord } from '../../shared/utils.js';
 import { causeRefSchema, describeJobProgressFault, describeLaunchRejected, describeTerminalOutcome, type CauseRef } from '../outcome.js';
 
@@ -111,11 +111,12 @@ function describeEvent(event: CoralEvent): string {
     case 'session:session.provider_failed': {
       if (!isRecord(event.body)) return 'Session provider failed.';
       if (typeof event.body.provider === 'string' && typeof event.body.reason === 'string') {
+        const message = typeof event.body.message === 'string' ? event.body.message : 'unknown';
         if (event.body.reason === 'session_unavailable') {
-          return `${event.body.provider} session unavailable: ${ensureSentence(String(event.body.message ?? 'unknown'))}`;
+          return `${event.body.provider} session unavailable: ${ensureSentence(message)}`;
         }
         if (event.body.reason === 'request_failed') {
-          return `${event.body.provider} turn failed: ${ensureSentence(String(event.body.message ?? 'unknown'))}`;
+          return `${event.body.provider} turn failed: ${ensureSentence(message)}`;
         }
       }
       return 'Session provider failed.';

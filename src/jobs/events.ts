@@ -10,7 +10,6 @@ import {
   abortReasonSchema,
   externalErrorSchema,
   jobLaunchRejectedSchema,
-  jobProgressFaultSchema,
   phaseForOutcome,
   terminalOutcomeSchema,
   type JobLaunchRejected,

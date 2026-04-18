@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -67,6 +67,8 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
     JSON.stringify({ bundleHash: sourceManifest.bundleHash, flavor }) + '\n',
     'utf-8',
   );
+  symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
+  cpSync(join(process.cwd(), 'dist', 'store', 'migrations'), join(root, 'dist', 'store', 'migrations'), { recursive: true });
   return { root, bundleHash: sourceManifest.bundleHash, manifestFlavor: flavor };
 }
 

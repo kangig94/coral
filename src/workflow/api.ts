@@ -4,6 +4,7 @@ import type { WorkflowCommand } from '../shared/schemas.js';
 import type { LaunchDecision } from '../shared/types.js';
 import { isOwnerId } from '../shared/utils.js';
 import { ZodError } from 'zod';
+import type { PipelineAST } from './ast.js';
 import { executePipeline } from './executor.js';
 import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';
 import { parseExpression } from './parser.js';
@@ -27,7 +28,7 @@ export function isWorkflowInputFailure(error: unknown): error is WorkflowInputEr
 
 export type CompiledWorkflow = {
   providerName: string;
-  ast: import('./ast.js').PipelineAST;
+  ast: PipelineAST;
   input: WorkflowCommand;
   workDir?: string;
   owner?: string;
@@ -64,7 +65,7 @@ export const workflowCommands = {
     service: {
       executeWorkflow(
         providerName: string,
-        ast: import('./ast.js').PipelineAST,
+        ast: PipelineAST,
         input: WorkflowCommand,
         ctx: CallerContext,
         workDir?: string,

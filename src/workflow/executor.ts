@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { CallerContext } from '../shared/request-context.js';
 import { errorMessage } from '../shared/utils.js';
+import type { PipelineAST } from './ast.js';
 import {
   formatStepOutput,
   WorkflowExecutionError,
@@ -277,7 +278,7 @@ export async function executePlannedSteps(
 }
 
 export async function executePipeline(
-  ast: import('./ast.js').PipelineAST,
+  ast: PipelineAST,
   initialPrompt: string,
   defaultProviderName: string,
   executionSvc: WorkflowExecutionPort,

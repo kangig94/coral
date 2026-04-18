@@ -1,19 +1,105 @@
 # Test Migration Notes
 
-- `src/execution/__tests__/recovery-core.test.ts` -> `src/jobs/reconcile/__tests__/plan.test.ts`
-- `src/execution/__tests__/abort-registry.test.ts` -> `src/jobs/shell/__tests__/abort-registry.test.ts`
-- `src/execution/__tests__/agent-resolution.test.ts` -> `src/jobs/shell/__tests__/agent-resolution.test.ts`
-- `src/execution/__tests__/session-manager.test.ts` -> split between `src/sessions/shell/__tests__/store.test.ts` and `src/sessions/shell/__tests__/resolve.test.ts`
-- `src/client/__tests__/readers.test.ts` -> kept in place; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`
-- Discuss slice:
-- `src/execution/__tests__/discuss-session-store.test.ts` -> kept with import rewrites onto `src/discuss/shell/session-store.ts`; golden reducer coverage added at `src/discuss/__tests__/session-store-golden.test.ts`
-- `src/execution/__tests__/discuss-manager.test.ts` -> kept with import rewrites onto `src/discuss/shell/{live-registry,runtime-build,operations,registry,subflows}.ts`
-- `src/execution/__tests__/discuss-manager-{bids,speech,epoch,synthesis,faults,lifecycle}.test.ts` -> kept with import rewrites onto `src/discuss/shell/*`
-- `src/execution/__tests__/discuss-tools.test.ts` and `src/execution/__tests__/discuss-prompts.test.ts` -> kept with import rewrites onto `src/discuss/shell/{tools,prompts}.ts`
-- `src/execution/__tests__/discuss-runtime-sealing.test.ts` and `src/execution/__tests__/server-discuss-api.test.ts` -> kept with import rewrites onto `src/discuss/shell/*`
-- Workflow slice:
-- `src/workflow/__tests__/pipe-parser.test.ts` -> kept with import rewrites onto `src/workflow/parser.ts`
-- `src/workflow/__tests__/pipe-executor.test.ts` -> kept with import rewrites onto `src/workflow/{launch,wait,executor,command}.ts`
-- `src/workflow/__tests__/handler.test.ts` -> kept with import rewrites onto `src/workflow/api.ts`
-- `src/workflow/__tests__/integration/pipe-executor-cascade.test.ts` -> kept but now runs through `src/workflow/api.ts` + the decomposed workflow executor
-- New AC4 proof coverage: `src/workflow/__tests__/reducer-equivalence.test.ts`, `src/workflow/__tests__/pipe-executor-cascade-equivalence.test.ts`, and `src/workflow/__tests__/recover-branches.test.ts`
+Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (40 `.test.ts` + 1 helper `simulation-runtime.ts`). Phase 2 moves domain-owned coverage onto the new `src/jobs/`, `src/sessions/`, `src/discuss/`, `src/workflow/` trees while the remaining files stay under `src/execution/__tests__/` as deferred coordinator/transport/simulation/KB residue with explicit later-phase retirement triggers.
+
+## Jobs slice (commit `ae7eeb8a` — `phase-2/jobs`)
+
+- `src/execution/__tests__/abort-registry.test.ts` → **DELETED**; replaced by `src/jobs/shell/__tests__/abort-registry.test.ts`.
+- `src/execution/__tests__/agent-resolution.test.ts` → **DELETED**; replaced by `src/jobs/shell/__tests__/agent-resolution.test.ts`.
+- `src/execution/__tests__/recovery-core.test.ts` → **DELETED**; replaced by `src/jobs/reconcile/__tests__/plan.test.ts`.
+- New AC1/AC8 proof coverage:
+  - `src/jobs/__tests__/reducer-equivalence.test.ts`
+  - `src/jobs/__tests__/outcome-adt.test.ts`
+  - `src/jobs/read/__tests__/cause-ref-render.test.ts`
+
+## Sessions slice (commit `02301ae2` — `phase-2/sessions`)
+
+- `src/execution/__tests__/session-manager.test.ts` → **SPLIT** between `src/sessions/shell/__tests__/store.test.ts` and `src/sessions/shell/__tests__/resolve.test.ts`.
+- `src/client/__tests__/readers.test.ts` → **KEPT** in place; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`.
+- New AC2 proof coverage: `src/sessions/__tests__/reducer-equivalence.test.ts`.
+
+## Discuss slice (commit `e1a53b3c` — `phase-2/discuss`)
+
+- `src/execution/__tests__/discuss-session-store.test.ts` → **KEPT** with import rewrites onto `src/discuss/shell/session-store.ts`; golden reducer coverage added at `src/discuss/__tests__/session-store-golden.test.ts`.
+- `src/execution/__tests__/discuss-manager.test.ts` → **KEPT** with import rewrites onto `src/discuss/shell/{live-registry,runtime-build,operations,registry,subflows}.ts`.
+- `src/execution/__tests__/discuss-manager-{bids,speech,epoch,synthesis,faults,lifecycle}.test.ts` → **KEPT** with import rewrites onto `src/discuss/shell/*`.
+- `src/execution/__tests__/discuss-tools.test.ts` and `src/execution/__tests__/discuss-prompts.test.ts` → **KEPT** with import rewrites onto `src/discuss/shell/{tools,prompts}.ts`.
+- `src/execution/__tests__/discuss-runtime-sealing.test.ts` and `src/execution/__tests__/server-discuss-api.test.ts` → **KEPT** with import rewrites onto `src/discuss/shell/*`.
+- New AC3 proof coverage:
+  - `src/discuss/__tests__/session-store-golden.test.ts` + fixtures (`session-store-golden.json`, `session-store-golden.events.jsonl`).
+  - `src/__tests__/hook-stubs-no-op.test.ts` (AC10).
+
+## Workflow slice (commit `baeeb8cd` — `phase-2/workflow`)
+
+- `src/workflow/__tests__/pipe-parser.test.ts` → **KEPT** with import rewrites onto `src/workflow/parser.ts`.
+- `src/workflow/__tests__/pipe-executor.test.ts` → **KEPT** with import rewrites onto `src/workflow/{launch,wait,executor,command}.ts`.
+- `src/workflow/__tests__/handler.test.ts` → **KEPT** with import rewrites onto `src/workflow/api.ts`.
+- `src/workflow/__tests__/integration/pipe-executor-cascade.test.ts` → **KEPT** but now runs through `src/workflow/api.ts` + the decomposed workflow executor.
+- New AC4 proof coverage:
+  - `src/workflow/__tests__/reducer-equivalence.test.ts`
+  - `src/workflow/__tests__/pipe-executor-cascade-equivalence.test.ts`
+  - `src/workflow/__tests__/recover-branches.test.ts`
+
+## Execution residue (commit `b8852b4b` — `phase-2/execution-composition-only`)
+
+All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFERRED** with explicit later-phase owners. The residue map lives at `src/__tests__/invariants/execution-composition-only.test.ts` + `src/__tests__/__helpers__/execution-residue-ast.ts`; every file below is also pinned there with its allowed imports, forbidden identifiers, and retirement trigger.
+
+### Coordinator handoff (Phase 3, `nextHome = src/coordinator/**`)
+- `backend-isolation.test.ts`
+- `backend-lock.test.ts`
+- `discuss-acyclic.test.ts`
+- `engine.test.ts`
+- `event-bus.test.ts`
+- `host-manager.test.ts`
+- `lifecycle-recovery.test.ts`
+- `recording-observer.test.ts`
+- `recovery-registry.test.ts`
+- `runtime-coral-paths-settlement.test.ts`
+- `runtime.test.ts`
+- `server-discuss-api.test.ts`
+- `server.test.ts`
+- `service.test.ts`
+- `workflow-session-cleanup.test.ts`
+
+### Transport handoff (Phase 4, `nextHome = src/transport/**`)
+- `progress-store.test.ts` — retires with `src/execution/progress-store.ts` once the last transport adapter reads Journal projections directly.
+- `query-coerce.test.ts`
+- `tool-response.test.ts`
+
+### KB handoff (Phase 5)
+- `kb-tools.test.ts` — retires with `src/execution/kb-tools.ts` in Phase 5 KB cleanup.
+
+### Discuss shell coverage kept for parity until coordinator extraction (Phase 3 / Phase 7 simulation)
+- `discuss-manager-bids.test.ts`
+- `discuss-manager-epoch.test.ts`
+- `discuss-manager-faults.test.ts`
+- `discuss-manager-lifecycle.test.ts`
+- `discuss-manager-speech.test.ts`
+- `discuss-manager-synthesis.test.ts`
+- `discuss-manager.test.ts`
+- `discuss-prompts.test.ts`
+- `discuss-runtime-sealing.test.ts`
+- `discuss-session-store.test.ts`
+- `discuss-test-helpers.ts`
+- `discuss-tools.test.ts`
+
+### Simulation handoff (Phase 7, `nextHome = src/simulation/**`)
+- `simulation-adversarial.test.ts`
+- `simulation-recording.test.ts`
+- `simulation-runner.test.ts`
+- `simulation-runtime.test.ts`
+- `simulation-runtime.ts` (helper)
+- `simulation.test.ts`
+
+## New invariants + proofs (Phase 2 totals)
+
+- `src/__tests__/invariants/exec-no-duplication.test.ts` (AC11).
+- `src/__tests__/invariants/execution-composition-only.test.ts` (AC5).
+- `src/__tests__/invariants/legacy-boundary.test.ts` (AC7).
+- `src/__tests__/__helpers__/execution-residue-ast.ts` — AST helper extending `ts-import-scanner.ts` with named-import, facade-member-access, identifier, literal, callee, and object-construction capture.
+
+## Repo-wide grep closures (Phase 2 exit gate)
+
+- `rg "\\bCoralFault\\b" src/ --type ts` → zero.
+- `rg "coral_fault\\s*\\{\\s*fault:" src/ --type ts` → zero.
+- `rg "PersistedStatusRecord|PersistedLaunchRecord|PersistedRuntimeRecord|PersistedExitRecord|PersistedProgressRecord|WorkflowCheckpoint|ProviderResult|ProviderProgressEvent|TerminalResult|SessionContinuityPatch" src/ --type ts` → zero.

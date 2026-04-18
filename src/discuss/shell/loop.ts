@@ -7,7 +7,6 @@ import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './
 import { type DiscussContext, DiscussManagerError } from './context.js';
 import { commitDecision } from './persistence.js';
 import * as discussSubflows from './subflows.js';
-import { collectBids } from './bid-flow.js';
 import { getSession } from './registry.js';
 
 async function waitForObserverBidWindow(
