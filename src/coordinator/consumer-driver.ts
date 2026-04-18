@@ -203,7 +203,7 @@ export class ConsumerDriver {
 
   private scheduleApply(state: ConsumerState, target: number): void {
     if (state.inFlight) {
-      state.pendingTarget = state.pendingTarget == null ? target : Math.max(state.pendingTarget, target);
+      state.pendingTarget = state.pendingTarget === null ? target : Math.max(state.pendingTarget, target);
       return;
     }
 
@@ -216,7 +216,7 @@ export class ConsumerDriver {
         return;
       }
 
-      if (state.pendingTarget != null) {
+      if (state.pendingTarget !== null) {
         const nextTarget = state.pendingTarget;
         state.pendingTarget = null;
         this.scheduleApply(state, nextTarget);

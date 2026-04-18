@@ -97,7 +97,7 @@ describe('events queries', () => {
     expect(page.events.map((event) => event.body)).toEqual(
       appended.map(() => ({ id: 'x', delta: 1 })),
     );
-    expect(page.nextCursor).toBe(appended[appended.length - 1]!.seq);
+    expect(page.nextCursor).toBe(appended[appended.length - 1].seq);
   });
 
   it('returns only events with seq greater than afterSeq', () => {
@@ -136,10 +136,10 @@ describe('events queries', () => {
   });
 
   it('returns afterSeq as nextCursor when the result is empty', () => {
-    const page = getEventsSince(db, appended[appended.length - 1]!.seq);
+    const page = getEventsSince(db, appended[appended.length - 1].seq);
 
     expect(page.events).toEqual([]);
-    expect(page.nextCursor).toBe(appended[appended.length - 1]!.seq);
+    expect(page.nextCursor).toBe(appended[appended.length - 1].seq);
   });
 
   it('returns the last returned seq as nextCursor when non-empty', () => {

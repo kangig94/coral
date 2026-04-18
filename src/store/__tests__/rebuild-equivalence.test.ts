@@ -32,7 +32,7 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
         type: 'test.counter.ticked' as const,
         stream: { kind: 'job' as const, id: `stream-${i % 3}` },
         bodyVersion: 1,
-        body: { id: ids[i % ids.length]!, delta: (i % 7) + 1 },
+        body: { id: ids[i % ids.length], delta: (i % 7) + 1 },
       }));
 
       appendEvents(db, inputs, { now: () => new Date(0), reducers, upcasters });

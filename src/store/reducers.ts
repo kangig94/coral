@@ -1,5 +1,5 @@
 import type BetterSqlite3 from 'better-sqlite3';
-import { z } from 'zod';
+import { type z } from 'zod';
 
 import type { CoralEvent } from './envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';

@@ -2,6 +2,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { createRealRuntime } from '../runtime/real.js';
 import type { StoragePort } from '../runtime/ports.js';
+import { backendLog } from '../shared/backend-log.js';
 
 function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): string {
   const entryPath = process.argv[1];
@@ -28,12 +29,12 @@ function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): st
 export async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
   if (pathIdx === -1 || !argv[pathIdx + 1]) {
-    process.stderr.write('missing --path\n');
+    backendLog.error('smoke open-store: missing --path');
     return 1;
   }
 
   try {
-    const storePath = argv[pathIdx + 1]!;
+    const storePath = argv[pathIdx + 1];
     const { openStoreDatabase } = await import('../store/db.js');
     const { appendEvents } = await import('../store/append.js');
     const { composeReducers } = await import('../store/reducers.js');
@@ -63,13 +64,13 @@ export async function handleSmokeOpenStore(argv: readonly string[]): Promise<num
       );
 
       if (!event) {
-        process.stderr.write('smoke append failed\n');
+        backendLog.error('smoke append failed');
         return 1;
       }
 
       const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq);
       if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
-        process.stderr.write('smoke read-back failed\n');
+        backendLog.error('smoke read-back failed');
         return 1;
       }
 
@@ -80,7 +81,7 @@ export async function handleSmokeOpenStore(argv: readonly string[]): Promise<num
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`smoke open-store failed: ${message}\n`);
+    backendLog.error('smoke open-store failed', message);
     return 1;
   }
 }

@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '../../coordinator/consumer-driver.js';
@@ -52,7 +52,7 @@ function openMemoryDatabase(storage: MigrationStorage, migrationsDir: string): D
     path: ':memory:',
     storage: storage as StoragePort,
     migrationsDir,
-  }) as Database.Database;
+  });
 }
 
 function seedMigrations(storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>): void {
@@ -108,13 +108,13 @@ function registerConsumer(driver: ConsumerDriver): void {
 function buildPlannedEvent(runtime: SimulationRuntime, index: number, streamIds: readonly string[], counterIds: readonly string[]): PlannedEvent {
   return {
     type: 'test.counter.ticked',
-    stream: { kind: 'job', id: streamIds[index % streamIds.length] ?? streamIds[0]! },
+    stream: { kind: 'job', id: streamIds[index % streamIds.length] ?? streamIds[0] },
     namespace: 'simulation',
     project: 'rewrite',
     correlationId: runtime.ids.sha256(`correlation-${index % 2}`),
     bodyVersion: 1,
     body: {
-      id: counterIds[index % counterIds.length] ?? counterIds[0]!,
+      id: counterIds[index % counterIds.length] ?? counterIds[0],
       delta: (runtime.ids.randomBytes(1)[0] % 7) + 1,
     },
     ts: new Date(runtime.time.now()).toISOString(),

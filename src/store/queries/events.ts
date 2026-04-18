@@ -81,6 +81,6 @@ export function getEventsSince(
     .all(...params) as Parameters<typeof decodeRow>[0][];
 
   const events = rows.map(decodeRow);
-  const nextCursor = events.length > 0 ? events[events.length - 1]!.seq : afterSeq;
+  const nextCursor = events.length > 0 ? events[events.length - 1].seq : afterSeq;
   return { events, nextCursor };
 }

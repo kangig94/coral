@@ -78,7 +78,7 @@ export function rebuildProjections(opts: RebuildOptions): void {
         );
       }
 
-      afterSeq = rows[rows.length - 1]!.seq;
+      afterSeq = rows[rows.length - 1].seq;
     }
   });
 
