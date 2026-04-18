@@ -704,13 +704,13 @@ describe('cli format', () => {
       );
     });
 
-    it('formats coral_fault headers with the [kind] tag', () => {
+    it('formats job_fault headers with the [kind] tag', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
           content: '',
           outcome: {
-            kind: 'coral_fault' as const,
+            kind: 'job_fault' as const,
             fault: {
               kind: 'wrapper_crashed' as const,
               cause: { message: 'provider timed out' },
@@ -720,7 +720,7 @@ describe('cli format', () => {
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 coral errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n'
+        'Job job-1 errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n'
           + 'Result path: /tmp/result.md\n'
           + 'Remaining jobs: job-2',
       );
@@ -749,17 +749,19 @@ describe('cli format', () => {
       );
     });
 
-    it('includes provider name literals for representative provider-scoped coral faults', () => {
+    it('includes provider name literals when cause refs are rendered', () => {
       const providerSessionUnavailable = {
         ...waitTerminalEvent,
         result: {
           content: '',
           outcome: {
-            kind: 'coral_fault' as const,
-            fault: {
-              kind: 'provider_session_unavailable' as const,
-              provider: 'codex' as const,
-              note: 'thread missing',
+            kind: 'failed' as const,
+            causeRef: {
+              stream: {
+                kind: 'session' as const,
+                id: 'session-1',
+              },
+              seq: 4,
             },
           },
         },
@@ -769,24 +771,31 @@ describe('cli format', () => {
         result: {
           content: '',
           outcome: {
-            kind: 'coral_fault' as const,
-            fault: {
-              kind: 'adapter_output_unparseable' as const,
-              provider: 'claude' as const,
-              exitCode: 7,
-              stdout: 'oops',
-              stderr: 'stderr',
-              parseError: 'bad json',
+            kind: 'failed' as const,
+            causeRef: {
+              stream: {
+                kind: 'session' as const,
+                id: 'session-2',
+              },
+              seq: 7,
             },
           },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
-      expect(formatWaitTerminal(providerSessionUnavailable, null, false)).toContain(
-        'Job job-1 coral errored: Codex session unavailable: thread missing. [provider_session_unavailable]',
+      expect(
+        formatWaitTerminal(providerSessionUnavailable, null, false, {
+          describeCauseRef: () => 'Codex session unavailable: thread missing.',
+        }),
+      ).toContain(
+        'Job job-1 failed: Failed: Codex session unavailable: thread missing.',
       );
-      expect(formatWaitTerminal(adapterOutputUnparseable, null, false)).toContain(
-        'Job job-1 coral errored: Claude produced unparseable output (exit 7): bad json. [adapter_output_unparseable]',
+      expect(
+        formatWaitTerminal(adapterOutputUnparseable, null, false, {
+          describeCauseRef: () => 'Claude produced unparseable output: bad json.',
+        }),
+      ).toContain(
+        'Job job-1 failed: Failed: Claude produced unparseable output: bad json.',
       );
     });
 

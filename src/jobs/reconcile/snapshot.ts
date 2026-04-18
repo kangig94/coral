@@ -9,9 +9,9 @@ import {
   type SessionEntry,
   type TerminalResult,
 } from '../../shared/types.js';
-import type { ProgressStore } from '../progress-store.js';
-import { listSessionShards, SessionManager } from '../session-manager.js';
-import type { JobStoreSnapshot } from '../recovery-core.js';
+import type { ProgressStore } from '../../execution/progress-store.js';
+import { listSessionShards, SessionManager } from '../../execution/session-manager.js';
+import type { JobStoreSnapshot } from './plan.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { readSessionRefs, withBackendNamespace } from './job-helpers.js';
 

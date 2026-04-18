@@ -13,7 +13,7 @@ import {
   resolveAgent,
   stripAgentMetadata,
 } from '../agent-resolution.js';
-import { createRealRuntime } from '../../runtime/real.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 
 const runtime = createRealRuntime();
 

@@ -101,7 +101,7 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
           warnings: config.result.warnings ? [...config.result.warnings] : undefined,
           usage: config.result.usage ? { ...config.result.usage } : undefined,
           outcome:
-            config.result.outcome.kind === 'coral_fault'
+            config.result.outcome.kind === 'legacy_fault'
               ? {
                   ...config.result.outcome,
                   fault: { ...config.result.outcome.fault },

@@ -10,7 +10,7 @@ import {
   stageVerifiedStatusSnapshot,
   tryAcquireAdoptionClaim,
   unlinkIfPresent,
-} from './cross-namespace-claim-protocol.js';
+} from './claim-protocol.js';
 
 const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
 

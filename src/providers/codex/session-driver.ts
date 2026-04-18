@@ -571,7 +571,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
         outcome: {
-          kind: 'coral_fault',
+          kind: 'legacy_fault',
           fault: {
             kind: 'provider_session_unavailable',
             provider: 'codex',
@@ -602,7 +602,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         model: state.model,
         durationMs: Date.now() - state.startedAt,
         outcome: {
-          kind: 'coral_fault',
+          kind: 'legacy_fault',
           fault: {
             kind: 'provider_request_failed',
             provider: 'codex',
@@ -629,7 +629,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
         ? { kind: 'aborted', reason: 'signal_abort' }
         : turnFailed
           ? {
-              kind: 'coral_fault',
+              kind: 'legacy_fault',
               fault: {
                 kind: 'provider_request_failed',
                 provider: 'codex',

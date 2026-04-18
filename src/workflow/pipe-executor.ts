@@ -2,7 +2,7 @@ import type { WorkflowCheckpointWriter } from '../shared/execution-contracts.js'
 import type { CallerContext } from '../shared/request-context.js';
 import type { TerminalResult, WaitCursor, WaitStreamEvent, WorkflowCheckpoint } from '../shared/types.js';
 import type { PipeAtom, PipelineAST, WorkflowExecutionPort, WorkflowSessionHandle } from './types.js';
-import { describeCoralFault, phaseForOutcome } from '../shared/coral-fault.js';
+import { describeTerminalOutcome, phaseForOutcome, type CauseRef, type TerminalOutcome } from '../jobs/outcome.js';
 import { truncate } from '../shared/format-progress.js';
 import { assertNever, errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -65,6 +65,9 @@ type WaitFailure = {
   message: string;
   failedStep?: number;
   failedAtom?: string;
+  failedJobId?: string;
+  causeRef?: CauseRef;
+  terminalOutcome?: TerminalOutcome;
 };
 
 export class WorkflowExecutionError extends Error {
@@ -72,6 +75,9 @@ export class WorkflowExecutionError extends Error {
   readonly stepDetails: StepDetail[];
   readonly failedStep?: number;
   readonly failedAtom?: string;
+  readonly failedJobId?: string;
+  readonly causeRef?: CauseRef;
+  readonly terminalOutcome?: TerminalOutcome;
 
   constructor(
     message: string,
@@ -80,6 +86,9 @@ export class WorkflowExecutionError extends Error {
       stepDetails: StepDetail[];
       failedStep?: number;
       failedAtom?: string;
+      failedJobId?: string;
+      causeRef?: CauseRef;
+      terminalOutcome?: TerminalOutcome;
     },
   ) {
     super(message);
@@ -88,6 +97,9 @@ export class WorkflowExecutionError extends Error {
     this.stepDetails = [...options.stepDetails];
     this.failedStep = options.failedStep;
     this.failedAtom = options.failedAtom;
+    this.failedJobId = options.failedJobId;
+    this.causeRef = options.causeRef;
+    this.terminalOutcome = options.terminalOutcome;
   }
 }
 
@@ -236,10 +248,10 @@ function formatAtomProgress(atom: LaunchedAtom, message: string): string {
 
 function describeTerminalFailure(result: TerminalResult): string {
   switch (result.outcome.kind) {
-    case 'coral_fault':
-      return describeCoralFault(result.outcome.fault);
+    case 'failed':
+    case 'job_fault':
     case 'aborted':
-      return result.outcome.reason;
+      return describeTerminalOutcome(result.outcome);
     case 'completed':
     case 'provider_exit': {
       const content = result.content.trim();
@@ -278,7 +290,13 @@ function createWorkflowExecutionError(
   message: string,
   aborted: boolean,
   stepDetails: StepDetail[],
-  metadata?: { failedStep: number; failedAtom: string },
+  metadata?: {
+    failedStep?: number;
+    failedAtom?: string;
+    failedJobId?: string;
+    causeRef?: CauseRef;
+    terminalOutcome?: TerminalOutcome;
+  },
 ): WorkflowExecutionError {
   return new WorkflowExecutionError(message, { aborted, stepDetails, ...metadata });
 }
@@ -507,13 +525,38 @@ function enterFailureDrain(
   executionSvc.abort([...state.pending.keys()]);
 }
 
-function failureMetadata(metadata: { failedStep?: number; failedAtom?: string }): { failedStep: number; failedAtom: string } | undefined {
-  return metadata.failedStep !== undefined && metadata.failedAtom !== undefined
-    ? {
-        failedStep: metadata.failedStep,
-        failedAtom: metadata.failedAtom,
-      }
-    : undefined;
+function failureMetadata(
+  metadata: {
+    failedStep?: number;
+    failedAtom?: string;
+    failedJobId?: string;
+    causeRef?: CauseRef;
+    terminalOutcome?: TerminalOutcome;
+  },
+): {
+  failedStep?: number;
+  failedAtom?: string;
+  failedJobId?: string;
+  causeRef?: CauseRef;
+  terminalOutcome?: TerminalOutcome;
+} | undefined {
+  if (
+    metadata.failedStep === undefined
+    && metadata.failedAtom === undefined
+    && metadata.failedJobId === undefined
+    && metadata.causeRef === undefined
+    && metadata.terminalOutcome === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(metadata.failedStep !== undefined ? { failedStep: metadata.failedStep } : {}),
+    ...(metadata.failedAtom !== undefined ? { failedAtom: metadata.failedAtom } : {}),
+    ...(metadata.failedJobId !== undefined ? { failedJobId: metadata.failedJobId } : {}),
+    ...(metadata.causeRef !== undefined ? { causeRef: metadata.causeRef } : {}),
+    ...(metadata.terminalOutcome !== undefined ? { terminalOutcome: metadata.terminalOutcome } : {}),
+  };
 }
 
 async function recoverStaleAtom(
@@ -662,6 +705,9 @@ function handleWaitEvent(
           aborted: event.result.outcome.kind === 'aborted',
           message: `Step ${atom.stepIndex}, atom '${atom.agent}' failed: ${describeTerminalFailure(event.result)}`,
           ...failureMetadataForAtom(atom),
+          failedJobId: event.jobId,
+          causeRef: event.result.outcome.kind === 'failed' ? event.result.outcome.causeRef : undefined,
+          terminalOutcome: event.result.outcome,
         });
         return 'handled';
       }

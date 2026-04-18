@@ -104,7 +104,7 @@ function parseError(error: unknown, fallbackModel: string): ProviderResult | nul
       model: fallbackModel,
       exitCode: error.failure.exitCode ?? null,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'adapter_output_unparseable',
           provider: 'claude',
@@ -170,7 +170,7 @@ function buildNewSessionRequiredResult(request: ProviderRequest, reason: string)
     model: resolveClaudeModel(request.model, request.coralEnv),
     nonResumable: true,
     outcome: {
-      kind: 'coral_fault',
+      kind: 'legacy_fault',
       fault: {
         kind: 'provider_session_unavailable',
         provider: 'claude',

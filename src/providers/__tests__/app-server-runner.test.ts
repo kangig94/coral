@@ -189,7 +189,7 @@ function createDriver(options: {
             content: '',
             nonResumable: true,
             outcome: {
-              kind: 'coral_fault',
+              kind: 'legacy_fault',
               fault: {
                 kind: 'provider_session_unavailable',
                 provider: 'claude',
@@ -202,7 +202,7 @@ function createDriver(options: {
           content: '',
           exitCode: 1,
           outcome: {
-            kind: 'coral_fault',
+            kind: 'legacy_fault',
             fault: {
               kind: 'provider_request_failed',
               provider: 'claude',
@@ -272,7 +272,7 @@ describe('runAppServerTurn', () => {
     expect(result).toMatchObject({
       nonResumable: true,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_session_unavailable',
           provider: 'claude',
@@ -390,7 +390,7 @@ describe('runAppServerTurn', () => {
     await expect(execution).resolves.toMatchObject({
       exitCode: 1,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_request_failed',
           provider: 'claude',
@@ -437,7 +437,7 @@ describe('runAppServerTurn', () => {
           outcome:
             outcome.kind === 'failed'
               ? {
-                  kind: 'coral_fault',
+                  kind: 'legacy_fault',
                   fault: {
                     kind: 'provider_request_failed',
                     provider: 'claude',
@@ -459,7 +459,7 @@ describe('runAppServerTurn', () => {
       content: 'closed-state',
       exitCode: 1,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_request_failed',
           provider: 'claude',
@@ -483,7 +483,7 @@ describe('runAppServerTurn', () => {
     expect(result).toMatchObject({
       exitCode: 1,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_request_failed',
           provider: 'claude',
@@ -524,7 +524,7 @@ describe('runAppServerTurn', () => {
     await expect(runAppServerTurn(driver, makeRequest(), makeRuntime(lease))).resolves.toMatchObject({
       nonResumable: true,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_session_unavailable',
           provider: 'claude',

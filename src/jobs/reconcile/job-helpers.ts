@@ -1,9 +1,10 @@
 import { join } from 'node:path';
-import { describeCoralFault, type CoralFault } from '../../shared/coral-fault.js';
+import { describeLegacyCoralFault, type LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type PersistedStatusRecord, type TerminalResult } from '../../shared/types.js';
-import type { ProgressStore } from '../progress-store.js';
+import type { ProgressStore } from '../../execution/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 
 export function withBackendNamespace(status: PersistedStatusRecord, namespace: string): PersistedStatusRecord {
   return {
@@ -64,14 +65,18 @@ export function readSessionRefs(
 export function markJobAsError(
   progressStore: ProgressStore,
   status: PersistedStatusRecord,
-  fault: CoralFault,
+  fault: LegacyCoralFault,
   log: (message: string) => void,
 ): void {
-  const message = describeCoralFault(fault);
+  const outcome = materializeLegacyTerminalOutcome(
+    planLegacyTerminalOutcome({ kind: 'legacy_fault', fault }, { jobId: status.jobId, sessionId: status.sessionId }),
+    [{ seq: 1, stream: { kind: 'job', id: status.jobId } }],
+  );
+  const message = describeLegacyCoralFault(fault);
   const terminalResult: TerminalResult =
     status.jobKind === 'workflow'
-      ? { content: '', workflow: { steps: [] }, outcome: { kind: 'coral_fault', fault } }
-      : { content: '', outcome: { kind: 'coral_fault', fault } };
+      ? { content: '', workflow: { steps: [] }, outcome }
+      : { content: '', outcome };
   progressStore.updateLaunchState(status.jobId, 'error', message);
   if (status.jobKind === 'workflow') {
     try {

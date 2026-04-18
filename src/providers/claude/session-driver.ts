@@ -333,7 +333,7 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
         durationMs: turn.durationMs,
         outcome: turn.isError
           ? {
-              kind: 'coral_fault',
+              kind: 'legacy_fault',
               fault: {
                 kind: 'provider_request_failed',
                 provider: 'claude',
@@ -363,7 +363,7 @@ export const claudeSessionDriver: AppServerSessionDriver<ClaudeTurnState> = {
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
         outcome: {
-          kind: 'coral_fault',
+          kind: 'legacy_fault',
           fault: {
             kind: 'provider_session_unavailable',
             provider: 'claude',

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseAgentRef, resolveAgent } from '../../../execution/agent-resolution.js';
+import { parseAgentRef, resolveAgent } from '../../../jobs/shell/agent-resolution.js';
 import { LaunchCoordinator } from '../../../execution/engine.js';
 import { TypedEventBus } from '../../../execution/event-bus.js';
 import { createProviderHostManager } from '../../../execution/host-manager.js';

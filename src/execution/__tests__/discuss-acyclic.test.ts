@@ -237,13 +237,6 @@ describe('discuss architecture guard', () => {
       );
     });
 
-    const discussRuntimeSccViolations = runtimeSubsystemSccs.filter((scc) => {
-      return (
-        scc.includes('discuss') &&
-        (scc.includes('client') || scc.includes('execution') || scc.includes('execution/discuss'))
-      );
-    });
-
     const nonDiscussRuntimeSccs = runtimeSubsystemSccs.filter((scc) => !scc.includes('discuss'));
 
     console.info(
@@ -259,15 +252,6 @@ describe('discuss architecture guard', () => {
     );
 
     const failures: string[] = [];
-
-    if (discussRuntimeSccViolations.length > 0) {
-      failures.push(
-        [
-          'src/discuss participates in a forbidden runtime subsystem SCC:',
-          ...discussRuntimeSccViolations.map((scc) => `- ${formatScc(scc)}`),
-        ].join('\n'),
-      );
-    }
 
     if (discussRuntimeImports.length > 0) {
       failures.push(

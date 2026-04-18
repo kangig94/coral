@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { type TerminalOutcome, terminalOutcomeSchema } from './coral-fault.js';
+import { JOB_PHASES, isLivePhase, isTerminalPhase, jobPhaseSchema, type JobPhase } from '../jobs/phase.js';
+import { type TerminalOutcome, terminalOutcomeSchema } from '../jobs/outcome.js';
+import { type LegacyTerminalOutcome, legacyTerminalOutcomeSchema } from './legacy-terminal-outcome-compat.js';
 
 /**
  * Shared type definitions for the Coral plugin.
@@ -22,20 +24,8 @@ export type SessionId = string;
 /** Readiness state of a session entry. */
 export type SessionState = 'pending' | 'ready' | 'non_resumable';
 
-/** Lifecycle phase of a single job. */
-export const JOB_PHASES = ['queued', 'launching', 'running', 'completed', 'error', 'aborted'] as const;
-export const jobPhaseSchema = z.enum(JOB_PHASES);
-export type JobPhase = (typeof JOB_PHASES)[number];
-
-export function isLivePhase(phase: JobPhase | string): phase is Extract<JobPhase, 'queued' | 'launching' | 'running'> {
-  return phase === 'queued' || phase === 'launching' || phase === 'running';
-}
-
-export function isTerminalPhase(
-  phase: JobPhase | string,
-): phase is Extract<JobPhase, 'completed' | 'error' | 'aborted'> {
-  return phase === 'completed' || phase === 'error' || phase === 'aborted';
-}
+export { JOB_PHASES, jobPhaseSchema, isLivePhase, isTerminalPhase };
+export type { JobPhase };
 
 export function readBackendNamespace(status: PersistedStatusRecord): string | null {
   return typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
@@ -146,7 +136,7 @@ export interface ProviderResult {
   exitCode?: number | null;
   warnings?: string[];
   usage?: UsageSummary;
-  outcome: TerminalOutcome;
+  outcome: LegacyTerminalOutcome;
 }
 
 /**
@@ -212,7 +202,7 @@ export const providerResultSchema = z
     exitCode: z.number().nullable().optional(),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
-    outcome: terminalOutcomeSchema,
+    outcome: legacyTerminalOutcomeSchema,
   })
   .strict();
 

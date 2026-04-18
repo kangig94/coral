@@ -41,12 +41,17 @@ import {
   type StepDetail,
   WorkflowExecutionError,
 } from '../workflow/pipe-executor.js';
-import { describeCoralFault, type AbortReason, type CoralFault } from '../shared/coral-fault.js';
-import { AbortRegistry } from './abort-controller-registry.js';
+import {
+  describeLegacyCoralFault,
+  type LegacyCoralFault,
+} from '../shared/legacy-terminal-outcome-compat.js';
+import { type AbortReason, type TerminalOutcome } from '../jobs/outcome.js';
+import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../jobs/shell/legacy-ingest.js';
+import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import type { LaunchCoordinator, LaunchPool } from './engine.js';
 import type { TypedEventBus } from './event-bus.js';
 import { type ProviderHostManager, type ProviderServerAttachment } from './host-manager.js';
-import { buildCoralInstruction } from './instruction.js';
+import { buildCoralInstruction } from '../jobs/shell/instruction.js';
 import { LaunchOrchestrator, WaitCoordinator } from './job-lifecycle.js';
 import {
   SessionClaimError,
@@ -66,7 +71,7 @@ import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
   type AgentResolutionContext,
-} from './agent-resolution.js';
+} from '../jobs/shell/agent-resolution.js';
 import { SessionManager, getSessionById, type SessionAllocateOptions } from './session-manager.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -192,10 +197,10 @@ function buildEffectiveCoralEnv(
 }
 
 function buildInterruptedAppServerReport(
-  fault: Extract<CoralFault, { kind: 'app_server_interrupted' }>,
+  fault: Extract<LegacyCoralFault, { kind: 'app_server_interrupted' }>,
   conversationRef?: string,
 ): string {
-  const lines = [describeCoralFault(fault), ''];
+  const lines = [describeLegacyCoralFault(fault), ''];
 
   if (fault.continuity === 'verified') {
     lines.push('Session is resumable. Use resume to continue.');
@@ -221,6 +226,21 @@ function buildInterruptedAppServerReport(
       : 'Session was interrupted before completion. The existing conversation reference was preserved.',
   );
   return lines.join('\n');
+}
+
+function normalizeLegacyFaultOutcome(jobId: string, sessionId: string, fault: LegacyCoralFault): TerminalOutcome {
+  const plan = planLegacyTerminalOutcome({ kind: 'legacy_fault', fault }, { jobId, sessionId });
+  if (plan.immediateOutcome !== null) {
+    return plan.immediateOutcome;
+  }
+
+  return materializeLegacyTerminalOutcome(
+    plan,
+    plan.domainEvents.map((event, index) => ({
+      seq: index + 1,
+      stream: event.stream,
+    })),
+  );
 }
 
 export type ExecutionServiceDeps = {
@@ -600,7 +620,7 @@ export class ExecutionService implements RecoveryCapableService {
       mutation = { type: 'clear_non_resumable' };
     }
 
-    const fault: Extract<CoralFault, { kind: 'app_server_interrupted' }> = {
+    const fault: Extract<LegacyCoralFault, { kind: 'app_server_interrupted' }> = {
       kind: 'app_server_interrupted',
       trigger: options.reason,
       continuity:
@@ -621,14 +641,15 @@ export class ExecutionService implements RecoveryCapableService {
     }
 
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
+    const outcome = normalizeLegacyFaultOutcome(launchRecord.jobId, launchRecord.sessionId, fault);
 
-    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeCoralFault(fault));
+    this.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeLegacyCoralFault(fault));
     this.writeTerminalResult(
       launchRecord.jobId,
       launchRecord.sessionId,
       {
         content: interruptedReport,
-        outcome: { kind: 'coral_fault', fault },
+        outcome,
         ...(probeOutcome === 'missing' || probeOutcome === 'unavailable' ? { nonResumable: true } : {}),
       },
       'error',
@@ -1570,27 +1591,23 @@ export class ExecutionService implements RecoveryCapableService {
     const workflowError = err instanceof WorkflowExecutionError ? err : null;
     const aborted = workflowError ? workflowError.aborted : signal.aborted;
     const stepDetails = err instanceof WorkflowExecutionError ? err.stepDetails : [];
-    const fault: CoralFault = aborted
-      ? { kind: 'workflow_aborted' }
-      : {
-          kind: 'workflow_atom_failed',
-          step: workflowError?.failedStep,
-          atom: workflowError?.failedAtom,
-          cause: { message },
-        };
+    const outcome: TerminalOutcome = workflowError?.terminalOutcome
+      ?? (aborted
+        ? { kind: 'aborted', reason: 'signal_abort' }
+        : { kind: 'job_fault', fault: { kind: 'wrapper_crashed', cause: { message } } });
 
     try {
       const serialized = serializeWorkflowResult(stepDetails);
       const terminalResult: TerminalResult = {
         content: '',
-        outcome: { kind: 'coral_fault', fault },
+        outcome,
         workflow: serialized.workflow,
       };
       this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
     } catch {
       const emptyResult: TerminalResult = {
         content: '',
-        outcome: { kind: 'coral_fault', fault },
+        outcome,
         workflow: { steps: [] },
       };
       this.finishWorkflowJob(sessionId, jobId, 'error', emptyResult, '');

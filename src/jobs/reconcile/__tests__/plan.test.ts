@@ -6,9 +6,9 @@ import type {
   PersistedStatusRecord,
   SessionEntry,
   TerminalResult,
-} from '../../shared/types.js'
-import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../recovery-core.js'
-import { planRecovery } from '../recovery-core.js'
+} from '../../../shared/types.js'
+import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../plan.js'
+import { planRecovery } from '../plan.js'
 
 const NOW = '2026-04-12T00:00:00.000Z'
 const CURRENT_NAMESPACE = 'namespace-current'

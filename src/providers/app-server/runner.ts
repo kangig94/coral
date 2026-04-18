@@ -66,7 +66,7 @@ export async function runAppServerTurn<TState>(
       return {
         ...base,
         outcome: {
-          kind: 'coral_fault',
+          kind: 'legacy_fault',
           fault: {
             kind: 'provider_request_failed',
             provider: driver.faultProviderName,

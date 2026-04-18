@@ -1,27 +1,28 @@
 import { z } from 'zod';
+
 import { assertNever } from './utils.js';
 
-export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
-export type ProviderName = 'claude' | 'codex';
-type AppServerTrigger = 'restart' | 'handoff';
-type AppServerContinuity =
+export type LegacyAbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
+export type LegacyProviderName = 'claude' | 'codex';
+type LegacyAppServerTrigger = 'restart' | 'handoff';
+type LegacyAppServerContinuity =
   | 'verified'
   | 'missing'
   | 'unavailable'
   | 'pre_checkpoint_empty'
   | 'pre_checkpoint_preserved';
 
-export interface ExternalError {
+export interface LegacyExternalError {
   message: string;
   stack?: string;
 }
 
-export type CoralFault =
+export type LegacyCoralFault =
   | { kind: 'stale_status_schema' }
   | { kind: 'ghost_launch' }
   | { kind: 'wrapper_lost' }
-  | { kind: 'wrapper_crashed'; cause: ExternalError }
-  | { kind: 'recovery_parse_failed'; cause: ExternalError }
+  | { kind: 'wrapper_crashed'; cause: LegacyExternalError }
+  | { kind: 'recovery_parse_failed'; cause: LegacyExternalError }
   | {
       kind: 'launch_rejected';
       reason: 'busy';
@@ -32,19 +33,19 @@ export type CoralFault =
     }
   | {
       kind: 'app_server_interrupted';
-      trigger: AppServerTrigger;
-      continuity: AppServerContinuity;
+      trigger: LegacyAppServerTrigger;
+      continuity: LegacyAppServerContinuity;
     }
   | {
       kind: 'workflow_atom_failed';
       step?: number;
       atom?: string;
-      cause: ExternalError;
+      cause: LegacyExternalError;
     }
   | { kind: 'workflow_aborted' }
   | {
       kind: 'adapter_output_unparseable';
-      provider: ProviderName;
+      provider: LegacyProviderName;
       exitCode: number | null;
       stdout: string;
       stderr: string;
@@ -52,36 +53,38 @@ export type CoralFault =
     }
   | {
       kind: 'provider_session_unavailable';
-      provider: ProviderName;
+      provider: LegacyProviderName;
       note: string;
     }
   | {
       kind: 'provider_request_failed';
-      provider: ProviderName;
+      provider: LegacyProviderName;
       message: string;
     };
 
-export type TerminalOutcome =
+// Retires in Phase 6 when providers emit domain events directly.
+export type LegacyTerminalOutcome =
   | { kind: 'completed' }
-  | { kind: 'aborted'; reason: AbortReason }
+  | { kind: 'aborted'; reason: LegacyAbortReason }
   | { kind: 'provider_exit'; code: number; note?: string }
-  | { kind: 'coral_fault'; fault: CoralFault };
+  | { kind: 'legacy_fault'; fault: LegacyCoralFault };
 
-const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
+export const legacyAbortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
+export const legacyProviderNameSchema = z.enum(['claude', 'codex']);
 
-export const externalErrorSchema = z
+export const legacyExternalErrorSchema = z
   .object({
     message: z.string(),
     stack: z.string().optional(),
   })
   .strict();
 
-export const coralFaultSchema = z.discriminatedUnion('kind', [
+export const legacyCoralFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('stale_status_schema') }).strict(),
   z.object({ kind: z.literal('ghost_launch') }).strict(),
   z.object({ kind: z.literal('wrapper_lost') }).strict(),
-  z.object({ kind: z.literal('wrapper_crashed'), cause: externalErrorSchema }).strict(),
-  z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
+  z.object({ kind: z.literal('wrapper_crashed'), cause: legacyExternalErrorSchema }).strict(),
+  z.object({ kind: z.literal('recovery_parse_failed'), cause: legacyExternalErrorSchema }).strict(),
   z
     .object({
       kind: z.literal('launch_rejected'),
@@ -110,14 +113,14 @@ export const coralFaultSchema = z.discriminatedUnion('kind', [
       kind: z.literal('workflow_atom_failed'),
       step: z.number().optional(),
       atom: z.string().optional(),
-      cause: externalErrorSchema,
+      cause: legacyExternalErrorSchema,
     })
     .strict(),
   z.object({ kind: z.literal('workflow_aborted') }).strict(),
   z
     .object({
       kind: z.literal('adapter_output_unparseable'),
-      provider: z.enum(['claude', 'codex']),
+      provider: legacyProviderNameSchema,
       exitCode: z.number().nullable(),
       stdout: z.string(),
       stderr: z.string(),
@@ -127,34 +130,34 @@ export const coralFaultSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('provider_session_unavailable'),
-      provider: z.enum(['claude', 'codex']),
+      provider: legacyProviderNameSchema,
       note: z.string(),
     })
     .strict(),
   z
     .object({
       kind: z.literal('provider_request_failed'),
-      provider: z.enum(['claude', 'codex']),
+      provider: legacyProviderNameSchema,
       message: z.string(),
     })
     .strict(),
 ]);
 
-export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
+export const legacyTerminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
-  z.object({ kind: z.literal('aborted'), reason: abortReasonSchema }).strict(),
+  z.object({ kind: z.literal('aborted'), reason: legacyAbortReasonSchema }).strict(),
   z.object({ kind: z.literal('provider_exit'), code: z.number(), note: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('coral_fault'), fault: coralFaultSchema }).strict(),
+  z.object({ kind: z.literal('legacy_fault'), fault: legacyCoralFaultSchema }).strict(),
 ]);
 
-export function wrapperCrashedFault(message: string): CoralFault {
+export function legacyWrapperCrashedFault(message: string): LegacyCoralFault {
   return {
     kind: 'wrapper_crashed',
     cause: { message },
   };
 }
 
-function providerDisplayName(provider: ProviderName): string {
+function providerDisplayName(provider: LegacyProviderName): string {
   switch (provider) {
     case 'claude':
       return 'Claude';
@@ -165,7 +168,7 @@ function providerDisplayName(provider: ProviderName): string {
   }
 }
 
-function continuitySentenceFragment(continuity: AppServerContinuity): string {
+function continuitySentenceFragment(continuity: LegacyAppServerContinuity): string {
   switch (continuity) {
     case 'verified':
       return 'continuity verified';
@@ -186,10 +189,7 @@ function ensureSentence(text: string): string {
   return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
-/**
- * Maps a typed coral fault to the single human-readable sentence shared across consumers.
- */
-export function describeCoralFault(fault: CoralFault): string {
+export function describeLegacyCoralFault(fault: LegacyCoralFault): string {
   switch (fault.kind) {
     case 'stale_status_schema':
       return 'Job status record uses an incompatible schema; dropping.';
@@ -237,25 +237,5 @@ export function describeCoralFault(fault: CoralFault): string {
     }
     default:
       return assertNever(fault);
-  }
-}
-
-/**
- * Derives the terminal job phase from a typed outcome without inspecting legacy fields.
- * Return type is `string` at L0 to avoid a `JobPhase` import cycle with `types.ts`;
- * callers that need the `JobPhase` type can assert via `as JobPhase` or wrap.
- */
-export function phaseForOutcome(outcome: TerminalOutcome): 'completed' | 'error' | 'aborted' {
-  switch (outcome.kind) {
-    case 'completed':
-      return 'completed';
-    case 'provider_exit':
-      return outcome.code === 0 ? 'completed' : 'error';
-    case 'aborted':
-      return 'aborted';
-    case 'coral_fault':
-      return 'error';
-    default:
-      return assertNever(outcome);
   }
 }

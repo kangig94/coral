@@ -393,7 +393,7 @@ describe('codex adapter app-server flow', () => {
       content: '',
       nonResumable: true,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'provider_session_unavailable',
           provider: 'codex',

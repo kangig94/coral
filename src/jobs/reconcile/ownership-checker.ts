@@ -1,6 +1,6 @@
 import { readBackendInfo } from '../../infra/backend-info.js';
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { IdleTimer } from '../idle-timer.js';
+import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { IdleTimer } from '../../execution/idle-timer.js';
 import type { Runtime } from '../../runtime/ports.js';
 
 type ReplacementBackendOwnershipCheckerInstaller = {

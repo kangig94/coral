@@ -559,7 +559,13 @@ describe('lifecycle recovery characterization', () => {
         phase: 'error',
         result: {
           content: '',
-          outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
+          outcome: {
+            kind: 'failed',
+            causeRef: {
+              stream: { kind: 'job', id: jobId },
+              seq: 1,
+            },
+          },
         },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
@@ -615,7 +621,7 @@ describe('lifecycle recovery characterization', () => {
         phase: 'error',
         result: {
           content: '',
-          outcome: { kind: 'coral_fault', fault: { kind: 'ghost_launch' } },
+          outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
         },
       })
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBe(
@@ -992,12 +998,12 @@ describe('lifecycle recovery characterization', () => {
         expect(completeSpy).toHaveBeenCalledWith(
           jobId,
           session.sessionId,
-          { content: '', outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } } },
+          { content: '', outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
           'error',
         )
         expect(progressStore.readStatus(jobId)).toMatchObject({
           phase: 'error',
-          result: { content: '', outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } } },
+          result: { content: '', outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
         })
       } finally {
         await stopLifecycleController(controller)
@@ -1398,7 +1404,7 @@ describe('lifecycle recovery characterization', () => {
         backendNamespace: namespace,
         result: {
           content: '',
-          outcome: { kind: 'coral_fault', fault: { kind: 'wrapper_lost' } },
+          outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
         },
       })
       expect(adoptSpy).toHaveBeenCalledWith(

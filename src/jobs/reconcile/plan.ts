@@ -8,8 +8,8 @@ import {
   type PersistedStatusRecord,
   type SessionEntry,
   type TerminalResult,
-} from '../shared/types.js';
-import type { CoralFault } from '../shared/coral-fault.js';
+} from '../../shared/types.js';
+import type { LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
 
 /**
  * Invariant — jobIds freshness:
@@ -41,7 +41,7 @@ export interface JobStoreSnapshot {
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; fault: CoralFault; status: PersistedStatusRecord }
+  | { type: 'markError'; jobId: string; fault: LegacyCoralFault; status: PersistedStatusRecord }
   | { type: 'registerQueued'; jobId: string; launchRecord: PersistedLaunchRecord }
   | {
       type: 'registerRunning';

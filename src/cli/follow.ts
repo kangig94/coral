@@ -3,7 +3,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import type { AcceptedLaunchResponse } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
+import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
+import type { CauseRef } from '../jobs/outcome.js';
+import { createRealRuntime } from '../runtime/real.js';
 import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import { readBuildFlavor } from '../shared/utils.js';
+import { CoralStore, openStoreDatabase } from '../store/index.js';
+import { storePaths } from '../store/paths.js';
 import {
   formatLaunch,
   formatWaitProgress,
@@ -39,6 +45,7 @@ function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
   renderContext: WaitRenderContext,
+  renderCauseRef?: (ref: CauseRef) => string,
 ): void {
   let line: string;
   switch (event.type) {
@@ -49,7 +56,7 @@ function emitWaitEvent(
       line = formatWaitQueued(event);
       break;
     case 'terminal':
-      line = formatWaitTerminal(event, cursor, false);
+      line = formatWaitTerminal(event, cursor, false, { describeCauseRef: renderCauseRef });
       break;
     case 'waiting':
       line = formatWaitWaiting(event, cursor);
@@ -65,7 +72,8 @@ function emitWaitEvent(
 function toExitCode(result: TerminalResult): number {
   switch (result.outcome.kind) {
     case 'aborted':
-    case 'coral_fault':
+    case 'failed':
+    case 'job_fault':
       return 1;
     case 'provider_exit':
       return normalizeExitCode(result.outcome.code);
@@ -96,6 +104,29 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
   return exitCode;
 }
 
+function openCauseRenderer(pluginRoot: string): {
+  readonly render?: (ref: CauseRef) => string;
+  close(): void;
+} {
+  try {
+    const runtime = createRealRuntime();
+    const db = openStoreDatabase({
+      path: storePaths(readBuildFlavor(pluginRoot)).dbFile,
+      storage: runtime.storage,
+      readonly: true,
+    });
+    const store = new CoralStore(db);
+    return {
+      render: (ref) => describeCauseRef(ref, store),
+      close: () => db.close(),
+    };
+  } catch {
+    return {
+      close: () => {},
+    };
+  }
+}
+
 async function waitForRetry(signal: AbortSignal): Promise<boolean> {
   try {
     await delay(TRANSIENT_RETRY_DELAY_MS, undefined, { signal });
@@ -116,6 +147,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
   let localAbortRequested = false;
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
+  const causeRenderer = openCauseRenderer(options.pluginRoot);
 
   const onSigint = () => {
     sigintCount += 1;
@@ -175,7 +207,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           cursorRef,
         )) {
           const cursor = cursorRef.lastEventId ?? null;
-          emitWaitEvent(event, cursor, renderContext);
+          emitWaitEvent(event, cursor, renderContext, causeRenderer.render);
 
           if (event.type === 'waiting') {
             reconnect = true;
@@ -211,6 +243,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
       }
     }
   } finally {
+    causeRenderer.close();
     process.off('SIGINT', onSigint);
     if (abortPromise !== null) {
       await (abortPromise as Promise<void>);

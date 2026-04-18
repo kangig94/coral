@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { BackendClient, BackendToolHttpError } from '../../client/http-client.js';
-import * as AgentResolution from '../../execution/agent-resolution.js';
+import * as AgentResolution from '../../jobs/shell/agent-resolution.js';
 import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
 import { LaunchCoordinator } from '../../execution/engine.js';
 import { TypedEventBus } from '../../execution/event-bus.js';

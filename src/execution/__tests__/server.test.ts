@@ -3821,7 +3821,13 @@ describe('execution backend server', () => {
       result: {
         content: '',
         workflow: { steps: [] },
-        outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: { kind: 'job', id: jobId },
+            seq: 1,
+          },
+        },
       },
     });
     expect(recoveredSession?.activeJobId).toBeUndefined();
@@ -4930,7 +4936,13 @@ describe('execution backend server', () => {
         phase: 'error',
         result: {
           content: '',
-          outcome: { kind: 'coral_fault', fault: { kind: 'stale_status_schema' } },
+          outcome: {
+            kind: 'failed',
+            causeRef: {
+              stream: { kind: 'job', id: jobId },
+              seq: 1,
+            },
+          },
         },
       });
 
@@ -4970,7 +4982,7 @@ describe('execution backend server', () => {
         phase: 'error',
         result: {
           content: '',
-          outcome: { kind: 'coral_fault', fault: { kind: 'ghost_launch' } },
+          outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
         },
       });
 

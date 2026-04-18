@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { terminalOutcomeSchema } from '../../shared/coral-fault.js';
+import { legacyTerminalOutcomeSchema } from '../../shared/legacy-terminal-outcome-compat.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),
@@ -98,7 +98,7 @@ const fakeProviderResultSchema = z.object({
   exitCode: z.number().nullable().optional(),
   warnings: z.array(z.string()).optional(),
   usage: usageSummarySchema.optional(),
-  outcome: terminalOutcomeSchema,
+  outcome: legacyTerminalOutcomeSchema,
 });
 
 const fakeProviderSchema = z.object({
@@ -195,7 +195,7 @@ const shutdownStepSchema = z.object({
 
 const resultExpectationSchema = z.object({
   content: z.string().optional(),
-  outcome: terminalOutcomeSchema,
+  outcome: legacyTerminalOutcomeSchema,
 });
 
 const sessionCountExpectationSchema = z.object({

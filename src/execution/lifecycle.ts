@@ -22,24 +22,24 @@ import type { DiscussContext } from './discuss/context.js';
 import type { DiscussSessionStore } from './discuss/session-store.js';
 import type { RecoveredDiscussResume } from './discuss/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
-import { wrapperCrashedFault } from '../shared/coral-fault.js';
+import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase } from '../shared/types.js';
 import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
 import type { Runtime } from '../runtime/ports.js';
-import { listLiveJobs, markJobAsError } from './lifecycle/job-helpers.js';
+import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
 import { resolveClientHost } from './lifecycle/network.js';
-import { createReplacementBackendOwnershipChecker } from './lifecycle/ownership-checker.js';
-import { createRecoveryCoordinator } from './lifecycle/recovery-coordinator.js';
+import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
+import { createRecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './lifecycle/shutdown-sequence.js';
-import { StartupInterruptedError } from './lifecycle/errors.js';
+import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
 import type { RecoveryCapableService } from './service.js';
 
-export { adoptOrphanedCrossNamespaceJobs } from './lifecycle/cross-namespace-adoption.js';
-export { StartupInterruptedError } from './lifecycle/errors.js';
+export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
+export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 export {
   HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
@@ -116,7 +116,7 @@ export function cleanupStaleJobs(
 export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      markJobAsError(progressStore, status, wrapperCrashedFault(message), () => {});
+      markJobAsError(progressStore, status, legacyWrapperCrashedFault(message), () => {});
     } catch {
       // fail-isolated: skip this job, continue with others
     }

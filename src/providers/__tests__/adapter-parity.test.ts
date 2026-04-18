@@ -357,7 +357,7 @@ describe('claude provider adapter', () => {
       model: 'sonnet',
       exitCode: 7,
       outcome: {
-        kind: 'coral_fault',
+        kind: 'legacy_fault',
         fault: {
           kind: 'adapter_output_unparseable',
           provider: 'claude',

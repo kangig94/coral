@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { AbortRegistry } from '../abort-controller-registry.js';
-import { createRealRuntime } from '../../runtime/real.js';
+import { AbortRegistry } from '../abort-registry.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 
 const runtime = createRealRuntime();
 
-describe('execution AbortRegistry', () => {
+describe('jobs AbortRegistry', () => {
   it('register returns a UUID', () => {
     const registry = new AbortRegistry(runtime.ids);
     const jobId = registry.register();

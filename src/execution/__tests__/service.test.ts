@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as AgentResolutionMod from '../agent-resolution.js';
+import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 import type {
   AppServerRuntimeRecord,
@@ -27,9 +27,9 @@ import {
   AgentNotFoundError,
   InvalidAgentRefError,
   type AgentRef,
-} from '../agent-resolution.js';
+} from '../../jobs/shell/agent-resolution.js';
 import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../engine.js';
-import { type AbortRegistry } from '../abort-controller-registry.js';
+import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
@@ -59,8 +59,8 @@ vi.mock('../../providers/registry.js', () => ({
   getNewProvider: mockState.getNewProvider,
 }));
 
-vi.mock('../agent-resolution.js', async () => {
-  const actual = await vi.importActual<typeof AgentResolutionMod>('../agent-resolution.js');
+vi.mock('../../jobs/shell/agent-resolution.js', async () => {
+  const actual = await vi.importActual<typeof AgentResolutionMod>('../../jobs/shell/agent-resolution.js');
   return {
     ...actual,
     resolveAgent: mockState.resolveAgent,
@@ -258,11 +258,11 @@ function completedOutcome() {
   return { kind: 'completed' } as const;
 }
 
-function withCompletedOutcome<T extends { content: string; outcome?: ProviderResult['outcome'] }>(result: T): T & {
-  outcome: ReturnType<typeof completedOutcome>;
+function withCompletedOutcome<T extends { content: string; outcome?: unknown }>(result: T): T & {
+  outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome>;
 } {
-  if (result.outcome) {
-    return result as T & { outcome: ReturnType<typeof completedOutcome> };
+  if (result.outcome !== undefined) {
+    return result as T & { outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome> };
   }
   return { ...result, outcome: completedOutcome() };
 }
@@ -277,7 +277,7 @@ function makeProvider(options?: {
 } {
   const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderResult> => {
     const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
-    return withCompletedOutcome(result);
+    return withCompletedOutcome(result) as ProviderResult;
   });
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
@@ -1482,7 +1482,7 @@ describe('ExecutionService', () => {
           content: '',
           nonResumable: true,
           outcome: {
-            kind: 'coral_fault',
+            kind: 'legacy_fault',
             fault: {
               kind: 'provider_session_unavailable',
               provider: 'codex',
@@ -1512,11 +1512,13 @@ describe('ExecutionService', () => {
         content: '',
         nonResumable: true,
         outcome: {
-          kind: 'coral_fault',
-          fault: {
-            kind: 'provider_session_unavailable',
-            provider: 'codex',
-            note: 'Conversation thread-stale is no longer resumable.',
+          kind: 'failed',
+          causeRef: {
+            stream: {
+              kind: 'session',
+              id: expect.any(String),
+            },
+            seq: 1,
           },
         },
       });
@@ -2766,7 +2768,7 @@ describe('ExecutionService', () => {
           return {
             content: '',
             outcome: {
-              kind: 'coral_fault',
+              kind: 'legacy_fault',
               fault: {
                 kind: 'provider_request_failed',
                 provider: 'codex',
@@ -2809,14 +2811,13 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'coral_fault',
-        fault: {
-          kind: 'workflow_atom_failed',
-          step: 1,
-          atom: 'resolver',
-          cause: {
-            message: expect.stringContaining('resolver failed'),
+        kind: 'failed',
+        causeRef: {
+          stream: {
+            kind: 'session',
+            id: expect.any(String),
           },
+          seq: 1,
         },
       },
       workflow: {
@@ -2882,8 +2883,8 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'coral_fault',
-        fault: { kind: 'workflow_aborted' },
+        kind: 'aborted',
+        reason: 'signal_abort',
       },
       workflow: {
         steps: [
@@ -3008,11 +3009,13 @@ describe('ExecutionService', () => {
       {
         content: '',
         outcome: {
-          kind: 'coral_fault',
-          fault: {
-            kind: 'provider_request_failed',
-            provider: 'codex',
-            message: 'provider failed',
+          kind: 'failed',
+          causeRef: {
+            stream: {
+              kind: 'session',
+              id: 'session-1',
+            },
+            seq: 1,
           },
         },
       },
@@ -3071,11 +3074,13 @@ describe('ExecutionService', () => {
           content: '',
           workflow: { steps: [] },
           outcome: {
-            kind: 'coral_fault',
-            fault: {
-              kind: 'provider_request_failed',
-              provider: 'codex',
-              message: 'failed',
+            kind: 'failed',
+            causeRef: {
+              stream: {
+                kind: 'workflow',
+                id: 'workflow-1',
+              },
+              seq: 1,
             },
           },
         },
@@ -3086,7 +3091,7 @@ describe('ExecutionService', () => {
         result: {
           content: '',
           workflow: { steps: [] },
-          outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+          outcome: { kind: 'aborted', reason: 'signal_abort' as const },
         },
         markdown: '# aborted\n',
       },
@@ -3162,7 +3167,7 @@ describe('ExecutionService', () => {
     const result = {
       content: '',
       workflow: { steps: [] },
-      outcome: { kind: 'coral_fault', fault: { kind: 'workflow_aborted' } },
+      outcome: { kind: 'aborted', reason: 'signal_abort' as const },
     };
     const markdown = '# fallback\n';
     trackJob(jobId);
@@ -3650,11 +3655,13 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'app_server_interrupted',
-                trigger: 'restart',
-                continuity: 'pre_checkpoint_preserved',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
               },
             },
           },
@@ -3722,11 +3729,13 @@ describe('ExecutionService', () => {
           result: {
             content: expectedReport,
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'app_server_interrupted',
-                trigger: 'restart',
-                continuity: 'verified',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
               },
             },
           },
@@ -3807,11 +3816,13 @@ describe('ExecutionService', () => {
             content: expectedReport,
             nonResumable: true,
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'app_server_interrupted',
-                trigger: 'restart',
-                continuity: 'missing',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
               },
             },
           },
@@ -3893,11 +3904,13 @@ describe('ExecutionService', () => {
             content: expectedReport,
             nonResumable: true,
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'app_server_interrupted',
-                trigger: 'handoff',
-                continuity: 'unavailable',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
               },
             },
           },

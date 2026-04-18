@@ -1,5 +1,5 @@
 import { MAX_INLINE } from '../shared/schemas.js';
-import { describeCoralFault } from '../shared/coral-fault.js';
+import { describeTerminalOutcome, type CauseRef } from '../jobs/outcome.js';
 import type { JobsListResponse } from '../client/http-client.js';
 import { assertNever, isRecord } from '../shared/utils.js';
 import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
@@ -59,6 +59,8 @@ export type WaitRenderContext = {
   isTTY: boolean;
   columns: number;
 };
+
+export type CauseRefDescriber = (ref: CauseRef) => string;
 
 function joinLines(lines: Array<string | undefined>): string {
   return lines.filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');
@@ -179,7 +181,7 @@ function truncatePreview(text: string): string {
   return `${text.slice(0, Math.max(0, MAX_INLINE - 3))}...`;
 }
 
-function pickTerminalPreviewSource(result: TerminalResult): string {
+function pickTerminalPreviewSource(result: TerminalResult, describeCauseRef?: CauseRefDescriber): string {
   const content = result.content.trimEnd();
   if (content.length > 0) {
     return content;
@@ -188,10 +190,10 @@ function pickTerminalPreviewSource(result: TerminalResult): string {
   switch (result.outcome.kind) {
     case 'completed':
       return '(empty result)';
-    case 'coral_fault':
-      return describeCoralFault(result.outcome.fault);
+    case 'failed':
+    case 'job_fault':
     case 'aborted':
-      return 'Aborted';
+      return describeTerminalOutcome(result.outcome, { describeCauseRef });
     case 'provider_exit':
       return `Exited with code ${result.outcome.code}`;
     default:
@@ -541,7 +543,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return label === undefined ? body : `${label} - ${body}`;
 }
 
-function terminalOutcomeHeader(jobId: string, result: TerminalResult): string {
+function terminalOutcomeHeader(jobId: string, result: TerminalResult, describeCauseRef?: CauseRefDescriber): string {
   switch (result.outcome.kind) {
     case 'completed':
       return `Job ${jobId} completed`;
@@ -551,15 +553,22 @@ function terminalOutcomeHeader(jobId: string, result: TerminalResult): string {
       const base = `Job ${jobId} provider exited ${result.outcome.code}`;
       return result.outcome.note === undefined ? base : `${base}: ${result.outcome.note}`;
     }
-    case 'coral_fault':
-      return `Job ${jobId} coral errored: ${describeCoralFault(result.outcome.fault)} [${result.outcome.fault.kind}]`;
+    case 'failed':
+      return `Job ${jobId} failed: ${describeTerminalOutcome(result.outcome, { describeCauseRef })}`;
+    case 'job_fault':
+      return `Job ${jobId} errored: ${describeTerminalOutcome(result.outcome, { describeCauseRef })} [${result.outcome.fault.kind}]`;
     default:
       return assertNever(result.outcome);
   }
 }
 
-export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | null, inline: boolean): string {
-  const header = terminalOutcomeHeader(event.jobId, event.result);
+export function formatWaitTerminal(
+  event: WaitTerminalEvent,
+  cursor: string | null,
+  inline: boolean,
+  options: { describeCauseRef?: CauseRefDescriber } = {},
+): string {
+  const header = terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef);
   if (!inline) {
     const remaining = event.remainingJobIds.length > 0 ? event.remainingJobIds.join(', ') : 'none';
     return joinLines([
@@ -573,7 +582,7 @@ export function formatWaitTerminal(event: WaitTerminalEvent, cursor: string | nu
   return joinLines([
     header,
     `Result path: ${event.resultPath}`,
-    truncatePreview(pickTerminalPreviewSource(event.result)),
+    truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef)),
     cursor === null ? undefined : `Cursor: ${cursor}`,
   ]);
 }

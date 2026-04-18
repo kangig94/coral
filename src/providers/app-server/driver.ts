@@ -1,10 +1,10 @@
 import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
-import type { AbortReason, ProviderName } from '../../shared/coral-fault.js';
+import type { LegacyAbortReason, LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
 
 export interface AppServerSessionDriver<TState> {
   readonly name: string;
-  readonly faultProviderName: ProviderName;
+  readonly faultProviderName: LegacyProviderName;
   readonly subscriptionPhase: 'beforeInitialize' | 'afterInitialize';
 
   buildServerSpec(
@@ -33,7 +33,7 @@ export type DriverStepOutcome = { terminal?: TurnOutcome };
 export type TurnOutcome =
   | { kind: 'completed'; turn: unknown }
   | { kind: 'failed'; message: string }
-  | { kind: 'aborted'; reason: AbortReason }
+  | { kind: 'aborted'; reason: LegacyAbortReason }
   | { kind: 'nonResumable'; message: string };
 
 export function buildProviderFailureMessage(label: string, message?: string, status?: string): string {

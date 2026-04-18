@@ -11,7 +11,7 @@ import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderResult } from '../../../shared/types.js';
-import type { ProviderName, TerminalOutcome } from '../../../shared/coral-fault.js';
+import type { LegacyProviderName, LegacyTerminalOutcome } from '../../../shared/legacy-terminal-outcome-compat.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { SimulationRuntime } from '../../../simulation/runtime.js';
 import { sendJson } from '../../http-handler.js';
@@ -59,7 +59,7 @@ export type { SimulationRuntimeOptions } from '../../../simulation/runtime.js';
 
 export type FakeProviderScenario = {
   name?: string;
-  faultProvider?: ProviderName;
+  faultProvider?: LegacyProviderName;
   cli?: {
     command?: string;
     args?: string[];
@@ -165,7 +165,7 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
   };
 }
 
-function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null | undefined): TerminalOutcome {
+function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null | undefined): LegacyTerminalOutcome {
   if (aborted) {
     return { kind: 'aborted', reason: 'signal_abort' };
   }
@@ -178,9 +178,9 @@ function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null 
 function buildRecoveredArtifactFailureOutcome(
   scenario: FakeProviderScenario | undefined,
   message: string,
-): TerminalOutcome {
+): LegacyTerminalOutcome {
   return {
-    kind: 'coral_fault',
+    kind: 'legacy_fault',
     fault: {
       kind: 'provider_request_failed',
       provider: scenario?.faultProvider ?? 'claude',

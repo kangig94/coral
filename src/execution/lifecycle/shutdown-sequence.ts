@@ -10,7 +10,7 @@ import type { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../service.js';
 import type { ProviderHostManager } from '../host-manager.js';
-import { listLiveJobs } from './job-helpers.js';
+import { listLiveJobs } from '../../jobs/reconcile/job-helpers.js';
 import { shutdownModeFromReason, type ShutdownMode } from './shutdown-mode.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;

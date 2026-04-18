@@ -463,11 +463,13 @@ describe('workflow pipe executor', () => {
             terminal('job-1', 'session-1', {
               content: '',
               outcome: {
-                kind: 'coral_fault',
-                fault: {
-                  kind: 'provider_request_failed',
-                  provider: 'claude',
-                  message: 'error msg',
+                kind: 'failed',
+                causeRef: {
+                  stream: {
+                    kind: 'session',
+                    id: 'session-1',
+                  },
+                  seq: 1,
                 },
               },
             }),
@@ -480,7 +482,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'architect' failed: Claude turn failed: error msg.",
+      message: "Step 0, atom 'architect' failed: Failed: session/session-1#1",
       aborted: false,
     });
 
@@ -619,11 +621,13 @@ describe('workflow pipe executor', () => {
           terminal('job-b', 'session-b', {
             content: '',
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'provider_request_failed',
-                provider: 'codex',
-                message: 'primary failure',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: 'session-b',
+                },
+                seq: 1,
               },
             },
           }),
@@ -634,7 +638,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'critic' failed: Codex turn failed: primary failure.",
+      message: "Step 0, atom 'critic' failed: Failed: session/session-b#1",
       aborted: false,
       stepDetails: [
         {
@@ -901,11 +905,13 @@ describe('waitForAtoms', () => {
           terminal('job-2', 'session-2', {
             content: '',
             outcome: {
-              kind: 'coral_fault',
-              fault: {
-                kind: 'provider_request_failed',
-                provider: 'codex',
-                message: 'process killed',
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: 'session-2',
+                },
+                seq: 1,
               },
             },
           }),
@@ -936,7 +942,7 @@ describe('waitForAtoms', () => {
         },
       ),
     ).rejects.toMatchObject({
-      message: "Step 0, atom 'critic' failed: Codex turn failed: process killed.",
+      message: "Step 0, atom 'critic' failed: Failed: session/session-2#1",
       aborted: false,
       stepDetails: [
         {

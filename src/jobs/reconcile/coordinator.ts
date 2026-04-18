@@ -1,4 +1,4 @@
-import { wrapperCrashedFault } from '../../shared/coral-fault.js';
+import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import {
   isAppServerRuntime,
@@ -6,15 +6,15 @@ import {
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { DiscussContext } from '../discuss/context.js';
-import type { RecoveredDiscussResume } from '../discuss/operations.js';
-import type { DiscussSessionStore } from '../discuss/session-store.js';
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { ProgressStore } from '../progress-store.js';
-import { planRecovery } from '../recovery-core.js';
-import { RecoveryRegistry } from '../recovery-registry.js';
+import type { DiscussContext } from '../../execution/discuss/context.js';
+import type { RecoveredDiscussResume } from '../../execution/discuss/operations.js';
+import type { DiscussSessionStore } from '../../execution/discuss/session-store.js';
+import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { ProgressStore } from '../../execution/progress-store.js';
+import { planRecovery } from './plan.js';
+import { RecoveryRegistry } from '../../execution/recovery-registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../service.js';
+import type { RecoveryCapableService } from '../../execution/service.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './job-helpers.js';
@@ -24,8 +24,8 @@ import {
   logRecoveryActionFailure,
   type QueuedRecoverableJob,
   type RunningRecoverableJob,
-} from './recovery-actions.js';
-import { buildRecoverySnapshot } from './recovery-snapshot.js';
+} from './actions.js';
+import { buildRecoverySnapshot } from './snapshot.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -373,7 +373,12 @@ export function createRecoveryCoordinator({
           try {
             const status = progressStore.readStatus(jobId);
             if (status) {
-              markJobAsError(progressStore, status, wrapperCrashedFault(`Recovery adoption failed: ${formatError(error)}`), log);
+              markJobAsError(
+                progressStore,
+                status,
+                legacyWrapperCrashedFault(`Recovery adoption failed: ${formatError(error)}`),
+                log,
+              );
             }
           } catch {
             // best-effort
