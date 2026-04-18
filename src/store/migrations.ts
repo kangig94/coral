@@ -5,7 +5,8 @@ import type { StoragePort } from '../runtime/ports.js';
 
 declare const __PLUGIN_ROOT__: string | undefined;
 
-const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const MODULE_DIR =
+  typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url));
 const SOURCE_MIGRATIONS_DIR = join(MODULE_DIR, 'migrations');
 const BUNDLED_MIGRATIONS_DIR =
   typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined;

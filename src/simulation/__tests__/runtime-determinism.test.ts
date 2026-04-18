@@ -47,15 +47,12 @@ interface Snapshot {
 
 type MigrationStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
 
-function openMemoryDatabase(): Database.Database {
-  try {
-    return openStoreDatabase(':memory:') as Database.Database;
-  } catch (error) {
-    if (error instanceof Error && /Phase 1 wiring not yet implemented/.test(error.message)) {
-      return new Database(':memory:');
-    }
-    throw error;
-  }
+function openMemoryDatabase(storage: MigrationStorage, migrationsDir: string): Database.Database {
+  return openStoreDatabase({
+    path: ':memory:',
+    storage: storage as StoragePort,
+    migrationsDir,
+  }) as Database.Database;
 }
 
 function seedMigrations(storage: Pick<StoragePort, 'mkdirSync' | 'writeFileSync'>): void {
@@ -144,7 +141,7 @@ function captureSnapshot(db: Database.Database): Snapshot {
 async function runSimulationSequence(): Promise<Snapshot> {
   const runtime = new SimulationRuntime({ epochMs: SIM_EPOCH_MS, roots: { ...SIM_ROOTS } });
   const { storage, migrationsDir } = createMigrationStorage(runtime);
-  const db = openMemoryDatabase();
+  const db = openMemoryDatabase(storage, migrationsDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createEmptyRegistry();
@@ -205,7 +202,7 @@ async function runPlannedSequence(
   plan: SequencePlan,
 ): Promise<Snapshot> {
   const { storage, migrationsDir } = createMigrationStorage(runtime);
-  const db = openMemoryDatabase();
+  const db = openMemoryDatabase(storage, migrationsDir);
   const driver = new ConsumerDriver({ db, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
   const upcasters = createEmptyRegistry();

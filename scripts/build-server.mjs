@@ -67,7 +67,7 @@ const sharedOpts = {
   platform: 'node',
   target: 'node18',
   format: 'cjs',
-  external: ['node:*'],
+  external: ['node:*', 'better-sqlite3'],
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
   define: {
@@ -81,6 +81,7 @@ await esbuild.build({
   outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
+copyStoreSqlAssets('build');
 console.log('Built build/coral-backend.cjs');
 
 await esbuild.build({
