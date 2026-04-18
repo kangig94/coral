@@ -21,6 +21,7 @@ import {
 } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
+import { composeCoralPaths } from '../coordinator/paths.js';
 import {
   composeChildEnv,
   parsePassthrough,
@@ -39,6 +40,7 @@ import {
   discussSourcesPath,
   discussStatePath,
   discussSummaryIndexPathForSource,
+  getSettledBuildFlavor,
   jobsDir,
   jobStatusPath,
   installationDirForNamespace,
@@ -46,6 +48,8 @@ import {
   resolveProjectSource,
   sessionBase,
 } from '../infra/paths.js';
+import type { CoralPaths } from '../infra/coral-paths.js';
+import { CoralSetupError } from '../runtime/errors.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
 import type {
   ChildProcessLike,
@@ -60,7 +64,7 @@ import type {
   RuntimeSpawnMode,
   RuntimeStorage,
   RuntimeTime,
-} from '../shared/runtime-ports.js';
+} from '../runtime/ports.js';
 export type {
   ChildProcessLike,
   ChildReadableLike,
@@ -94,7 +98,7 @@ export type {
   RuntimeTimerHandle,
   SpawnEvent,
   SpawnListener,
-} from '../shared/runtime-ports.js';
+} from '../runtime/ports.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -214,6 +218,7 @@ export function createRealRuntime(): Runtime {
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
+  let cachedCoralPaths: CoralPaths | undefined;
   const paths: RuntimePaths = {
     jobsDir,
     jobStatusPath,
@@ -232,6 +237,22 @@ export function createRealRuntime(): Runtime {
     discussSessionDirForSource,
     discussStatePath,
     discussEventLogPath,
+    get coral(): CoralPaths {
+      if (cachedCoralPaths !== undefined) {
+        return cachedCoralPaths;
+      }
+      const settled = getSettledBuildFlavor();
+      if (settled === null) {
+        throw new CoralSetupError({
+          code: 'E_FLAVOR_NOT_SETTLED',
+          userMessage: 'Runtime.paths.coral accessed before setBuildFlavor settled',
+          remediation:
+            'Ensure setBuildFlavor() is called during composition-root bootstrap before any paths.coral consumer runs. See src/execution/composition/backend-world.ts.',
+        });
+      }
+      cachedCoralPaths = Object.freeze(composeCoralPaths(settled));
+      return cachedCoralPaths;
+    },
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {

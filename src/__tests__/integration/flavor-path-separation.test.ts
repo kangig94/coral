@@ -26,8 +26,8 @@ describe('flavor path separation', () => {
   });
 
   it.each(FAMILIES)('%s family has distinct prod vs dev paths', (family) => {
-    const prodLeaves = allLeafPaths(prod[family] as Record<string, unknown>);
-    const devLeaves = allLeafPaths(dev[family] as Record<string, unknown>);
+    const prodLeaves = allLeafPaths(prod[family] as unknown as Record<string, unknown>);
+    const devLeaves = allLeafPaths(dev[family] as unknown as Record<string, unknown>);
     expect(prodLeaves.length).toBeGreaterThan(0);
     expect(devLeaves.length).toBe(prodLeaves.length);
     const prodMap = new Map(prodLeaves.map((l) => [l.key, l.value]));

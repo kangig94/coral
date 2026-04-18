@@ -69,6 +69,10 @@ export function currentBuildFlavor(): 'prod' | 'dev' {
   return _buildFlavor;
 }
 
+export function getSettledBuildFlavor(): 'prod' | 'dev' | null {
+  return _settledBuildFlavor;
+}
+
 /**
  * Returns the KB markdown root. The directory may not exist — callers are
  * responsible for creation.
