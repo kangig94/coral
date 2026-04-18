@@ -22,13 +22,14 @@ bridge/coral-cli.cjs
       │
       ▼  HTTP + SSE (`127.0.0.1`, authenticated)
 bridge/coral-backend.cjs
-  ├── Request routing (`src/execution/http-handler.ts`)
-  ├── Provider orchestration (`src/execution/service.ts`)
-  ├── Workflow execution (`src/workflow/*`)
-  ├── Discuss runtime (`src/execution/discuss/*`)
-  ├── KB runtime (`src/kb/*`)
-  ├── Session + job persistence
-  └── Optional provider host management (`src/execution/host-manager.ts`)
+  ├── Request routing (HTTP + SSE)
+  ├── Provider orchestration via the jobs domain facade
+  ├── Workflow execution
+  ├── Discuss runtime (pure core + imperative shell)
+  ├── Jobs + sessions domains (Journal-backed)
+  ├── Journal substrate (`better-sqlite3`)
+  ├── KB runtime
+  └── Optional provider host management
       │
       ├── Codex CLI
       ├── Claude CLI
@@ -110,57 +111,73 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 ### Workflow
 
 1. `coral-cli workflow ...` posts to `POST /workflow`
-2. `src/workflow/handler.ts` parses the DSL and normalizes the AST
-3. `src/workflow/pipe-executor.ts` launches provider or `coral:` atoms through `ExecutionService`
-4. Workflow state is persisted in the normal job store, so `coral-cli wait` works unchanged
+2. The workflow domain compiles the DSL into a plan (parse → normalize → AST)
+3. The executor launches provider or `coral:` atoms through `ExecutionService`; launch and retry are intertwined per architecture §10.1a
+4. Workflow state is persisted as Journal events with a projection row per workflow; `coral-cli wait` reads the same job store
 
 ### Discuss and KB
 
-- `coral-cli discuss ...` maps to resource routes under `/discuss/*` and uses `src/execution/discuss-tools.ts`
-- `coral-cli kb ...` maps to resource routes under `/kb/*` and uses `src/execution/kb-tools.ts`
-- Discuss runtime lives under `src/execution/discuss/` and the pure domain model lives under `src/discuss/`
-- KB runtime lives under `src/kb/`
+- `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
+- `coral-cli kb ...` maps to resource routes under `/kb/*`
+- Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
+- KB domain is self-contained under `src/kb/`
 
 ## Module Map
 
-| Area | Key modules | Role |
-| --- | --- | --- |
-| CLI | `src/cli/main.ts`, `src/cli/follow.ts`, `src/cli/format.ts` | Command parsing, follow mode, text formatting, KB JSON formatting |
-| Client | `src/client/http-client.ts`, `src/client/backend-lifecycle.ts`, `src/client/backend-helpers.ts` | Backend startup, HTTP requests, wait/admin helpers |
-| Backend HTTP | `src/execution/server.ts`, `src/execution/http-handler.ts` | Backend composition root and route registration |
-| Provider execution | `src/execution/service.ts`, `src/execution/engine.ts`, `src/providers/*` | Launch orchestration, provider spawning, host/runtime management |
-| Workflows | `src/workflow/handler.ts`, `src/workflow/pipe-executor.ts`, `src/workflow/pipe-parser.ts` | DSL parsing and pipeline execution |
-| Discuss | `src/execution/discuss/*`, `src/discuss/*` | Imperative runtime shell plus pure event-sourced core |
-| Knowledge base | `src/execution/kb-tools.ts`, `src/kb/*` | Dedicated KB endpoints, indexing, vector/text search, memo/source flows |
-| Shared / infra | `src/shared/utils.ts`, `src/shared/types.ts`, `src/infra/*` | Shared helpers, shared contracts, backend info and path resolution |
+| Area | Role |
+| --- | --- |
+| CLI (`src/cli/`) | Command parsing, follow mode, text/JSON formatting |
+| Client (`src/client/`) | Backend startup, HTTP requests, wait/admin helpers |
+| Backend HTTP (`src/execution/`) | Backend composition root and route registration. Post-Phase-2 this layer holds composition/transport/simulation/KB residue pending handoff to `src/coordinator/**`, `src/transport/**`, and `src/simulation/**`. |
+| Provider execution (`src/providers/`, `src/execution/service.ts`, `src/execution/engine.ts`) | Provider adapters, launch orchestration, host/runtime management. `engine.ts` exposes launch-pool mechanics only — domain events are owned by the jobs domain. |
+| Jobs domain (`src/jobs/`) | Truth-owning facade for job lifecycle. Pure core: terminal-outcome and lifecycle-fault ADTs, job phase, cause references. Shell: launch, abort, wait, agent resolution, instruction assembly, legacy ingest. Reconcile: startup recovery and cross-namespace adoption. Facade exposes commands, queries, and reconcile surfaces. |
+| Sessions domain (`src/sessions/`) | Session persistence + continuity. Pure contract types; shell handles atomic persistence and resolution. `sessionsCommands` / `sessionsQueries` facade. |
+| Workflows (`src/workflow/`) | DSL parsing, plan building, decomposed pipeline execution. Launch and retry stay intertwined per architecture §10.1a. `workflowCompiler` / `workflowCommands` / `workflowRecover` facade. |
+| Discuss (`src/discuss/`) | Functional-core / imperative-shell. Pure core: state machine, reducer, events. Shell: persistence, loop, subflows. `discussCommands` / `discussQueries` / `discussReconcile` facade. |
+| Journal (`src/store/`) | `better-sqlite3` Journal substrate: WAL, append + rebuild, envelope + upcasters, domain-reducer dispatch. `CoralStore` is the read-only public surface. |
+| Runtime (`src/runtime/`) | Single-world Runtime with six I/O subports (time / storage / paths / process / ids / env); shared exec builder used by both the real runtime and the simulation runtime. |
+| Simulation (`src/simulation/`) | Deterministic doubles for testing (virtual time, sequential ids). |
+| Coordinator (`src/coordinator/`) | Journal consumer driver; Phase-3 handoff target for the coordinator-facing composition. |
+| Knowledge base (`src/execution/kb-tools.ts`, `src/kb/`) | KB endpoints, indexing, vector/text search, memo/source flows. |
+| Shared / infra (`src/shared/`, `src/infra/`) | Shared helpers, renamed `Legacy*` compat bridges (retire in Phase 6), backend info and path resolution. |
 
 ## Dependency Sketch
 
 ```text
-src/cli/*
-  -> src/client/*
-      -> src/execution/http-handler.ts routes
+CLI layer (`src/cli/`)
+  -> Client layer (`src/client/`)
+      -> Backend HTTP routes
 
-src/execution/http-handler.ts
-  -> src/execution/service.ts
-  -> src/workflow/handler.ts
-  -> src/execution/discuss-tools.ts
-  -> src/execution/kb-tools.ts
+Backend HTTP routes
+  -> Execution service (dispatcher)
+  -> Workflow facade
+  -> Discuss facade
+  -> KB facade
 
-src/execution/service.ts
-  -> src/providers/*
-  -> src/execution/progress-store.ts
-  -> src/execution/session-manager.ts
-  -> src/execution/host-manager.ts
+Execution service
+  -> Jobs domain facade (jobsCommands / jobsQueries / jobsReconcile)
+  -> Sessions domain facade (sessionsCommands / sessionsQueries)
+  -> Provider adapters
+  -> Launch engine (pool mechanics only — emits no domain events)
+  -> Provider host manager
 
-src/execution/discuss/*
-  -> src/discuss/*
+Lifecycle startup
+  -> Open Journal
+  -> Rebuild projections (one-shot drain, Phase 2)
+  -> jobsReconcile.runStartup
+  -> discussReconcile.runStartup
+  -> workflowRecover.resumeAll
 
-src/execution/kb-tools.ts
-  -> src/kb/*
+Discuss shell
+  -> Pure discuss core (state machine + reducer)
+  -> Journal append via the discuss store-registry
 
-src/shared/utils.ts and src/shared/types.ts
-  -> shared foundation used across CLI, client, execution, providers, and KB
+KB bridge
+  -> KB domain
+
+Shared / compat layer
+  -> Shared foundation consumed by all layers
+  -> Legacy* compat bridges retire in Phase 6
 ```
 
 ## Runtime State
@@ -179,26 +196,28 @@ The core architectural boundary is simple: the CLI is the only local command sur
 
 ## Migration Notes
 
-### CoralFault ADT (breaking wire/persistence change)
+### TerminalOutcome ADT (Phase 2)
 
-Terminal results now carry a typed outcome (`TerminalOutcome`) instead of the legacy `notice: string` + `aborted: boolean` pair. The outcome is a discriminated union with four branches:
+Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated union owned by the jobs domain:
 
 - `completed` — provider turn finished successfully.
 - `aborted { reason }` — closed-token reason: `signal_abort` | `user_abort` | `queue_shutdown`.
 - `provider_exit { code, note? }` — provider process terminated with a numeric exit code.
-- `coral_fault { fault }` — typed coral-internal failure from the 12-variant `CoralFault` ADT (`src/shared/coral-fault.ts`).
+- `failed { causeRef }` — upstream cause resolvable via the Journal (`CauseRef = { stream, seq }`).
+- `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
-CLI wait output surfaces the outcome through four exhaustive headers:
+The pre-rewrite `CoralFault` union has been retired; the renamed `Legacy*` compat bridges at the provider boundary retire in Phase 6.
+
+CLI wait output surfaces the outcome through five exhaustive headers:
 
 ```
 Job <id> completed
 Job <id> aborted: <reason>
 Job <id> provider exited <N>[: <note>]
+Job <id> failed: <cause description>
 Job <id> coral errored: <sentence> [<kind>]
 ```
 
-The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`) — the human sentence may drift across releases.
+The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).
 
-**Upgrade impact**: pre-upgrade `status.json` / `progress.jsonl` records use the legacy shape. On the first start after upgrade, the backend validates each record against the new schema and silently discards any record that fails — logging `Ignoring invalid status.json for <jobId>` once per job. The job directory is NOT deleted, and any session claim it owned is released so the session stays usable. No read-time promotion is performed; pre-upgrade jobs simply vanish from the discovery set.
-
-To upgrade cleanly, drop `<os-tmpdir>/coral-jobs/` before the first restart, or accept that in-flight pre-upgrade jobs will not be recoverable after the version bump.
+**Upgrade impact**: pre-rewrite `status.json` / `progress.jsonl` records use the legacy shape. On first start after upgrade, the backend validates each record against the new schema and silently discards any record that fails — logging once per job. The job directory is not deleted, and any session claim it owned is released. To upgrade cleanly, drop `<os-tmpdir>/coral-jobs/` before the first restart, or accept that in-flight pre-upgrade jobs will not be recoverable after the version bump.

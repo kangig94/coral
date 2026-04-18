@@ -69,13 +69,16 @@ Phase 2 turns the Phase 1 Journal substrate into real domain ownership. Each of 
 
 **Retirement ledger progression**:
 - ✅ `src/shared/coral-fault.ts` — DELETED (§2.2).
-- ✅ `src/execution/{recovery-core,recovery-registry,abort-controller-registry,agent-resolution,instruction,progress-store,job-lifecycle}.ts` — DELETED (§2.2).
+- ✅ `src/execution/{recovery-core,abort-controller-registry,agent-resolution,instruction}.ts` — DELETED (§2.2).
 - ✅ `src/execution/lifecycle/*` — DELETED (§2.2).
-- ✅ `src/execution/session-manager.ts` — DELETED (§2.3).
 - ✅ `src/execution/discuss/*` (13 files) — DELETED (§2.4).
 - ✅ `src/workflow/{pipe-executor,pipe-parser,handler,types}.ts` — DELETED (§2.5).
 - ✅ `WorkflowCheckpoint`, `SessionContinuityPatch`, `CoralFault`, `Persisted*Record`, `ProviderResult`, `ProviderProgressEvent`, `TerminalResult` — PURGED repo-wide (§2.2–§2.6).
 - ✅ `coral_fault` discriminant — RENAMED to `legacy_fault` on the compat module only (§2.2).
+- ⏭ `src/execution/session-manager.ts` (9-line shim re-exporting from `src/sessions/shell/`) — retires in Phase 3 when the last importer moves off the shim.
+- ⏭ `src/execution/job-lifecycle.ts` (3-line shim re-exporting from `src/jobs/shell/`) — retires in Phase 3 with the coordinator extraction.
+- ⏭ `src/execution/recovery-registry.ts` (94 lines) — handoff to `src/coordinator/**` in Phase 3.
+- ⏭ `src/execution/progress-store.ts` (712 lines) — retirement trigger "delete in Phase 4 once the last transport adapter reads Journal projections directly" (see §2.5 disposition).
 - ⏭ `src/shared/legacy-terminal-outcome-compat.ts` — retires in Phase 6 when provider adapters emit domain `TerminalOutcome` directly.
 - ⏭ `src/jobs/shell/legacy-ingest.ts` — retires in Phase 6.
 - ⏭ `src/execution/{server,composition/**,event-bus,recording-observer,smoke-open-store,backend-core,backend-core-types,server-types,idle-timer,engine,host-manager,lifecycle{,/network,/shutdown-mode,/shutdown-sequence},service}.ts` — handoff to `src/coordinator/**` in Phase 3.

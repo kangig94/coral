@@ -1,6 +1,6 @@
 # Test Migration Notes
 
-Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (40 `.test.ts` + 1 helper `simulation-runtime.ts`). Phase 2 moves domain-owned coverage onto the new `src/jobs/`, `src/sessions/`, `src/discuss/`, `src/workflow/` trees while the remaining files stay under `src/execution/__tests__/` as deferred coordinator/transport/simulation/KB residue with explicit later-phase retirement triggers.
+Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (39 `.test.ts` + 2 helpers: `discuss-test-helpers.ts` and `simulation-runtime.ts`). Phase 2 moves domain-owned coverage onto the new `src/jobs/`, `src/sessions/`, `src/discuss/`, `src/workflow/` trees while the remaining files stay under `src/execution/__tests__/` as deferred coordinator/transport/simulation/KB residue with explicit later-phase retirement triggers.
 
 ## Jobs slice (commit `ae7eeb8a` — `phase-2/jobs`)
 
@@ -9,8 +9,8 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (4
 - `src/execution/__tests__/recovery-core.test.ts` → **DELETED**; replaced by `src/jobs/reconcile/__tests__/plan.test.ts`.
 - New AC1/AC8 proof coverage:
   - `src/jobs/__tests__/reducer-equivalence.test.ts`
-  - `src/jobs/__tests__/outcome-adt.test.ts`
-  - `src/jobs/read/__tests__/cause-ref-render.test.ts`
+  - `src/jobs/__tests__/outcome-contract-purity.test.ts`
+  - `src/jobs/__tests__/cause-ref-chain.test.ts`
 
 ## Sessions slice (commit `02301ae2` — `phase-2/sessions`)
 
