@@ -5,16 +5,17 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import { createEmptyRegistry } from '../envelope.js';
 
 describe('UpcasterRegistry', () => {
-  it('registerUpcaster records the type/fromVersion pair with its target version and function', () => {
+  it('registerUpcaster records the type/fromVersion pair (verified via parseBody behavior)', () => {
     const registry = createEmptyRegistry();
-    const fn = (body: unknown) => body;
+    registry.registerUpcaster('test.recorded', 1, 2, (body) => ({ upgraded: (body as { legacy: number }).legacy * 10 }));
 
-    registry.registerUpcaster('test.recorded', 1, 2, fn);
-
-    expect((registry as unknown as { entries: Map<string, { toVersion: number; fn: (body: unknown) => unknown }> }).entries.get('test.recorded|1')).toEqual({
-      toVersion: 2,
-      fn,
-    });
+    const result = registry.parseBody(
+      'test.recorded',
+      1,
+      { legacy: 3 },
+      z.object({ upgraded: z.number() }),
+    );
+    expect(result).toEqual({ upgraded: 30 });
   });
 
   it('throws CoralSetupError(upcaster_conflict) for duplicate type/fromVersion registrations', () => {

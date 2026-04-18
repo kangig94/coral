@@ -1,4 +1,17 @@
 #!/usr/bin/env node
+//
+// verify-runtime-cutover.mjs — AC13 gate for the Phase 1 runtime cutover.
+//
+// Walks src/**/*.ts via TypeScript resolver and proves there are zero imports
+// resolving to src/execution/runtime.ts or src/shared/runtime-ports.ts, plus
+// zero Runtime* compat aliases in src/runtime/ports.ts (without Port suffix).
+//
+// Usage:  node scripts/verify-runtime-cutover.mjs [commitish]
+//         --root <dir>    override the repo root (used by fixture self-test)
+//         CORAL_VERIFY_ROOT env var also overrides.
+//
+// Exit 0 on clean (prints "[verify-runtime-cutover] OK"); exit 1 on violations.
+//
 import { execFileSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, normalize, relative, resolve } from 'node:path';

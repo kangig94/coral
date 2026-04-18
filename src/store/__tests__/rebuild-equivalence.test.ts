@@ -49,7 +49,15 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
       });
 
       const afterRebuild = db.prepare('SELECT * FROM projection_test_counter ORDER BY id').all();
-      expect(afterRebuild).toEqual(beforeRebuild);
+      expect(afterRebuild).toStrictEqual(beforeRebuild);
+      // Column-drift guard: assert the row shape explicitly so a new projection column
+      // that happens to default to the same value on both paths can't silently slip past toEqual.
+      const columns = db.prepare(`PRAGMA table_info(projection_test_counter)`).all() as Array<{ name: string }>;
+      expect(columns.map((c) => c.name).sort()).toEqual(['count', 'id', 'last_seq']);
+      expect(afterRebuild.length).toBeGreaterThan(0);
+      for (const row of afterRebuild as Array<Record<string, unknown>>) {
+        expect(Object.keys(row).sort()).toEqual(['count', 'id', 'last_seq']);
+      }
     } finally {
       db.close();
     }

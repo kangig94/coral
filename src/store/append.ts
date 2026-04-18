@@ -81,6 +81,10 @@ export function appendEvents(
     const parsedBody = schema
       ? upcasters.parseBody(input.type, input.bodyVersion, input.body, schema)
       : input.body;
+    // Persist RAW input bytes (not parsedBody) per architecture §4.2: "Old events
+    // are never rewritten; only the in-memory interpretation evolves." Upcasters
+    // run on READ (rebuild/read paths) against the stored body_version. Storing
+    // parsedBody here would double-upcast on later rebuild.
     const bodyBytes = Buffer.from(JSON.stringify(input.body), 'utf-8');
 
     return { input, parsedBody, bodyBytes };

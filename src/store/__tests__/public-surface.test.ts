@@ -10,13 +10,15 @@ const ALLOWED_VALUE_EXPORTS = new Set([
 ]);
 
 describe('src/store public surface (AC11)', () => {
-  it('exports only the allow-listed value names', () => {
+  // Note: Object.keys only enumerates value exports; `export type` entries are erased at runtime.
+  // A drift-guard on *type* exports would require an AST walker; the allow-list is a value-only invariant.
+  it('exports exactly the allow-listed value names (no more, no less)', () => {
     const actual = new Set(Object.keys(storeBarrel));
     const unexpected = [...actual].filter((k) => !ALLOWED_VALUE_EXPORTS.has(k));
+    const missing = [...ALLOWED_VALUE_EXPORTS].filter((k) => !actual.has(k));
     expect(unexpected).toEqual([]);
-    for (const expected of ALLOWED_VALUE_EXPORTS) {
-      expect(actual.has(expected)).toBe(true);
-    }
+    expect(missing).toEqual([]);
+    expect(actual.size).toBe(ALLOWED_VALUE_EXPORTS.size);
   });
 
   it('does NOT expose appendEvents', () => {

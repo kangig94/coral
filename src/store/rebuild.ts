@@ -1,8 +1,23 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { CoralSetupError } from '../runtime/errors.js';
 import type { ComposedReducers } from './reducers.js';
 import { applyReducer } from './reducers.js';
-import type { UpcasterRegistry } from './envelope.js';
+import type { CoralEvent, UpcasterRegistry } from './envelope.js';
+
+const STREAM_KINDS = new Set(['job', 'session', 'discuss', 'workflow']);
+
+function assertStreamKind(value: string): CoralEvent['stream']['kind'] {
+  if (!STREAM_KINDS.has(value)) {
+    throw new CoralSetupError({
+      code: 'event_stream_kind_invalid',
+      userMessage: `Unknown stream.kind in events row: '${value}'`,
+      remediation: 'A migration likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
+      context: { streamKind: value },
+    });
+  }
+  return value as CoralEvent['stream']['kind'];
+}
 
 type Database = BetterSqlite3.Database;
 type EventRow = {
@@ -65,7 +80,7 @@ export function rebuildProjections(opts: RebuildOptions): void {
             seq: row.seq,
             ts: row.ts,
             type: row.type,
-            stream: { kind: row.stream_kind as 'job' | 'session' | 'discuss' | 'workflow', id: row.stream_id },
+            stream: { kind: assertStreamKind(row.stream_kind), id: row.stream_id },
             namespace: row.namespace ?? undefined,
             project: row.project ?? undefined,
             correlationId: row.correlation_id ?? undefined,

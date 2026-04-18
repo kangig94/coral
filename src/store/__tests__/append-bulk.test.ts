@@ -52,7 +52,7 @@ describe('appendEvents bulk', () => {
       expect(assigned[9999]?.seq).toBe(10000);
 
       for (let index = 1; index < assigned.length; index++) {
-        expect(assigned[index]?.seq).toBeGreaterThan(assigned[index - 1]?.seq ?? 0);
+        expect(assigned[index]?.seq).toBe((assigned[index - 1]?.seq ?? 0) + 1);
       }
 
       expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(10000);

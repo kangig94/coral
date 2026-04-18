@@ -92,6 +92,7 @@ export class UpcasterRegistry {
   parseBody<T>(type: string, bodyVersion: number, body: unknown, currentSchema: z.ZodType<T>): T {
     let current = body;
     let version = bodyVersion;
+    const visited = new Set<number>([version]);
 
     while (true) {
       const rec = this.entries.get(`${type}|${version}`);
@@ -111,6 +112,15 @@ export class UpcasterRegistry {
 
       current = rec.fn(current);
       version = rec.toVersion;
+      if (visited.has(version)) {
+        throw new CoralSetupError({
+          code: 'upcaster_cycle',
+          userMessage: `Upcaster chain cycle detected for type '${type}' at v${version}`,
+          remediation: 'Inspect registerUpcaster calls for this type; a cycle makes the chain non-terminating.',
+          context: { type, bodyVersion, cycleAt: version, chain: [...visited] },
+        });
+      }
+      visited.add(version);
     }
   }
 }
