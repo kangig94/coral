@@ -32,7 +32,7 @@ import {
   handleDiscussSpeech,
   handleDiscussStart,
   handleDiscussWatch,
-} from './discuss/tools.js';
+} from '../discuss/shell/tools.js';
 import {
   handleKbCommunityRead,
   handleKbDelete,

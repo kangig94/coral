@@ -11,7 +11,7 @@ import type { BackendCoreOptions } from '../backend-core-types.js';
 import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
-} from '../discuss/context-registry.js';
+} from '../../discuss/shell/live-registry.js';
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';

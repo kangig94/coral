@@ -1,12 +1,13 @@
 /**
- * Mark-based flaky test runner with parallel execution.
+ * Mark-based flaky test runner with isolated batches.
  *
  * Test files containing a `// @flaky` comment are detected automatically,
  * excluded from the main vitest run, then executed in isolation.
  * To mark a test as flaky, add `// @flaky` anywhere in the file (typically
  * line 1 with a short reason).
  *
- * The main run, flaky run, and simulation run execute concurrently.
+ * The main/flaky batches and the simulation batch run sequentially to avoid
+ * cross-batch contention in CLI and backend integration tests.
  */
 
 import { spawn } from 'child_process';
@@ -43,7 +44,9 @@ if (flaky.length) {
 jobs.push(runAsync('npx vitest run --config vitest.simulation.config.ts'));
 
 try {
-  await Promise.all(jobs);
+  for (const job of jobs) {
+    await job;
+  }
 } catch {
   process.exit(1);
 }

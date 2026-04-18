@@ -1,12 +1,11 @@
-import type { PersistedDiscussAgentRun, PersistedDiscussSnapshot } from '../../discuss/events.js';
-import type { Result } from '../../discuss/types.js';
-import type { WatchEvent } from '../../discuss/watch.js';
+import type { PersistedDiscussAgentRun, PersistedDiscussSnapshot } from '../events.js';
+import type { Result } from '../types.js';
+import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
-import type { ExecutionService } from '../service.js';
 import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
-export type { WatchEvent, WatchState } from '../../discuss/watch.js';
+export type { WatchEvent, WatchState } from '../watch.js';
 
 export const ABORT_REASON = 'abort';
 
@@ -51,10 +50,33 @@ export type DiscussRuntimePorts = {
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
 };
 
+export type DiscussLaunchDecision =
+  | {
+      status: 'running' | 'queued';
+      job: string;
+      session: string;
+    }
+  | {
+      status: 'rejected';
+      message: string;
+      code?: string;
+    };
+
+export type DiscussWaitResult = {
+  content: string;
+  nonResumable: boolean;
+};
+
+export type DiscussService = {
+  start(...args: unknown[]): Promise<DiscussLaunchDecision>;
+  resume(...args: unknown[]): Promise<DiscussLaunchDecision>;
+  waitStreamOnce(...args: unknown[]): Promise<DiscussWaitResult>;
+};
+
 export type DiscussContext = {
   projectRoot: string;
   sessions: Map<string, LiveDiscussSession>;
-  service: ExecutionService;
+  service: DiscussService;
   store: DiscussSessionStore;
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;

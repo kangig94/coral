@@ -3,14 +3,14 @@ import { request as httpRequest, type IncomingMessage as ClientIncomingMessage }
 
 import { makeEvent } from '../../discuss/events.js';
 import type { DiscussDetailResponse, DiscussSummaryDto } from '../../discuss/views.js';
-import * as discussLoop from '../discuss/loop.js';
+import * as discussLoop from '../../discuss/shell/loop.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   type DiscussContextRegistry,
-} from '../discuss/context-registry.js';
-import { attachSession } from '../discuss/registry.js';
-import { submitManualSpeech } from '../discuss/operations.js';
+} from '../../discuss/shell/live-registry.js';
+import { attachSession } from '../../discuss/shell/registry.js';
+import { submitManualSpeech } from '../../discuss/shell/operations.js';
 import type { BackendServerController } from '../server.js';
 import { createBackendServer } from '../server.js';
 import type { Runtime } from '../../runtime/ports.js';

@@ -3,16 +3,16 @@ import type { CallerContext } from '../../shared/request-context.js';
 import { formatError } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import type { ExecutionServiceLike } from '../backend-contracts.js';
-import type { DiscussContext } from '../discuss/context.js';
+import type { DiscussContext } from '../../discuss/shell/context.js';
 import {
   clearAllDiscuss,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
-} from '../discuss/context-registry.js';
-import * as discussLoop from '../discuss/loop.js';
-import * as discussOperations from '../discuss/operations.js';
-import { knownDiscussSources, type DiscussReadHelpersDeps } from '../discuss/read-helpers.js';
-import { DiscussSessionStore } from '../discuss/session-store.js';
+} from '../../discuss/shell/live-registry.js';
+import * as discussLoop from '../../discuss/shell/loop.js';
+import * as discussOperations from '../../discuss/shell/operations.js';
+import { knownDiscussSources, type DiscussReadHelpersDeps } from '../../discuss/shell/read-helpers.js';
+import { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { LifecycleHooks } from '../lifecycle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionService } from '../service.js';

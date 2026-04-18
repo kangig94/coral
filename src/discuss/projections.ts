@@ -1,3 +1,8 @@
+import type { Database } from 'better-sqlite3';
+
+import type { CoralEvent } from '../store/envelope.js';
+import type { Reducer } from '../store/reducers.js';
+import { makeEmptySnapshot, reduceDiscussEvent } from './reducer.js';
 import type {
   DiscussAuditView,
   DiscussControlTranscriptEntryDto,
@@ -6,6 +11,89 @@ import type {
 import type { WatchEvent } from './watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import type { TranscriptEntry } from './types.js';
+
+type ProjectionDiscussRow = {
+  state: PersistedDiscussSnapshot;
+  lastSeq: number;
+};
+
+type DiscussProjectionBody = Record<string, unknown> & {
+  legacySeq: number;
+};
+
+function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscussRow | null {
+  const row = db
+    .prepare(
+      `SELECT state, last_seq
+         FROM projection_discuss
+        WHERE discuss_id = ?`,
+    )
+    .get(discussId) as
+    | {
+        state: string;
+        last_seq: number;
+      }
+    | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    state: JSON.parse(row.state) as PersistedDiscussSnapshot,
+    lastSeq: row.last_seq,
+  };
+}
+
+function topicForEvent(
+  event: CoralEvent<DiscussProjectionBody>,
+  previous: PersistedDiscussSnapshot | null,
+): string {
+  if (typeof previous?.state.topic === 'string' && previous.state.topic.length > 0) {
+    return previous.state.topic;
+  }
+
+  if (event.type === 'discuss.session.created') {
+    const createdTopic = (event.body as { input?: { topic?: unknown } }).input?.topic;
+    if (typeof createdTopic === 'string') {
+      return createdTopic;
+    }
+  }
+
+  return '';
+}
+
+function toLegacyEvent(
+  event: CoralEvent<DiscussProjectionBody>,
+  previous: PersistedDiscussSnapshot | null,
+): DiscussDomainEvent {
+  const { legacySeq, ...payload } = event.body;
+
+  return {
+    v: 1,
+    sessionId: event.stream.id,
+    projectRoot: event.project ?? previous?.projectRoot ?? '',
+    topic: topicForEvent(event, previous),
+    seq: legacySeq,
+    kind: event.type.slice('discuss.'.length) as DiscussDomainEvent['kind'],
+    ts: event.ts,
+    payload,
+  } as DiscussDomainEvent;
+}
+
+export const reduceDiscussProjection: Reducer<DiscussProjectionBody> = (db, event) => {
+  const previous = readProjectionDiscuss(db, event.stream.id)?.state ?? null;
+  const seed = previous ?? makeEmptySnapshot(event.stream.id, event.project ?? '');
+  const next = reduceDiscussEvent(seed, toLegacyEvent(event, previous));
+
+  db.prepare(
+    `INSERT INTO projection_discuss (discuss_id, state, last_seq)
+     VALUES (?, ?, ?)
+     ON CONFLICT(discuss_id) DO UPDATE SET
+       state = excluded.state,
+       last_seq = excluded.last_seq`,
+  ).run(event.stream.id, JSON.stringify(next), event.seq);
+};
 
 function cloneTranscriptEntry(entry: TranscriptEntry): TranscriptEntry {
   switch (entry.type) {

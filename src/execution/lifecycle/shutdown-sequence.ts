@@ -4,7 +4,7 @@ import { backendLog } from '../../shared/backend-log.js';
 import { isAppServerRuntime } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { DiscussSessionStore } from '../discuss/session-store.js';
+import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { IdleTimer } from '../idle-timer.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';

@@ -14,12 +14,12 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextConstructionOptions,
   type DiscussContextRegistry,
-} from '../discuss/context-registry.js';
-import type { DiscussContext } from '../discuss/context.js';
+} from '../../discuss/shell/live-registry.js';
+import type { DiscussContext } from '../../discuss/shell/context.js';
 import { buildWatchEvents } from '../../discuss/projections.js';
-import { DiscussSessionStore } from '../discuss/session-store.js';
-import { attachSession, detachSession, listSessions } from '../discuss/registry.js';
-import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
+import { DiscussSessionStore } from '../../discuss/shell/session-store.js';
+import { attachSession, detachSession, listSessions } from '../../discuss/shell/registry.js';
+import { isAbortEnded, readSessionEvents } from '../../discuss/shell/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -93,6 +93,14 @@ function cleanupLiveSessions(context: DiscussContext): void {
 
 let harnessCounter = 0;
 
+export type CreateDiscussHarnessOptions = {
+  tmpRoot?: string;
+  projectRoot?: string;
+  pluginRoot?: string;
+  source?: string;
+  runtime?: SimulationRuntime;
+};
+
 export function createDiscussContextOptions(
   runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
 ): DiscussContextConstructionOptions {
@@ -112,16 +120,20 @@ export function discussContextOptions(harness: Pick<DiscussHarness, 'runtime'>):
   return createDiscussContextOptions(harness.runtime);
 }
 
-export function createDiscussHarness(service = createExecutionServiceStub(), sourceOverride?: string): DiscussHarness {
+export function createDiscussHarness(
+  service = createExecutionServiceStub(),
+  options: CreateDiscussHarnessOptions | string = {},
+): DiscussHarness {
   const harnessId = ++harnessCounter;
-  const tmpRoot = `/tmp/sim/coral-discuss-${harnessId}`;
-  const projectRoot = join(tmpRoot, `project-${harnessId}`);
-  const pluginRoot = join(tmpRoot, 'plugin');
+  const resolvedOptions = typeof options === 'string' ? { source: options } : options;
+  const tmpRoot = resolvedOptions.tmpRoot ?? `/tmp/sim/coral-discuss-${harnessId}`;
+  const projectRoot = resolvedOptions.projectRoot ?? join(tmpRoot, `project-${harnessId}`);
+  const pluginRoot = resolvedOptions.pluginRoot ?? join(tmpRoot, 'plugin');
 
-  const runtime = new SimulationRuntime();
+  const runtime = resolvedOptions.runtime ?? new SimulationRuntime();
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
-  const source = sourceOverride ?? runtime.paths.projectSource(projectRoot);
+  const source = resolvedOptions.source ?? runtime.paths.projectSource(projectRoot);
   const store = new DiscussSessionStore(source, {
     storage: runtime.storage,
     time: runtime.time,

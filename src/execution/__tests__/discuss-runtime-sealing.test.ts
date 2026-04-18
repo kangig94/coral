@@ -15,15 +15,15 @@ import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
-} from '../discuss/context-registry.js';
-import type { AgentConfig, DiscussContext } from '../discuss/context.js';
-import { runPlainTurn } from '../discuss/executor.js';
-import { getWatchState, startDiscussSession, submitManualBid } from '../discuss/operations.js';
-import { readSessionEvents } from '../discuss/persistence.js';
-import { detachSession } from '../discuss/registry.js';
-import { knownDiscussSources } from '../discuss/read-helpers.js';
-import { DiscussSessionStore } from '../discuss/session-store.js';
-import * as discussLoop from '../discuss/loop.js';
+} from '../../discuss/shell/live-registry.js';
+import type { AgentConfig, DiscussContext } from '../../discuss/shell/context.js';
+import { runPlainTurn } from '../../discuss/shell/runtime-build.js';
+import { getWatchState, startDiscussSession, submitManualBid } from '../../discuss/shell/operations.js';
+import { readSessionEvents } from '../../discuss/shell/persistence.js';
+import { detachSession } from '../../discuss/shell/registry.js';
+import { knownDiscussSources } from '../../discuss/shell/read-helpers.js';
+import { DiscussSessionStore } from '../../discuss/shell/session-store.js';
+import * as discussLoop from '../../discuss/shell/loop.js';
 import type { ExecutionService } from '../service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../simulation/core/index.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '../simulation/scenario-http.js';
@@ -483,7 +483,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
 });
 
 describe('AC7 import audits', () => {
-  const sourceRoot = resolve(process.cwd(), 'src/execution');
+  const sourceRoot = resolve(process.cwd(), 'src/discuss/shell');
 
   function readSource(relativePath: string): string {
     return readFileSync(resolve(sourceRoot, relativePath), 'utf-8');
@@ -495,32 +495,32 @@ describe('AC7 import audits', () => {
   }
 
   it('keeps session-store.ts free of node:fs and native timers', () => {
-    const source = readSource('discuss/session-store.ts');
+    const source = readSource('session-store.ts');
     expect(source).not.toMatch(/node:fs/u);
     expectNoNativeTimers(source);
   });
 
   it('keeps read-helpers.ts free of direct client source-registry readers', () => {
-    const source = readSource('discuss/read-helpers.ts');
+    const source = readSource('read-helpers.ts');
     expect(source).not.toMatch(/client\/readers/u);
     expect(source).not.toMatch(/(?<!\.)\breadDiscussSources(?:WithStorage)?\s*\(/u);
   });
 
-  it('keeps executor.ts free of direct client job-status readers', () => {
-    const source = readSource('discuss/executor.ts');
+  it('keeps runtime-build.ts free of direct client job-status readers', () => {
+    const source = readSource('runtime-build.ts');
     expect(source).not.toMatch(/client\/readers/u);
     expect(source).not.toMatch(/\breadStatusRecord\b/u);
   });
 
   it('keeps tools.ts free of node:crypto', () => {
-    expect(readSource('discuss/tools.ts')).not.toMatch(/node:crypto/u);
+    expect(readSource('tools.ts')).not.toMatch(/node:crypto/u);
   });
 
   it('keeps operations.ts free of direct process.env', () => {
-    expect(readSource('discuss/operations.ts')).not.toMatch(/process\.env/u);
+    expect(readSource('operations.ts')).not.toMatch(/process\.env/u);
   });
 
   it('keeps loop.ts free of native timers', () => {
-    expectNoNativeTimers(readSource('discuss/loop.ts'));
+    expectNoNativeTimers(readSource('loop.ts'));
   });
 });

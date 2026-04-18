@@ -8,7 +8,7 @@
 
 import type { ServerResponse } from 'node:http';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { DiscussContext } from './discuss/context.js';
+import type { DiscussContext } from '../discuss/shell/context.js';
 import type { EventBusEvents } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';

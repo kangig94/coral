@@ -1,7 +1,6 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
-import type { ExecutionService } from '../service.js';
-import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, LiveDiscussSession } from './context.js';
+import type { DiscussContext, DiscussJobStatusReader, DiscussRuntimePorts, DiscussService, LiveDiscussSession } from './context.js';
 import { isWithinLiveSessionBoundary } from './operations.js';
 
 export type AttachedDiscussSession = {
@@ -28,7 +27,7 @@ export function createDiscussContextRegistry(): DiscussContextRegistry {
 export function getOrCreate(
   registry: DiscussContextRegistry,
   projectRoot: string,
-  service: ExecutionService,
+  service: DiscussService,
   store: DiscussSessionStore,
   options: DiscussContextConstructionOptions,
 ): DiscussContext {

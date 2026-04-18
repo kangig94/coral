@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -22,7 +22,7 @@ import {
   runHook,
   writeInjectMd,
 } from './_helpers.js';
-import type { HookOutput, JobStatus, SnapshotRecord } from './_helpers.js';
+import type { HookOutput } from './_helpers.js';
 
 afterEach(cleanupFixtures);
 
@@ -33,26 +33,6 @@ function initGitRepo(projectRoot: string, remote: string): void {
 
 function coralProjectDir(homeDir: string, source: string): string {
   return join(homeDir, '.coral', 'projects', source.replace(/\//g, '-'));
-}
-
-function writeStatus(jobsDir: string, status: JobStatus): void {
-  const jobDir = join(jobsDir, status.jobId);
-  mkdirSync(jobDir, { recursive: true });
-  writeFileSync(join(jobDir, 'status.json'), JSON.stringify(status), 'utf-8');
-}
-
-function writeCorruptStatus(jobsDir: string, jobId: string, raw: string): void {
-  const jobDir = join(jobsDir, jobId);
-  mkdirSync(jobDir, { recursive: true });
-  writeFileSync(join(jobDir, 'status.json'), raw, 'utf-8');
-}
-
-function listSnapshots(snapshotDir: string): string[] {
-  if (!existsSync(snapshotDir)) return [];
-  return readdirSync(snapshotDir)
-    .filter((fileName) => fileName.startsWith('active-jobs-') && fileName.endsWith('.json'))
-    .map((fileName) => join(snapshotDir, fileName))
-    .sort((left, right) => left.localeCompare(right));
 }
 
 describe('session-start.mjs', () => {
@@ -338,16 +318,21 @@ describe('hooks.json', () => {
 });
 
 describe('pre-compact.mjs', () => {
-  it('writes snapshot when active jobs exist for this project', () => {
+  it('exits 0, emits a stub log line, and does not write snapshots', () => {
     const fixture = createFixture();
-    const liveJob: JobStatus = {
-      jobId: 'test-job-live',
-      phase: 'running',
-      projectRoot: fixture.projectRoot,
-      provider: 'codex',
-      sessionId: 'sess-1',
-    };
-    writeStatus(fixture.jobsDir, liveJob);
+    const jobDir = join(fixture.jobsDir, 'test-job-live');
+    mkdirSync(jobDir, { recursive: true });
+    writeFileSync(
+      join(jobDir, 'status.json'),
+      JSON.stringify({
+        jobId: 'test-job-live',
+        phase: 'running',
+        projectRoot: fixture.projectRoot,
+        provider: 'codex',
+        sessionId: 'sess-1',
+      }),
+      'utf-8',
+    );
 
     const result = runHook(
       PRE_COMPACT_HOOK,
@@ -359,75 +344,15 @@ describe('pre-compact.mjs', () => {
     );
 
     expect(result.status).toBe(0);
-
-    const snapshots = listSnapshots(fixture.snapshotDir);
-    expect(snapshots).toHaveLength(1);
-
-    const snapshot = JSON.parse(readFileSync(snapshots[0], 'utf-8')) as SnapshotRecord;
-    expect(snapshot.projectRoot).toBe(fixture.projectRoot);
-    expect(snapshot.jobs).toHaveLength(1);
-    expect(snapshot.jobs[0]).toMatchObject({
-      jobId: 'test-job-live',
-      phase: 'running',
-      provider: 'codex',
-      sessionId: 'sess-1',
+    expect(result.stdout).toBe('');
+    expect(existsSync(fixture.snapshotDir)).toBe(false);
+    expect(JSON.parse(result.stderr.trim())).toMatchObject({
+      hook: 'pre-compact',
+      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
     });
   });
 
-  it('does not write snapshot when no matching jobs', () => {
-    const fixture = createFixture();
-    writeStatus(fixture.jobsDir, {
-      jobId: 'test-job-completed',
-      phase: 'completed',
-      projectRoot: fixture.projectRoot,
-      provider: 'codex',
-      sessionId: 'sess-1',
-    });
-
-    const result = runHook(
-      PRE_COMPACT_HOOK,
-      { session_id: 'sess-1', cwd: fixture.projectRoot },
-      {
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        TMPDIR: fixture.tmpRoot,
-      },
-    );
-
-    expect(result.status).toBe(0);
-    expect(listSnapshots(fixture.snapshotDir)).toHaveLength(0);
-  });
-
-  it('skips corrupt job dirs (fail isolation)', () => {
-    const fixture = createFixture();
-    writeCorruptStatus(fixture.jobsDir, 'test-job-corrupt', '{ not valid json }');
-    writeStatus(fixture.jobsDir, {
-      jobId: 'test-job-valid',
-      phase: 'running',
-      projectRoot: fixture.projectRoot,
-      provider: 'codex',
-      sessionId: 'sess-2',
-    });
-
-    const result = runHook(
-      PRE_COMPACT_HOOK,
-      { session_id: 'sess-2', cwd: fixture.projectRoot },
-      {
-        CLAUDE_PROJECT_DIR: fixture.projectRoot,
-        TMPDIR: fixture.tmpRoot,
-      },
-    );
-
-    expect(result.status).toBe(0);
-
-    const snapshots = listSnapshots(fixture.snapshotDir);
-    expect(snapshots).toHaveLength(1);
-
-    const snapshot = JSON.parse(readFileSync(snapshots[0], 'utf-8')) as SnapshotRecord;
-    expect(snapshot.jobs).toHaveLength(1);
-    expect(snapshot.jobs[0]?.jobId).toBe('test-job-valid');
-  });
-
-  it('exits silently when no JOBS_DIR', () => {
+  it('remains fail-open with no jobs directory', () => {
     const fixture = createFixture();
 
     const result = runHook(
@@ -440,8 +365,12 @@ describe('pre-compact.mjs', () => {
     );
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
-    expect(listSnapshots(fixture.snapshotDir)).toHaveLength(0);
+    expect(result.stdout).toBe('');
+    expect(existsSync(fixture.snapshotDir)).toBe(false);
+    expect(JSON.parse(result.stderr.trim())).toMatchObject({
+      hook: 'pre-compact',
+      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+    });
   });
 });
 

@@ -21,7 +21,7 @@ import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, StoragePort } from '../../../runtime/ports.js';
 import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
-import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
+import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../../discuss/reconcile.js';
 import { ExecutionService } from '../../service.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';

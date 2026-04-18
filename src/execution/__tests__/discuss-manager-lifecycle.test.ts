@@ -7,14 +7,14 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
   listAttachedSessions,
-} from '../discuss/context-registry.js';
+} from '../../discuss/shell/live-registry.js';
 import {
   abortDiscussSession,
   persistAbortEndForShutdown,
   recoverPersistedSessionsFromStore,
-} from '../discuss/operations.js';
-import { readSessionEvents } from '../discuss/persistence.js';
-import { detachSession } from '../discuss/registry.js';
+} from '../../discuss/shell/operations.js';
+import { readSessionEvents } from '../../discuss/shell/persistence.js';
+import { detachSession } from '../../discuss/shell/registry.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,

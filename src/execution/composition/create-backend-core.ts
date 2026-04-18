@@ -1,12 +1,9 @@
 import type { ServerResponse } from 'node:http';
 import { formatError } from '../../shared/utils.js';
 import type { EventStreamHandlers, HttpHandlerDeps } from '../backend-contracts.js';
-import {
-  knownDiscussSources,
-  listDiscussSessions,
-  loadDiscussDetail,
-} from '../discuss/read-helpers.js';
-import { listAttachedSessions } from '../discuss/context-registry.js';
+import { discussQueries } from '../../discuss/api.js';
+import { knownDiscussSources } from '../../discuss/shell/read-helpers.js';
+import { listAttachedSessions } from '../../discuss/shell/live-registry.js';
 import { createHttpHandler, sendJson } from '../http-handler.js';
 import {
   createLifecycle,
@@ -100,9 +97,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       world.eventBus.off('discuss:updated', handlers.onDiscussUpdated);
     },
     liveDiscussCount: () => listAttachedSessions(world.discussRegistry).length,
-    listDiscussSessions: () => listDiscussSessions(discuss.readHelpersDeps),
-    loadDiscussDetail: (source, sessionId, view) =>
-      loadDiscussDetail(discuss.readHelpersDeps, source, sessionId, view),
+    listDiscussSessions: () => discussQueries.list(discuss.readHelpersDeps),
+    loadDiscussDetail: (source, sessionId, view) => discussQueries.get(discuss.readHelpersDeps, source, sessionId, view),
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);

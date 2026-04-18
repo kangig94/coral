@@ -2,11 +2,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
-import * as discussPrompts from '../discuss/prompts.js';
-import * as discussLoop from '../discuss/loop.js';
-import * as discussSubflows from '../discuss/subflows.js';
-import { getWatchState, recoverPersistedSessionsFromStore } from '../discuss/operations.js';
-import { getSession } from '../discuss/registry.js';
+import * as discussPrompts from '../../discuss/shell/prompts.js';
+import * as discussLoop from '../../discuss/shell/loop.js';
+import * as discussSubflows from '../../discuss/shell/subflows.js';
+import { getWatchState, recoverPersistedSessionsFromStore } from '../../discuss/shell/operations.js';
+import { getSession } from '../../discuss/shell/registry.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,

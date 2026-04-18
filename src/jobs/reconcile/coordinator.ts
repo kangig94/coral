@@ -6,9 +6,9 @@ import {
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { DiscussContext } from '../../execution/discuss/context.js';
-import type { RecoveredDiscussResume } from '../../execution/discuss/operations.js';
-import type { DiscussSessionStore } from '../../execution/discuss/session-store.js';
+import type { DiscussContext } from '../../discuss/shell/context.js';
+import type { RecoveredDiscussResume } from '../../discuss/shell/operations.js';
+import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { planRecovery } from './plan.js';

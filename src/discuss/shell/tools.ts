@@ -1,17 +1,42 @@
 import { z } from 'zod';
-import { errorMessage } from '../../shared/utils.js';
-import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
+import { errorMessage, isRecord } from '../../shared/utils.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../schemas.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
-import { seedPersonas } from '../../discuss/persona-seed.js';
-import {
-  deriveErrorMessage,
-  domainError,
-  domainSuccess,
-  toolValidationError,
-  type ToolDomainResult,
-} from '../tool-response.js';
+import { seedPersonas } from '../persona-seed.js';
 import type { CallerContext } from '../../shared/request-context.js';
+
+type ToolDomainResult =
+  | { ok: true; data: unknown }
+  | { ok: false; code: string; message: string; detail?: unknown };
+
+function domainSuccess(data: unknown): ToolDomainResult {
+  return { ok: true, data };
+}
+
+function domainError(code: string, message: string, detail?: unknown): ToolDomainResult {
+  return detail === undefined ? { ok: false, code, message } : { ok: false, code, message, detail };
+}
+
+function toolValidationError(error: { message: string }): ToolDomainResult {
+  return domainError('invalid_request', error.message);
+}
+
+function deriveErrorMessage(code: string, detail?: unknown): string {
+  if (typeof detail === 'string' && detail.length > 0) {
+    return detail;
+  }
+
+  if (detail instanceof Error && detail.message.length > 0) {
+    return detail.message;
+  }
+
+  if (isRecord(detail) && typeof detail.message === 'string' && detail.message.length > 0) {
+    return detail.message;
+  }
+
+  return code.replaceAll('_', ' ');
+}
 
 const discussSessionSchema = z.object({
   session: z.string().min(1),

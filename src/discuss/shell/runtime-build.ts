@@ -2,9 +2,9 @@ import {
   makeEvent,
   type PersistedDiscussAgentRun,
   type SessionCreatedAgentExecutionConfig,
-} from '../../discuss/events.js';
-import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
-import { nowIsoString } from '../../discuss/util/time.js';
+} from '../events.js';
+import type { PersistedDiscussSnapshot } from '../events.js';
+import { nowIsoString } from '../util/time.js';
 import { isLivePhase } from '../../shared/types.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';

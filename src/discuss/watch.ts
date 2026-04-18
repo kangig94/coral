@@ -4,7 +4,7 @@
  * `WatchEvent` and `WatchState` are discuss domain types that describe the
  * shape of watch data produced by projections and consumed by execution
  * runtime. Runtime-only watch machinery (WatchBuffer, WatchSubscriber,
- * LiveDiscussSession internals) stays in `execution/discuss/context.ts`.
+ * LiveDiscussSession internals) stay in `src/discuss/shell/context.ts`.
  */
 
 export type WatchEvent = {

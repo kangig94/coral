@@ -1,22 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../discuss/events.js';
-import * as discussLoop from '../discuss/loop.js';
-import * as discussSubflows from '../discuss/subflows.js';
+import * as discussLoop from '../../discuss/shell/loop.js';
+import * as discussSubflows from '../../discuss/shell/subflows.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
-} from '../discuss/context-registry.js';
-import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../discuss/executor.js';
+} from '../../discuss/shell/live-registry.js';
+import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../../discuss/shell/runtime-build.js';
 import {
   abortDiscussSession,
   getWatchState,
   recoverPersistedSessionsFromStore,
   startDiscussSession,
-} from '../discuss/operations.js';
-import { detachSession, getSession } from '../discuss/registry.js';
+} from '../../discuss/shell/operations.js';
+import { detachSession, getSession } from '../../discuss/shell/registry.js';
 import {
   DEFAULT_TOPIC,
   advanceDiscussRuntime,

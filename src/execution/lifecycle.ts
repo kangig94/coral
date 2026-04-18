@@ -18,9 +18,10 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { DiscussContext } from './discuss/context.js';
-import type { DiscussSessionStore } from './discuss/session-store.js';
-import type { RecoveredDiscussResume } from './discuss/operations.js';
+import type { DiscussContext } from '../discuss/shell/context.js';
+import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
+import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
+import { discussReconcile } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase } from '../shared/types.js';
@@ -301,7 +302,7 @@ async function runLifecycleStartup({
       assertStartupStillActive,
       log: identity.log,
       cleanupStaleJobs: cleanupStaleJobsFn,
-      recoverPersistedDiscuss: recoverPersistedDiscussFn,
+      recoverPersistedDiscuss: recoverPersistedDiscussFn ?? discussReconcile.runStartup,
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,

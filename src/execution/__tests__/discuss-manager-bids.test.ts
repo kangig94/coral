@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { collectBids } from '../discuss/subflows.js';
-import { startDiscussSession, submitManualBid } from '../discuss/operations.js';
+import { collectBids } from '../../discuss/shell/subflows.js';
+import { startDiscussSession, submitManualBid } from '../../discuss/shell/operations.js';
 import {
   DEFAULT_TOPIC,
   cleanupDiscussHarnesses,

@@ -22,8 +22,8 @@ import { readDiscussEventLog } from '../../client/readers.js';
 import { readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
 import { makeEvent } from '../../discuss/events.js';
 import { decideSessionCreate } from '../../discuss/state-machine.js';
-import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../discuss/context-registry.js';
-import { DiscussSessionStore } from '../discuss/session-store.js';
+import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../../discuss/shell/live-registry.js';
+import { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import { ProgressStore } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import {
@@ -1308,7 +1308,7 @@ describe('execution backend server', () => {
         ...options.kbToolOverrides,
       };
 
-      vi.doMock('../discuss/tools.js', () => discussTools);
+      vi.doMock('../../discuss/shell/tools.js', () => discussTools);
       vi.doMock('../kb-tools.js', () => kbTools);
 
       const { createHttpHandler } = await import('../http-handler.js');
@@ -1337,7 +1337,7 @@ describe('execution backend server', () => {
     }
 
     afterEach(() => {
-      vi.doUnmock('../discuss/tools.js');
+      vi.doUnmock('../../discuss/shell/tools.js');
       vi.doUnmock('../kb-tools.js');
     });
 
@@ -4492,7 +4492,7 @@ describe('execution backend server', () => {
 
     it('stops the startup tail when shutdown begins during recovery adoption', async () => {
       const { lifecycleModule } = await loadExecutionModules();
-      const discussLoop = await import('../discuss/loop.js');
+      const discussLoop = await import('../../discuss/shell/loop.js');
       const resumeLoopSpy = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
       const pluginRoot = createProjectRoot('startup-interrupted-during-adoption');
       const namespace = pluginRootNamespace(pluginRoot);

@@ -8,9 +8,9 @@ import type {
   MutableBackendRuntimeState,
 } from './backend-contracts.js';
 import type { VerifyBackendOwnershipFn } from './backend-lock.js';
-import type { DiscussContext } from './discuss/context.js';
-import type { DiscussContextRegistry } from './discuss/context-registry.js';
-import type { DiscussSessionStore } from './discuss/session-store.js';
+import type { DiscussContext } from '../discuss/shell/context.js';
+import type { DiscussContextRegistry } from '../discuss/shell/live-registry.js';
+import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { LaunchCoordinator } from './engine.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ProviderHostManager } from './host-manager.js';

@@ -1,12 +1,13 @@
-import { decideBidRoundClose, decideEnd } from '../../discuss/state-machine.js';
-import { nowIsoString } from '../../discuss/util/time.js';
+import { decideBidRoundClose, decideEnd } from '../state-machine.js';
+import { nowIsoString } from '../util/time.js';
 import { errorMessage } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './executor.js';
+import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './runtime-build.js';
 import { type DiscussContext, DiscussManagerError } from './context.js';
 import { commitDecision } from './persistence.js';
-import { collectBids, collectSpeech, handleEpochTransition, handleSynthesis, runFollowUpTurns } from './subflows.js';
+import * as discussSubflows from './subflows.js';
+import { collectBids } from './bid-flow.js';
 import { getSession } from './registry.js';
 
 async function waitForObserverBidWindow(
@@ -53,7 +54,7 @@ async function handleBidRoundClose(
     return { shouldResume: true };
   }
   if (resolved.error === 'quorum_not_met') {
-    return collectBids(ctx, sessionId, callerCtx);
+    return discussSubflows.collectBids(ctx, sessionId, callerCtx);
   }
   if (resolved.error === 'session_not_found') {
     return { shouldResume: false };
@@ -126,7 +127,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'synthesize') {
-        const result = await handleSynthesis(ctx, sessionId, callerCtx);
+        const result = await discussSubflows.handleSynthesis(ctx, sessionId, callerCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -134,7 +135,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'evaluate_epoch') {
-        const result = await handleEpochTransition(ctx, sessionId, callerCtx);
+        const result = await discussSubflows.handleEpochTransition(ctx, sessionId, callerCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -142,7 +143,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'collect_follow_up') {
-        const result = await runFollowUpTurns(ctx, sessionId, callerCtx);
+        const result = await discussSubflows.runFollowUpTurns(ctx, sessionId, callerCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -160,7 +161,7 @@ export async function continueLoop(
         if (isManualParticipant(snapshot, snapshot.state.current_speaker)) {
           return;
         }
-        const result = await collectSpeech(ctx, sessionId, snapshot.state.current_speaker, callerCtx);
+        const result = await discussSubflows.collectSpeech(ctx, sessionId, snapshot.state.current_speaker, callerCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -190,7 +191,7 @@ export async function continueLoop(
       }
 
       if (hasActiveBidWork(snapshot) || hasPendingAutoBidders(snapshot)) {
-        const result = await collectBids(ctx, sessionId, callerCtx);
+        const result = await discussSubflows.collectBids(ctx, sessionId, callerCtx);
         if (!result.shouldResume) {
           return;
         }

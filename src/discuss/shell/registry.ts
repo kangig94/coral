@@ -9,7 +9,7 @@ import {
   watchBufferCursor,
 } from './context.js';
 import { buildPersistedWatchState } from './persistence.js';
-import type { PersistedDiscussSnapshot } from '../../discuss/events.js';
+import type { PersistedDiscussSnapshot } from '../events.js';
 
 export function attachSession(
   ctx: DiscussContext,

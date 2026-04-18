@@ -14,7 +14,7 @@ import type * as EngineModule from '../engine.js'
 import type * as EventBusModule from '../event-bus.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
-import type * as DiscussOperationsModule from '../discuss/operations.js'
+import type * as DiscussOperationsModule from '../../discuss/shell/operations.js'
 import { createRealRuntime } from '../../runtime/real.js'
 import { createDeferred } from '../../shared/test-deferred.js'
 
@@ -78,7 +78,7 @@ async function loadModules(): Promise<LoadedModules> {
     import('../event-bus.js'),
     import('../../infra/paths.js'),
     import('../../providers/registry.js'),
-    import('../discuss/operations.js'),
+    import('../../discuss/shell/operations.js'),
   ])
 
   return {

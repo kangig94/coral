@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent, type PersistedDiscussSnapshot } from '../../discuss/events.js';
-import { continueLoop } from '../discuss/loop.js';
-import { getWatchState } from '../discuss/operations.js';
-import { getSession } from '../discuss/registry.js';
-import { handleEpochTransition } from '../discuss/subflows.js';
+import { continueLoop } from '../../discuss/shell/loop.js';
+import { getWatchState } from '../../discuss/shell/operations.js';
+import { getSession } from '../../discuss/shell/registry.js';
+import { handleEpochTransition } from '../../discuss/shell/subflows.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,

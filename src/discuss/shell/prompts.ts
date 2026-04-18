@@ -1,4 +1,4 @@
-import type { AgentState, DiscussState } from '../../discuss/types.js';
+import type { AgentState, DiscussState } from '../types.js';
 
 export type PromptContext = {
   selfName: string;

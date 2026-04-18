@@ -11,8 +11,8 @@ import {
   type DiscussDetailResponse,
   type DiscussSummaryDto,
   type DiscussView,
-} from '../../discuss/views.js';
-import { listAttachedSessions, type DiscussContextRegistry } from './context-registry.js';
+} from '../views.js';
+import { listAttachedSessions, type DiscussContextRegistry } from './live-registry.js';
 import type { DiscussSessionStore } from './session-store.js';
 
 export type DiscussReadHelpersDeps = {

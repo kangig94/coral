@@ -28,7 +28,7 @@ import {
 import { replayDiscussEvents } from '../../discuss/reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '../../discuss/types.js';
-import { DiscussSessionStore, DiscussStaleWriteError } from '../discuss/session-store.js';
+import { DiscussSessionStore, DiscussStaleWriteError } from '../../discuss/shell/session-store.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
 const SESSION_ID = 'session-1';
