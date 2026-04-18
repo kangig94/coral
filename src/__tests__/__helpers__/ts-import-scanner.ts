@@ -32,7 +32,7 @@ export function listProductionSourceFiles(dirPath: string): string[] {
     const entryPath = join(dirPath, entry.name);
 
     if (entry.isDirectory()) {
-      if (entry.name === '__tests__') {
+      if (entry.name === '__tests__' || entry.name === '_legacy') {
         continue;
       }
       files.push(...listProductionSourceFiles(entryPath));

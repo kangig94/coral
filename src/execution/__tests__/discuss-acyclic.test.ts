@@ -24,6 +24,7 @@ const SUBSYSTEM_PREFIXES = [
   'providers',
   'workflow',
   'kb',
+  'runtime',
   'coral',
   'hooks',
   'skills',
