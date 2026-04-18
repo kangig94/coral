@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import type {
-  PersistedExitRecord,
-  PersistedLaunchRecord,
-  PersistedRuntimeRecord,
-  PersistedStatusRecord,
-  TerminalResult,
+  JobExitRecord,
+  JobLaunchRecord,
+  JobRuntimeRecord,
+  JobStatusRecord,
+  JobTerminalRecord,
 } from '../../shared/types.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
@@ -54,7 +54,7 @@ function isoNow(): string {
   return new Date(nowMs()).toISOString();
 }
 
-function completedResult(overrides: Partial<TerminalResult> = {}): TerminalResult {
+function completedResult(overrides: Partial<JobTerminalRecord> = {}): JobTerminalRecord {
   return {
     content: 'done',
     outcome: { kind: 'completed' },
@@ -248,7 +248,7 @@ describe('execution ProgressStore', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
-    } satisfies PersistedStatusRecord;
+    } satisfies JobStatusRecord;
 
     store.writeStatus(jobId, record);
 
@@ -273,7 +273,7 @@ describe('execution ProgressStore', () => {
       phase: 'completed',
       launch: { state: 'ready', updatedAt: '2026-03-06T00:00:00.000Z' },
       result: completedResult({ content: 'done' }),
-    } satisfies PersistedStatusRecord;
+    } satisfies JobStatusRecord;
 
     store.writeStatus(jobId, record);
 
@@ -395,7 +395,7 @@ describe('legacy backendNamespace bridge', () => {
   function seedLegacyStatus(
     progressStore: ProgressStore,
     jobId: string,
-    overrides: Partial<PersistedStatusRecord & { backendNamespace?: string | null }> = {},
+    overrides: Partial<JobStatusRecord & { backendNamespace?: string | null }> = {},
   ): void {
     const jobDir = progressStore.jobDir(jobId);
     mkdirSync(jobDir, { recursive: true });
@@ -492,7 +492,7 @@ describe('durable snapshot artifacts', () => {
     const jobId = nextJobId('test-launch');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
-    const record: PersistedLaunchRecord = {
+    const record: JobLaunchRecord = {
       jobId,
       sessionId: 's1',
       provider: 'codex',
@@ -520,7 +520,7 @@ describe('durable snapshot artifacts', () => {
     const jobId = nextJobId('test-runtime');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
-    const record: PersistedRuntimeRecord = {
+    const record: JobRuntimeRecord = {
       pid: 12345,
       stdoutPath: join(store.jobDir(jobId), 'stdout'),
       stderrPath: join(store.jobDir(jobId), 'stderr'),
@@ -538,13 +538,13 @@ describe('durable snapshot artifacts', () => {
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const runtimePath = join(store.jobDir(jobId), 'runtime.json');
-    const firstRecord: PersistedRuntimeRecord = {
+    const firstRecord: JobRuntimeRecord = {
       pid: 111,
       stdoutPath: join(store.jobDir(jobId), 'stdout-1'),
       stderrPath: join(store.jobDir(jobId), 'stderr-1'),
       startTime: '2026-04-03T00:00:00.000Z',
     };
-    const secondRecord: PersistedRuntimeRecord = {
+    const secondRecord: JobRuntimeRecord = {
       pid: 222,
       stdoutPath: join(store.jobDir(jobId), 'stdout-2'),
       stderrPath: join(store.jobDir(jobId), 'stderr-2'),
@@ -567,7 +567,7 @@ describe('durable snapshot artifacts', () => {
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
     const runtimePath = join(store.jobDir(jobId), 'runtime.json');
-    const record: PersistedRuntimeRecord = {
+    const record: JobRuntimeRecord = {
       pid: 333,
       stdoutPath: join(store.jobDir(jobId), 'stdout'),
       stderrPath: join(store.jobDir(jobId), 'stderr'),
@@ -585,7 +585,7 @@ describe('durable snapshot artifacts', () => {
     const jobId = nextJobId('test-exit');
     store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
 
-    const record: PersistedExitRecord = {
+    const record: JobExitRecord = {
       exitCode: 0,
       signal: null,
       endTime: isoNow(),

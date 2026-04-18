@@ -59,12 +59,12 @@ export type {
 
 // ../shared/types.js
 export type {
-  PersistedStatusRecord,
-  PersistedProgressRecord,
+  JobStatusRecord,
+  JobProgressRecord,
   SessionEntry,
   WaitStreamEvent,
   WaitCursor,
-  TerminalResult,
+  JobTerminalRecord,
   JobPhase,
   SessionState,
   JobKind,

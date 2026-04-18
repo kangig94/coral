@@ -336,7 +336,7 @@ describe('claude provider adapter', () => {
     expect(runCli).not.toHaveBeenCalled();
   });
 
-  it('returns nonResumable ProviderResult when fork throws ClaudeExecParseError', async () => {
+  it('returns nonResumable ProviderTurnResult when fork throws ClaudeExecParseError', async () => {
     mockExecuteClaudeFork.mockRejectedValueOnce(
       new ClaudeExecParseError({
         exitCode: 7,
@@ -370,7 +370,7 @@ describe('claude provider adapter', () => {
     });
   });
 
-  it('maps persistent broker output into ProviderResult fields including usage.costUsd', async () => {
+  it('maps persistent broker output into ProviderTurnResult fields including usage.costUsd', async () => {
     const lease = makeLease({
       rpcImpl: async (method) => {
         if (method === 'session/ensure') {

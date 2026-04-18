@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CallerContext } from '../../shared/request-context.js';
-import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../shared/types.js';
+import type { JobTerminalRecord, WaitRequest, WaitStreamEvent } from '../../shared/types.js';
 import { executePipeline } from '../executor.js';
 import { parseExpression } from '../parser.js';
 import type { WorkflowExecutionPort } from '../command.js';
@@ -22,7 +22,7 @@ function running(job: string, session: string) {
 
 function terminal(
   jobId: string,
-  result: Omit<TerminalResult, 'outcome'> & { outcome?: TerminalResult['outcome'] },
+  result: Omit<JobTerminalRecord, 'outcome'> & { outcome?: JobTerminalRecord['outcome'] },
 ): WaitStreamEvent {
   return {
     type: 'terminal',
@@ -32,7 +32,7 @@ function terminal(
     result:
       result.outcome === undefined
         ? { ...result, outcome: { kind: 'completed' } }
-        : ({ ...result, outcome: result.outcome } as TerminalResult),
+        : ({ ...result, outcome: result.outcome } as JobTerminalRecord),
   };
 }
 

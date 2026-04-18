@@ -9,9 +9,9 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { isRecord } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
 import { runAppServerTurn } from '../app-server/runner.js';
-import { mapProviderResultBase } from '../result-mapping.js';
+import { mapProviderTurnResultBase } from '../result-mapping.js';
 import {
   type ArtifactCleanupRuntime,
   makeOnEvent,
@@ -87,16 +87,16 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   };
 }
 
-function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderResult {
+function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderTurnResult {
   return {
-    ...mapProviderResultBase(result),
+    ...mapProviderTurnResultBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
     nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
   };
 }
 
-function parseError(error: unknown, fallbackModel: string): ProviderResult | null {
+function parseError(error: unknown, fallbackModel: string): ProviderTurnResult | null {
   if (error instanceof ClaudeExecParseError) {
     return {
       content: '',
@@ -164,7 +164,7 @@ function buildPreparedRequest(
   };
 }
 
-function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderResult {
+function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderTurnResult {
   return {
     content: '',
     model: resolveClaudeModel(request.model, request.coralEnv),
@@ -215,7 +215,7 @@ async function executeFork(
   request: ProviderRequest,
   runtime: ProviderRuntime,
   prepared: { prompt: string; systemPrompt?: string; model?: string; effort: EffortLevel },
-): Promise<ProviderResult> {
+): Promise<ProviderTurnResult> {
   const options = {
     model: prepared.model,
     workingDirectory: request.cwd,
@@ -242,7 +242,7 @@ async function executePersistent(
   runtime: ProviderRuntime,
   _prepared: { prompt: string; systemPrompt?: string; model?: string },
   _persistedContinuity: ClaudePersistedContinuity,
-): Promise<ProviderResult> {
+): Promise<ProviderTurnResult> {
   return runAppServerTurn(claudeSessionDriver, request, runtime);
 }
 
@@ -333,7 +333,7 @@ const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
   },
 };
 
-async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
+async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderTurnResult> {
   const prepared = buildPreparedRequest(request);
   const continuity = readClaudePersistedContinuity(runtime.persistedContinuity);
   const redirectReason = getPersistentRedirectReason(request, runtime, continuity, prepared.systemPrompt);

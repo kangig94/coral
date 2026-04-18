@@ -1,4 +1,4 @@
-import type { JobKind, JobPhase, LaunchDecision, PersistedLaunchRecord, ProviderRequest } from '../shared/types.js';
+import type { JobKind, JobPhase, LaunchDecision, JobLaunchRecord, ProviderRequest } from '../shared/types.js';
 import { resolveEffort } from '../shared/schemas.js';
 import type { AdmissionResult } from './engine.js';
 
@@ -28,7 +28,7 @@ export function rejectLaunch(code: string, message: string): LaunchDecision {
   };
 }
 
-export function toProviderRequest(launchRecord: PersistedLaunchRecord): ProviderRequest {
+export function toProviderRequest(launchRecord: JobLaunchRecord): ProviderRequest {
   const { providerAction, request, sessionId, projectRoot } = launchRecord;
   return {
     action: providerAction,

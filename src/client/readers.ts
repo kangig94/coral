@@ -34,7 +34,7 @@ import {
   jobsDir,
   resolveProjectSource,
 } from '../infra/paths.js';
-import type { PersistedProgressRecord, PersistedStatusRecord } from '../shared/types.js';
+import type { JobProgressRecord, JobStatusRecord } from '../shared/types.js';
 
 export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../shared/session-entry.js';
 export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
@@ -113,19 +113,19 @@ export type DiscussEventLogEntry = DiscussDomainEvent;
 /**
  * Reads and parses a persisted job status record.
  */
-export function readStatusRecord(jobId: string): PersistedStatusRecord | null {
+export function readStatusRecord(jobId: string): JobStatusRecord | null {
   return readStatusRecordWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, jobId);
 }
 
 /**
  * Reads and parses all persisted progress records for a job.
  */
-export function readProgressLog(jobId: string): PersistedProgressRecord[] {
+export function readProgressLog(jobId: string): JobProgressRecord[] {
   const log = readTextFile(join(jobsDir(), jobId, 'progress.jsonl'));
   if (log === null) return [];
   return parseJsonLines(
     log,
-    (lineValue) => parseWithSchema(persistedProgressRecordSchema, lineValue) as PersistedProgressRecord | null,
+    (lineValue) => parseWithSchema(persistedProgressRecordSchema, lineValue) as JobProgressRecord | null,
   );
 }
 

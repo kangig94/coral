@@ -28,7 +28,7 @@ import type {
   ReindexResult,
 } from '../kb/types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { PersistedStatusRecord, TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { JobStatusRecord, JobTerminalRecord, WaitStreamEvent } from '../shared/types.js';
 import type { CliErrorEnvelope } from './errors.js';
 
 type DiscussAbortResult = {
@@ -181,7 +181,7 @@ function truncatePreview(text: string): string {
   return `${text.slice(0, Math.max(0, MAX_INLINE - 3))}...`;
 }
 
-function pickTerminalPreviewSource(result: TerminalResult, describeCauseRef?: CauseRefDescriber): string {
+function pickTerminalPreviewSource(result: JobTerminalRecord, describeCauseRef?: CauseRefDescriber): string {
   const content = result.content.trimEnd();
   if (content.length > 0) {
     return content;
@@ -230,7 +230,7 @@ function formatRelativeAge(updatedAt: string, now = Date.now()): string {
   return `${days}d ago`;
 }
 
-function readJobCwd(status: PersistedStatusRecord): string {
+function readJobCwd(status: JobStatusRecord): string {
   return status.projectRoot;
 }
 
@@ -543,7 +543,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return label === undefined ? body : `${label} - ${body}`;
 }
 
-function terminalOutcomeHeader(jobId: string, result: TerminalResult, describeCauseRef?: CauseRefDescriber): string {
+function terminalOutcomeHeader(jobId: string, result: JobTerminalRecord, describeCauseRef?: CauseRefDescriber): string {
   switch (result.outcome.kind) {
     case 'completed':
       return `Job ${jobId} completed`;

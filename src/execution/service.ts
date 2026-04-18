@@ -20,13 +20,13 @@ import {
   type JobPhase,
   type LaunchDecision,
   type LaunchState,
-  type PersistedLaunchRecord,
-  type PersistedRuntimeRecord,
+  type JobLaunchRecord,
+  type JobRuntimeRecord,
   type ProviderInstruction,
   type ProviderRequest,
-  type ProviderResult,
+  type ProviderTurnResult,
   type SessionEntry,
-  type TerminalResult,
+  type JobTerminalRecord,
   type WaitStreamEvent,
   type WaitStreamRequest,
   type WorkflowResultMeta,
@@ -362,17 +362,17 @@ async function runProviderPreflight(provider: ProviderExecutor, runtime: Preflig
 /** Recovery-oriented interface for lifecycle startup/handoff/restart. */
 export interface RecoveryCapableService {
   finalizeInterruptedAppServerJob(
-    launchRecord: PersistedLaunchRecord,
+    launchRecord: JobLaunchRecord,
     runtimeRecord: AppServerRuntimeRecord,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void>;
-  adoptRunningJob(launchRecord: PersistedLaunchRecord, runtimeRecord: PersistedRuntimeRecord): { cleanup: () => void };
-  recoverQueuedJob(launchRecord: PersistedLaunchRecord): string;
-  interruptAppServerJob(launchRecord: PersistedLaunchRecord, runtimeRecord: AppServerRuntimeRecord): Promise<void>;
+  adoptRunningJob(launchRecord: JobLaunchRecord, runtimeRecord: JobRuntimeRecord): { cleanup: () => void };
+  recoverQueuedJob(launchRecord: JobLaunchRecord): string;
+  interruptAppServerJob(launchRecord: JobLaunchRecord, runtimeRecord: AppServerRuntimeRecord): Promise<void>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
-    result: TerminalResult,
+    result: JobTerminalRecord,
     phase: JobPhase,
     options?: { conversationRef?: string; nonResumable?: boolean },
   ): void;
@@ -482,7 +482,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async interruptAppServerJob(
-    launchRecord: PersistedLaunchRecord,
+    launchRecord: JobLaunchRecord,
     runtimeRecord: AppServerRuntimeRecord,
   ): Promise<void> {
     const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(launchRecord.provider);
@@ -515,7 +515,7 @@ export class ExecutionService implements RecoveryCapableService {
   }
 
   async finalizeInterruptedAppServerJob(
-    launchRecord: PersistedLaunchRecord,
+    launchRecord: JobLaunchRecord,
     runtimeRecord: AppServerRuntimeRecord,
     options: { reason: InterruptedAppServerReason },
   ): Promise<void> {
@@ -647,7 +647,7 @@ export class ExecutionService implements RecoveryCapableService {
     const outcome = normalizeLegacyFaultOutcome(launchRecord.jobId, launchRecord.sessionId, fault);
 
     this.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeLegacyCoralFault(fault));
-    this.writeTerminalResult(
+    this.writeJobTerminalRecord(
       launchRecord.jobId,
       launchRecord.sessionId,
       {
@@ -1271,7 +1271,7 @@ export class ExecutionService implements RecoveryCapableService {
    * via `restoreQueuedLaunch` (FIFO order preserved by caller invocation order),
    * and wires up the async execution path for when the permit is granted.
    */
-  recoverQueuedJob(launchRecord: PersistedLaunchRecord): string {
+  recoverQueuedJob(launchRecord: JobLaunchRecord): string {
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
@@ -1302,7 +1302,7 @@ export class ExecutionService implements RecoveryCapableService {
    * rebinds namespace, and registers abort with a PID-kill callback.
    * Returns a cleanup handle for the PID poller to call when the job terminates.
    */
-  adoptRunningJob(launchRecord: PersistedLaunchRecord, runtimeRecord: PersistedRuntimeRecord): { cleanup: () => void } {
+  adoptRunningJob(launchRecord: JobLaunchRecord, runtimeRecord: JobRuntimeRecord): { cleanup: () => void } {
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
@@ -1347,11 +1347,11 @@ export class ExecutionService implements RecoveryCapableService {
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
-    result: TerminalResult,
+    result: JobTerminalRecord,
     phase: JobPhase,
     options?: { conversationRef?: string; nonResumable?: boolean },
   ): void {
-    this.writeTerminalResult(jobId, sessionId, result, phase);
+    this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.progressStore.writeResultMd(jobId, result.content);
     this.abortRegistry.remove(jobId);
     const pool = this.jobPools.get(jobId) ?? 'default';
@@ -1402,7 +1402,7 @@ export class ExecutionService implements RecoveryCapableService {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderResult,
+    result: ProviderTurnResult,
   ): Promise<void> {
     const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(providerName);
     const runtimeRecord = this.progressStore.readRuntimeRecord(jobId);
@@ -1491,18 +1491,18 @@ export class ExecutionService implements RecoveryCapableService {
     sessionId: string,
     jobId: string,
     phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: TerminalResult,
+    result: JobTerminalRecord,
     markdown: string,
   ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
-    this.writeTerminalResult(jobId, sessionId, result, phase);
+    this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.sessionManager.setNonResumable(sessionId);
     this.abortRegistry.remove(jobId);
     this.sessionManager.releaseJob(sessionId, jobId);
   }
 
-  private writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
-    this.launchOrchestrator.writeTerminalResult(jobId, sessionId, result, phase);
+  private writeJobTerminalRecord(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): void {
+    this.launchOrchestrator.writeJobTerminalRecord(jobId, sessionId, result, phase);
   }
 
   private runWorkflowAsync(
@@ -1558,14 +1558,14 @@ export class ExecutionService implements RecoveryCapableService {
 
     try {
       const serialized = serializeWorkflowResult(stepDetails);
-      const terminalResult: TerminalResult = {
+      const terminalResult: JobTerminalRecord = {
         content: '',
         outcome,
         workflow: serialized.workflow,
       };
       this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
     } catch {
-      const emptyResult: TerminalResult = {
+      const emptyResult: JobTerminalRecord = {
         content: '',
         outcome,
         workflow: { steps: [] },

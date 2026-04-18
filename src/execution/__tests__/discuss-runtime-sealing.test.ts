@@ -9,7 +9,7 @@ import { renderEntries } from '../../discuss/transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../discuss/types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../discuss/state-machine.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { PersistedStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../shared/types.js';
 import { nowIsoString } from '../../discuss/util/time.js';
 import {
   createDiscussContextRegistry,
@@ -391,7 +391,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       ),
     ];
     await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
-    const status: PersistedStatusRecord = {
+    const status: JobStatusRecord = {
       jobId,
       sessionId: 'execution-session-1',
       provider: 'codex',

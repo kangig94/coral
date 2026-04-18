@@ -1,8 +1,8 @@
-import type { ProviderResult } from '../shared/types.js';
+import type { ProviderTurnResult } from '../shared/types.js';
 
 /**
  * Raw execution result shape common to both Codex and Claude executors.
- * Not all fields are used by mapProviderResultBase — provider-specific fields
+ * Not all fields are used by mapProviderTurnResultBase — provider-specific fields
  * (exitCode, warnings, costUsd) are applied by each adapter.
  */
 export interface RawExecResult {
@@ -17,9 +17,9 @@ export interface RawExecResult {
  * Session policy (conversationRef, nonResumable) and provider-specific fields
  * (exitCode/warnings vs usage) remain in each adapter.
  */
-export function mapProviderResultBase(
+export function mapProviderTurnResultBase(
   raw: RawExecResult,
-): Pick<ProviderResult, 'content' | 'model' | 'durationMs' | 'outcome'> {
+): Pick<ProviderTurnResult, 'content' | 'model' | 'durationMs' | 'outcome'> {
   return {
     content: raw.response,
     model: raw.model,

@@ -1,13 +1,13 @@
 import { isNoEntryError, isRecord } from '../../shared/utils.js';
-import { parsePersistedStatusRecord } from '../../shared/persistence-parsers.js';
+import { parseJobStatusRecord } from '../../shared/persistence-parsers.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { PersistedStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../shared/types.js';
 
 const ADOPTION_CLAIM_STALE_MS = 30_000;
 
 export type AdoptionStatusSnapshot = {
   raw: string;
-  record: PersistedStatusRecord;
+  record: JobStatusRecord;
 };
 
 export type AdoptionClaimRecord = {
@@ -54,7 +54,7 @@ export function readAdoptionStatusSnapshot(
 ): AdoptionStatusSnapshot | null {
   try {
     const raw = storage.readFileSync(statusPath, 'utf-8');
-    const parsed = parsePersistedStatusRecord(JSON.parse(raw));
+    const parsed = parseJobStatusRecord(JSON.parse(raw));
     if (parsed === null) return null;
     return {
       raw,

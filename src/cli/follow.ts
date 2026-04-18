@@ -6,7 +6,7 @@ import { ensureBackend } from '../client/backend-lifecycle.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import type { CauseRef } from '../jobs/outcome.js';
 import { createRealRuntime } from '../runtime/real.js';
-import type { TerminalResult, WaitStreamEvent } from '../shared/types.js';
+import type { JobTerminalRecord, WaitStreamEvent } from '../shared/types.js';
 import { readBuildFlavor } from '../shared/utils.js';
 import { CoralStore, openStoreDatabase } from '../store/index.js';
 import { storePaths } from '../store/paths.js';
@@ -69,7 +69,7 @@ function emitWaitEvent(
   }
 }
 
-function toExitCode(result: TerminalResult): number {
+function toExitCode(result: JobTerminalRecord): number {
   switch (result.outcome.kind) {
     case 'aborted':
     case 'failed':

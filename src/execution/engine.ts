@@ -2,7 +2,7 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../shared/backend-log.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../shared/utils.js';
-import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
+import type { JobExitRecord, JobRuntimeRecord } from '../shared/types.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../runtime/ports.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
@@ -638,7 +638,7 @@ export class LaunchCoordinator {
       let abortedBySignal = false;
       let runtimeRecord = durable.runtimeRecord;
       let tailOffset = runtimeRecord.tailWatermark ?? 0;
-      const durableState: { exitRecord: PersistedExitRecord | null; exitError: unknown } = {
+      const durableState: { exitRecord: JobExitRecord | null; exitError: unknown } = {
         exitRecord: null,
         exitError: null,
       };
@@ -1050,7 +1050,7 @@ function readAppendedLines(storage: StoragePort, path: string, fromOffset: numbe
   }
 }
 
-function writeRuntimeRecord(storage: StoragePort, jobDir: string, record: PersistedRuntimeRecord): void {
+function writeRuntimeRecord(storage: StoragePort, jobDir: string, record: JobRuntimeRecord): void {
   const runtimePath = `${jobDir}/${RUNTIME_FILE}`;
   const tmpPath = `${runtimePath}.tmp`;
   storage.writeFileSync(tmpPath, JSON.stringify(record, null, 2));

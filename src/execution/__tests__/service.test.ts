@@ -10,11 +10,11 @@ import type {
   AppServerRuntimeRecord,
   DurableCliRuntimeRecord,
   JobPhase,
-  PersistedLaunchRecord,
-  PersistedProgressRecord,
-  PersistedStatusRecord,
+  JobLaunchRecord,
+  JobProgressRecord,
+  JobStatusRecord,
   ProviderRequest,
-  ProviderResult,
+  ProviderTurnResult,
   WaitStreamEvent,
 } from '../../shared/types.js';
 
@@ -246,12 +246,12 @@ function createFakeProviderServerHandle(options?: {
   };
 }
 
-type TestProviderResult = Omit<ProviderResult, 'outcome'> & {
-  outcome?: ProviderResult['outcome'];
+type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
+  outcome?: ProviderTurnResult['outcome'];
 };
 
-type TestTerminalResult = Omit<NonNullable<PersistedStatusRecord['result']>, 'outcome'> & {
-  outcome?: NonNullable<PersistedStatusRecord['result']>['outcome'];
+type TestJobTerminalRecord = Omit<NonNullable<JobStatusRecord['result']>, 'outcome'> & {
+  outcome?: NonNullable<JobStatusRecord['result']>['outcome'];
 };
 
 function completedOutcome() {
@@ -268,16 +268,16 @@ function withCompletedOutcome<T extends { content: string; outcome?: unknown }>(
 }
 
 function makeProvider(options?: {
-  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderResult>;
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult>;
   preflight?: Provider['preflight'];
 }): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderResult> => {
+  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderTurnResult> => {
     const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
-    return withCompletedOutcome(result) as ProviderResult;
+    return withCompletedOutcome(result) as ProviderTurnResult;
   });
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
@@ -485,9 +485,9 @@ function makeStatusRecord(
   phase: JobPhase,
   options: {
     sessionId?: string;
-    result?: TestTerminalResult;
+    result?: TestJobTerminalRecord;
   } = {},
-): PersistedStatusRecord {
+): JobStatusRecord {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
@@ -509,9 +509,9 @@ function makeTerminalReplay(
     eventId?: number;
     sessionId?: string;
     ts?: string;
-    result?: TestTerminalResult;
+    result?: TestJobTerminalRecord;
   } = {},
-): PersistedProgressRecord {
+): JobProgressRecord {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
@@ -562,7 +562,7 @@ describe('ExecutionService', () => {
   });
 
   it('start returns a running LaunchDecision with job and session ids', async () => {
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
@@ -580,7 +580,7 @@ describe('ExecutionService', () => {
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
     const provider: Provider = {
       name: 'codex',
-      execute: async (request, runtime): Promise<ProviderResult> => {
+      execute: async (request, runtime): Promise<ProviderTurnResult> => {
         const result = await runtime.runCli({
           command: process.execPath,
           args: [
@@ -639,7 +639,7 @@ describe('ExecutionService', () => {
 
   it('releases the session claim when provider session finalization throws after completion', async () => {
     const { provider } = makeProvider({
-      execute: async (): Promise<ProviderResult> => ({
+      execute: async (): Promise<ProviderTurnResult> => ({
         content: 'ok',
         conversationRef: 'thread-1',
         outcome: { kind: 'completed' },
@@ -922,7 +922,7 @@ describe('ExecutionService', () => {
     const firstLease = await service.acquireServer(spec);
     const acquireServerSpy = vi.spyOn(service, 'acquireServer');
 
-    const launchRecord: PersistedLaunchRecord = {
+    const launchRecord: JobLaunchRecord = {
       jobId: `shared-interrupt-${randomUUID()}`,
       sessionId: 'session-1',
       provider: 'claude',
@@ -1064,7 +1064,7 @@ describe('ExecutionService', () => {
 
   it('start resolves agent metadata before allocation and persists the agent profile', async () => {
     realizePluginRoot(ctx);
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
@@ -1114,7 +1114,7 @@ describe('ExecutionService', () => {
 
   it('start defaults bypassPermissions to true when an agent is resolved', async () => {
     realizePluginRoot(ctx);
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
@@ -1137,7 +1137,7 @@ describe('ExecutionService', () => {
 
   it('start preserves explicit bypassPermissions=false even with an agent', async () => {
     realizePluginRoot(ctx);
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockReturnValue(
@@ -1160,7 +1160,7 @@ describe('ExecutionService', () => {
   });
 
   it('start defaults bypassPermissions to false without an agent', async () => {
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
@@ -1178,7 +1178,7 @@ describe('ExecutionService', () => {
   // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
   describe('queue admission', { retry: 2 }, () => {
     it('start returns queued when provider launch slots are full', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const service = createService(ctx);
@@ -1253,7 +1253,7 @@ describe('ExecutionService', () => {
 
     it('resumeBySessionId continues when the asserted provider matches the stored provider', async () => {
       realizePluginRoot(ctx);
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = new SessionManager(ctx.projectRoot, runtime);
@@ -1287,7 +1287,7 @@ describe('ExecutionService', () => {
 
     it('resumeBySessionId continues the stored provider when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = new SessionManager(ctx.projectRoot, runtime);
@@ -1370,7 +1370,7 @@ describe('ExecutionService', () => {
 
     it('resume inherits stored continuation profile fields when the input omits them', async () => {
       realizePluginRoot(ctx);
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const instruction = {
@@ -1442,7 +1442,7 @@ describe('ExecutionService', () => {
     });
 
     it('resume rolls back queued admission when the session becomes busy during preflight', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const blockingProvider = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
       const service = createService(ctx);
@@ -1529,7 +1529,7 @@ describe('ExecutionService', () => {
     });
 
     it('fork allocates a new session id', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = new SessionManager(ctx.projectRoot, runtime);
@@ -1580,7 +1580,7 @@ describe('ExecutionService', () => {
 
     it('forkBySessionId persists the merged continuation profile onto the child session when the asserted provider matches', async () => {
       realizePluginRoot(ctx);
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const instruction = {
@@ -1652,7 +1652,7 @@ describe('ExecutionService', () => {
 
     it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
       realizePluginRoot(ctx);
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, execute } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const instruction = {
@@ -1772,7 +1772,7 @@ describe('ExecutionService', () => {
     });
 
     it('abort aborts the correct jobs', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const service = createService(ctx);
@@ -1800,7 +1800,7 @@ describe('ExecutionService', () => {
     });
 
     it('abort persists queued jobs as aborted instead of error', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
       const service = createService(ctx);
@@ -2010,7 +2010,7 @@ describe('ExecutionService', () => {
   it('waitStream yields progress and terminal events in order', async () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const status: PersistedStatusRecord = {
+    const status: JobStatusRecord = {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -2022,7 +2022,7 @@ describe('ExecutionService', () => {
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
     };
-    const replay: PersistedProgressRecord[] = [
+    const replay: JobProgressRecord[] = [
       {
         jobId: 'job-1',
         sessionId: 'session-1',
@@ -2103,7 +2103,7 @@ describe('ExecutionService', () => {
   it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const runningStatus: PersistedStatusRecord = {
+    const runningStatus: JobStatusRecord = {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -2115,7 +2115,7 @@ describe('ExecutionService', () => {
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
     };
-    const terminalStatus: PersistedStatusRecord = {
+    const terminalStatus: JobStatusRecord = {
       ...runningStatus,
       phase: 'completed',
       result: { content: 'done', outcome: { kind: 'completed' } },
@@ -2449,7 +2449,7 @@ describe('ExecutionService', () => {
       eventId: 1,
       type: 'terminal',
       result: { content: 'done' },
-    } as PersistedProgressRecord;
+    } as JobProgressRecord;
 
     vi.spyOn(lateStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
     vi.spyOn(lateStore, 'replayFrom').mockImplementation(() => {
@@ -2562,7 +2562,7 @@ describe('ExecutionService', () => {
   });
 
   it('waitStream emits a queued event before replaying queued progress records', async () => {
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
@@ -2720,7 +2720,7 @@ describe('ExecutionService', () => {
   });
 
   it('executeWorkflow bypasses launch admission when provider slots are full', async () => {
-    const never = new Promise<ProviderResult>(() => {});
+    const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
     mockState.getNewProvider.mockReturnValue(provider);
     mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
@@ -3228,8 +3228,8 @@ describe('ExecutionService', () => {
 
   describe('recovery adoption APIs', () => {
     function makeLaunchRecord(
-      overrides: Partial<PersistedLaunchRecord> & { jobId: string; sessionId: string },
-    ): PersistedLaunchRecord {
+      overrides: Partial<JobLaunchRecord> & { jobId: string; sessionId: string },
+    ): JobLaunchRecord {
       return {
         provider: 'codex',
         projectRoot: '/tmp/project',
@@ -3383,7 +3383,7 @@ describe('ExecutionService', () => {
       });
 
       it('job eventually executes when queue capacity opens', async () => {
-        const never = new Promise<ProviderResult>(() => {});
+        const never = new Promise<ProviderTurnResult>(() => {});
         const { provider } = makeProvider({ execute: () => never });
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
@@ -3976,7 +3976,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
     });
 
     it('rejects with session_busy when session has activeJobId set (via live start)', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
@@ -4010,7 +4010,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('allows exactly one concurrent resume and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, preflight } = makeProvider({
         preflight: async (_preflightRuntime) => {
           await gate.promise;
@@ -4051,7 +4051,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
   describe('ExecutionService.fork() adversarial', () => {
     it('rejects with session_busy when source session has an active job', async () => {
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider } = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(provider);
 
@@ -4116,7 +4116,7 @@ describe('ExecutionService adversarial', { retry: 2 }, () => {
 
     it('allows exactly one concurrent fork and rejects the stale loser with session_busy', async () => {
       const gate = createDeferred<void>();
-      const never = new Promise<ProviderResult>(() => {});
+      const never = new Promise<ProviderTurnResult>(() => {});
       const { provider, preflight } = makeProvider({
         preflight: async (_preflightRuntime) => {
           await gate.promise;

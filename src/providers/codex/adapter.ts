@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderContinuityBlob, ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
 import { readString } from '../../shared/utils.js';
 import { runAppServerTurn } from '../app-server/runner.js';
 import {
@@ -211,7 +211,7 @@ const codexAppServerLifecycle: ProviderAppServerLifecycle = {
   },
 };
 
-async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderResult> {
+async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderTurnResult> {
   if (request.action === 'fork') {
     throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
   }

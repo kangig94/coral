@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CallerContext } from '../shared/request-context.js';
-import type { TerminalResult } from '../shared/types.js';
+import type { JobTerminalRecord } from '../shared/types.js';
 import { jobsQueries } from '../jobs/api.js';
 import { errorMessage } from '../shared/utils.js';
 import {
@@ -147,7 +147,7 @@ function firstTerminalFailure(
     return null;
   }
 
-  const result: TerminalResult = {
+  const result: JobTerminalRecord = {
     content: terminal.content,
     outcome: terminal.outcome,
     ...(terminal.durationMs === undefined ? {} : { durationMs: terminal.durationMs }),

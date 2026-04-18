@@ -21,12 +21,12 @@ import {
   isTerminalPhase,
   type DurableCliRuntimeRecord,
   type LaunchDecision,
-  type PersistedExitRecord,
-  type PersistedProgressRecord,
-  type PersistedRuntimeRecord,
-  type PersistedStatusRecord,
+  type JobExitRecord,
+  type JobProgressRecord,
+  type JobRuntimeRecord,
+  type JobStatusRecord,
   type SessionEntry,
-  type TerminalResult,
+  type JobTerminalRecord,
 } from '../../shared/types.js';
 
 const STATUS_FILE = 'status.json';
@@ -48,7 +48,7 @@ export type WaitObservation = {
   runtimeRecorded: boolean;
   terminal: boolean;
   progress: string[];
-  result: TerminalResult | null;
+  result: JobTerminalRecord | null;
 };
 
 export type WaitDetail = {
@@ -117,9 +117,9 @@ function hasRuntimePid(record: unknown): record is { pid: number } {
 }
 
 function hasRuntimeStreamPath(
-  record: PersistedRuntimeRecord | DurableCliRuntimeRecord | null,
+  record: JobRuntimeRecord | DurableCliRuntimeRecord | null,
   key: 'stdoutPath' | 'stderrPath',
-): record is (PersistedRuntimeRecord | DurableCliRuntimeRecord) & Record<typeof key, string> {
+): record is (JobRuntimeRecord | DurableCliRuntimeRecord) & Record<typeof key, string> {
   if (record === null || !(key in record)) {
     return false;
   }
@@ -291,7 +291,7 @@ export class SimulationWorld {
     }
   }
 
-  getJobStatus(jobId: string): PersistedStatusRecord | null {
+  getJobStatus(jobId: string): JobStatusRecord | null {
     this.assertUsable();
     return this.current.backend.progressStore.readStatus(jobId);
   }
@@ -299,7 +299,7 @@ export class SimulationWorld {
   getProgress(jobId: string): string[] {
     return this.replay(jobId)
       .filter(
-        (event): event is PersistedProgressRecord & { type: 'progress'; message: string } => event.type === 'progress',
+        (event): event is JobProgressRecord & { type: 'progress'; message: string } => event.type === 'progress',
       )
       .map((event) => event.message);
   }
@@ -388,7 +388,7 @@ export class SimulationWorld {
     };
   }
 
-  replay(jobId: string, afterEventId = 0): PersistedProgressRecord[] {
+  replay(jobId: string, afterEventId = 0): JobProgressRecord[] {
     this.assertUsable();
     return this.current.backend.progressStore.replayFrom(jobId, afterEventId, createReplayCursor());
   }
@@ -397,7 +397,7 @@ export class SimulationWorld {
     jobId: string,
     kind: SimulationArtifactKind,
     options: { freshness?: ArtifactFreshness } = {},
-  ): string | PersistedStatusRecord | PersistedRuntimeRecord | PersistedExitRecord | null {
+  ): string | JobStatusRecord | JobRuntimeRecord | JobExitRecord | null {
     this.assertUsable();
     const freshness = options.freshness ?? 'cached';
 
@@ -436,12 +436,12 @@ export class SimulationWorld {
     }
 
     if (kind === 'status') {
-      return parseJsonArtifact<PersistedStatusRecord>(raw);
+      return parseJsonArtifact<JobStatusRecord>(raw);
     }
     if (kind === 'runtime') {
-      return parseJsonArtifact<PersistedRuntimeRecord>(raw);
+      return parseJsonArtifact<JobRuntimeRecord>(raw);
     }
-    return parseJsonArtifact<PersistedExitRecord>(raw);
+    return parseJsonArtifact<JobExitRecord>(raw);
   }
 
   listJobIds(): string[] {
@@ -567,7 +567,7 @@ export class SimulationWorld {
         (status !== null && status !== undefined ? isTerminalPhase(status.phase) : false),
       progress: replay
         .filter(
-          (event): event is PersistedProgressRecord & { type: 'progress'; message: string } =>
+          (event): event is JobProgressRecord & { type: 'progress'; message: string } =>
             event.type === 'progress',
         )
         .map((event) => event.message),

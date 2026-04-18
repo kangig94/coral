@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type {
-  PersistedExitRecord,
-  PersistedLaunchRecord,
-  PersistedRuntimeRecord,
-  PersistedStatusRecord,
+  JobExitRecord,
+  JobLaunchRecord,
+  JobRuntimeRecord,
+  JobStatusRecord,
   SessionEntry,
-  TerminalResult,
+  JobTerminalRecord,
 } from '../../../shared/types.js'
 import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../plan.js'
 import { planRecovery } from '../plan.js'
@@ -16,11 +16,11 @@ const FOREIGN_NAMESPACE = 'namespace-foreign'
 
 type JobFixture = {
   jobId: string
-  status?: PersistedStatusRecord | null
-  launch?: PersistedLaunchRecord | null
-  runtime?: PersistedRuntimeRecord | null
-  exit?: PersistedExitRecord | null
-  terminalPayload?: TerminalResult | null
+  status?: JobStatusRecord | null
+  launch?: JobLaunchRecord | null
+  runtime?: JobRuntimeRecord | null
+  exit?: JobExitRecord | null
+  terminalPayload?: JobTerminalRecord | null
   hasLaunch?: boolean
   hasRuntime?: boolean
   hasExit?: boolean
@@ -39,11 +39,11 @@ type StoredJob = {
   hasLaunch: boolean
   hasRuntime: boolean
   hasExit: boolean
-  status: PersistedStatusRecord | null
-  launch: PersistedLaunchRecord | null
-  runtime: PersistedRuntimeRecord | null
-  exit: PersistedExitRecord | null
-  terminalPayload: TerminalResult | null
+  status: JobStatusRecord | null
+  launch: JobLaunchRecord | null
+  runtime: JobRuntimeRecord | null
+  exit: JobExitRecord | null
+  terminalPayload: JobTerminalRecord | null
 }
 
 class InMemoryRecoverySnapshot implements JobStoreSnapshot {
@@ -108,23 +108,23 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
     return this.jobs.get(jobId)?.hasExit ?? false
   }
 
-  readStatus(jobId: string): PersistedStatusRecord | null {
+  readStatus(jobId: string): JobStatusRecord | null {
     return this.jobs.get(jobId)?.status ?? null
   }
 
-  readLaunch(jobId: string): PersistedLaunchRecord | null {
+  readLaunch(jobId: string): JobLaunchRecord | null {
     return this.jobs.get(jobId)?.launch ?? null
   }
 
-  readRuntime(jobId: string): PersistedRuntimeRecord | null {
+  readRuntime(jobId: string): JobRuntimeRecord | null {
     return this.jobs.get(jobId)?.runtime ?? null
   }
 
-  readExit(jobId: string): PersistedExitRecord | null {
+  readExit(jobId: string): JobExitRecord | null {
     return this.jobs.get(jobId)?.exit ?? null
   }
 
-  readTerminalPayload(jobId: string): TerminalResult | null {
+  readTerminalPayload(jobId: string): JobTerminalRecord | null {
     return this.jobs.get(jobId)?.terminalPayload ?? null
   }
 
@@ -143,12 +143,12 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
 
 function makeStatus(
   jobId: string,
-  phase: PersistedStatusRecord['phase'],
-  overrides: Partial<PersistedStatusRecord> & {
-    launch?: Partial<PersistedStatusRecord['launch']>
+  phase: JobStatusRecord['phase'],
+  overrides: Partial<JobStatusRecord> & {
+    launch?: Partial<JobStatusRecord['launch']>
   } = {},
-): PersistedStatusRecord {
-  const base: PersistedStatusRecord = {
+): JobStatusRecord {
+  const base: JobStatusRecord = {
     jobId,
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
@@ -173,11 +173,11 @@ function makeStatus(
 
 function makeLaunch(
   jobId: string,
-  overrides: Partial<PersistedLaunchRecord> & {
-    request?: Partial<PersistedLaunchRecord['request']>
+  overrides: Partial<JobLaunchRecord> & {
+    request?: Partial<JobLaunchRecord['request']>
   } = {},
-): PersistedLaunchRecord {
-  const base: PersistedLaunchRecord = {
+): JobLaunchRecord {
+  const base: JobLaunchRecord = {
     jobId,
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
@@ -209,17 +209,17 @@ function makeLaunch(
   }
 }
 
-function makeRuntime(jobId: string, overrides: Partial<PersistedRuntimeRecord> = {}): PersistedRuntimeRecord {
+function makeRuntime(jobId: string, overrides: Partial<JobRuntimeRecord> = {}): JobRuntimeRecord {
   return {
     pid: 1000,
     stdoutPath: `/tmp/${jobId}.stdout`,
     stderrPath: `/tmp/${jobId}.stderr`,
     startTime: NOW,
     ...overrides,
-  } as PersistedRuntimeRecord
+  } as JobRuntimeRecord
 }
 
-function makeAppServerRuntime(overrides: Partial<PersistedRuntimeRecord> = {}): PersistedRuntimeRecord {
+function makeAppServerRuntime(overrides: Partial<JobRuntimeRecord> = {}): JobRuntimeRecord {
   return {
     transport: 'app-server',
     startTime: NOW,
@@ -229,10 +229,10 @@ function makeAppServerRuntime(overrides: Partial<PersistedRuntimeRecord> = {}): 
       recoveryPolicy: 'session_continuity_only',
     },
     ...overrides,
-  } as PersistedRuntimeRecord
+  } as JobRuntimeRecord
 }
 
-function makeExit(overrides: Partial<PersistedExitRecord> = {}): PersistedExitRecord {
+function makeExit(overrides: Partial<JobExitRecord> = {}): JobExitRecord {
   return {
     exitCode: 0,
     signal: null,

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '../main.js';
-import type { PersistedStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../shared/types.js';
 import {
   formatAbortResult,
   formatDiscussAbort,
@@ -130,11 +130,11 @@ function findCommand(root: Command, ...path: string[]): Command {
 }
 
 function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; provider?: string } = {}) {
-  const phase = (overrides.phase ?? 'running') as PersistedStatusRecord['phase'];
+  const phase = (overrides.phase ?? 'running') as JobStatusRecord['phase'];
   const provider = overrides.provider ?? 'codex';
 
   return {
-    jobs: jobIds.map((jobId, index): { jobId: string; status: PersistedStatusRecord } => ({
+    jobs: jobIds.map((jobId, index): { jobId: string; status: JobStatusRecord } => ({
       jobId,
       status: {
         jobId,

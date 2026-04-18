@@ -4,9 +4,9 @@ import {
   isAppServerRuntime,
   isTerminalPhase,
   type DurableCliRuntimeRecord,
-  type PersistedLaunchRecord,
-  type PersistedRuntimeRecord,
-  type TerminalResult,
+  type JobLaunchRecord,
+  type JobRuntimeRecord,
+  type JobTerminalRecord,
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/types.js';
@@ -20,11 +20,11 @@ import { SessionManager } from '../../execution/session-manager.js';
 import type { RecoveryCapableService } from '../../execution/service.js';
 import { markJobAsError } from './job-helpers.js';
 
-export type QueuedRecoverableJob = { jobId: string; launchRecord: PersistedLaunchRecord };
+export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunchRecord };
 export type RunningRecoverableJob = {
   jobId: string;
-  launchRecord: PersistedLaunchRecord;
-  runtimeRecord: PersistedRuntimeRecord;
+  launchRecord: JobLaunchRecord;
+  runtimeRecord: JobRuntimeRecord;
 };
 type ProviderLike = ProviderArtifactRecovery | undefined;
 type RecoveryActionContext = {
@@ -125,7 +125,7 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
 
 type FinalizeDeadAdoptedJobContext = {
   jobId: string;
-  launchRecord: PersistedLaunchRecord;
+  launchRecord: JobLaunchRecord;
   runtimeRecord: DurableCliRuntimeRecord;
   service: RecoveryCapableService;
   provider: ProviderLike;
@@ -218,7 +218,7 @@ export function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalPayload(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      const payload: TerminalResult = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
+      const payload: JobTerminalRecord = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
       service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, { nonResumable: persistedPayload.nonResumable === true });
       return;
     }

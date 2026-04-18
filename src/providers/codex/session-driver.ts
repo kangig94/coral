@@ -1,4 +1,4 @@
-import type { ProviderContinuityBlob, ProviderResult } from '../../shared/types.js';
+import type { ProviderContinuityBlob, ProviderTurnResult } from '../../shared/types.js';
 import { readString } from '../../shared/utils.js';
 import { resolveModelTier } from '../../shared/schemas.js';
 import {
@@ -564,7 +564,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     };
   },
 
-  finalize(state, outcome): ProviderResult {
+  finalize(state, outcome): ProviderTurnResult {
     if (outcome.kind === 'nonResumable') {
       return {
         content: '',

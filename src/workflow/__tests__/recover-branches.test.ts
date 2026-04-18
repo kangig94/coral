@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProgressStore } from '../../execution/progress-store.js';
 import { SimulationRuntime } from '../../execution/simulation/core/index.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { TerminalResult, WaitStreamEvent, WaitStreamRequest } from '../../shared/types.js';
+import type { JobTerminalRecord, WaitStreamEvent, WaitStreamRequest } from '../../shared/types.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { parseExpression } from '../parser.js';
 import { workflowPlanDeclaredEvent } from '../events.js';
@@ -34,7 +34,7 @@ function running(job: string, session: string) {
 }
 
 function terminal(jobId: string, content: string): WaitStreamEvent {
-  const result: TerminalResult = { content, outcome: { kind: 'completed' } };
+  const result: JobTerminalRecord = { content, outcome: { kind: 'completed' } };
   return {
     type: 'terminal',
     jobId,

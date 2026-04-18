@@ -7,7 +7,7 @@ import { ensureBackend } from '../../client/backend-lifecycle.js';
 import { readBackendInfo, type BackendInfo } from '../../infra/backend-info.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
-import type { PersistedStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../shared/types.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
@@ -75,7 +75,7 @@ function seedCompletedJob(jobId: string, namespace: string, projectRoot: string,
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(join(jobsDir(), jobId), { recursive: true });
 
-  const status: PersistedStatusRecord = {
+  const status: JobStatusRecord = {
     jobId,
     sessionId: `${jobId}-session`,
     provider: 'codex',
@@ -201,16 +201,16 @@ describe('flavor coexistence integration', () => {
     expect(prodHealth.instanceId).toBe(prodInfo.instanceId);
     expect(devHealth.instanceId).toBe(devInfo.instanceId);
 
-    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(prodInfo, '/jobs');
-    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: PersistedStatusRecord }> }>(devInfo, '/jobs');
+    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(prodInfo, '/jobs');
+    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(devInfo, '/jobs');
 
     expect(prodJobs.jobs.map((job) => job.jobId)).toEqual([prodJobId]);
     expect(devJobs.jobs.map((job) => job.jobId)).toEqual([devJobId]);
     expect(prodJobs.jobs[0]?.status.backendNamespace).toBe(prodNamespace);
     expect(devJobs.jobs[0]?.status.backendNamespace).toBe(devNamespace);
 
-    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
-    await fetchJson<{ status: PersistedStatusRecord; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
+    await fetchJson<{ status: JobStatusRecord; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
+    await fetchJson<{ status: JobStatusRecord; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
 
     const prodForeignLookup = await fetchJson<{ code: string; message: string }>(
       prodInfo,

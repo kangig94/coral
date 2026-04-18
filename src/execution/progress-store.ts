@@ -5,15 +5,15 @@ import {
   type JobKind,
   type JobPhase,
   type LaunchState,
-  type PersistedExitRecord,
-  type PersistedLaunchRecord,
-  type PersistedProgressRecord,
-  type PersistedRuntimeRecord,
-  type PersistedStatusRecord,
-  type TerminalResult,
+  type JobExitRecord,
+  type JobLaunchRecord,
+  type JobProgressRecord,
+  type JobRuntimeRecord,
+  type JobStatusRecord,
+  type JobTerminalRecord,
 } from '../shared/types.js';
 import { backendLog } from '../shared/backend-log.js';
-import { safeParsePersistedStatusRecord } from '../shared/persistence-parsers.js';
+import { safeParseJobStatusRecord } from '../shared/persistence-parsers.js';
 import { errorMessage, isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
@@ -40,7 +40,7 @@ export type InitJobOptions = {
 };
 
 type StatusDiskReadResult =
-  | { kind: 'ok'; record: PersistedStatusRecord }
+  | { kind: 'ok'; record: JobStatusRecord }
   | { kind: 'absent' }
   | { kind: 'invalid'; reason: InvalidStatusReason };
 
@@ -61,8 +61,8 @@ export class ProgressStore {
   private readonly time: RuntimeTimePort;
   private readonly eventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
-  private readonly statusCache = new Map<string, PersistedStatusRecord>();
-  private readonly runtimeCache = new Map<string, PersistedRuntimeRecord>();
+  private readonly statusCache = new Map<string, JobStatusRecord>();
+  private readonly runtimeCache = new Map<string, JobRuntimeRecord>();
   private readonly knownJobIds = new Set<string>();
   private readonly warnedInvalidStatusReads = new Set<string>();
   private readonly eventBus: TypedEventBus;
@@ -200,7 +200,7 @@ export class ProgressStore {
     return [...this.knownJobIds];
   }
 
-  private applyStatusRecord(jobId: string, record: PersistedStatusRecord): void {
+  private applyStatusRecord(jobId: string, record: JobStatusRecord): void {
     const oldRecord = this.statusCache.get(jobId);
     const wasLive = oldRecord ? isLivePhase(oldRecord.phase) : false;
     const isLive = isLivePhase(record.phase);
@@ -223,7 +223,7 @@ export class ProgressStore {
     }
   }
 
-  private persistStatusSync(jobId: string, record: PersistedStatusRecord): void {
+  private persistStatusSync(jobId: string, record: JobStatusRecord): void {
     this.writeJobFile(this.statusPath(jobId), JSON.stringify(record, null, 2));
   }
 
@@ -241,7 +241,7 @@ export class ProgressStore {
     } = opts;
     const dir = this.jobDir(jobId);
     this.storage.mkdirSync(dir, { recursive: true });
-    const record: PersistedStatusRecord = {
+    const record: JobStatusRecord = {
       jobId,
       sessionId,
       provider,
@@ -283,14 +283,14 @@ export class ProgressStore {
   }
 
   /** Atomically write status.json (sync to avoid race between consecutive writes). */
-  writeStatus(jobId: string, record: PersistedStatusRecord): void {
+  writeStatus(jobId: string, record: JobStatusRecord): void {
     this.persistStatusSync(jobId, record);
     this.knownJobIds.add(jobId);
     this.applyStatusRecord(jobId, record);
   }
 
   /** Read status.json. Returns null if absent or invalid. */
-  readStatus(jobId: string): PersistedStatusRecord | null {
+  readStatus(jobId: string): JobStatusRecord | null {
     const cached = this.statusCache.get(jobId);
     if (cached) return { ...cached };
 
@@ -339,7 +339,7 @@ export class ProgressStore {
     const startedAt = this.jobStartedAt.get(jobId);
     const elapsed = startedAt !== undefined ? this.time.now() - startedAt : 0;
     const stamped = `[${formatElapsed(elapsed)}] ${message}`;
-    const entry: PersistedProgressRecord = {
+    const entry: JobProgressRecord = {
       jobId,
       sessionId,
       eventId,
@@ -358,9 +358,9 @@ export class ProgressStore {
   }
 
   /** Append a terminal event to progress.jsonl and update status.json with terminal result. */
-  appendTerminal(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): number {
+  appendTerminal(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): number {
     const eventId = this.nextEventId(jobId);
-    const entry: PersistedProgressRecord = {
+    const entry: JobProgressRecord = {
       jobId,
       sessionId,
       eventId,
@@ -383,7 +383,7 @@ export class ProgressStore {
     return eventId;
   }
 
-  markTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): void {
+  markTerminalStatus(jobId: string, result: JobTerminalRecord, phase: JobPhase): void {
     const didUpdateStatus = this.updateTerminalStatus(jobId, result, phase);
     this.clearTerminalState(jobId);
     if (!didUpdateStatus) {
@@ -392,7 +392,7 @@ export class ProgressStore {
     this.eventBus.emit('job:completed', { jobId, result });
   }
 
-  private updateTerminalStatus(jobId: string, result: TerminalResult, phase: JobPhase): boolean {
+  private updateTerminalStatus(jobId: string, result: JobTerminalRecord, phase: JobPhase): boolean {
     const record = this.readStatus(jobId);
     if (!record) return false;
     record.phase = phase;
@@ -433,23 +433,23 @@ export class ProgressStore {
   }
 
   /** Write launch.json before queue admission. */
-  writeLaunchRecord(jobId: string, record: PersistedLaunchRecord): void {
+  writeLaunchRecord(jobId: string, record: JobLaunchRecord): void {
     this.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
     this.writeJobFile(join(this.jobDir(jobId), LAUNCH_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read launch.json. Returns null if not found or corrupt. */
-  readLaunchRecord(jobId: string): PersistedLaunchRecord | null {
+  readLaunchRecord(jobId: string): JobLaunchRecord | null {
     try {
       const data = this.storage.readFileSync(join(this.jobDir(jobId), LAUNCH_FILE), 'utf-8');
-      return JSON.parse(data) as PersistedLaunchRecord;
+      return JSON.parse(data) as JobLaunchRecord;
     } catch {
       return null;
     }
   }
 
   /** Write runtime.json as the spawn-to-runtime commit. */
-  writeRuntimeRecord(jobId: string, record: PersistedRuntimeRecord): void {
+  writeRuntimeRecord(jobId: string, record: JobRuntimeRecord): void {
     const didWrite = this.writeJobFile(join(this.jobDir(jobId), RUNTIME_FILE), JSON.stringify(record, null, 2));
     if (didWrite) {
       this.runtimeCache.set(jobId, record);
@@ -457,7 +457,7 @@ export class ProgressStore {
   }
 
   /** Read runtime.json. Returns null if not found or corrupt. */
-  readRuntimeRecord(jobId: string): PersistedRuntimeRecord | null {
+  readRuntimeRecord(jobId: string): JobRuntimeRecord | null {
     const cached = this.runtimeCache.get(jobId);
     if (cached !== undefined) {
       return cached;
@@ -465,7 +465,7 @@ export class ProgressStore {
 
     try {
       const data = this.storage.readFileSync(join(this.jobDir(jobId), RUNTIME_FILE), 'utf-8');
-      const record = JSON.parse(data) as PersistedRuntimeRecord;
+      const record = JSON.parse(data) as JobRuntimeRecord;
       this.runtimeCache.set(jobId, record);
       return record;
     } catch {
@@ -474,15 +474,15 @@ export class ProgressStore {
   }
 
   /** Write exit.json as the completion sentinel. */
-  writeExitRecord(jobId: string, record: PersistedExitRecord): void {
+  writeExitRecord(jobId: string, record: JobExitRecord): void {
     this.writeJobFile(join(this.jobDir(jobId), EXIT_FILE), JSON.stringify(record, null, 2));
   }
 
   /** Read exit.json. Returns null if not found or corrupt. */
-  readExitRecord(jobId: string): PersistedExitRecord | null {
+  readExitRecord(jobId: string): JobExitRecord | null {
     try {
       const data = this.storage.readFileSync(join(this.jobDir(jobId), EXIT_FILE), 'utf-8');
-      return JSON.parse(data) as PersistedExitRecord;
+      return JSON.parse(data) as JobExitRecord;
     } catch {
       return null;
     }
@@ -495,7 +495,7 @@ export class ProgressStore {
    * during a daemon crash) must NOT discard an already-found earlier terminal payload, since
    * that would silently re-introduce the Case (a) content-loss bug under a narrower failure mode.
    */
-  readTerminalPayload(jobId: string): TerminalResult | null {
+  readTerminalPayload(jobId: string): JobTerminalRecord | null {
     let data: string;
     try {
       data = this.storage.readFileSync(this.progressPath(jobId), 'utf-8');
@@ -504,12 +504,12 @@ export class ProgressStore {
     }
     if (data.length === 0) return null;
 
-    let lastTerminal: TerminalResult | null = null;
+    let lastTerminal: JobTerminalRecord | null = null;
     for (const line of data.split('\n')) {
       if (line.length === 0) continue;
-      let record: PersistedProgressRecord;
+      let record: JobProgressRecord;
       try {
-        record = JSON.parse(line) as PersistedProgressRecord;
+        record = JSON.parse(line) as JobProgressRecord;
       } catch {
         continue;
       }
@@ -560,7 +560,7 @@ export class ProgressStore {
     }
   }
 
-  /** Hydrate jobStartedAt for adopted running jobs from a PersistedRuntimeRecord. */
+  /** Hydrate jobStartedAt for adopted running jobs from a JobRuntimeRecord. */
   hydrateJobStartedAt(jobId: string, startTime: string): void {
     const ts = new Date(startTime).getTime();
     if (!Number.isNaN(ts)) {
@@ -598,12 +598,12 @@ export class ProgressStore {
    * Replay progress events from a job starting after fromEventId (exclusive).
    * Returns all events with eventId > fromEventId, in order.
    */
-  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): PersistedProgressRecord[] {
+  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgressRecord[] {
     const lines = this.readNewLines(this.progressPath(jobId), cursor);
-    const events: PersistedProgressRecord[] = [];
+    const events: JobProgressRecord[] = [];
     for (const line of lines) {
       try {
-        const record = JSON.parse(line) as PersistedProgressRecord;
+        const record = JSON.parse(line) as JobProgressRecord;
         if (typeof record.eventId === 'number' && record.eventId > fromEventId) {
           events.push(record);
         }
@@ -686,7 +686,7 @@ export class ProgressStore {
       return this.invalidStatusRead(jobId, statusPath, 'corrupt_json', errorMessage(error));
     }
 
-    const result = safeParsePersistedStatusRecord(parsed);
+    const result = safeParseJobStatusRecord(parsed);
     if (!result.success) {
       const issue = result.error.issues[0];
       const path = issue?.path.join('.') ?? 'status';
@@ -694,7 +694,7 @@ export class ProgressStore {
       return this.invalidStatusRead(jobId, statusPath, 'invalid_schema', message);
     }
 
-    return { kind: 'ok', record: result.data as PersistedStatusRecord };
+    return { kind: 'ok', record: result.data as JobStatusRecord };
   }
 
   private invalidStatusRead(

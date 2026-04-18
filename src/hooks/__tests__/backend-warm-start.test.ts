@@ -14,6 +14,8 @@ import {
 
 afterEach(cleanupFixtures);
 
+const WARM_START_TIMEOUT_MS = 15_000;
+
 describe('backend-warm-start.mjs', () => {
   async function setupWarmStartFixture(expectedFlavor: 'prod' | 'dev', liveFlavor: 'prod' | 'dev') {
     const fixture = createFixture();
@@ -126,7 +128,7 @@ describe('backend-warm-start.mjs', () => {
     } finally {
       await setup.closeServer();
     }
-  });
+  }, WARM_START_TIMEOUT_MS);
 
   it('requests shutdown and spawns a replacement when the live backend flavor differs from the manifest flavor', async () => {
     const setup = await setupWarmStartFixture('dev', 'prod');
@@ -142,7 +144,7 @@ describe('backend-warm-start.mjs', () => {
     } finally {
       await setup.closeServer();
     }
-  });
+  }, WARM_START_TIMEOUT_MS);
 
   it('spawns a replacement when the backend pid is live but the health check fails', async () => {
     const setup = await setupWarmStartFixture('prod', 'prod');
@@ -156,5 +158,5 @@ describe('backend-warm-start.mjs', () => {
     expect(result.status).toBe(0);
     expect(await waitForFile(setup.markerPath)).toBe(true);
     expect(setup.shutdownCount()).toBe(0);
-  });
+  }, WARM_START_TIMEOUT_MS);
 });

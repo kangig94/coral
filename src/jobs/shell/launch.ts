@@ -18,13 +18,13 @@ import {
   type JobPhase,
   type LaunchDecision,
   type LaunchState,
-  type ProviderProgressEvent,
+  type ProviderTurnProgressEvent,
   type ProviderRequest,
-  type PersistedLaunchRecord,
-  type PersistedStatusRecord,
-  type ProviderResult,
+  type JobLaunchRecord,
+  type JobStatusRecord,
+  type ProviderTurnResult,
   type SessionEntry,
-  type TerminalResult,
+  type JobTerminalRecord,
   type WaitStreamEvent,
   type WaitRequest,
   type WaitStreamRequest,
@@ -72,7 +72,7 @@ function bindProviderRunner(
     });
 }
 
-function canAdvanceLaunchState(status: PersistedStatusRecord | null): status is PersistedStatusRecord {
+function canAdvanceLaunchState(status: JobStatusRecord | null): status is JobStatusRecord {
   return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
 }
 
@@ -99,14 +99,14 @@ export interface LaunchOrchestratorDeps {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderResult,
+    result: ProviderTurnResult,
   ) => Promise<void>;
 }
 
 export class LaunchOrchestrator {
   constructor(private readonly deps: LaunchOrchestratorDeps) {}
 
-  private normalizeLegacyOutcome(jobId: string, sessionId: string, legacyOutcome: ProviderResult['outcome']): TerminalOutcome {
+  private normalizeLegacyOutcome(jobId: string, sessionId: string, legacyOutcome: ProviderTurnResult['outcome']): TerminalOutcome {
     const plan = planLegacyTerminalOutcome(legacyOutcome, { jobId, sessionId });
     if (plan.immediateOutcome !== null) {
       return plan.immediateOutcome;
@@ -269,7 +269,7 @@ export class LaunchOrchestrator {
 
   runRecoveredQueuedJob(
     provider: ProviderExecutor,
-    launchRecord: PersistedLaunchRecord,
+    launchRecord: JobLaunchRecord,
     admission: QueuedHandle,
     pool: LaunchPool,
   ): void {
@@ -311,7 +311,7 @@ export class LaunchOrchestrator {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
     const outcome = this.normalizeLegacyOutcome(jobId, sessionId, { kind: 'legacy_fault', fault });
     progressStore.updateLaunchState(jobId, launchState, describeLegacyCoralFault(fault));
-    this.writeTerminalResult(jobId, sessionId, { content: '', outcome }, 'error');
+    this.writeJobTerminalRecord(jobId, sessionId, { content: '', outcome }, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -322,7 +322,7 @@ export class LaunchOrchestrator {
     this.deps.progressStore.updatePhase(jobId, 'running');
   }
 
-  writeTerminalResult(jobId: string, sessionId: string, result: TerminalResult, phase: JobPhase): void {
+  writeJobTerminalRecord(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): void {
     const { progressStore } = this.deps;
     try {
       progressStore.appendTerminal(jobId, sessionId, result, phase);
@@ -343,7 +343,7 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
   ): Promise<void> {
-    const onEvent = (event: ProviderProgressEvent): void => {
+    const onEvent = (event: ProviderTurnProgressEvent): void => {
       const currentStatus = this.deps.progressStore.readStatus(jobId);
       if (canAdvanceLaunchState(currentStatus)) {
         this.markJobRunning(jobId);
@@ -365,7 +365,7 @@ export class LaunchOrchestrator {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderResult,
+    result: ProviderTurnResult,
   ): Promise<void> {
     const { abortRegistry, jobPools, progressStore } = this.deps;
     if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
@@ -374,7 +374,7 @@ export class LaunchOrchestrator {
 
     const outcome = this.normalizeLegacyOutcome(jobId, sessionId, result.outcome);
     const phase = phaseForOutcome(outcome);
-    const terminalResult: TerminalResult = {
+    const terminalResult: JobTerminalRecord = {
       content: result.content,
       durationMs: result.durationMs,
       nonResumable: result.nonResumable,
@@ -389,7 +389,7 @@ export class LaunchOrchestrator {
       return;
     }
 
-    this.writeTerminalResult(jobId, sessionId, terminalResult, phase);
+    this.writeJobTerminalRecord(jobId, sessionId, terminalResult, phase);
     progressStore.writeResultMd(jobId, result.content);
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
@@ -439,7 +439,7 @@ export class LaunchOrchestrator {
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
-    onEvent: (event: ProviderProgressEvent) => void,
+    onEvent: (event: ProviderTurnProgressEvent) => void,
   ): ProviderRuntime {
     return {
       signal,
@@ -511,7 +511,7 @@ export class LaunchOrchestrator {
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
     progressStore.updateLaunchState(jobId, 'error', `Aborted: ${reason}`);
-    this.writeTerminalResult(
+    this.writeJobTerminalRecord(
       jobId,
       sessionId,
       { content: '', outcome: { kind: 'aborted', reason } },
@@ -767,7 +767,7 @@ export class WaitCoordinator {
     throw new Error(`Job ${jobId} ended without a terminal result`);
   }
 
-  private readStatusOrThrow(jobId: string): PersistedStatusRecord {
+  private readStatusOrThrow(jobId: string): JobStatusRecord {
     const status = this.deps.progressStore.readStatus(jobId);
     if (!status) {
       throw new Error(`Job not found: ${jobId}`);
@@ -779,7 +779,7 @@ export class WaitCoordinator {
     jobId: string,
     providerName: string,
     sessionId: string,
-    status: PersistedStatusRecord,
+    status: JobStatusRecord,
   ): boolean {
     if (!isTerminalPhase(status.phase)) {
       return false;

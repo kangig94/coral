@@ -45,7 +45,7 @@ import {
   parseWaitStreamEvent,
   TOOL_TIMEOUT_MS,
 } from '../shared/sse-parser.js';
-import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitStreamEvent } from '../shared/types.js';
+import type { JobProgressRecord, JobStatusRecord, WaitCursor, WaitStreamEvent } from '../shared/types.js';
 import { isRecord } from '../shared/utils.js';
 
 export type AcceptedLaunchResponse = {
@@ -60,7 +60,7 @@ export type SessionForkResponse = AcceptedLaunchResponse;
 export type WorkflowLaunchResponse = AcceptedLaunchResponse;
 
 export type JobsListResponse = {
-  jobs: Array<{ jobId: string; status: PersistedStatusRecord }>;
+  jobs: Array<{ jobId: string; status: JobStatusRecord }>;
 };
 
 export type ListJobsOptions = {
@@ -71,8 +71,8 @@ export type ListJobsOptions = {
 };
 
 export type JobDetailResponse = {
-  status: PersistedStatusRecord;
-  events: PersistedProgressRecord[];
+  status: JobStatusRecord;
+  events: JobProgressRecord[];
 };
 
 export type DiscussStartResponse = {

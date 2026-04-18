@@ -1,4 +1,4 @@
-import type { ProviderContinuityBlob, ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderContinuityBlob, ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
 import type { LegacyAbortReason, LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
 
@@ -18,7 +18,7 @@ export interface AppServerSessionDriver<TState> {
   awaitTurnOutcome(state: TState): Promise<TurnOutcome>;
   requestInterrupt(ctx: DriverContext, state: TState): Promise<void>;
   onTransportClosed(state: TState, outcome: Error | void): TurnOutcome;
-  finalize(state: TState, outcome: TurnOutcome): ProviderResult;
+  finalize(state: TState, outcome: TurnOutcome): ProviderTurnResult;
 }
 
 export interface DriverContext {

@@ -1,5 +1,5 @@
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderResult } from '../../shared/types.js';
+import type { ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
 import { requireAppServerRuntime, type ProviderRuntime } from '../types.js';
 import type { AppServerSessionDriver, DriverContext, TurnOutcome } from './driver.js';
 
@@ -7,7 +7,7 @@ export async function runAppServerTurn<TState>(
   driver: AppServerSessionDriver<TState>,
   request: ProviderRequest,
   runtime: ProviderRuntime,
-): Promise<ProviderResult> {
+): Promise<ProviderTurnResult> {
   const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, driver.name);
   const spec = driver.buildServerSpec(request, runtime.persistedContinuity);
   const lease = await acquireServer(spec);
@@ -59,7 +59,7 @@ export async function runAppServerTurn<TState>(
     return produce();
   };
 
-  const finalize = (outcome: TurnOutcome): ProviderResult => {
+  const finalize = (outcome: TurnOutcome): ProviderTurnResult => {
     stopNotifications();
     if (outcome.kind === 'failed') {
       const base = driver.finalize(state, outcome);

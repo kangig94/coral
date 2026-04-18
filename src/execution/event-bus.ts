@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { backendLog } from '../shared/backend-log.js';
-import type { JobPhase, TerminalResult } from '../shared/types.js';
+import type { JobPhase, JobTerminalRecord } from '../shared/types.js';
 
 /** Events emitted by the execution-layer event bus. */
 export type EventBusEvents = {
@@ -9,7 +9,7 @@ export type EventBusEvents = {
   'job:progress': { jobId: string; eventId: number; message: string };
   'job:completed': {
     jobId: string;
-    result: TerminalResult;
+    result: JobTerminalRecord;
     costUsd?: number;
     tokenUsage?: {
       inputTokens?: number;

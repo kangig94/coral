@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSy
 import { createServer, type Server as HttpServer } from 'node:http'
 import type * as NodeOs from 'node:os'
 import { dirname, join } from 'node:path'
-import type { PersistedLaunchRecord, PersistedProgressRecord, TerminalResult, WaitStreamEvent } from '../../shared/types.js'
+import type { JobLaunchRecord, JobProgressRecord, JobTerminalRecord, WaitStreamEvent } from '../../shared/types.js'
 import type * as ProgressStoreModule from '../progress-store.js'
 import type * as SessionManagerModule from '../session-manager.js'
 import type * as LifecycleModule from '../lifecycle.js'
@@ -134,7 +134,7 @@ function writeJson(filePath: string, value: unknown): void {
   writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf-8')
 }
 
-function appendProgressRecord(jobDir: string, entry: PersistedProgressRecord): void {
+function appendProgressRecord(jobDir: string, entry: JobProgressRecord): void {
   appendFileSync(join(jobDir, 'progress.jsonl'), JSON.stringify(entry) + '\n')
 }
 
@@ -255,7 +255,7 @@ function stubLaunchRecord(
     pool?: string
   },
 ): void {
-  const record: PersistedLaunchRecord = {
+  const record: JobLaunchRecord = {
     jobId: overrides.jobId,
     sessionId: overrides.sessionId,
     provider: overrides.provider,
@@ -1050,14 +1050,14 @@ describe('lifecycle recovery characterization', () => {
     })
     sessionManager.claimForJobSync(session.sessionId, jobId)
 
-    const persistedPayload: TerminalResult = {
+    const persistedPayload: JobTerminalRecord = {
       content: 'persisted content that should be preserved later',
       workflow: { steps: [] },
       exitCode: 0,
       usage: { inputTokens: 12, outputTokens: 4 },
       outcome: { kind: 'completed' },
     }
-    const persistedTerminal: PersistedProgressRecord = {
+    const persistedTerminal: JobProgressRecord = {
       jobId,
       sessionId: session.sessionId,
       eventId: 1,
@@ -1861,7 +1861,7 @@ describe('lifecycle recovery characterization', () => {
     })
     sessionManager.claimForJobSync(session.sessionId, jobId)
 
-    const persistedPayload: TerminalResult = {
+    const persistedPayload: JobTerminalRecord = {
       content: 'aborted payload',
       exitCode: 0,
       usage: { inputTokens: 9, outputTokens: 2 },
@@ -1950,7 +1950,7 @@ describe('lifecycle recovery characterization', () => {
     })
     sessionManager.claimForJobSync(session.sessionId, jobId)
 
-    const persistedPayload: TerminalResult = {
+    const persistedPayload: JobTerminalRecord = {
       content: 'completed payload',
       exitCode: 0,
       usage: { inputTokens: 8, outputTokens: 3 },
@@ -2039,7 +2039,7 @@ describe('lifecycle recovery characterization', () => {
     })
     sessionManager.claimForJobSync(session.sessionId, jobId)
 
-    const persistedPayload: TerminalResult = {
+    const persistedPayload: JobTerminalRecord = {
       content: 'error payload',
       exitCode: 1,
       usage: { inputTokens: 7, outputTokens: 1 },

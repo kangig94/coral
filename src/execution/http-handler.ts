@@ -19,7 +19,7 @@ import {
   workflowRequestSchema,
 } from '../shared/schemas.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { PersistedProgressRecord, PersistedStatusRecord, WaitCursor, WaitStreamRequest } from '../shared/types.js';
+import type { JobProgressRecord, JobStatusRecord, WaitCursor, WaitStreamRequest } from '../shared/types.js';
 import { belongsToNamespace, isLivePhase, jobPhaseSchema } from '../shared/types.js';
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
@@ -261,8 +261,8 @@ export function parseEventStreamFilter(url: string): string | null {
 export function listAllJobs(
   store: ProgressStore,
   currentNamespace: string,
-): Array<{ jobId: string; status: PersistedStatusRecord }> {
-  const results: Array<{ jobId: string; status: PersistedStatusRecord }> = [];
+): Array<{ jobId: string; status: JobStatusRecord }> {
+  const results: Array<{ jobId: string; status: JobStatusRecord }> = [];
   for (const jobId of store.listJobIds()) {
     const status = store.readStatus(jobId);
     if (status && belongsToNamespace(status, currentNamespace)) {
@@ -285,7 +285,7 @@ export function getJobDetail(
   store: ProgressStore,
   jobId: string,
   currentNamespace: string,
-): { status: PersistedStatusRecord; events: PersistedProgressRecord[] } | null {
+): { status: JobStatusRecord; events: JobProgressRecord[] } | null {
   const status = store.readStatus(jobId);
   if (!status || !belongsToNamespace(status, currentNamespace)) return null;
   const cursor = createReplayCursor();

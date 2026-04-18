@@ -59,7 +59,7 @@ import type {
 import { CoralSetupError } from './errors.js';
 import { MAX_BUFFER } from '../shared/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../shared/env-sanitize.js';
-import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
+import { isDurableCliRuntime, type DurableCliRuntimeRecord, type JobExitRecord } from '../shared/types.js';
 import { buildExecPromise } from './exec-builder.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
@@ -268,7 +268,7 @@ export function createRealRuntime(): Runtime {
       let exitedAt = null as number | null;
 
       while (true) {
-        const record = readJsonIfPresent<PersistedExitRecord>(storage, exitPath);
+        const record = readJsonIfPresent<JobExitRecord>(storage, exitPath);
         if (record) {
           return record;
         }

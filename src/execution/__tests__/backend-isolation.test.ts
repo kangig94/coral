@@ -10,9 +10,9 @@ import { createDiscussContextRegistry } from '../../discuss/shell/live-registry.
 import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { TerminalResult } from '../../shared/types.js';
+import type { JobTerminalRecord } from '../../shared/types.js';
 
-const terminalResult: TerminalResult = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
+const terminalResult: JobTerminalRecord = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
 
 describe('backend isolation', () => {
   it('two coordinators track children independently', () => {

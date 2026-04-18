@@ -36,7 +36,7 @@ import {
 import type { BackendServerController } from '../server.js';
 import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { LifecycleState } from '../server-types.js';
-import type { PersistedLaunchRecord } from '../../shared/types.js';
+import type { JobLaunchRecord } from '../../shared/types.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
@@ -323,7 +323,7 @@ function stubLaunchRecord(
     pool?: string;
   },
 ): void {
-  const record: PersistedLaunchRecord = {
+  const record: JobLaunchRecord = {
     jobId: overrides.jobId,
     sessionId: overrides.sessionId,
     provider: overrides.provider,

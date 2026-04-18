@@ -12,7 +12,7 @@ import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
 } from './persistence-types.js';
-import { jobPhaseSchema, terminalResultSchema, type PersistedStatusRecord } from './types.js';
+import { jobPhaseSchema, terminalResultSchema, type JobStatusRecord } from './types.js';
 
 const finiteNumberSchema = z.number().finite();
 const integerSchema = z.number().int();
@@ -48,11 +48,11 @@ export const persistedStatusRecordSchema = z
   })
   .passthrough();
 
-export function parsePersistedStatusRecord(value: unknown): PersistedStatusRecord | null {
-  return parseWithSchema(persistedStatusRecordSchema, value) as PersistedStatusRecord | null;
+export function parseJobStatusRecord(value: unknown): JobStatusRecord | null {
+  return parseWithSchema(persistedStatusRecordSchema, value) as JobStatusRecord | null;
 }
 
-export function safeParsePersistedStatusRecord(value: unknown) {
+export function safeParseJobStatusRecord(value: unknown) {
   return persistedStatusRecordSchema.safeParse(value);
 }
 

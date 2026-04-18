@@ -2,12 +2,12 @@ import {
   belongsToNamespace,
   isLivePhase,
   isTerminalPhase,
-  type PersistedExitRecord,
-  type PersistedLaunchRecord,
-  type PersistedRuntimeRecord,
-  type PersistedStatusRecord,
+  type JobExitRecord,
+  type JobLaunchRecord,
+  type JobRuntimeRecord,
+  type JobStatusRecord,
   type SessionEntry,
-  type TerminalResult,
+  type JobTerminalRecord,
 } from '../../shared/types.js';
 import type { LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
 
@@ -30,24 +30,24 @@ export interface JobStoreSnapshot {
   hasLaunch(jobId: string): boolean;
   hasRuntime(jobId: string): boolean;
   hasExit(jobId: string): boolean;
-  readStatus(jobId: string): PersistedStatusRecord | null;
-  readLaunch(jobId: string): PersistedLaunchRecord | null;
-  readRuntime(jobId: string): PersistedRuntimeRecord | null;
-  readExit(jobId: string): PersistedExitRecord | null;
-  readTerminalPayload(jobId: string): TerminalResult | null;
+  readStatus(jobId: string): JobStatusRecord | null;
+  readLaunch(jobId: string): JobLaunchRecord | null;
+  readRuntime(jobId: string): JobRuntimeRecord | null;
+  readExit(jobId: string): JobExitRecord | null;
+  readTerminalPayload(jobId: string): JobTerminalRecord | null;
   listSessionRefs(): Array<{ shardDir: string; sessionId: string; provider: string }>;
   readSession(shardDir: string, provider: string, sessionId: string): SessionEntry | null;
 }
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; fault: LegacyCoralFault; status: PersistedStatusRecord }
-  | { type: 'registerQueued'; jobId: string; launchRecord: PersistedLaunchRecord }
+  | { type: 'markError'; jobId: string; fault: LegacyCoralFault; status: JobStatusRecord }
+  | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunchRecord }
   | {
       type: 'registerRunning';
       jobId: string;
-      launchRecord: PersistedLaunchRecord;
-      runtimeRecord: PersistedRuntimeRecord;
+      launchRecord: JobLaunchRecord;
+      runtimeRecord: JobRuntimeRecord;
     }
   | { type: 'releaseSessionClaim'; shardDir: string; sessionId: string; jobId: string };
 
@@ -64,11 +64,11 @@ type RecoveryJobRow = {
   hasLaunch: boolean;
   hasRuntime: boolean;
   hasExit: boolean;
-  status: PersistedStatusRecord | null;
-  launchRecord: PersistedLaunchRecord | null;
-  runtimeRecord: PersistedRuntimeRecord | null;
-  exitRecord: PersistedExitRecord | null;
-  terminalPayload: TerminalResult | null;
+  status: JobStatusRecord | null;
+  launchRecord: JobLaunchRecord | null;
+  runtimeRecord: JobRuntimeRecord | null;
+  exitRecord: JobExitRecord | null;
+  terminalPayload: JobTerminalRecord | null;
 };
 
 const CLASSIFIER_TABLE: ReadonlyArray<{
@@ -230,7 +230,7 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
   }
 }
 
-function belongsToCurrentNamespace(status: PersistedStatusRecord, snapshot: JobStoreSnapshot): boolean {
+function belongsToCurrentNamespace(status: JobStatusRecord, snapshot: JobStoreSnapshot): boolean {
   return belongsToNamespace(status, snapshot.currentNamespace);
 }
 

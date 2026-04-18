@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
-import type { DurableCliRuntimeRecord, PersistedExitRecord } from '../../../shared/types.js';
+import type { DurableCliRuntimeRecord, JobExitRecord } from '../../../shared/types.js';
 import { nowIsoString } from '../../../shared/utils.js';
 import { attachSpawnRecordingMetadata } from '../recording.js';
 import type {
@@ -92,7 +92,7 @@ type RegisteredProcess = {
   child: MockChildProcess | null;
   killActions: MockKillAction[];
   complete: (outcome: ProcessExitOutcome) => void;
-  waitForExit: Deferred<PersistedExitRecord> | null;
+  waitForExit: Deferred<JobExitRecord> | null;
 };
 
 type MockProcessSpawnerOptions = {
@@ -198,7 +198,7 @@ export class MockDurableTransport implements DurableExecutionTransport {
     return this.spawner.launchDurable(options);
   }
 
-  waitForExit(handle: DurableLaunchResult): Promise<PersistedExitRecord> {
+  waitForExit(handle: DurableLaunchResult): Promise<JobExitRecord> {
     this.waitForExitCalls.push(handle);
     return this.spawner.waitForDurableExit(handle);
   }
@@ -410,10 +410,10 @@ export class MockProcessSpawner {
       encoding: 'utf-8',
     });
 
-    const exitDeferred = createDeferred<PersistedExitRecord>();
+    const exitDeferred = createDeferred<JobExitRecord>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;
     const record = this.registerProcess(pid, null, script.kills ?? [], exitDeferred, (outcome) => {
-      const exitRecord: PersistedExitRecord = {
+      const exitRecord: JobExitRecord = {
         exitCode: outcome.exitCode ?? null,
         signal: outcome.signal ?? null,
         endTime: nowIsoString(this.time),
@@ -479,7 +479,7 @@ export class MockProcessSpawner {
     };
   }
 
-  waitForDurableExit(handle: DurableLaunchResult): Promise<PersistedExitRecord> {
+  waitForDurableExit(handle: DurableLaunchResult): Promise<JobExitRecord> {
     const record = this.processes.get(handle.pid);
     if (!record?.waitForExit) {
       return Promise.reject(new Error(`No durable process registered for pid ${handle.pid}`));
@@ -497,7 +497,7 @@ export class MockProcessSpawner {
     pid: number,
     child: MockChildProcess | null,
     killActions: MockKillAction[],
-    waitForExit: Deferred<PersistedExitRecord> | null,
+    waitForExit: Deferred<JobExitRecord> | null,
     onExit?: (outcome: ProcessExitOutcome) => void,
   ): RegisteredProcess {
     const record: RegisteredProcess = {

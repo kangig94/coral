@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
-import type { TerminalResult, WaitStreamEvent } from '../../shared/types.js';
+import type { JobTerminalRecord, WaitStreamEvent } from '../../shared/types.js';
 import type * as FollowMod from '../follow.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '../format.js';
@@ -61,7 +61,7 @@ function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'waiting' }> {
 }
 
 function makeTerminalEvent(
-  result: Partial<TerminalResult> = {},
+  result: Partial<JobTerminalRecord> = {},
   overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }>> = {},
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {

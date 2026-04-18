@@ -8,7 +8,9 @@
  * All dependencies are received through the explicit `LifecycleDeps` contract.
  */
 
+import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import type { Server, ServerResponse } from 'node:http';
+import { dirname } from 'node:path';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { type LaunchCoordinator } from './engine.js';
@@ -22,6 +24,7 @@ import type { DiscussContext } from '../discuss/shell/context.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
 import { discussReconcile } from '../discuss/api.js';
+import { jobsReconcile } from '../jobs/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase } from '../shared/types.js';
@@ -38,6 +41,16 @@ import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
 import type { RecoveryCapableService } from './service.js';
+import { workflowRecover } from '../workflow/api.js';
+import { openStoreDatabase } from '../store/db.js';
+import { storePaths } from '../store/paths.js';
+import { createEmptyRegistry } from '../store/envelope.js';
+import { composeReducers } from '../store/reducers.js';
+import { rebuildProjections } from '../store/rebuild.js';
+import { jobsRegistry } from '../jobs/events.js';
+import { sessionsRegistry } from '../sessions/events.js';
+import { discussRegistry } from '../discuss/store-registry.js';
+import { workflowRegistry } from '../workflow/events.js';
 
 export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
 export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
@@ -239,6 +252,7 @@ async function runLifecycleStartup({
     launchCoordinator,
     providerRegistry,
     server,
+    getExecutionService,
     getRecoveryService,
     getDiscussStoreForSource,
     knownDiscussSources,
@@ -291,22 +305,68 @@ async function runLifecycleStartup({
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
-    const recoveredDiscussResumes = await recoveryCoordinator.runStartupRecovery({
-      namespace,
-      bundleHash,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getRecoveryService,
-      createCallerContext,
-      assertStartupStillActive,
-      log: identity.log,
-      cleanupStaleJobs: cleanupStaleJobsFn,
-      recoverPersistedDiscuss: recoverPersistedDiscussFn ?? discussReconcile.runStartup,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
+    let storeDbPath = storePaths(flavor).dbFile;
+    try {
+      storeDbPath = runtime.paths.coral.store.dbFile;
+    } catch {
+      // Some direct lifecycle tests intentionally bypass flavor-settled bootstrap.
+    }
+    const storeDbStorage = {
+      ...runtime.storage,
+      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
+      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
+    };
+    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
+    const storeDb = openStoreDatabase({
+      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
+      storage: storeDbStorage,
     });
+    let recoveredDiscussResumes: RecoveredDiscussResume[] = [];
+
+    try {
+      const cutoffSeq = storeDb.prepare('SELECT COALESCE(MAX(seq), 0) FROM events').pluck().get() as number;
+      rebuildProjections({
+        db: storeDb,
+        cutoffSeq,
+        reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+        upcasters: createEmptyRegistry(),
+      });
+      assertStartupStillActive();
+
+      await jobsReconcile.runStartup({
+        recoveryCoordinator,
+        namespace,
+        bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createCallerContext,
+        assertStartupStillActive,
+        log: identity.log,
+        cleanupStaleJobs: cleanupStaleJobsFn,
+      });
+      assertStartupStillActive();
+
+      recoveredDiscussResumes = await (recoverPersistedDiscussFn ?? discussReconcile.runStartup)({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createCallerContext,
+        assertStartupStillActive,
+      });
+      assertStartupStillActive();
+
+      await workflowRecover.resumeAll({
+        db: storeDb,
+        progressStore,
+        getExecutionService: (ctx) => getExecutionService(ctx) as never,
+        createCallerContext,
+      });
+      assertStartupStillActive();
+    } finally {
+      storeDb.close();
+    }
 
     assertStartupStillActive();
     const startedAt = runtimeState.getStartedAt();

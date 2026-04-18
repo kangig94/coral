@@ -15,7 +15,7 @@ import {
   persistedStatusRecordSchema,
 } from './persistence-parsers.js';
 import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../runtime/ports.js';
-import type { PersistedStatusRecord } from './types.js';
+import type { JobStatusRecord } from './types.js';
 import { isNoEntryError } from './utils.js';
 
 export function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T | null): T[] {
@@ -67,10 +67,10 @@ export function readStatusRecordWithStorage(
   storage: Pick<StoragePort, 'readFileSync'>,
   paths: Pick<DiscussPathResolver, 'jobStatusPath'>,
   jobId: string,
-): PersistedStatusRecord | null {
+): JobStatusRecord | null {
   const record = readJsonFileWithStorage(storage, paths.jobStatusPath(jobId));
   if (record === null) return null;
-  return parseWithSchema(persistedStatusRecordSchema, record) as PersistedStatusRecord | null;
+  return parseWithSchema(persistedStatusRecordSchema, record) as JobStatusRecord | null;
 }
 
 export function readDiscussSnapshotWithStorage(

@@ -10,7 +10,7 @@ import { ProviderRegistry } from '../../../providers/registry.js';
 import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { ProviderResult } from '../../../shared/types.js';
+import type { ProviderTurnResult } from '../../../shared/types.js';
 import type { LegacyProviderName, LegacyTerminalOutcome } from '../../../shared/legacy-terminal-outcome-compat.js';
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { SimulationRuntime } from '../../../simulation/runtime.js';
@@ -66,7 +66,7 @@ export type FakeProviderScenario = {
     extraEnv?: Record<string, string>;
   };
   progress?: Array<{ delayMs?: number; message: string }>;
-  result?: Omit<Partial<ProviderResult>, 'outcome'> & Pick<ProviderResult, 'outcome'>;
+  result?: Omit<Partial<ProviderTurnResult>, 'outcome'> & Pick<ProviderTurnResult, 'outcome'>;
   preflightError?: Error | string;
 };
 
@@ -228,7 +228,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
 
       const exitCode = scenario?.result?.exitCode ?? cli.code;
       const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(cli.aborted, exitCode);
-      const result: ProviderResult = {
+      const result: ProviderTurnResult = {
         ...scenario?.result,
         content: scenario?.result?.content ?? cli.stdout.trimEnd(),
         exitCode,
@@ -248,7 +248,7 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           (recoveredArtifactFailed
             ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
             : buildDefaultExecutionOutcome(signal !== null, exitCode));
-        const result: ProviderResult = {
+        const result: ProviderTurnResult = {
           ...scenario?.result,
           content: scenario?.result?.content ?? stdout,
           exitCode: scenario?.result?.exitCode ?? exitCode,

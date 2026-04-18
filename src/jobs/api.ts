@@ -2,7 +2,11 @@ import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ExecutionServiceLike } from '../execution/backend-contracts.js';
 import { createReplayCursor, type ProgressStore } from '../execution/progress-store.js';
 import type { RecoveryRegistry } from '../execution/recovery-registry.js';
-import type { PersistedLaunchRecord, PersistedProgressRecord, PersistedRuntimeRecord, PersistedStatusRecord, WaitStreamEvent } from '../shared/types.js';
+import type { CallerContext } from '../shared/request-context.js';
+import type { JobLaunchRecord, JobProgressRecord, JobRuntimeRecord, JobStatusRecord, WaitStreamEvent } from '../shared/types.js';
+import type { ProviderRegistry } from '../providers/registry.js';
+import type { Runtime } from '../runtime/ports.js';
+import type { RecoveryCapableService } from '../execution/service.js';
 import type { JobPhase } from './phase.js';
 import type { TerminalOutcome } from './outcome.js';
 import { createRecoveryCoordinator } from './reconcile/coordinator.js';
@@ -17,9 +21,9 @@ export type JobStatusRow = {
   lastSeq: number;
 };
 
-export type JobLaunchRow = PersistedLaunchRecord;
-export type JobProgressRow = PersistedProgressRecord;
-export type JobRuntimeRow = PersistedRuntimeRecord | null;
+export type JobLaunchRow = JobLaunchRecord;
+export type JobProgressRow = JobProgressRecord;
+export type JobRuntimeRow = JobRuntimeRecord | null;
 export type JobExitRow = {
   outcome: TerminalOutcome;
   content: string;
@@ -27,6 +31,20 @@ export type JobExitRow = {
   exitCode?: number | null;
   signal?: string | null;
   nonResumable?: boolean;
+};
+
+export type JobsStartupDeps = {
+  recoveryCoordinator: ReturnType<typeof createRecoveryCoordinator>;
+  namespace: string;
+  bundleHash: string;
+  runtime: Runtime;
+  progressStore: ProgressStore;
+  providerRegistry: ProviderRegistry;
+  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  createCallerContext: (projectRoot: string) => CallerContext;
+  assertStartupStillActive: () => void;
+  log: (message: string) => void;
+  cleanupStaleJobs: (currentBundleHash: string) => void;
 };
 
 export const jobsCommands = {
@@ -54,16 +72,16 @@ export const jobsCommands = {
 } as const;
 
 export const jobsQueries = {
-  list(progressStore: ProgressStore): Array<{ jobId: string; status: PersistedStatusRecord }> {
+  list(progressStore: ProgressStore): Array<{ jobId: string; status: JobStatusRecord }> {
     return progressStore.listJobIds().flatMap((jobId) => {
       const status = progressStore.readStatus(jobId);
       return status ? [{ jobId, status }] : [];
     });
   },
   detail(progressStore: ProgressStore, jobId: string): {
-    status: PersistedStatusRecord | null;
-    launch: PersistedLaunchRecord | null;
-    runtime: PersistedRuntimeRecord | null;
+    status: JobStatusRecord | null;
+    launch: JobLaunchRecord | null;
+    runtime: JobRuntimeRecord | null;
     exit: JobExitRow | null;
   } {
     const status = progressStore.readStatus(jobId);
@@ -111,7 +129,22 @@ export const jobsQueries = {
 } as const;
 
 export const jobsReconcile = {
-  runStartup: createRecoveryCoordinator,
+  async runStartup({
+    recoveryCoordinator,
+    ...deps
+  }: JobsStartupDeps): Promise<void> {
+    await recoveryCoordinator.runStartupRecovery({
+      ...deps,
+      recoverPersistedDiscuss: async () => [],
+      knownDiscussSources: () => new Set<string>(),
+      getDiscussStoreForSource: ((_: string) => {
+        throw new Error('Discuss startup is handled separately.');
+      }) as (source: string) => never,
+      getDiscussContext: ((_: CallerContext) => {
+        throw new Error('Discuss startup is handled separately.');
+      }) as (ctx: CallerContext) => never,
+    });
+  },
   adoptRunning<T>(fn: () => T): T {
     return fn();
   },

@@ -27,13 +27,13 @@ export type SessionId = string;
 export { JOB_PHASES, jobPhaseSchema, isLivePhase, isTerminalPhase };
 export type { JobPhase };
 
-export function readBackendNamespace(status: PersistedStatusRecord): string | null {
+export function readBackendNamespace(status: JobStatusRecord): string | null {
   return typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
     ? status.backendNamespace
     : null;
 }
 
-export function belongsToNamespace(status: PersistedStatusRecord, namespace: string): boolean {
+export function belongsToNamespace(status: JobStatusRecord, namespace: string): boolean {
   return readBackendNamespace(status) === namespace;
 }
 
@@ -41,7 +41,7 @@ export function belongsToNamespace(status: PersistedStatusRecord, namespace: str
 export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
 
 /** Progress event emitted by a Provider during execution. */
-export interface ProviderProgressEvent {
+export interface ProviderTurnProgressEvent {
   jobId: string;
   message: string;
   ts: string;
@@ -101,7 +101,7 @@ export interface ProviderRequest {
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /** Result returned by a Provider adapter after execution completes. */
-export interface ProviderResult {
+export interface ProviderTurnResult {
   content: string;
   conversationRef?: string;
   model?: string;
@@ -122,7 +122,7 @@ export type LaunchDecision =
   | { status: 'queued'; job: string; session: string; message?: undefined }
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
 
-/** Terminal result payload included in WaitStreamEvent and PersistedStatusRecord. */
+/** Terminal result payload included in WaitStreamEvent and JobStatusRecord. */
 export interface WorkflowStepMeta {
   agent: string;
   step: number;
@@ -155,7 +155,7 @@ export const workflowResultMetaSchema = z
 
 export type JobKind = 'provider' | 'workflow';
 
-export interface TerminalResult {
+export interface JobTerminalRecord {
   content: string;
   durationMs?: number;
   nonResumable?: boolean;
@@ -199,7 +199,7 @@ export type WaitCursor = {
 };
 
 /** Durable status record persisted in status.json for each job. */
-export interface PersistedStatusRecord {
+export interface JobStatusRecord {
   jobId: string;
   sessionId: string;
   provider: string;
@@ -213,11 +213,11 @@ export interface PersistedStatusRecord {
     message?: string;
     updatedAt: string;
   };
-  result?: TerminalResult;
+  result?: JobTerminalRecord;
 }
 
 /** Durable launch record written before queue admission. Contains all data needed to reproduce the job after restart. */
-export interface PersistedLaunchRecord {
+export interface JobLaunchRecord {
   jobId: string;
   sessionId: string;
   provider: string;
@@ -247,7 +247,7 @@ export interface PersistedLaunchRecord {
 }
 
 /** Durable runtime record written by the wrapper after spawn succeeds. */
-export type PersistedRuntimeRecord = DurableCliRuntimeRecord | AppServerRuntimeRecord;
+export type JobRuntimeRecord = DurableCliRuntimeRecord | AppServerRuntimeRecord;
 
 export interface DurableCliRuntimeRecord {
   transport?: 'durable-cli';
@@ -275,33 +275,33 @@ export interface AppServerRuntimeRecord {
 }
 
 export function isDurableCliRuntime(
-  record: PersistedRuntimeRecord | null | undefined,
+  record: JobRuntimeRecord | null | undefined,
 ): record is DurableCliRuntimeRecord {
   return record !== null && record !== undefined && record.transport !== 'app-server';
 }
 
 export function isAppServerRuntime(
-  record: PersistedRuntimeRecord | null | undefined,
+  record: JobRuntimeRecord | null | undefined,
 ): record is AppServerRuntimeRecord {
   return record?.transport === 'app-server';
 }
 
 /** Durable completion sentinel written after output flush and exit. */
-export interface PersistedExitRecord {
+export interface JobExitRecord {
   exitCode: number | null;
   signal: string | null;
   endTime: string;
 }
 
 /** Append-only progress record persisted in progress.jsonl. */
-export interface PersistedProgressRecord {
+export interface JobProgressRecord {
   jobId: string;
   sessionId: string;
   eventId: number;
   type: 'progress' | 'terminal';
   ts: string;
   message?: string;
-  result?: TerminalResult;
+  result?: JobTerminalRecord;
 }
 
 /** Request body for POST /wait/stream. */
@@ -331,6 +331,6 @@ export type WaitStreamEvent =
       jobId: string;
       remainingJobIds: string[];
       resultPath: string;
-      result: TerminalResult;
+      result: JobTerminalRecord;
     }
   | { type: 'waiting'; waitingJobIds: string[] };
