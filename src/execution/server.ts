@@ -1,8 +1,5 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { backendLog } from '../shared/backend-log.js';
 import { BackendAlreadyRunningError } from './backend-lock.js';
@@ -14,6 +11,7 @@ import {
 import { createRealRuntime, type Runtime, type RuntimeObserver } from './runtime.js';
 import { StartupInterruptedError } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
+import { handleSmokeOpenStore } from './smoke-open-store.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -44,9 +42,6 @@ export type BackendServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => BackendCoreResult['idleTimer'];
 };
-
-const MODULE_DIR =
-  typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url));
 
 export function createBackendServer(options: BackendServerOptions = {}): BackendServerController {
   const {
@@ -80,66 +75,6 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     getLifecycle: () => core.runtimeState.getLifecycle(),
     getIdleTimer: () => core.idleTimer,
   };
-}
-
-async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
-  const pathIdx = argv.indexOf('--path');
-  if (pathIdx === -1 || !argv[pathIdx + 1]) {
-    process.stderr.write('missing --path\n');
-    return 1;
-  }
-
-  try {
-    const storePath = argv[pathIdx + 1]!;
-    const { openStoreDatabase } = await import('../store/db.js');
-    const { appendEvents } = await import('../store/append.js');
-    const { composeReducers } = await import('../store/reducers.js');
-    const { createEmptyRegistry } = await import('../store/envelope.js');
-    const { getEvent } = await import('../store/queries/events.js');
-    const runtime = createRealRuntime();
-    const db = openStoreDatabase({
-      path: storePath,
-      storage: runtime.storage,
-      migrationsDir: join(MODULE_DIR, 'store', 'migrations'),
-    });
-
-    try {
-      const reducers = composeReducers();
-      const upcasters = createEmptyRegistry();
-      const [event] = appendEvents(
-        db,
-        [
-          {
-            type: 'smoke.ping',
-            stream: { kind: 'job', id: 'smoke' },
-            bodyVersion: 1,
-            body: { ok: true },
-          },
-        ],
-        { now: () => new Date(), reducers, upcasters },
-      );
-
-      if (!event) {
-        process.stderr.write('smoke append failed\n');
-        return 1;
-      }
-
-      const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq);
-      if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
-        process.stderr.write('smoke read-back failed\n');
-        return 1;
-      }
-
-      process.stdout.write('ok\n');
-      return 0;
-    } finally {
-      db.close();
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`smoke open-store failed: ${message}\n`);
-    return 1;
-  }
 }
 
 export async function main(): Promise<number> {
