@@ -41,7 +41,7 @@ import { domainError, domainSuccess, type ToolDomainResult } from '../tool-respo
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager } from '../host-manager.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { ZodError, ZodIssueCode } from 'zod';

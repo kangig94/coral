@@ -3,7 +3,7 @@ import { describeCoralFault, type CoralFault } from '../../shared/coral-fault.js
 import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type PersistedStatusRecord, type TerminalResult } from '../../shared/types.js';
 import type { ProgressStore } from '../progress-store.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 
 export function withBackendNamespace(status: PersistedStatusRecord, namespace: string): PersistedStatusRecord {
   return {

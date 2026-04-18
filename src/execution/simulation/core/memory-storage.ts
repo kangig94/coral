@@ -1,5 +1,5 @@
 import { dirname, normalize } from 'node:path';
-import type { RuntimeDirentLike, RuntimeStorage, RuntimeTime } from '../../runtime.js';
+import type { RuntimeDirentLike, StoragePort, TimePort } from '../../../runtime/ports.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 type FileNode = {
@@ -82,7 +82,7 @@ function createErrnoError(code: string, path: string, message?: string): NodeJS.
   return error;
 }
 
-export class InMemoryStorage implements RuntimeStorage {
+export class InMemoryStorage implements StoragePort {
   private readonly files = new Map<string, FileNode>();
   private readonly directories = new Map<string, DirectoryNode>();
   private readonly childIndex = new Map<string, Set<string>>();
@@ -91,7 +91,7 @@ export class InMemoryStorage implements RuntimeStorage {
   private lastStamp: number;
 
   constructor(
-    private readonly time: Pick<RuntimeTime, 'now'>,
+    private readonly time: Pick<TimePort, 'now'>,
     private readonly roots: InMemoryRoots = {},
   ) {
     this.lastStamp = this.time.now();

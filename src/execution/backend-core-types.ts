@@ -23,7 +23,7 @@ import type {
   RegisterBuiltInProvidersFn,
 } from './lifecycle.js';
 import type { ProgressStore } from './progress-store.js';
-import type { Runtime } from './runtime.js';
+import type { Runtime } from '../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from './service.js';
 
 export type BackendBootSnapshot = {

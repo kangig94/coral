@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
 import type {
   Disposable,
-  RuntimeEnv,
-  RuntimeIds,
+  EnvPort,
+  IdPort,
   RuntimeObserver,
   RuntimePaths,
   SpawnEvent,
   SpawnListener,
-} from '../../runtime.js';
+} from '../../../runtime/ports.js';
 import { coordinatorPaths } from '../../../coordinator/info.js';
 import type { CoralPaths } from '../../../infra/coral-paths.js';
 import { equipmentPaths } from '../../../infra/equipment-paths.js';
@@ -197,7 +197,7 @@ export class InMemoryPaths implements RuntimePaths {
   }
 }
 
-export class SequentialIds implements RuntimeIds {
+export class SequentialIds implements IdPort {
   private uuidCounter = 0;
   private byteCounter = 0;
 
@@ -220,7 +220,7 @@ export class SequentialIds implements RuntimeIds {
   }
 }
 
-export class SealedEnv implements RuntimeEnv {
+export class SealedEnv implements EnvPort {
   private readonly fullEnv: Readonly<Record<string, string>>;
   private readonly coralEnv: Readonly<Record<string, string>>;
 

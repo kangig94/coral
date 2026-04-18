@@ -13,7 +13,7 @@ import type { ProviderArtifactRecovery } from '../../providers/types.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { RecoveryAction } from '../recovery-core.js';
 import type { RecoveryRegistry } from '../recovery-registry.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { SessionManager } from '../session-manager.js';
 import type { RecoveryCapableService } from '../service.js';
 import { markJobAsError } from './job-helpers.js';

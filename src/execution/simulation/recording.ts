@@ -1,5 +1,5 @@
 import { basename, dirname } from 'node:path';
-import type { ChildProcessLike, ChildStdinLike, RuntimeStorage } from '../runtime.js';
+import type { ChildProcessLike, ChildStdinLike, StoragePort } from '../../runtime/ports.js';
 import type { ChildOutputChunk, MockDurableScript, MockSpawnScript } from './core/mock-process.js';
 
 type SpawnRecordingEvent = {
@@ -286,13 +286,13 @@ export function recordingToDurableScript(recording: SpawnRecording): MockDurable
   };
 }
 
-export function saveRecording(storage: RuntimeStorage, recording: SpawnRecording, filePath: string): void {
+export function saveRecording(storage: StoragePort, recording: SpawnRecording, filePath: string): void {
   const normalized = validateRecording(recording);
   storage.mkdirSync(dirname(filePath), { recursive: true });
   storage.writeFileSync(filePath, JSON.stringify(normalized, null, 2), { encoding: 'utf-8' });
 }
 
-export function loadRecording(storage: RuntimeStorage, filePath: string): SpawnRecording {
+export function loadRecording(storage: StoragePort, filePath: string): SpawnRecording {
   const parsed = JSON.parse(storage.readFileSync(filePath, 'utf-8')) as unknown;
   const recording = validateRecording(parsed);
   recording.events.sort((a, b) => a.timestamp - b.timestamp);

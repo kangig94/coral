@@ -22,7 +22,7 @@ import type {
   DiscussDiscoverySession,
   DiscussSummaryIndexData,
 } from '../shared/persistence-types.js';
-import type { DiscussPathResolver, RuntimeStorage } from '../shared/runtime-ports.js';
+import type { DiscussPathResolver, StoragePort } from '../runtime/ports.js';
 import {
   discussSourcesPath,
   discussBaseDirForSource,
@@ -76,7 +76,7 @@ function isValidDiscussState(value: unknown): value is DiscussState {
   return discussStateSchema.safeParse(value).success;
 }
 
-const nodeDiscussReaderStorage: Pick<RuntimeStorage, 'readFileSync' | 'readdirSync' | 'existsSync'> = {
+const nodeDiscussReaderStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'> = {
   readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
   readdirSync: (dirPath, options) => readdirSync(dirPath, options),
   existsSync: (filePath) => existsSync(filePath),

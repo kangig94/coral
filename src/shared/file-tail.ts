@@ -1,5 +1,5 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
-import type { RuntimeStoragePort } from './runtime-ports.js';
+import type { RuntimeStoragePort } from '../runtime/ports.js';
 
 export type FileTailChunk = {
   lines: string[];

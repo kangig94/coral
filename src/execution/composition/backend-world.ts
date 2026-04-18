@@ -17,7 +17,7 @@ import { TypedEventBus } from '../event-bus.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
 import type { IdleTimer } from '../idle-timer.js';
 import { ProgressStore } from '../progress-store.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
 
 export interface BackendWorld {

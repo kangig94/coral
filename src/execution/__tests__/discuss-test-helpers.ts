@@ -22,7 +22,7 @@ import { attachSession, detachSession, listSessions } from '../discuss/registry.
 import { isAbortEnded, readSessionEvents } from '../discuss/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionService } from '../service.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { SimulationRuntime } from '../simulation/core/index.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';

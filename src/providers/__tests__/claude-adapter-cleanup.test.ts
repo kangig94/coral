@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import type { ArtifactCleanupRuntime } from '../types.js';
-import type { RuntimeDirentLike, RuntimeEnv, RuntimeStorage } from '../../shared/runtime-ports.js';
+import type { RuntimeDirentLike, EnvPort, StoragePort } from '../../runtime/ports.js';
 import { claudeProvider } from '../claude/adapter.js';
 
 function makeDirent(name: string, kind: 'file' | 'dir'): RuntimeDirentLike {
@@ -25,11 +25,11 @@ function makeRuntime(tree: Record<string, RuntimeDirentLike[]>, homedir = '/home
     existsSync,
     readdirSync,
     unlinkSync,
-  } as unknown as RuntimeStorage;
+  } as unknown as StoragePort;
 
   const env = {
     homedir: () => homedir,
-  } as unknown as RuntimeEnv;
+  } as unknown as EnvPort;
 
   return { runtime: { storage, env }, unlinkSync, existsSync };
 }

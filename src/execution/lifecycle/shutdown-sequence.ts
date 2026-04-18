@@ -7,7 +7,7 @@ import type { MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { DiscussSessionStore } from '../discuss/session-store.js';
 import type { IdleTimer } from '../idle-timer.js';
 import type { ProgressStore } from '../progress-store.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../service.js';
 import type { ProviderHostManager } from '../host-manager.js';
 import { listLiveJobs } from './job-helpers.js';

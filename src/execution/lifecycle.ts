@@ -28,7 +28,7 @@ import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
-import type { Runtime } from './runtime.js';
+import type { Runtime } from '../runtime/ports.js';
 import { listLiveJobs, markJobAsError } from './lifecycle/job-helpers.js';
 import { resolveClientHost } from './lifecycle/network.js';
 import { createReplacementBackendOwnershipChecker } from './lifecycle/ownership-checker.js';

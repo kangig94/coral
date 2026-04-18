@@ -17,11 +17,11 @@ import type {
 } from '../../shared/persistence-types.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../../discuss/reducer.js';
 import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
-import type { DiscussPathResolver, RuntimeStorage, RuntimeTime, RuntimeTimerHandle } from '../runtime.js';
+import type { DiscussPathResolver, StoragePort, TimePort, RuntimeTimerHandle } from '../../runtime/ports.js';
 
 type DiscussSessionStoreOptions = {
-  storage: RuntimeStorage;
-  time: Pick<RuntimeTime, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
+  storage: StoragePort;
+  time: Pick<TimePort, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
   paths: DiscussPathResolver;
   onCommit?: (snapshot: PersistedDiscussSnapshot, events: DiscussDomainEvent[]) => void;
 };
@@ -186,8 +186,8 @@ function buildPersistedSummary(row: DiscussSummaryIndexRow): DiscussSummaryDto {
 
 export class DiscussSessionStore {
   private readonly source: string;
-  private readonly storage: RuntimeStorage;
-  private readonly time: Pick<RuntimeTime, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
+  private readonly storage: StoragePort;
+  private readonly time: Pick<TimePort, 'now' | 'sleep' | 'setTimeout' | 'clearTimeout'>;
   private readonly paths: DiscussPathResolver;
   private readonly lockDeps: DirectoryLockDeps;
   private readonly onCommit?: DiscussSessionStoreOptions['onCommit'];

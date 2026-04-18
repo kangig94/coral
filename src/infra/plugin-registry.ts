@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { RuntimeEnvPort, RuntimeStoragePort } from '../shared/runtime-ports.js';
+import type { RuntimeEnvPort, RuntimeStoragePort } from '../runtime/ports.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 const installedPluginEntrySchema = z

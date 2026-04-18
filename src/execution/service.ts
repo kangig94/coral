@@ -68,7 +68,7 @@ import {
   type AgentResolutionContext,
 } from './agent-resolution.js';
 import { SessionManager, getSessionById, type SessionAllocateOptions } from './session-manager.js';
-import type { Runtime } from './runtime.js';
+import type { Runtime } from '../runtime/ports.js';
 
 interface LaunchIntentBase {
   prompt: string;

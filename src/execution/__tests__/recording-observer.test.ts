@@ -7,7 +7,8 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
 } from '../recording-observer.js';
-import { createRealRuntime, type ChildProcessLike } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import type { ChildProcessLike } from '../../runtime/ports.js';
 import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { loadRecording } from '../simulation/recording.js';
 

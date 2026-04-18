@@ -14,7 +14,7 @@ import {
   parseWithSchema,
   persistedStatusRecordSchema,
 } from './persistence-parsers.js';
-import type { DiscussPathResolver, RuntimeDirentLike, RuntimeStorage } from './runtime-ports.js';
+import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../runtime/ports.js';
 import type { PersistedStatusRecord } from './types.js';
 import { isNoEntryError } from './utils.js';
 
@@ -33,7 +33,7 @@ export function parseJsonLines<T>(text: string, parseLine: (value: unknown) => T
   return entries;
 }
 
-export function readJsonFileWithStorage(storage: Pick<RuntimeStorage, 'readFileSync'>, filePath: string): unknown | null {
+export function readJsonFileWithStorage(storage: Pick<StoragePort, 'readFileSync'>, filePath: string): unknown | null {
   try {
     return JSON.parse(storage.readFileSync(filePath, 'utf-8')) as unknown;
   } catch (error: unknown) {
@@ -42,7 +42,7 @@ export function readJsonFileWithStorage(storage: Pick<RuntimeStorage, 'readFileS
   }
 }
 
-export function readTextFileWithStorage(storage: Pick<RuntimeStorage, 'readFileSync'>, filePath: string): string | null {
+export function readTextFileWithStorage(storage: Pick<StoragePort, 'readFileSync'>, filePath: string): string | null {
   try {
     return storage.readFileSync(filePath, 'utf-8');
   } catch (error: unknown) {
@@ -52,7 +52,7 @@ export function readTextFileWithStorage(storage: Pick<RuntimeStorage, 'readFileS
 }
 
 export function readDirectoryEntriesWithStorage(
-  storage: Pick<RuntimeStorage, 'readdirSync'>,
+  storage: Pick<StoragePort, 'readdirSync'>,
   baseDir: string,
 ): RuntimeDirentLike[] {
   try {
@@ -64,7 +64,7 @@ export function readDirectoryEntriesWithStorage(
 }
 
 export function readStatusRecordWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   paths: Pick<DiscussPathResolver, 'jobStatusPath'>,
   jobId: string,
 ): PersistedStatusRecord | null {
@@ -74,7 +74,7 @@ export function readStatusRecordWithStorage(
 }
 
 export function readDiscussSnapshotWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   statePath: string,
 ): PersistedDiscussSnapshot | null {
   const snapshot = readJsonFileWithStorage(storage, statePath);
@@ -83,7 +83,7 @@ export function readDiscussSnapshotWithStorage(
 }
 
 export function readDiscussEventLogWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   logPath: string,
 ): DiscussDomainEvent[] {
   const log = readTextFileWithStorage(storage, logPath);
@@ -92,7 +92,7 @@ export function readDiscussEventLogWithStorage(
 }
 
 export function readDiscussDiscoveryForSourceWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   paths: Pick<DiscussPathResolver, 'discussDiscoveryPathForSource'>,
   source: string,
 ): DiscussDiscoveryData | null {
@@ -102,7 +102,7 @@ export function readDiscussDiscoveryForSourceWithStorage(
 }
 
 export function readDiscussSummaryIndexForSourceWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   paths: Pick<DiscussPathResolver, 'discussSummaryIndexPathForSource'>,
   source: string,
 ): DiscussSummaryIndexData | null {
@@ -112,7 +112,7 @@ export function readDiscussSummaryIndexForSourceWithStorage(
 }
 
 export function readDiscussSourcesWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync'>,
+  storage: Pick<StoragePort, 'readFileSync'>,
   paths: Pick<DiscussPathResolver, 'discussSourcesPath' | 'projectSource'>,
 ): string[] {
   return parseDiscussSourcesRegistry(
@@ -122,7 +122,7 @@ export function readDiscussSourcesWithStorage(
 }
 
 export function canUseDiscussSessionDirWithStorage(
-  storage: Pick<RuntimeStorage, 'existsSync'>,
+  storage: Pick<StoragePort, 'existsSync'>,
   paths: Pick<DiscussPathResolver, 'discussStatePath' | 'discussEventLogPath'>,
   sessionDir: string,
 ): boolean {
@@ -130,7 +130,7 @@ export function canUseDiscussSessionDirWithStorage(
 }
 
 export function scanPersistedDiscussSessionsForSourceWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync' | 'readdirSync'>,
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync'>,
   paths: Pick<DiscussPathResolver, 'discussBaseDirForSource' | 'discussStatePath'>,
   source: string,
 ): DiscussDiscoverySession[] {
@@ -155,7 +155,7 @@ export function scanPersistedDiscussSessionsForSourceWithStorage(
 }
 
 export function resolveDiscussSessionDirForSourceWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync' | 'readdirSync' | 'existsSync'>,
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'>,
   paths: Pick<
     DiscussPathResolver,
     'discussDiscoveryPathForSource' | 'discussBaseDirForSource' | 'discussStatePath' | 'discussEventLogPath'
@@ -188,7 +188,7 @@ export function resolveDiscussSessionDirForSourceWithStorage(
 }
 
 export function listPersistedDiscussSessionsForSourceWithStorage(
-  storage: Pick<RuntimeStorage, 'readFileSync' | 'readdirSync' | 'existsSync'>,
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'>,
   paths: Pick<
     DiscussPathResolver,
     'discussDiscoveryPathForSource' | 'discussBaseDirForSource' | 'discussStatePath' | 'discussEventLogPath'

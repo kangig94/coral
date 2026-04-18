@@ -1,4 +1,4 @@
-import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../shared/runtime-ports.js';
+import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../runtime/ports.js';
 import type { KbIndex, KbEntryId, EntityType, RelationshipType } from '../types.js';
 import type { CurateCursor, PendingDiscovery } from './state.js';
 

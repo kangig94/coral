@@ -11,7 +11,7 @@ import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
-import { createRealRuntime } from '../../execution/runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 vi.mock('../curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,

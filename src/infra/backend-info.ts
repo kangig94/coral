@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { backendInfoPath } from './paths.js';
-import type { RuntimeEnvPort, RuntimePathsPort, RuntimeStoragePort } from '../shared/runtime-ports.js';
+import type { RuntimeEnvPort, RuntimePathsPort, RuntimeStoragePort } from '../runtime/ports.js';
 import { isNoEntryError } from '../shared/utils.js';
 
 export { backendInfoPath } from './paths.js';

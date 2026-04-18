@@ -6,7 +6,7 @@ describe('Runtime.paths.coral lazy getter seal', () => {
   });
 
   it('throws CoralSetupError(E_FLAVOR_NOT_SETTLED) when accessed before setBuildFlavor', async () => {
-    const { createRealRuntime } = await import('../runtime.js');
+    const { createRealRuntime } = await import('../../runtime/real.js');
     const { CoralSetupError } = await import('../../runtime/errors.js');
     const rt = createRealRuntime();
 
@@ -24,7 +24,7 @@ describe('Runtime.paths.coral lazy getter seal', () => {
   it('returns frozen CoralPaths after setBuildFlavor(dev) and caches the result', async () => {
     const paths = await import('../../infra/paths.js');
     paths.setBuildFlavor('dev');
-    const { createRealRuntime } = await import('../runtime.js');
+    const { createRealRuntime } = await import('../../runtime/real.js');
     const rt = createRealRuntime();
 
     const first = rt.paths.coral;
@@ -38,7 +38,7 @@ describe('Runtime.paths.coral lazy getter seal', () => {
   it('returns frozen CoralPaths after setBuildFlavor(prod)', async () => {
     const paths = await import('../../infra/paths.js');
     paths.setBuildFlavor('prod');
-    const { createRealRuntime } = await import('../runtime.js');
+    const { createRealRuntime } = await import('../../runtime/real.js');
     const rt = createRealRuntime();
 
     const first = rt.paths.coral;

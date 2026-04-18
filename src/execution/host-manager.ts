@@ -1,7 +1,7 @@
 import { raceTimeout } from '../shared/utils.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/types.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from './engine.js';
-import type { Runtime, RuntimeTimePort } from './runtime.js';
+import type { Runtime, RuntimeTimePort } from '../runtime/ports.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;

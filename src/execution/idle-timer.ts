@@ -1,5 +1,5 @@
 import { parsePositiveInt } from './engine.js';
-import type { RuntimeTimePort } from './runtime.js';
+import type { RuntimeTimePort } from '../runtime/ports.js';
 
 export const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
 

@@ -15,7 +15,7 @@ import type * as EventBusModule from '../event-bus.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../discuss/operations.js'
-import { createRealRuntime } from '../runtime.js'
+import { createRealRuntime } from '../../runtime/real.js'
 import { createDeferred } from '../../shared/test-deferred.js'
 
 const runtime = createRealRuntime()

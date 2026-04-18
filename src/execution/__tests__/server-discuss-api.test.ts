@@ -13,7 +13,7 @@ import { attachSession } from '../discuss/registry.js';
 import { submitManualSpeech } from '../discuss/operations.js';
 import type { BackendServerController } from '../server.js';
 import { createBackendServer } from '../server.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import {
   appendPersistedEvents,
   cleanupDiscussHarnesses,

@@ -29,7 +29,7 @@ import { replayDiscussEvents } from '../../discuss/reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '../../discuss/types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '../discuss/session-store.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';

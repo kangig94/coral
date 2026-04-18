@@ -14,8 +14,6 @@ export interface TimePort {
   clearInterval(handle: RuntimeTimerHandle | null): void;
 }
 
-export type RuntimeTime = TimePort;
-
 export interface RuntimeDirentLike {
   name: string;
   isDirectory(): boolean;
@@ -42,8 +40,6 @@ export interface StoragePort {
   writeAtomicDurableSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   chmodSync(path: string, mode: number): void;
 }
-
-export type RuntimeStorage = StoragePort;
 
 export interface DiscussPathResolver {
   projectSource(projectRoot: string): string;
@@ -178,15 +174,11 @@ export interface ProcessPort {
   durable: DurableExecutionTransport;
 }
 
-export type RuntimeProcess = ProcessPort;
-
 export interface IdPort {
   uuid(): string;
   randomBytes(size: number): Buffer;
   sha256(input: string): string;
 }
-
-export type RuntimeIds = IdPort;
 
 export interface EnvPort {
   get(key: string): string | undefined;
@@ -197,8 +189,6 @@ export interface EnvPort {
   fullSnapshot(): Readonly<Record<string, string>>;
   coralSnapshot(): Readonly<Record<string, string>>;
 }
-
-export type RuntimeEnv = EnvPort;
 
 export interface Runtime {
   readonly time: TimePort;

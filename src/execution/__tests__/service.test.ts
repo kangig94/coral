@@ -33,7 +33,7 @@ import { type AbortRegistry } from '../abort-controller-registry.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 import { SessionManager } from '../session-manager.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../service.js';

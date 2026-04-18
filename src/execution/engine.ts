@@ -3,7 +3,7 @@ import { backendLog } from '../shared/backend-log.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../shared/utils.js';
 import type { PersistedExitRecord, PersistedRuntimeRecord } from '../shared/types.js';
-import type { ChildProcessLike, Runtime, RuntimeStorage } from './runtime.js';
+import type { ChildProcessLike, Runtime, StoragePort } from '../runtime/ports.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes of inactivity
 const IDLE_CHECK_INTERVAL = 30_000; // poll interval for idle detection
@@ -989,7 +989,7 @@ export type SpawnProviderServerOptions = {
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
 const RUNTIME_FILE = 'runtime.json';
 
-function readOutputFile(storage: RuntimeStorage, path: string): string {
+function readOutputFile(storage: StoragePort, path: string): string {
   try {
     const stats = storage.statSync(path);
     const bytesToRead = Math.min(stats.size, MAX_BUFFER + 1);
@@ -1010,7 +1010,7 @@ function readOutputFile(storage: RuntimeStorage, path: string): string {
   }
 }
 
-function readAppendedLines(storage: RuntimeStorage, path: string, fromOffset: number): { lines: string[]; newOffset: number } {
+function readAppendedLines(storage: StoragePort, path: string, fromOffset: number): { lines: string[]; newOffset: number } {
   try {
     const stats = storage.statSync(path);
     if (stats.size <= fromOffset) {
@@ -1050,7 +1050,7 @@ function readAppendedLines(storage: RuntimeStorage, path: string, fromOffset: nu
   }
 }
 
-function writeRuntimeRecord(storage: RuntimeStorage, jobDir: string, record: PersistedRuntimeRecord): void {
+function writeRuntimeRecord(storage: StoragePort, jobDir: string, record: PersistedRuntimeRecord): void {
   const runtimePath = `${jobDir}/${RUNTIME_FILE}`;
   const tmpPath = `${runtimePath}.tmp`;
   storage.writeFileSync(tmpPath, JSON.stringify(record, null, 2));

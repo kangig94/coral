@@ -15,7 +15,7 @@ import {
   markJobsAsError,
 } from '../lifecycle.js';
 import type { ProgressStore } from '../progress-store.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../discuss/recovery.js';
 import { ExecutionService as DefaultExecutionService } from '../service.js';
 import type { BackendCoreOptions, CreateServerFn, FetchFn } from '../backend-core-types.js';

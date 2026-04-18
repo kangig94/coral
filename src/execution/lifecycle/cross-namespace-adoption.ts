@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type PersistedStatusRecord } from '../../shared/types.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import {
   claimPathForStatus,
   readAdoptionStatusSnapshot,

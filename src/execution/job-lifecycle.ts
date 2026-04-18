@@ -29,7 +29,7 @@ import { type AbortRegistry } from './abort-controller-registry.js';
 import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from './engine.js';
 import { type TypedEventBus } from './event-bus.js';
 import { type ProgressStore, createReplayCursor } from './progress-store.js';
-import type { Runtime, RuntimeTimePort } from './runtime.js';
+import type { Runtime, RuntimeTimePort } from '../runtime/ports.js';
 import { type SessionManager } from './session-manager.js';
 import {
   SessionClaimError,

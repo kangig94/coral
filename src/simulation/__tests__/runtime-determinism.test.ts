@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '../../coordinator/consumer-driver.js';
-import { createRealRuntime } from '../../execution/runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 import type { StoragePort } from '../../runtime/ports.js';
 import { appendEvents, type AppendInput } from '../../store/append.js';
 import { createEmptyRegistry } from '../../store/envelope.js';

@@ -1,6 +1,6 @@
 import { isNoEntryError, isRecord } from '../../shared/utils.js';
 import { parsePersistedStatusRecord } from '../../shared/persistence-parsers.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
 const ADOPTION_CLAIM_STALE_MS = 30_000;

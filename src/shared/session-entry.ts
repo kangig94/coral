@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { RuntimeStoragePort } from './runtime-ports.js';
+import type { RuntimeStoragePort } from '../runtime/ports.js';
 import { isNoEntryError, isRecord } from './utils.js';
 import type { SessionEntry } from './types.js';
 

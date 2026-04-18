@@ -1,6 +1,6 @@
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ExecutionServiceLike } from '../backend-contracts.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../service.js';
 import type { BackendWorld } from './backend-world.js';
 

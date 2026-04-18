@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '../engine.js';
-import type { ChildProcessLike } from '../runtime.js';
+import type { ChildProcessLike } from '../../runtime/ports.js';
 import {
   SimulationRuntime,
   createMockAppServerSpawnScript,

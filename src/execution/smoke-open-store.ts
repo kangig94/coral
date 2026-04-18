@@ -1,8 +1,9 @@
 import { dirname, join, resolve } from 'node:path';
 
-import { createRealRuntime, type RuntimeStorage } from './runtime.js';
+import { createRealRuntime } from '../runtime/real.js';
+import type { StoragePort } from '../runtime/ports.js';
 
-function resolveSmokeMigrationsDir(storage: Pick<RuntimeStorage, 'existsSync'>): string {
+function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): string {
   const entryPath = process.argv[1];
   if (!entryPath) {
     throw new Error('missing entry path');

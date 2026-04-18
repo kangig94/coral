@@ -12,7 +12,7 @@ import {
 import type { ProgressStore } from '../progress-store.js';
 import { listSessionShards, SessionManager } from '../session-manager.js';
 import type { JobStoreSnapshot } from '../recovery-core.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { readSessionRefs, withBackendNamespace } from './job-helpers.js';
 
 export function buildRecoverySnapshot(

@@ -19,7 +19,7 @@ import { LaunchCoordinator } from '../../engine.js';
 import { TypedEventBus } from '../../event-bus.js';
 import { createProviderHostManager } from '../../host-manager.js';
 import { ProgressStore } from '../../progress-store.js';
-import type { Runtime, RuntimeStorage } from '../../runtime.js';
+import type { Runtime, StoragePort } from '../../../runtime/ports.js';
 import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/recovery.js';
 import { ExecutionService } from '../../service.js';
@@ -93,7 +93,7 @@ export type SimulationScenario = {
   recoverPersistedDiscuss?: 'default' | 'stub';
 };
 
-function readFileIfPresent(storage: Pick<RuntimeStorage, 'existsSync' | 'readFileSync'>, path: string): string {
+function readFileIfPresent(storage: Pick<StoragePort, 'existsSync' | 'readFileSync'>, path: string): string {
   return storage.existsSync(path) ? storage.readFileSync(path, 'utf-8') : '';
 }
 

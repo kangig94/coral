@@ -1,6 +1,6 @@
 import { composeChildEnv } from '../shared/env-sanitize.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
-import type { ExecResult, Runtime, RuntimeExecOptions, RuntimeProcess } from '../runtime/ports.js';
+import type { ExecResult, Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
 import { InMemoryStorage, type InMemoryRoots } from '../execution/simulation/core/memory-storage.js';
 import { MockProcessSpawner } from '../execution/simulation/core/mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from '../execution/simulation/core/runtime-doubles.js';
@@ -22,7 +22,7 @@ export class SimulationRuntime implements Runtime {
   readonly env: SealedEnv;
   readonly observer: InMemoryObserver;
   readonly spawner: MockProcessSpawner;
-  readonly process: RuntimeProcess;
+  readonly process: ProcessPort;
 
   constructor(options: SimulationRuntimeOptions = {}) {
     const roots: InMemoryRoots = options.roots ?? {};
@@ -37,7 +37,7 @@ export class SimulationRuntime implements Runtime {
       buildDurableEnv: (envAdditions) =>
         composeChildEnv({ ...inheritedEnv }, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
     });
-    const simulationProcess = {} as RuntimeProcess;
+    const simulationProcess = {} as ProcessPort;
     simulationProcess.spawn = (spawnOptions) => {
       const child = this.spawner.spawn(spawnOptions);
       this.observer.emit({

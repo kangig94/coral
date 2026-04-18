@@ -1,4 +1,4 @@
-import type { RuntimeTimerHandle, RuntimeTime } from '../../runtime.js';
+import type { RuntimeTimerHandle, TimePort } from '../../../runtime/ports.js';
 
 export const DEFAULT_EPOCH_MS = 1_000_000;
 
@@ -80,7 +80,7 @@ export class VirtualTimerHandle implements RuntimeTimerHandle {
   unref(): void {}
 }
 
-export class VirtualTime implements RuntimeTime {
+export class VirtualTime implements TimePort {
   private currentTime: number;
   private readonly timers = new Map<number, TimerRecord>();
   private readonly timerHeap = new TimerHeap();

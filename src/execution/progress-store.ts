@@ -18,7 +18,7 @@ import { safeParsePersistedStatusRecord } from '../shared/persistence-parsers.js
 import { errorMessage, isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from './event-bus.js';
-import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from './runtime.js';
+import type { Runtime, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from '../runtime/ports.js';
 
 const STATUS_FILE = 'status.json';
 const PROGRESS_FILE = 'progress.jsonl';

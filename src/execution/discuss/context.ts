@@ -3,7 +3,7 @@ import type { Result } from '../../discuss/types.js';
 import type { WatchEvent } from '../../discuss/watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { ExecutionService } from '../service.js';
-import type { RuntimeEnv, RuntimeIds, RuntimeTime } from '../runtime.js';
+import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
 import type { PersistedStatusRecord } from '../../shared/types.js';
 
 export type { WatchEvent, WatchState } from '../../discuss/watch.js';
@@ -46,9 +46,9 @@ export type DiscussJobStatusReader = {
 };
 
 export type DiscussRuntimePorts = {
-  ids: Pick<RuntimeIds, 'uuid'>;
-  env: Pick<RuntimeEnv, 'get'>;
-  time: Pick<RuntimeTime, 'now' | 'setTimeout' | 'clearTimeout'>;
+  ids: Pick<IdPort, 'uuid'>;
+  env: Pick<EnvPort, 'get'>;
+  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
 };
 
 export type DiscussContext = {

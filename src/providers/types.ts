@@ -1,5 +1,5 @@
 import type { ProviderContinuityBlob, ProviderProgressEvent, ProviderRequest, ProviderResult } from '../shared/types.js';
-import type { Runtime } from '../shared/runtime-ports.js';
+import type { Runtime } from '../runtime/ports.js';
 import { nowIsoString } from '../shared/utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
 

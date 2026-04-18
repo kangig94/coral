@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AbortRegistry } from '../abort-controller-registry.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 const runtime = createRealRuntime();
 

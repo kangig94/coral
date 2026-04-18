@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '../engine.js';
 import { TypedEventBus } from '../event-bus.js';
 import { createDiscussContextRegistry } from '../discuss/context-registry.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { TerminalResult } from '../../shared/types.js';

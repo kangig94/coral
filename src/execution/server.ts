@@ -8,7 +8,8 @@ import {
   type BackendCoreOptions,
   type BackendCoreResult,
 } from './backend-core.js';
-import { createRealRuntime, type Runtime, type RuntimeObserver } from './runtime.js';
+import { createRealRuntime } from '../runtime/real.js';
+import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { StartupInterruptedError } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
 import { handleSmokeOpenStore } from './smoke-open-store.js';

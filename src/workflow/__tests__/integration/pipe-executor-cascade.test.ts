@@ -7,7 +7,7 @@ import { LaunchCoordinator } from '../../../execution/engine.js';
 import { TypedEventBus } from '../../../execution/event-bus.js';
 import { createProviderHostManager } from '../../../execution/host-manager.js';
 import { ProgressStore } from '../../../execution/progress-store.js';
-import { createRealRuntime } from '../../../execution/runtime.js';
+import { createRealRuntime } from '../../../runtime/real.js';
 import { ExecutionService } from '../../../execution/service.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';
 import { ProviderRegistry } from '../../../providers/registry.js';

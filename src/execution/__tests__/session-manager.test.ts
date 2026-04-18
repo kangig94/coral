@@ -16,7 +16,7 @@ vi.mock('node:os', async () => {
 });
 
 import { SessionManager, getSessionById, listSessionShards } from '../session-manager.js';
-import { createRealRuntime } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 const runtime = createRealRuntime();
 

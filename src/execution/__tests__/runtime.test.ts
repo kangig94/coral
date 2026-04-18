@@ -3,7 +3,8 @@ import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRealRuntime, type ChildProcessLike } from '../runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import type { ChildProcessLike } from '../../runtime/ports.js';
 
 const createdDirs: string[] = [];
 
@@ -216,7 +217,7 @@ describe('createRealRuntime', () => {
     });
 
     try {
-      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const { createRealRuntime: createMockedRuntime } = await import('../../runtime/real.js');
       const runtime = createMockedRuntime();
 
       expect(runtime.storage.writeAtomicDurableSync(statePath, '{}')).toBe(false);
@@ -246,7 +247,7 @@ describe('createRealRuntime', () => {
     });
 
     try {
-      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const { createRealRuntime: createMockedRuntime } = await import('../../runtime/real.js');
       const runtime = createMockedRuntime();
 
       expect(runtime.storage.appendFileDurableSync(logPath, 'event\n')).toBe(false);
@@ -304,7 +305,7 @@ describe('createRealRuntime', () => {
     });
 
     try {
-      const { createRealRuntime: createMockedRuntime } = await import('../runtime.js');
+      const { createRealRuntime: createMockedRuntime } = await import('../../runtime/real.js');
       const runtime = createMockedRuntime();
 
       expect(runtime.storage.writeAtomicDurableSync(statePath, '{"ok":true}')).toBe(true);

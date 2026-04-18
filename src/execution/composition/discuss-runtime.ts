@@ -14,7 +14,7 @@ import * as discussOperations from '../discuss/operations.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from '../discuss/read-helpers.js';
 import { DiscussSessionStore } from '../discuss/session-store.js';
 import type { LifecycleHooks } from '../lifecycle.js';
-import type { Runtime } from '../runtime.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionService } from '../service.js';
 import type { BackendWorld } from './backend-world.js';
 

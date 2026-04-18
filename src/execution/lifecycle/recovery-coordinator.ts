@@ -13,7 +13,7 @@ import type { MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { ProgressStore } from '../progress-store.js';
 import { planRecovery } from '../recovery-core.js';
 import { RecoveryRegistry } from '../recovery-registry.js';
-import type { Runtime, RuntimeTimerHandle } from '../runtime.js';
+import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../service.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';

@@ -32,7 +32,7 @@ import {
   type CurateState,
 } from './state.js';
 import type { CurateHandle, GitSyncRuntimePicks, SpawnCliFn } from './types.js';
-import { createRealRuntime } from '../../execution/runtime.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 export type {
   ClassificationAssignment,

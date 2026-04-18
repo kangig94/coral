@@ -1,5 +1,5 @@
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { RuntimeIdsPort } from './runtime.js';
+import type { RuntimeIdsPort } from '../runtime/ports.js';
 
 export class AbortRegistry {
   constructor(private readonly ids: RuntimeIdsPort) {}
