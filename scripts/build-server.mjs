@@ -1,7 +1,7 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
 
 mkdirSync('build', { recursive: true });
 
@@ -24,9 +24,20 @@ function parseArgs(argv) {
   return { flavor, release };
 }
 
+function copyStoreSqlAssets(outRoot) {
+  mkdirSync(`${outRoot}/store/migrations`, { recursive: true });
+  copyFileSync('src/store/schema.sql', `${outRoot}/store/schema.sql`);
+
+  for (const file of readdirSync('src/store/migrations')) {
+    if (!file.endsWith('.sql')) continue;
+    copyFileSync(`src/store/migrations/${file}`, `${outRoot}/store/migrations/${file}`);
+  }
+}
+
 const { flavor, release } = parseArgs(process.argv.slice(2));
 // Verify simulation sealing before bundling
 execFileSync('node', ['scripts/verify-simulation-sealing.mjs'], { stdio: 'inherit' });
+copyStoreSqlAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
