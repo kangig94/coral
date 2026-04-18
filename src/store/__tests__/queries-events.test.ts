@@ -3,10 +3,12 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { appendEvents, type AppendInput } from '../append.js';
+import { createEmptyRegistry } from '../envelope.js';
 import { applyMigrations } from '../migrations.js';
 import { getEvent, getEventsSince } from '../queries/events.js';
 import { applyTestCounterMigration, testCounterRegistry } from './fixtures/test-counter-registry.js';
 import type { StoragePort } from '../../runtime/ports.js';
+import { composeReducers } from '../reducers.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -80,8 +82,9 @@ describe('events queries', () => {
     ];
 
     appended = appendEvents(db, inputs, {
-      now: () => Date.UTC(2026, 3, 18, 0, 0, 0),
-      reducers: { ...testCounterRegistry.reducers },
+      now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
+      reducers: composeReducers(testCounterRegistry),
+      upcasters: createEmptyRegistry(),
     });
   });
 

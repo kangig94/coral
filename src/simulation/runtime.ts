@@ -1,10 +1,11 @@
 import { composeChildEnv } from '../shared/env-sanitize.js';
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
-import type { ExecResult, Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
+import { MAX_BUFFER } from '../shared/process-constants.js';
+import type { Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
 import { InMemoryStorage, type InMemoryRoots } from '../execution/simulation/core/memory-storage.js';
 import { MockProcessSpawner } from '../execution/simulation/core/mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from '../execution/simulation/core/runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime } from '../execution/simulation/core/virtual-time.js';
+import { buildExecPromise } from '../runtime/exec-builder.js';
 
 const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
 
@@ -57,142 +58,19 @@ export class SimulationRuntime implements Runtime {
     simulationProcess.exec = (command, args, options = {}) => {
       const execOptions: RuntimeExecOptions = { ...options };
       execOptions.maxBuffer ??= MAX_BUFFER;
-      const maxBuffer = execOptions.maxBuffer;
-      const encoding = execOptions.encoding ?? 'utf-8';
-
-      return new Promise<ExecResult>((resolve) => {
-        let stdout = '';
-        let stderr = '';
-        let resolved = false;
-        let timeoutHandle: ReturnType<SimulationRuntime['time']['setTimeout']> | null = null;
-        let killTimer: ReturnType<SimulationRuntime['time']['setTimeout']> | null = null;
-        let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
-
-        const child = simulationProcess.spawn({
-          command,
-          args,
-          cwd: execOptions.cwd,
-          env: execOptions.env,
-          inheritEnv: execOptions.inheritEnv,
-          mode: 'piped',
-        });
-
-        child.stdin?.end();
-
-        const clearTimers = (): void => {
-          this.time.clearTimeout(timeoutHandle);
-          timeoutHandle = null;
-          this.time.clearTimeout(killTimer);
-          killTimer = null;
-        };
-
-        const finish = (result: ExecResult): void => {
-          if (resolved) {
-            return;
-          }
-          resolved = true;
-          clearTimers();
-          resolve(result);
-        };
-
-        const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
-          if (resolved || wrapperKilled !== null || child.pid === undefined) {
-            return;
-          }
-          wrapperKilled = reason;
-          simulationProcess.kill(child.pid, 'SIGTERM');
-          killTimer = this.time.setTimeout(() => {
-            if (resolved || child.pid === undefined) {
-              return;
-            }
-            simulationProcess.kill(child.pid, 'SIGKILL');
-          }, SIGTERM_GRACE_MS);
-          killTimer.unref?.();
-        };
-
-        const appendOutput = (
-          current: string,
-          chunk: string | Buffer,
-        ): { next: string; overflowed: boolean } => {
-          if (wrapperKilled !== null) {
-            return { next: current, overflowed: false };
-          }
-
-          const text = typeof chunk === 'string' ? chunk : chunk.toString(encoding);
-          const currentBytes = Buffer.byteLength(current, encoding);
-          const chunkBytes = Buffer.byteLength(text, encoding);
-          if (currentBytes + chunkBytes <= maxBuffer) {
-            return { next: current + text, overflowed: false };
-          }
-
-          let next = current;
-          let remainingBytes = maxBuffer - currentBytes;
-          if (remainingBytes > 0) {
-            for (const character of text) {
-              const characterBytes = Buffer.byteLength(character, encoding);
-              if (characterBytes > remainingBytes) {
-                break;
-              }
-              next += character;
-              remainingBytes -= characterBytes;
-            }
-          }
-
-          return { next, overflowed: true };
-        };
-
-        if (child.stdout) {
-          child.stdout.setEncoding(encoding);
-          child.stdout.on('data', (chunk) => {
-            const result = appendOutput(stdout, chunk);
-            stdout = result.next;
-            if (result.overflowed) {
-              scheduleKill('maxBuffer');
-            }
-          });
-        }
-
-        if (child.stderr) {
-          child.stderr.setEncoding(encoding);
-          child.stderr.on('data', (chunk) => {
-            const result = appendOutput(stderr, chunk);
-            stderr = result.next;
-            if (result.overflowed) {
-              scheduleKill('maxBuffer');
-            }
-          });
-        }
-
-        child.on('close', (status) => {
-          const error =
-            wrapperKilled === 'timeout'
-              ? new Error(`timeout: ${command}`)
-              : wrapperKilled === 'maxBuffer'
-                ? new Error(`maxBuffer exceeded: ${command}`)
-                : undefined;
-          finish({
-            stdout,
-            stderr,
-            status: error ? null : status,
-            ...(error ? { error } : {}),
-          });
-        });
-
-        child.on('error', (error) => {
-          finish({
-            stdout: '',
-            stderr: '',
-            status: null,
-            error,
-          });
-        });
-
-        if (execOptions.timeout !== undefined) {
-          timeoutHandle = this.time.setTimeout(() => {
-            scheduleKill('timeout');
-          }, execOptions.timeout);
-          timeoutHandle.unref?.();
-        }
+      return buildExecPromise({
+        command,
+        args,
+        cwd: execOptions.cwd,
+        env: execOptions.env,
+        inheritEnv: execOptions.inheritEnv,
+        timeoutMs: execOptions.timeout,
+        maxBuffer: execOptions.maxBuffer,
+        encoding: execOptions.encoding ?? 'utf-8',
+        spawn: simulationProcess.spawn,
+        kill: simulationProcess.kill,
+        setTimeout: (fn, ms) => this.time.setTimeout(fn, ms),
+        clearTimeout: (handle) => this.time.clearTimeout(handle),
       });
     };
 

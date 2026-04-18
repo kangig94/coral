@@ -1,22 +1,20 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import {
-  createEmptyRegistry,
   journalEventInputSchema,
   type CoralEvent,
   type CoralEventInput,
   type UpcasterRegistry,
 } from './envelope.js';
-import type { ComposedReducers, Reducer } from './reducers.js';
+import type { ComposedReducers } from './reducers.js';
 import { applyReducer } from './reducers.js';
 
 type Database = BetterSqlite3.Database;
-type ReducerMap = Record<string, Reducer<unknown>>;
 
 export interface AppendContext {
-  now(): Date | number;
-  reducers: ComposedReducers | ReducerMap;
-  upcasters?: UpcasterRegistry;
+  now(): Date;
+  reducers: ComposedReducers;
+  upcasters: UpcasterRegistry;
 }
 
 export interface AppendedEvent extends CoralEvent {
@@ -26,34 +24,8 @@ export interface AppendedEvent extends CoralEvent {
 
 export type AppendInput = CoralEventInput;
 
-function isComposedReducers(reducers: ComposedReducers | ReducerMap): reducers is ComposedReducers {
-  return (
-    typeof reducers === 'object' &&
-    reducers !== null &&
-    'types' in reducers &&
-    Array.isArray(reducers.types) &&
-    'reducers' in reducers &&
-    reducers.reducers instanceof Map &&
-    'schemas' in reducers &&
-    reducers.schemas instanceof Map
-  );
-}
-
-function normalizeReducers(reducers: ComposedReducers | ReducerMap): ComposedReducers {
-  if (isComposedReducers(reducers)) {
-    return reducers;
-  }
-
-  const types = Object.keys(reducers);
-  return {
-    types,
-    reducers: new Map(Object.entries(reducers)),
-    schemas: new Map(),
-  };
-}
-
-function toTimestamp(value: Date | number): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+function toTimestamp(value: Date): string {
+  return value.toISOString();
 }
 
 export function appendEvents(
@@ -63,8 +35,8 @@ export function appendEvents(
 ): AppendedEvent[] {
   if (inputs.length === 0) return [];
 
-  const reducers = normalizeReducers(ctx.reducers);
-  const upcasters = ctx.upcasters ?? createEmptyRegistry();
+  const reducers = ctx.reducers;
+  const upcasters = ctx.upcasters;
 
   const insertStmt = db.prepare<
     [string, string, CoralEvent['stream']['kind'], string, string | null, string | null, string | null, number | null, string | null, number, Buffer],

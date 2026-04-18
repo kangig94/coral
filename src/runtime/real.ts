@@ -47,7 +47,6 @@ import type {
   ChildProcessLike,
   DurableExecutionTransport,
   EnvPort,
-  ExecResult,
   IdPort,
   ProcessPort,
   Runtime,
@@ -58,9 +57,10 @@ import type {
   TimePort,
 } from './ports.js';
 import { CoralSetupError } from './errors.js';
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../shared/process-constants.js';
+import { MAX_BUFFER } from '../shared/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../shared/env-sanitize.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord, type PersistedExitRecord } from '../shared/types.js';
+import { buildExecPromise } from './exec-builder.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
@@ -319,138 +319,19 @@ export function createRealRuntime(): Runtime {
   runtimeProcess.exec = (command, args, options = {}) => {
     const execOptions: RuntimeExecOptions = { ...options };
     execOptions.maxBuffer ??= MAX_BUFFER;
-    const maxBuffer = execOptions.maxBuffer;
-    const encoding = execOptions.encoding ?? 'utf-8';
-
-    return new Promise<ExecResult>((resolveResult) => {
-      let stdout = '';
-      let stderr = '';
-      let resolved = false;
-      let timeoutHandle: ReturnType<TimePort['setTimeout']> | null = null;
-      let killTimer: ReturnType<TimePort['setTimeout']> | null = null;
-      let wrapperKilled: 'timeout' | 'maxBuffer' | null = null;
-
-      const child = runtimeProcess.spawn({
-        command,
-        args,
-        cwd: execOptions.cwd,
-        env: execOptions.env,
-        inheritEnv: execOptions.inheritEnv,
-        mode: 'piped',
-      });
-
-      child.stdin?.end();
-
-      const clearTimers = (): void => {
-        time.clearTimeout(timeoutHandle);
-        timeoutHandle = null;
-        time.clearTimeout(killTimer);
-        killTimer = null;
-      };
-
-      const finish = (result: ExecResult): void => {
-        if (resolved) {
-          return;
-        }
-        resolved = true;
-        clearTimers();
-        resolveResult(result);
-      };
-
-      const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
-        if (resolved || wrapperKilled !== null || child.pid === undefined) {
-          return;
-        }
-        wrapperKilled = reason;
-        runtimeProcess.kill(child.pid, 'SIGTERM');
-        killTimer = time.setTimeout(() => {
-          if (resolved || child.pid === undefined) {
-            return;
-          }
-          runtimeProcess.kill(child.pid, 'SIGKILL');
-        }, SIGTERM_GRACE_MS);
-        killTimer.unref?.();
-      };
-
-      const appendOutput = (current: string, chunk: string | Buffer): { next: string; overflowed: boolean } => {
-        if (wrapperKilled !== null) {
-          return { next: current, overflowed: false };
-        }
-
-        const text = typeof chunk === 'string' ? chunk : chunk.toString(encoding);
-        const currentBytes = Buffer.byteLength(current, encoding);
-        const chunkBytes = Buffer.byteLength(text, encoding);
-        if (currentBytes + chunkBytes <= maxBuffer) {
-          return { next: current + text, overflowed: false };
-        }
-
-        let next = current;
-        let remainingBytes = maxBuffer - currentBytes;
-        if (remainingBytes > 0) {
-          for (const character of text) {
-            const characterBytes = Buffer.byteLength(character, encoding);
-            if (characterBytes > remainingBytes) {
-              break;
-            }
-            next += character;
-            remainingBytes -= characterBytes;
-          }
-        }
-        return { next, overflowed: true };
-      };
-
-      if (child.stdout) {
-        child.stdout.setEncoding(encoding);
-        child.stdout.on('data', (chunk) => {
-          const result = appendOutput(stdout, chunk);
-          stdout = result.next;
-          if (result.overflowed) {
-            scheduleKill('maxBuffer');
-          }
-        });
-      }
-
-      if (child.stderr) {
-        child.stderr.setEncoding(encoding);
-        child.stderr.on('data', (chunk) => {
-          const result = appendOutput(stderr, chunk);
-          stderr = result.next;
-          if (result.overflowed) {
-            scheduleKill('maxBuffer');
-          }
-        });
-      }
-
-      child.on('close', (status) => {
-        const error =
-          wrapperKilled === 'timeout'
-            ? new Error(`timeout: ${command}`)
-            : wrapperKilled === 'maxBuffer'
-              ? new Error(`maxBuffer exceeded: ${command}`)
-              : undefined;
-        finish({
-          stdout,
-          stderr,
-          status: error ? null : status,
-          ...(error ? { error } : {}),
-        });
-      });
-
-      child.on('error', (error) => {
-        finish({
-          stdout: '',
-          stderr: '',
-          status: null,
-          error,
-        });
-      });
-
-      if (execOptions.timeout !== undefined) {
-        timeoutHandle = time.setTimeout(() => {
-          scheduleKill('timeout');
-        }, execOptions.timeout);
-        timeoutHandle.unref?.();
-      }
+    return buildExecPromise({
+      command,
+      args,
+      cwd: execOptions.cwd,
+      env: execOptions.env,
+      inheritEnv: execOptions.inheritEnv,
+      timeoutMs: execOptions.timeout,
+      maxBuffer: execOptions.maxBuffer,
+      encoding: execOptions.encoding ?? 'utf-8',
+      spawn: runtimeProcess.spawn,
+      kill: runtimeProcess.kill,
+      setTimeout: time.setTimeout,
+      clearTimeout: time.clearTimeout,
     });
   };
 

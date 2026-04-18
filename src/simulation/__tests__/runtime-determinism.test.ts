@@ -158,7 +158,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
     for (let index = 0; index < EVENT_COUNT; index += 1) {
       const { ts: expectedTs, ...input } = buildPlannedEvent(runtime, index, streamIds, counterIds);
       const appended = appendEvents(db, [input], {
-        now: () => runtime.time.now(),
+        now: () => new Date(runtime.time.now()),
         reducers,
         upcasters,
       });
@@ -220,7 +220,7 @@ async function runPlannedSequence(
         db,
         [{ ...input, tsOverride: ts }],
         {
-          now: () => 0,
+          now: () => new Date(0),
           reducers,
           upcasters,
         },
