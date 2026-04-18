@@ -15,7 +15,7 @@ import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { LifecycleState } from './server-types.js';
 import type { ExecutionService } from './service.js';
-import type { KbSubsystem } from './kb-tools.js';
+import type { KnowledgeBaseRuntime } from './kb-tools.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -43,7 +43,7 @@ export interface BackendIdentity {
 export interface ReadonlyBackendRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
-  getKbSubsystem(): KbSubsystem | null;
+  getKbSubsystem(): KnowledgeBaseRuntime | null;
   getKbInitError(): string | null;
   getLaunchFenceActive(): boolean;
 }
@@ -51,7 +51,7 @@ export interface ReadonlyBackendRuntimeState {
 export interface MutableBackendRuntimeState extends ReadonlyBackendRuntimeState {
   setLifecycle(state: LifecycleState): void;
   setStartedAt(ts: number): void;
-  setKbSubsystem(kb: KbSubsystem | null): void;
+  setKbSubsystem(kb: KnowledgeBaseRuntime | null): void;
   setKbInitError(error: string | null): void;
   setLaunchFenceActive(active: boolean): void;
 }

@@ -37,7 +37,7 @@ function compileOrThrow(
   command: WorkflowCommand,
   providerRegistry: ProviderRegistry,
 ) {
-  const compiled = api.workflowQueries.compile(command, providerRegistry);
+  const compiled = api.workflowCompiler.compile(command, providerRegistry);
   if ('status' in compiled) {
     throw new Error(`expected compiled workflow, got ${compiled.status}`);
   }
@@ -120,7 +120,7 @@ describe('workflow api', () => {
     const api = await loadWorkflowApi();
     const providerRegistry = createProviderRegistry();
 
-    const decision = api.workflowQueries.compile(
+    const decision = api.workflowCompiler.compile(
       {
         expression: 'architect@missing-provider',
         startPrompt: 'hello',
@@ -142,7 +142,7 @@ describe('workflow api', () => {
     const providerRegistry = createProviderRegistry();
 
     expect(() =>
-      api.workflowQueries.compile(
+      api.workflowCompiler.compile(
         {
           expression: '(architect, architect)',
           startPrompt: 'test',

@@ -13,6 +13,12 @@ export const workflowCompletedBodySchema = z
   })
   .strict();
 
+/**
+ * Body intentionally narrower than plan AC4(b): we store only `firstFailureSlotId`
+ * because `jobId` and `stepIndex` are re-derivable by joining against
+ * `projection_workflows.plan.slots` at read time (see src/workflow/recover.ts:133-145).
+ * This works because drain events are always read together with the plan.
+ */
 export const workflowDrainEnteredBodySchema = z
   .object({
     firstFailureSlotId: z.string(),

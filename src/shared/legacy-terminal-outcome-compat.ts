@@ -69,6 +69,9 @@ export type LegacyTerminalOutcome =
   | { kind: 'provider_exit'; code: number; note?: string }
   | { kind: 'legacy_fault'; fault: LegacyCoralFault };
 
+export type RecoveryFaultCompat = LegacyCoralFault;
+export type ProviderTurnOutcomeCompat = LegacyTerminalOutcome;
+
 export const legacyAbortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
 export const legacyProviderNameSchema = z.enum(['claude', 'codex']);
 

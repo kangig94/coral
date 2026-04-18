@@ -258,7 +258,10 @@ describe('execution composition-only invariant (AC5)', () => {
       }
 
       for (const callee of residueContract.forbiddenCallees) {
-        expect(residue!.callees, `${file} called forbidden callee ${callee}`).not.toContain(callee);
+        expect(
+          [...residue!.callees, ...residue!.memberCallees],
+          `${file} called forbidden callee ${callee}`,
+        ).not.toContain(callee);
       }
 
       for (const pattern of residueContract.forbiddenConstructionPatterns ?? []) {

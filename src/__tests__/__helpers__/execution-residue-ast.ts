@@ -22,6 +22,7 @@ export type ExecutionResidueFacts = {
   identifiers: string[];
   literalStrings: string[];
   callees: string[];
+  memberCallees: string[];
   objectLiterals: ExecutionResidueObjectLiteral[];
 };
 
@@ -102,6 +103,7 @@ function scanFile(filePath: string, productionFiles: Set<string>): ExecutionResi
   const identifiers = new Set<string>();
   const literalStrings = new Set<string>();
   const callees = new Set<string>();
+  const memberCallees = new Set<string>();
   const objectLiterals: ExecutionResidueObjectLiteral[] = [];
 
   function visit(node: ts.Node): void {
@@ -124,9 +126,15 @@ function scanFile(filePath: string, productionFiles: Set<string>): ExecutionResi
     } else if (ts.isCallExpression(node)) {
       if (node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
         callees.add(node.expression.getText(sourceFile));
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          memberCallees.add(node.expression.name.text);
+        }
       }
     } else if (ts.isNewExpression(node)) {
       callees.add(node.expression.getText(sourceFile));
+      if (ts.isPropertyAccessExpression(node.expression)) {
+        memberCallees.add(node.expression.name.text);
+      }
     } else if (ts.isObjectLiteralExpression(node)) {
       objectLiterals.push(captureObjectLiteral(node));
     }
@@ -143,6 +151,7 @@ function scanFile(filePath: string, productionFiles: Set<string>): ExecutionResi
     identifiers: [...identifiers].sort(),
     literalStrings: [...literalStrings].sort(),
     callees: [...callees].sort(),
+    memberCallees: [...memberCallees].sort(),
     objectLiterals,
   };
 }

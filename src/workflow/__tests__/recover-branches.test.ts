@@ -17,6 +17,11 @@ import { appendWorkflowEvents } from '../projections.js';
 import { resumeAll } from '../recover.js';
 import type { WorkflowExecutionPort } from '../command.js';
 
+// NOTE: "running" and "queued" branches today share the same code path
+// (both hit waitForAtoms). We retain two tests so that if phase-differentiated
+// behavior is added later, the test scaffold already exists. The distinct
+// third branch ("absent" -> relaunch) is the genuine divergence.
+
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../store/migrations');
 const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),

@@ -112,6 +112,7 @@ export function planLegacyTerminalOutcome(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', {
               provider: outcome.fault.provider,
+              exitCode: outcome.fault.exitCode,
               stdout: outcome.fault.stdout,
               stderr: outcome.fault.stderr,
               parseError: outcome.fault.parseError,

@@ -79,6 +79,7 @@ describe('sessions reducer equivalence (AC2)', () => {
             bodyVersion: 1,
             body: {
               provider: 'codex',
+              exitCode: null,
               stdout: 'partial stdout',
               stderr: 'partial stderr',
               parseError: 'unexpected EOF',

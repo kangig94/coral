@@ -59,9 +59,9 @@ type DiscussSessionArgs = z.infer<typeof discussSessionSchema>;
 type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
 type DiscussBidArgs = z.infer<typeof discussBidSchema>;
 type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
-type LegacyDiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchema>;
+type DiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchema>;
 
-function isDiscussSpeechArgs(args: LegacyDiscussParticipateArgs): args is DiscussSpeechArgs {
+function isDiscussSpeechArgs(args: DiscussParticipateArgs): args is DiscussSpeechArgs {
   return typeof args.content === 'string';
 }
 

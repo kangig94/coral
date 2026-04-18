@@ -1,4 +1,4 @@
-export { workflowCommands, workflowQueries, workflowRecover, WorkflowInputError, isWorkflowInputFailure } from './api.js';
+export { workflowCommands, workflowCompiler, workflowRecover, WorkflowInputError, isWorkflowInputFailure } from './api.js';
 export { parseExpression } from './parser.js';
 export type { PipelineAST, PipeAtom, PipeStep } from './ast.js';
 export type { WorkflowPlan, PlanSlot } from './plan.js';

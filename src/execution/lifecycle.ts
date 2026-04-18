@@ -28,7 +28,7 @@ import { jobsReconcile } from '../jobs/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase } from '../shared/types.js';
-import type { CreateKbSubsystemOptions, KbSubsystem } from './kb-tools.js';
+import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
 import type { ProviderHostManager } from './host-manager.js';
 import type { BackendServerInfo } from './server-types.js';
@@ -36,7 +36,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
 import { resolveClientHost } from './lifecycle/network.js';
 import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
-import { createRecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
+import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './lifecycle/shutdown-sequence.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
@@ -61,7 +61,7 @@ export {
 } from './lifecycle/shutdown-sequence.js';
 export type { ShutdownMode } from './lifecycle/shutdown-mode.js';
 
-export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Promise<KbSubsystem>;
+export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode): Promise<void>;
@@ -229,7 +229,7 @@ type LifecycleStartupContext = {
   deps: LifecycleDeps;
   state: LifecycleControlState;
   createCallerContext: (projectRoot: string) => CallerContext;
-  recoveryCoordinator: ReturnType<typeof createRecoveryCoordinator>;
+  recoveryCoordinator: RecoveryCoordinator;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
   shutdown: (reason: string) => Promise<void>;
 };

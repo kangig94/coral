@@ -4,7 +4,7 @@ import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import type { AcceptedLaunchResponse } from '../client/http-client.js';
 import { ensureBackend } from '../client/backend-lifecycle.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
-import type { CauseRef } from '../jobs/outcome.js';
+import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { JobTerminalRecord, WaitStreamEvent } from '../shared/types.js';
 import { readBuildFlavor } from '../shared/utils.js';
@@ -45,7 +45,7 @@ function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
   renderContext: WaitRenderContext,
-  renderCauseRef?: (ref: CauseRef) => string,
+  renderCauseRef?: (ref: CauseRef, fallbackOutcome?: TerminalOutcome) => string,
 ): void {
   let line: string;
   switch (event.type) {
@@ -56,7 +56,9 @@ function emitWaitEvent(
       line = formatWaitQueued(event);
       break;
     case 'terminal':
-      line = formatWaitTerminal(event, cursor, false, { describeCauseRef: renderCauseRef });
+      line = formatWaitTerminal(event, cursor, false, {
+        describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
+      });
       break;
     case 'waiting':
       line = formatWaitWaiting(event, cursor);
@@ -105,7 +107,7 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
 }
 
 function openCauseRenderer(pluginRoot: string): {
-  readonly render?: (ref: CauseRef) => string;
+  readonly render?: (ref: CauseRef, fallbackOutcome?: TerminalOutcome) => string;
   close(): void;
 } {
   try {
@@ -117,7 +119,7 @@ function openCauseRenderer(pluginRoot: string): {
     });
     const store = new CoralStore(db);
     return {
-      render: (ref) => describeCauseRef(ref, store),
+      render: (ref, fallbackOutcome) => describeCauseRef(ref, store, fallbackOutcome),
       close: () => db.close(),
     };
   } catch {

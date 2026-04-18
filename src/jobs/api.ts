@@ -3,13 +3,24 @@ import type { ExecutionServiceLike } from '../execution/backend-contracts.js';
 import { createReplayCursor, type ProgressStore } from '../execution/progress-store.js';
 import type { RecoveryRegistry } from '../execution/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { JobLaunchRecord, JobProgressRecord, JobRuntimeRecord, JobStatusRecord, WaitStreamEvent } from '../shared/types.js';
+import type {
+  JobPhase,
+  JobStatusRecord,
+  JobTerminalRecord,
+  ProviderAction,
+  ProviderInstruction,
+  ProviderContinuityBlob,
+  WaitStreamEvent,
+  WaitStreamRequest,
+  WorkflowResultMeta,
+  UsageSummary,
+} from '../shared/types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RecoveryCapableService } from '../execution/service.js';
-import type { JobPhase } from './phase.js';
+import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { TerminalOutcome } from './outcome.js';
-import type { createRecoveryCoordinator } from './reconcile/coordinator.js';
+import type { RecoveryCoordinator } from './reconcile/coordinator.js';
 
 export type JobStatusRow = {
   jobId: string;
@@ -21,9 +32,67 @@ export type JobStatusRow = {
   lastSeq: number;
 };
 
-export type JobLaunchRow = JobLaunchRecord;
-export type JobProgressRow = JobProgressRecord;
-export type JobRuntimeRow = JobRuntimeRecord | null;
+// Phase 6: can diverge from JobLaunchRecord.
+export type JobLaunchRow = {
+  jobId: string;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash?: string;
+  jobKind?: 'provider' | 'workflow';
+  pool: string;
+  enqueueSequence: number;
+  providerAction: ProviderAction;
+  request: {
+    prompt: string;
+    name?: string;
+    model?: string;
+    cwd: string;
+    effort?: string;
+    bypassPermissions: boolean;
+    systemPrompt?: string;
+    conversationRef?: string;
+    instruction?: ProviderInstruction;
+    coralEnv: Record<string, string>;
+  };
+  parentWorkflowJobId?: string;
+  createdAt: string;
+};
+
+export type JobProgressRow = {
+  jobId: string;
+  sessionId: string;
+  eventId: number;
+  type: 'progress' | 'terminal';
+  ts: string;
+  message?: string;
+  result?: JobTerminalRecord;
+};
+
+export type JobCliRuntimeRow = {
+  transport?: 'durable-cli';
+  pid: number;
+  stdoutPath: string;
+  stderrPath: string;
+  startTime: string;
+  providerMeta?: Record<string, unknown>;
+  tailWatermark?: number;
+};
+
+export type JobAppServerRuntimeRow = {
+  transport: 'app-server';
+  startTime: string;
+  providerMeta: {
+    provider: string;
+    leaseState: 'waiting' | 'acquired';
+    serverGeneration?: number;
+    providerContinuity?: ProviderContinuityBlob;
+    recoveryPolicy: 'session_continuity_only';
+  };
+};
+
+export type JobRuntimeRow = JobCliRuntimeRow | JobAppServerRuntimeRow | null;
 export type JobExitRow = {
   outcome: TerminalOutcome;
   content: string;
@@ -31,10 +100,13 @@ export type JobExitRow = {
   exitCode?: number | null;
   signal?: string | null;
   nonResumable?: boolean;
+  warnings?: string[];
+  usage?: UsageSummary;
+  workflow?: WorkflowResultMeta;
 };
 
 export type JobsStartupDeps = {
-  recoveryCoordinator: ReturnType<typeof createRecoveryCoordinator>;
+  recoveryCoordinator: RecoveryCoordinator;
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
@@ -48,20 +120,27 @@ export type JobsStartupDeps = {
 };
 
 export const jobsCommands = {
-  start(service: Pick<ExecutionServiceLike, 'start'>, ...args: unknown[]): ReturnType<ExecutionServiceLike['start']> {
-    return service.start(...(args as Parameters<ExecutionServiceLike['start']>));
+  start(
+    service: Pick<ExecutionServiceLike, 'start'>,
+    providerName: string,
+    request: JobLaunchRequest,
+    ctx: CallerContext,
+  ): ReturnType<ExecutionServiceLike['start']> {
+    return service.start(providerName, request, ctx);
   },
   resume(
     service: Pick<ExecutionServiceLike, 'resumeBySessionId'>,
-    ...args: unknown[]
+    request: JobResumeRequest,
+    ctx: CallerContext,
   ): ReturnType<ExecutionServiceLike['resumeBySessionId']> {
-    return service.resumeBySessionId(...(args as Parameters<ExecutionServiceLike['resumeBySessionId']>));
+    return service.resumeBySessionId(request, ctx);
   },
   fork(
     service: Pick<ExecutionServiceLike, 'forkBySessionId'>,
-    ...args: unknown[]
+    request: JobForkRequest,
+    ctx: CallerContext,
   ): ReturnType<ExecutionServiceLike['forkBySessionId']> {
-    return service.forkBySessionId(...(args as Parameters<ExecutionServiceLike['forkBySessionId']>));
+    return service.forkBySessionId(request, ctx);
   },
   abort(
     service: Pick<ExecutionServiceLike, 'abort'>,
@@ -80,16 +159,44 @@ export const jobsQueries = {
   },
   detail(progressStore: ProgressStore, jobId: string): {
     status: JobStatusRecord | null;
-    launch: JobLaunchRecord | null;
-    runtime: JobRuntimeRecord | null;
+    launch: JobLaunchRow | null;
+    runtime: JobRuntimeRow;
     exit: JobExitRow | null;
   } {
     const status = progressStore.readStatus(jobId);
+    const launch = progressStore.readLaunchRecord(jobId);
+    const runtime = progressStore.readRuntimeRecord(jobId);
     const exit = progressStore.readTerminalPayload(jobId);
     return {
       status,
-      launch: progressStore.readLaunchRecord(jobId),
-      runtime: progressStore.readRuntimeRecord(jobId),
+      launch:
+        launch === null
+          ? null
+          : {
+              ...launch,
+              request: {
+                ...launch.request,
+                coralEnv: { ...launch.request.coralEnv },
+                ...(launch.request.instruction ? { instruction: { ...launch.request.instruction } } : {}),
+              },
+            },
+      runtime:
+        runtime === null
+          ? null
+          : runtime.transport === 'app-server'
+            ? {
+                ...runtime,
+                providerMeta: {
+                  ...runtime.providerMeta,
+                  ...(runtime.providerMeta.providerContinuity
+                    ? { providerContinuity: { ...runtime.providerMeta.providerContinuity } }
+                    : {}),
+                },
+              }
+            : {
+                ...runtime,
+                ...(runtime.providerMeta ? { providerMeta: { ...runtime.providerMeta } } : {}),
+              },
       exit:
         exit === null
           ? null
@@ -99,6 +206,14 @@ export const jobsQueries = {
               durationMs: exit.durationMs,
               exitCode: exit.exitCode,
               nonResumable: exit.nonResumable,
+              warnings: exit.warnings,
+              usage: exit.usage ? { ...exit.usage } : undefined,
+              workflow:
+                exit.workflow === undefined
+                  ? undefined
+                  : {
+                      steps: exit.workflow.steps.map((step) => ({ ...step })),
+                    },
             },
     };
   },
@@ -118,13 +233,20 @@ export const jobsQueries = {
   awaitLaunch(service: Pick<ExecutionServiceLike, 'waitStream'>, jobId: string): AsyncGenerator<WaitStreamEvent> {
     return service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 });
   },
-  waitForTerminal(service: Pick<ExecutionServiceLike, 'waitStream'>, ...args: unknown[]): ReturnType<ExecutionServiceLike['waitStream']> {
-    return service.waitStream(...(args as Parameters<ExecutionServiceLike['waitStream']>));
+  waitForTerminal(
+    service: Pick<ExecutionServiceLike, 'waitStream'>,
+    request: WaitStreamRequest,
+  ): ReturnType<ExecutionServiceLike['waitStream']> {
+    return service.waitStream(request);
   },
   progress(progressStore: ProgressStore, jobId: string): JobProgressRow[] {
-    return progressStore.replayFrom(jobId, 0, createReplayCursor()).filter(
-      (record): record is JobProgressRow => record.type === 'progress' || record.type === 'terminal',
-    );
+    return progressStore
+      .replayFrom(jobId, 0, createReplayCursor())
+      .filter((record): record is JobProgressRow => record.type === 'progress' || record.type === 'terminal')
+      .map((record) => ({
+        ...record,
+        ...(record.result ? { result: { ...record.result } } : {}),
+      }));
   },
 } as const;
 
@@ -133,17 +255,7 @@ export const jobsReconcile = {
     recoveryCoordinator,
     ...deps
   }: JobsStartupDeps): Promise<void> {
-    await recoveryCoordinator.runStartupRecovery({
-      ...deps,
-      recoverPersistedDiscuss: async () => [],
-      knownDiscussSources: () => new Set<string>(),
-      getDiscussStoreForSource: ((_: string) => {
-        throw new Error('Discuss startup is handled separately.');
-      }) as (source: string) => never,
-      getDiscussContext: ((_: CallerContext) => {
-        throw new Error('Discuss startup is handled separately.');
-      }) as (ctx: CallerContext) => never,
-    });
+    await recoveryCoordinator.runStartupRecovery(deps);
   },
   adoptRunning<T>(fn: () => T): T {
     return fn();

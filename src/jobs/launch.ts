@@ -1,11 +1,39 @@
 import { z } from 'zod';
 
+import type { LaunchPool } from '../execution/engine.js';
 import type { EffortLevel, ProviderAction, ProviderInstruction } from '../shared/types.js';
 
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }
   | { status: 'queued'; job: string; session: string; message?: undefined }
   | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
+
+export interface JobLaunchRequest {
+  prompt: string;
+  name?: string;
+  model?: string;
+  cwd?: string;
+  jobId?: string;
+  workflowSlotId?: string;
+  effort?: string;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+  instruction?: ProviderInstruction;
+  parentWorkflowJobId?: string;
+  agent?: string;
+  pool?: LaunchPool;
+}
+
+export interface JobResumeRequest extends JobLaunchRequest {
+  sessionId: string;
+  provider?: string;
+}
+
+export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent' | 'pool'> {
+  sessionId: string;
+  provider?: string;
+  prompt?: string;
+}
 
 export interface JobLaunchRequestBody {
   sessionId: string;

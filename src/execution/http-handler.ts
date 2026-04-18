@@ -53,7 +53,7 @@ import {
   handleKbUpdate,
 } from './kb-tools.js';
 import { domainError, domainResultToHttp, formatZodError, launchToHttp, type ToolDomainResult } from './tool-response.js';
-import { workflowCommands, workflowQueries, isWorkflowInputFailure } from '../workflow/api.js';
+import { workflowCommands, workflowCompiler, isWorkflowInputFailure } from '../workflow/api.js';
 import {
   buildCallerContextFromQuery,
   discussDeleteQuerySchema,
@@ -703,7 +703,7 @@ async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, 
 
   try {
     const command = (({ projectRoot, claudeModelCap, ...workflowCommand }) => workflowCommand)(parsed);
-    const compiled = workflowQueries.compile(command, deps.providerRegistry);
+    const compiled = workflowCompiler.compile(command, deps.providerRegistry);
     const decision =
       'status' in compiled
         ? compiled

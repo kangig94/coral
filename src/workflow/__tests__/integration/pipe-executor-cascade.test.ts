@@ -14,7 +14,7 @@ import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderInstruction, ProviderRequest } from '../../../shared/types.js';
-import { workflowCommands, workflowQueries } from '../../api.js';
+import { workflowCommands, workflowCompiler } from '../../api.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -104,7 +104,7 @@ describe('pipe executor coral cascade invariant', () => {
       );
 
       const ctx: CallerContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
-      const compiled = workflowQueries.compile(
+      const compiled = workflowCompiler.compile(
         {
           expression: 'architect',
           startPrompt: 'hi',

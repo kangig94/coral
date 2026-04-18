@@ -3,6 +3,7 @@ import { mkdirSync as nodeMkdirSync, readFileSync as nodeReadFileSync, readdirSy
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { currentBuildFlavor } from '../infra/paths.js';
+import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import { CoralStore } from '../store/index.js';
 import { openStoreDatabase } from '../store/db.js';
 import { appendEvents } from '../store/append.js';
@@ -99,7 +100,7 @@ export function createWorkflowJournal(storage: RuntimeStoragePort): WorkflowJour
     describeCauseRef(ref) {
       return withWorkflowDatabase(storage, (db) => {
         const store = new CoralStore(db);
-        return store.getEvent(ref.stream, ref.seq) ? store.getEvent(ref.stream, ref.seq)?.type ?? `${ref.stream.kind}/${ref.stream.id}` : `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
+        return describeCauseRef(ref, store);
       });
     },
   };

@@ -6,9 +6,6 @@ import {
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { DiscussContext } from '../../discuss/shell/context.js';
-import type { RecoveredDiscussResume } from '../../discuss/shell/operations.js';
-import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { planRecovery } from './plan.js';
@@ -37,12 +34,12 @@ type RecoveryCoordinatorState = {
   teardownRequested: boolean;
 };
 
-type RecoveryCoordinator = {
-  runStartupRecovery(ctx: StartupRecoveryContext): Promise<RecoveredDiscussResume[]>;
+export interface RecoveryCoordinator {
+  runStartupRecovery(ctx: StartupRecoveryContext): Promise<void>;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
   teardown(): void;
-};
+}
 
 type RecoveryCoordinatorContext = {
   progressStore: ProgressStore;
@@ -65,16 +62,6 @@ type StartupRecoveryContext = {
   assertStartupStillActive: () => void;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
-  recoverPersistedDiscuss: (deps: {
-    readonly knownDiscussSources: () => Set<string>;
-    readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-    readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
-    readonly createCallerContext: (projectRoot: string) => CallerContext;
-    readonly assertStartupStillActive: () => void;
-  }) => Promise<RecoveredDiscussResume[]>;
-  knownDiscussSources: () => Set<string>;
-  getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  getDiscussContext: (ctx: CallerContext) => DiscussContext;
 };
 
 type RecoveryAdoptionContext = RecoveryCoordinatorContext & {
@@ -289,7 +276,7 @@ export function createRecoveryCoordinator({
   }
 
   return {
-    async runStartupRecovery(ctx: StartupRecoveryContext): Promise<RecoveredDiscussResume[]> {
+    async runStartupRecovery(ctx: StartupRecoveryContext): Promise<void> {
       const {
         namespace,
         bundleHash,
@@ -298,10 +285,6 @@ export function createRecoveryCoordinator({
         assertStartupStillActive,
         log,
         cleanupStaleJobs,
-        recoverPersistedDiscuss,
-        knownDiscussSources,
-        getDiscussStoreForSource,
-        getDiscussContext,
       } = ctx;
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);
@@ -337,17 +320,9 @@ export function createRecoveryCoordinator({
 
       cleanupStaleJobs(bundleHash);
 
-      const recoveredDiscussResumes = await recoverPersistedDiscuss({
-        knownDiscussSources,
-        getDiscussStoreForSource,
-        getDiscussContext,
-        createCallerContext,
-        assertStartupStillActive,
-      });
-
       if (queuedRecoverable.length === 0 && runningRecoverable.length === 0) {
         resetRecoveryState();
-        return recoveredDiscussResumes;
+        return;
       }
 
       try {
@@ -386,8 +361,6 @@ export function createRecoveryCoordinator({
         }
         resetRecoveryState();
       }
-
-      return recoveredDiscussResumes;
     },
     getRecoveryRegistry: () => state.recoveryRegistry,
     isIdleBlocked: () => state.adoptedRunningPids.size > 0 || (state.recoveryRegistry?.size ?? 0) > 0,

@@ -28,7 +28,7 @@ export function describeTerminalFailure(
   switch (result.outcome.kind) {
     case 'failed':
       return options.store
-        ? describeCauseRef(result.outcome.causeRef, options.store)
+        ? describeCauseRef(result.outcome.causeRef, options.store, result.outcome)
         : describeTerminalOutcome(result.outcome);
     case 'job_fault':
     case 'aborted':

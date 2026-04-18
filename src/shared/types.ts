@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { JOB_PHASES, isLivePhase, isTerminalPhase, jobPhaseSchema, type JobPhase } from '../jobs/phase.js';
 import { type TerminalOutcome, terminalOutcomeSchema } from '../jobs/outcome.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
-import { type LegacyTerminalOutcome, legacyTerminalOutcomeSchema } from './legacy-terminal-outcome-compat.js';
+import { type ProviderTurnOutcomeCompat, legacyTerminalOutcomeSchema } from './legacy-terminal-outcome-compat.js';
 
 /**
  * Shared type definitions for the Coral plugin.
@@ -105,7 +105,7 @@ export interface ProviderTurnResult {
   exitCode?: number | null;
   warnings?: string[];
   usage?: UsageSummary;
-  outcome: LegacyTerminalOutcome;
+  outcome: ProviderTurnOutcomeCompat;
 }
 
 /**

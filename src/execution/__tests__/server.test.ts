@@ -2900,7 +2900,7 @@ describe('execution backend server', () => {
       const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
       workflowError.name = 'WorkflowInputError';
       vi.doMock('../../workflow/api.js', () => ({
-        workflowQueries: {
+        workflowCompiler: {
           compile: vi.fn(() => {
             throw workflowError;
           }),
@@ -2950,7 +2950,7 @@ describe('execution backend server', () => {
         },
       ]);
       vi.doMock('../../workflow/api.js', () => ({
-        workflowQueries: {
+        workflowCompiler: {
           compile: vi.fn(() => {
             throw workflowError;
           }),

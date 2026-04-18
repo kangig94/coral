@@ -1,11 +1,11 @@
 import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { KbSubsystem } from '../kb-tools.js';
+import type { KnowledgeBaseRuntime } from '../kb-tools.js';
 import type { LifecycleState } from '../server-types.js';
 
 export function createRuntimeState(startedAt: number): MutableBackendRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
-  let kbSubsystem: KbSubsystem | null = null;
+  let kbSubsystem: KnowledgeBaseRuntime | null = null;
   let kbInitError: string | null = null;
   let launchFenceActive = false;
 

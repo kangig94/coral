@@ -34,7 +34,7 @@ export type CompiledWorkflow = {
   owner?: string;
 };
 
-export const workflowQueries = {
+export const workflowCompiler = {
   compile(command: WorkflowCommand, providerRegistry: ProviderCatalog): CompiledWorkflow | LaunchDecision {
     try {
       const ast = normalizeAst(parseExpression(command.expression), command.provider);

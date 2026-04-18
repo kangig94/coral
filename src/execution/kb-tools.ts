@@ -55,6 +55,8 @@ export type KbSubsystem = {
   curateScheduler: CurateHandle;
 };
 
+export type KnowledgeBaseRuntime = KbSubsystem;
+
 export type CreateKbSubsystemOptions = {
   pluginRoot: string;
   spawnCli: SpawnCliFn;

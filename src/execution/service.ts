@@ -44,7 +44,7 @@ import { workflowCommands } from '../workflow/api.js';
 import { createWorkflowJournal } from '../workflow/projections.js';
 import {
   describeLegacyCoralFault,
-  type LegacyCoralFault,
+  type RecoveryFaultCompat,
 } from '../shared/legacy-terminal-outcome-compat.js';
 import { type AbortReason, type TerminalOutcome } from '../jobs/outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../jobs/shell/legacy-ingest.js';
@@ -200,7 +200,7 @@ function buildEffectiveCoralEnv(
 }
 
 function buildInterruptedAppServerReport(
-  fault: Extract<LegacyCoralFault, { kind: 'app_server_interrupted' }>,
+  fault: Extract<RecoveryFaultCompat, { kind: 'app_server_interrupted' }>,
   conversationRef?: string,
 ): string {
   const lines = [describeLegacyCoralFault(fault), ''];
@@ -231,7 +231,7 @@ function buildInterruptedAppServerReport(
   return lines.join('\n');
 }
 
-function normalizeLegacyFaultOutcome(jobId: string, sessionId: string, fault: LegacyCoralFault): TerminalOutcome {
+function normalizeLegacyFaultOutcome(jobId: string, sessionId: string, fault: RecoveryFaultCompat): TerminalOutcome {
   const plan = planLegacyTerminalOutcome({ kind: 'legacy_fault', fault }, { jobId, sessionId });
   if (plan.immediateOutcome !== null) {
     return plan.immediateOutcome;
@@ -623,7 +623,7 @@ export class ExecutionService implements RecoveryCapableService {
       mutation = { type: 'clear_non_resumable' };
     }
 
-    const fault: Extract<LegacyCoralFault, { kind: 'app_server_interrupted' }> = {
+    const fault: Extract<RecoveryFaultCompat, { kind: 'app_server_interrupted' }> = {
       kind: 'app_server_interrupted',
       trigger: options.reason,
       continuity:

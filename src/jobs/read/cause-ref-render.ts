@@ -1,6 +1,13 @@
 import type { CoralStore, CoralEvent } from '../../store/index.js';
 import { isRecord } from '../../shared/utils.js';
-import { causeRefSchema, describeJobProgressFault, describeLaunchRejected, describeTerminalOutcome, type CauseRef } from '../outcome.js';
+import {
+  causeRefSchema,
+  describeJobProgressFault,
+  describeLaunchRejected,
+  describeTerminalOutcome,
+  type CauseRef,
+  type TerminalOutcome,
+} from '../outcome.js';
 
 export interface CircularCauseRefDiagnostic {
   readonly key: string;
@@ -152,6 +159,7 @@ function renderCauseRef(
   store: CoralStore,
   visited: Set<string>,
   path: string[],
+  fallbackOutcome?: TerminalOutcome,
 ): CauseRefRenderResult {
   const key = refKey(ref);
   if (visited.has(key)) {
@@ -170,6 +178,14 @@ function renderCauseRef(
   visited.add(key);
   const event = store.getEvent(ref.stream, ref.seq);
   if (!event) {
+    if (path.length === 0 && fallbackOutcome) {
+      const description = describeTerminalOutcome(fallbackOutcome);
+      return {
+        description,
+        chain: [...path, description],
+      };
+    }
+
     return {
       description: markerForMissing(ref),
       chain: [...path, markerForMissing(ref)],
@@ -193,10 +209,14 @@ function renderCauseRef(
   };
 }
 
-export function describeCauseRefDetailed(ref: CauseRef, store: CoralStore): CauseRefRenderResult {
-  return renderCauseRef(ref, store, new Set<string>(), []);
+export function describeCauseRefDetailed(
+  ref: CauseRef,
+  store: CoralStore,
+  fallbackOutcome?: TerminalOutcome,
+): CauseRefRenderResult {
+  return renderCauseRef(ref, store, new Set<string>(), [], fallbackOutcome);
 }
 
-export function describeCauseRef(ref: CauseRef, store: CoralStore): string {
-  return describeCauseRefDetailed(ref, store).description;
+export function describeCauseRef(ref: CauseRef, store: CoralStore, fallbackOutcome?: TerminalOutcome): string {
+  return describeCauseRefDetailed(ref, store, fallbackOutcome).description;
 }

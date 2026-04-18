@@ -1,4 +1,4 @@
-import { describeLegacyCoralFault, type LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
+import { describeLegacyCoralFault, type RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type JobStatusRecord, type JobTerminalRecord } from '../../shared/types.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
@@ -37,7 +37,7 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 export function markJobAsError(
   progressStore: ProgressStore,
   status: JobStatusRecord,
-  fault: LegacyCoralFault,
+  fault: RecoveryFaultCompat,
   log: (message: string) => void,
 ): void {
   const outcome = materializeLegacyTerminalOutcome(

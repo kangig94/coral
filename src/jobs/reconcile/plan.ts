@@ -9,7 +9,7 @@ import {
   type SessionEntry,
   type JobTerminalRecord,
 } from '../../shared/types.js';
-import type { LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
+import type { RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 
 /**
  * Invariant — jobIds freshness:
@@ -41,7 +41,7 @@ export interface JobStoreSnapshot {
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; fault: LegacyCoralFault; status: JobStatusRecord }
+  | { type: 'markError'; jobId: string; fault: RecoveryFaultCompat; status: JobStatusRecord }
   | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunchRecord }
   | {
       type: 'registerRunning';
