@@ -9,9 +9,13 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../runtime.js';
-import { composeCoralPaths } from '../../../coordinator/paths.js';
+import { coordinatorPaths } from '../../../coordinator/info.js';
 import type { CoralPaths } from '../../../infra/coral-paths.js';
+import { equipmentPaths } from '../../../infra/equipment-paths.js';
+import { exportsPaths } from '../../../jobs/exports/paths.js';
+import { corpusPaths } from '../../../kb/corpus/paths.js';
 import type { BuildFlavor } from '../../../runtime/flavor.js';
+import { storePaths } from '../../../store/paths.js';
 import { cloneSpawnEvent } from '../../../runtime/spawn.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
@@ -31,41 +35,21 @@ function hashToken(input: string, length: number): string {
   return createHash('sha256').update(input).digest('hex').slice(0, length);
 }
 
-function buildInMemoryCoralPaths(roots: InMemoryRoots, flavor: BuildFlavor): CoralPaths {
+function buildInMemoryCoralPaths(roots: InMemoryRoots, flavor: BuildFlavor = 'prod'): CoralPaths {
   const coralRoot = roots.coralRoot ?? DEFAULT_CORAL_ROOT;
-  const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
-  const kbDir = flavor === 'dev' ? 'kb-dev' : 'kb';
-  const runDir = flavor === 'dev' ? 'run-dev' : 'run';
-  const exportsDir = flavor === 'dev' ? 'exports-dev' : 'exports';
-  const base = composeCoralPaths(flavor);
+  const opts = { baseDir: coralRoot };
+  const store = storePaths(flavor, opts);
+  const corpus = corpusPaths(flavor, opts);
+  const coordinator = coordinatorPaths(flavor, undefined, opts);
+  const exports = exportsPaths(flavor, opts);
+  const equipment = equipmentPaths(flavor, opts);
 
   return Object.freeze({
-    ...base,
-    store: Object.freeze({
-      dbDir: join(coralRoot, dataDir, 'store'),
-      dbFile: join(coralRoot, dataDir, 'store', 'store.db'),
-      walFile: join(coralRoot, dataDir, 'store', 'store.db-wal'),
-    }),
-    corpus: Object.freeze({
-      kbRoot: join(coralRoot, kbDir),
-      notesDir: join(coralRoot, kbDir, 'notes'),
-      sourcesDir: join(coralRoot, kbDir, 'sources'),
-      principlesDir: join(coralRoot, kbDir, 'principles'),
-      communitiesDir: join(coralRoot, kbDir, 'communities'),
-      derivedDir: join(coralRoot, kbDir, 'derived'),
-    }),
-    coordinator: Object.freeze({
-      runDir: join(coralRoot, runDir),
-      socketPath: join(coralRoot, runDir, 'coordinator.sock'),
-      infoFile: join(coralRoot, runDir, 'coordinator.json'),
-      lockFile: join(coralRoot, runDir, 'coordinator.lock'),
-    }),
-    exports: Object.freeze({
-      jobsRoot: join(coralRoot, exportsDir, 'jobs'),
-    }),
-    equipment: Object.freeze({
-      equipmentRoot: join(coralRoot, dataDir, 'equipment'),
-    }),
+    store,
+    corpus,
+    coordinator,
+    exports,
+    equipment,
   });
 }
 

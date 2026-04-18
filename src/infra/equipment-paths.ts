@@ -6,9 +6,17 @@ export interface EquipmentPaths {
   equipmentRoot: string;
 }
 
-export function equipmentPaths(flavor: BuildFlavor): EquipmentPaths {
+export interface EquipmentPathOptions {
+  readonly baseDir?: string;
+}
+
+function coralRoot(opts?: EquipmentPathOptions): string {
+  return opts?.baseDir ?? join(homedir(), '.coral');
+}
+
+export function equipmentPaths(flavor: BuildFlavor, opts?: EquipmentPathOptions): EquipmentPaths {
   const base = flavor === 'dev' ? 'data-dev/equipment' : 'data/equipment';
   return {
-    equipmentRoot: join(homedir(), '.coral', base),
+    equipmentRoot: join(coralRoot(opts), base),
   };
 }

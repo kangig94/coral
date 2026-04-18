@@ -10,6 +10,10 @@ export interface CoordinatorPaths {
   lockFile: string;
 }
 
+export interface CoordinatorPathOptions {
+  readonly baseDir?: string;
+}
+
 // Platform limits for sockaddr_un.sun_path (per sys/un.h): Darwin=104, Linux=108.
 // If the candidate path meets or exceeds the platform limit, fall back to $TMPDIR.
 const SOCKET_LIMIT_DARWIN = 104;
@@ -23,9 +27,13 @@ function shortHash(input: string): string {
   return createHash('sha256').update(input).digest('hex').slice(0, 8);
 }
 
-export function coordinatorPaths(flavor: BuildFlavor, env: NodeJS.ProcessEnv = process.env): CoordinatorPaths {
+export function coordinatorPaths(
+  flavor: BuildFlavor,
+  env: NodeJS.ProcessEnv = process.env,
+  opts?: CoordinatorPathOptions,
+): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(homedir(), '.coral', base);
+  const runDir = join(opts?.baseDir ?? join(homedir(), '.coral'), base);
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathLimit();
   let socketPath = candidateSocket;

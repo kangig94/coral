@@ -11,9 +11,17 @@ export interface CorpusPaths {
   derivedDir: string;
 }
 
-export function corpusPaths(flavor: BuildFlavor): CorpusPaths {
+export interface CorpusPathOptions {
+  readonly baseDir?: string;
+}
+
+function coralRoot(opts?: CorpusPathOptions): string {
+  return opts?.baseDir ?? join(homedir(), '.coral');
+}
+
+export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): CorpusPaths {
   const base = flavor === 'dev' ? 'kb-dev' : 'kb';
-  const kbRoot = join(homedir(), '.coral', base);
+  const kbRoot = join(coralRoot(opts), base);
   return {
     kbRoot,
     notesDir: join(kbRoot, 'notes'),

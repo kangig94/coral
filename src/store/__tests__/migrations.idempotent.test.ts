@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -6,11 +6,16 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { applyMigrations } from '../migrations.js';
+import type { StoragePort } from '../../runtime/ports.js';
 
 const STORE_DIR = fileURLToPath(new URL('../', import.meta.url));
 const SCHEMA_SQL_PATH = join(STORE_DIR, 'schema.sql');
 const INITIAL_MIGRATION_PATH = join(STORE_DIR, 'migrations/001_initial.sql');
 type TrackedDatabase = InstanceType<typeof Database> & { totalChanges: number };
+const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
+  readFileSync: (path, encoding) => readFileSync(path, encoding),
+  readdirSync: (path, options) => readdirSync(path, options),
+};
 
 describe('migrations idempotency', () => {
   it('second run performs zero write activity', () => {
@@ -18,12 +23,12 @@ describe('migrations idempotency', () => {
     const db = new Database(join(tempDir, 'store.db')) as TrackedDatabase;
 
     try {
-      applyMigrations(db);
+      applyMigrations({ db, storage: nodeStorage });
       const firstChanges = db.totalChanges;
       const firstSchemaVersion = db.pragma('schema_version', { simple: true });
       const firstMetaVersion = (db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value;
 
-      applyMigrations(db);
+      applyMigrations({ db, storage: nodeStorage });
       const secondChanges = db.totalChanges;
       const secondSchemaVersion = db.pragma('schema_version', { simple: true });
       const secondMetaVersion = (db.prepare("SELECT value FROM meta WHERE key='schema_version'").get() as { value: string }).value;
