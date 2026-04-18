@@ -44,9 +44,27 @@ export const journalEventEnvelopeSchema = z
   })
   .strict();
 
-export type JournalEventEnvelope = z.infer<typeof journalEventEnvelopeSchema>;
-export type CoralEvent = JournalEventEnvelope;
-export type CoralEventInput = Omit<CoralEvent, 'seq' | 'ts'>;
+export const journalEventInputSchema = journalEventEnvelopeSchema
+  .omit({
+    seq: true,
+    ts: true,
+  })
+  .extend({
+    tsOverride: z.string().datetime().optional(),
+  })
+  .strict();
+
+type JournalEventEnvelopeShape = z.infer<typeof journalEventEnvelopeSchema>;
+
+export interface CoralEvent<T = unknown> extends Omit<JournalEventEnvelopeShape, 'body'> {
+  body: T;
+}
+
+export interface CoralEventInput<T = unknown> extends Omit<CoralEvent<T>, 'seq' | 'ts'> {
+  tsOverride?: string;
+}
+
+export type JournalEventEnvelope<T = unknown> = CoralEvent<T>;
 
 type Upcaster = (body: unknown) => unknown;
 

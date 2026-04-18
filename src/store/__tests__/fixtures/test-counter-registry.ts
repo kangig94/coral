@@ -1,34 +1,29 @@
-import type BetterSqlite3 from 'better-sqlite3';
+import { z } from 'zod';
 
-import type { Reducer } from '../../append.js';
+import type { DomainEventRegistry, Reducer } from '../../reducers.js';
 
-const TEST_COUNTER_MIGRATION_SQL = `
-CREATE TABLE IF NOT EXISTS projection_test_counter (
-  id TEXT PRIMARY KEY,
-  value INTEGER NOT NULL,
-  last_seq INTEGER NOT NULL
-);
-`;
+export const TEST_COUNTER_SCHEMA = z.object({
+  id: z.string(),
+  delta: z.number().int(),
+});
 
-export function applyTestCounterMigration(db: BetterSqlite3.Database): void {
-  db.exec(TEST_COUNTER_MIGRATION_SQL);
-}
-
-const tickedReducer: Reducer = (db, event) => {
-  const body = event.body as { id: string; delta: number };
+const reducer: Reducer<z.infer<typeof TEST_COUNTER_SCHEMA>> = (db, event) => {
   db.prepare(
-    [
-      'INSERT INTO projection_test_counter (id, value, last_seq)',
-      'VALUES (?, ?, ?)',
-      'ON CONFLICT(id) DO UPDATE SET',
-      '  value = projection_test_counter.value + excluded.value,',
-      '  last_seq = excluded.last_seq',
-    ].join('\n'),
-  ).run(body.id, body.delta, event.seq);
+    `INSERT INTO projection_test_counter (id, count, last_seq) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
+  ).run(event.body.id, event.body.delta, event.seq);
 };
 
-export const testCounterRegistry = {
-  reducers: {
-    'test.counter.ticked': tickedReducer,
-  } satisfies Record<string, Reducer>,
+export const testCounterRegistry: DomainEventRegistry = {
+  types: ['test.counter.ticked'],
+  reducers: { 'test.counter.ticked': reducer as Reducer<unknown> },
+  schemas: { 'test.counter.ticked': TEST_COUNTER_SCHEMA },
 };
+
+export function applyTestCounterMigration(db: import('better-sqlite3').Database): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS projection_test_counter (
+    id       TEXT PRIMARY KEY,
+    count    INTEGER NOT NULL DEFAULT 0,
+    last_seq INTEGER NOT NULL DEFAULT 0
+  );`);
+}
