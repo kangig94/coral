@@ -1,9 +1,7 @@
-import { join } from 'node:path';
 import { describeLegacyCoralFault, type LegacyCoralFault } from '../../shared/legacy-terminal-outcome-compat.js';
-import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
+import { formatError } from '../../shared/utils.js';
 import { isLivePhase, readBackendNamespace, type PersistedStatusRecord, type TerminalResult } from '../../shared/types.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
-import type { Runtime } from '../../runtime/ports.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 
 export function withBackendNamespace(status: PersistedStatusRecord, namespace: string): PersistedStatusRecord {
@@ -34,32 +32,6 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): P
   }
 
   return results;
-}
-
-export function readSessionRefs(
-  shardDir: string,
-  storage: Pick<Runtime['storage'], 'readdirSync' | 'readFileSync'>,
-): Array<{ sessionId: string; provider: string }> {
-  try {
-    return storage
-      .readdirSync(shardDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-      .flatMap((entry) => {
-        try {
-          const raw = storage.readFileSync(join(shardDir, entry.name), 'utf-8');
-          const parsed: unknown = JSON.parse(raw);
-          if (!isRecord(parsed)) return [];
-          if (typeof parsed.sessionId !== 'string' || typeof parsed.provider !== 'string') return [];
-          return [{ sessionId: parsed.sessionId, provider: parsed.provider }];
-        } catch (error: unknown) {
-          if (isNoEntryError(error) || error instanceof SyntaxError) return [];
-          throw error;
-        }
-      });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return [];
-    throw error;
-  }
 }
 
 export function markJobAsError(

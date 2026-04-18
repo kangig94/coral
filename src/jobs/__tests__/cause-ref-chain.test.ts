@@ -74,8 +74,8 @@ describe('describeCauseRef (AC8)', () => {
         type: 'session.provider_failed',
         stream: { kind: 'session', id: 'session-1' },
         body: {
-          kind: 'request_failed',
           provider: 'codex',
+          reason: 'request_failed',
           message: 'transport reset',
           causeRef: {
             stream: { kind: 'job', id: 'job-2' },
@@ -137,8 +137,8 @@ describe('describeCauseRef (AC8)', () => {
         type: 'session.provider_failed',
         stream: { kind: 'session', id: 'session-cycle' },
         body: {
-          kind: 'request_failed',
           provider: 'codex',
+          reason: 'request_failed',
           message: 'loop b',
           causeRef: {
             stream: { kind: 'job', id: 'job-cycle' },

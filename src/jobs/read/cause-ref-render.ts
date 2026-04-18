@@ -110,11 +110,13 @@ function describeEvent(event: CoralEvent): string {
     }
     case 'session:session.provider_failed': {
       if (!isRecord(event.body)) return 'Session provider failed.';
-      if (event.body.kind === 'session_unavailable' && typeof event.body.provider === 'string') {
-        return `${event.body.provider} session unavailable: ${ensureSentence(String(event.body.note ?? 'unknown'))}`;
-      }
-      if (event.body.kind === 'request_failed' && typeof event.body.provider === 'string') {
-        return `${event.body.provider} turn failed: ${ensureSentence(String(event.body.message ?? 'unknown'))}`;
+      if (typeof event.body.provider === 'string' && typeof event.body.reason === 'string') {
+        if (event.body.reason === 'session_unavailable') {
+          return `${event.body.provider} session unavailable: ${ensureSentence(String(event.body.message ?? 'unknown'))}`;
+        }
+        if (event.body.reason === 'request_failed') {
+          return `${event.body.provider} turn failed: ${ensureSentence(String(event.body.message ?? 'unknown'))}`;
+        }
       }
       return 'Session provider failed.';
     }

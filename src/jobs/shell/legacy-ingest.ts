@@ -110,23 +110,28 @@ export function planLegacyTerminalOutcome(
         case 'adapter_output_unparseable':
           return planFailed(
             options,
-            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', outcome.fault),
+            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', {
+              provider: outcome.fault.provider,
+              stdout: outcome.fault.stdout,
+              stderr: outcome.fault.stderr,
+              parseError: outcome.fault.parseError,
+            }),
           );
         case 'provider_session_unavailable':
           return planFailed(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {
-              kind: 'session_unavailable',
               provider: outcome.fault.provider,
-              note: outcome.fault.note,
+              reason: 'session_unavailable',
+              message: outcome.fault.note,
             }),
           );
         case 'provider_request_failed':
           return planFailed(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {
-              kind: 'request_failed',
               provider: outcome.fault.provider,
+              reason: 'request_failed',
               message: outcome.fault.message,
             }),
           );

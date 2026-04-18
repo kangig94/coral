@@ -1,17 +1,20 @@
 import { z } from 'zod';
 import { JOB_PHASES, isLivePhase, isTerminalPhase, jobPhaseSchema, type JobPhase } from '../jobs/phase.js';
 import { type TerminalOutcome, terminalOutcomeSchema } from '../jobs/outcome.js';
+import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type {
+  SessionControllerProfile,
+  SessionEntry,
+  SessionState,
+} from '../sessions/entry.js';
 import { type LegacyTerminalOutcome, legacyTerminalOutcomeSchema } from './legacy-terminal-outcome-compat.js';
 
 /**
  * Shared type definitions for the Coral plugin.
  */
 
-export type SessionControllerProfile = {
-  owner?: string;
-  effort?: string;
-  claudeModelCap?: string;
-};
+export type { ProviderContinuityBlob } from '../sessions/continuity.js';
+export type { SessionControllerProfile, SessionEntry, SessionState } from '../sessions/entry.js';
 
 // ── Execution Service contract types ─────────────────────────────────────────
 
@@ -20,9 +23,6 @@ export type JobId = string;
 
 /** Opaque stable identifier for a session (conversation continuity). Used for list/resume/fork. */
 export type SessionId = string;
-
-/** Readiness state of a session entry. */
-export type SessionState = 'pending' | 'ready' | 'non_resumable';
 
 export { JOB_PHASES, jobPhaseSchema, isLivePhase, isTerminalPhase };
 export type { JobPhase };
@@ -45,32 +45,6 @@ export interface ProviderProgressEvent {
   jobId: string;
   message: string;
   ts: string;
-}
-
-/** Opaque provider-owned continuity data persisted by the execution layer. */
-export type ProviderContinuityBlob = Record<string, unknown>;
-
-export interface SessionEntry {
-  sessionId: string;
-  provider: string;
-  name: string;
-  state: SessionState;
-  activeJobId?: string;
-  lastJobId?: string;
-  conversationRef?: string;
-  providerContinuity?: ProviderContinuityBlob;
-  model?: string;
-  cwd: string;
-  projectRoot?: string;
-  backendNamespace?: string;
-  agentName?: string;
-  instruction?: ProviderInstruction;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  controllerProfile?: SessionControllerProfile;
-  createdAt: string;
-  lastUsedAt: string;
-  version: number;
 }
 
 /** Provider action type — the three launch operations a provider handles. */

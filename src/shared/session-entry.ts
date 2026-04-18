@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { RuntimeStoragePort } from '../runtime/ports.js';
 import { isNoEntryError, isRecord } from './utils.js';
-import type { SessionEntry } from './types.js';
+import { sessionEntrySchema, type SessionEntry } from '../sessions/entry.js';
 
 export type ProvenanceState = 'authoritative' | 'legacy_unresolved';
 
@@ -45,35 +45,7 @@ function readSessionJson(
 }
 
 export function isValidSessionEntry(value: unknown): value is SessionEntry {
-  if (!value || typeof value !== 'object') return false;
-  const entry = value as Record<string, unknown>;
-  const instruction = entry.instruction;
-  const controllerProfile = entry.controllerProfile;
-  return (
-    typeof entry.sessionId === 'string' &&
-    typeof entry.provider === 'string' &&
-    typeof entry.name === 'string' &&
-    typeof entry.state === 'string' &&
-    (entry.state === 'pending' || entry.state === 'ready' || entry.state === 'non_resumable') &&
-    (entry.model === undefined || typeof entry.model === 'string') &&
-    typeof entry.cwd === 'string' &&
-    (entry.projectRoot === undefined || typeof entry.projectRoot === 'string') &&
-    (entry.backendNamespace === undefined || typeof entry.backendNamespace === 'string') &&
-    (entry.agentName === undefined || typeof entry.agentName === 'string') &&
-    (entry.providerContinuity === undefined || isRecord(entry.providerContinuity)) &&
-    (instruction === undefined ||
-      (isRecord(instruction) &&
-        typeof instruction.content === 'string' &&
-        (instruction.channel === 'prompt' || instruction.channel === 'system'))) &&
-    (entry.bypassPermissions === undefined || typeof entry.bypassPermissions === 'boolean') &&
-    (entry.systemPrompt === undefined || typeof entry.systemPrompt === 'string') &&
-    (controllerProfile === undefined ||
-      (isRecord(controllerProfile) &&
-        (controllerProfile.owner === undefined || typeof controllerProfile.owner === 'string') &&
-        (controllerProfile.effort === undefined || typeof controllerProfile.effort === 'string') &&
-        (controllerProfile.claudeModelCap === undefined || typeof controllerProfile.claudeModelCap === 'string'))) &&
-    typeof entry.version === 'number'
-  );
+  return sessionEntrySchema.safeParse(value).success;
 }
 
 export function readSessionEntry(

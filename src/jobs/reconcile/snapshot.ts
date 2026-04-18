@@ -10,10 +10,11 @@ import {
   type TerminalResult,
 } from '../../shared/types.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
-import { listSessionShards, SessionManager } from '../../execution/session-manager.js';
+import { readSessionRefs, listSessionShards } from '../../sessions/shell/resolve.js';
+import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobStoreSnapshot } from './plan.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { readSessionRefs, withBackendNamespace } from './job-helpers.js';
+import { withBackendNamespace } from './job-helpers.js';
 
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,

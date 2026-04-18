@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,12 +15,30 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { SessionManager, getSessionById, listSessionShards } from '../session-manager.js';
-import { createRealRuntime } from '../../runtime/real.js';
+import { currentBuildFlavor } from '../../../infra/paths.js';
+import { createRealRuntime } from '../../../runtime/real.js';
+import { openStoreDatabase } from '../../../store/db.js';
+import { storePaths } from '../../../store/paths.js';
+import { SessionManager } from '../store.js';
 
 const runtime = createRealRuntime();
 
-describe('execution SessionManager', () => {
+function openJournal() {
+  return openStoreDatabase({
+    path: storePaths(currentBuildFlavor()).dbFile,
+    storage: runtime.storage,
+    readonly: true,
+  });
+}
+
+function resolveSessionDir(baseDir: string): string {
+  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
+  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((e) => e.isDirectory());
+  if (entries.length === 0) throw new Error('No session hash-dir found under ' + sessionDirBase);
+  return join(sessionDirBase, entries[0].name);
+}
+
+describe('sessions shell store', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
   });
@@ -57,6 +75,49 @@ describe('execution SessionManager', () => {
       cwd: workDir,
       version: 1,
     });
+  });
+
+  it('allocate appends session.opened and continuity checkpoints append to the journal', () => {
+    const { mgr, workDir } = setup('journal-events');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-a',
+      controllerProfile: { owner: 'team-a' },
+    });
+
+    mgr.setConversationRef(entry.sessionId, 'thread-1');
+
+    const db = openJournal();
+    try {
+      const rows = db
+        .prepare(
+          `SELECT type, body
+             FROM events
+            WHERE stream_kind = 'session' AND stream_id = ?
+            ORDER BY seq ASC`,
+        )
+        .all(entry.sessionId) as Array<{ type: string; body: Uint8Array | Buffer }>;
+
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.continuity.checkpointed',
+      ]);
+      expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toEqual({
+        controller: 'team-a',
+        provider: 'codex',
+      });
+      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toEqual({
+        conversationRef: 'thread-1',
+        resumable: true,
+        providerContinuity: null,
+      });
+    } finally {
+      db.close();
+    }
   });
 
   it('allocate persists projectRoot when provided', () => {
@@ -305,72 +366,9 @@ describe('execution SessionManager', () => {
     mgr.releaseJob(entry.sessionId, 'job-1');
     expect(mgr.get('codex', entry.sessionId)?.version).toBe(3);
   });
-
-  it('openShard reads an existing shard and listShards enumerates it', () => {
-    const { mgr, workDir } = setup('open-shard');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
-    const shardDir = resolveSessionDir(tmpHome);
-
-    expect(listSessionShards(runtime)).toContain(shardDir);
-
-    const shardMgr = SessionManager.openShard(shardDir, runtime);
-    expect(shardMgr.get('codex', entry.sessionId)).toMatchObject({
-      sessionId: entry.sessionId,
-      provider: 'codex',
-      name: 'alpha',
-    });
-  });
-
-  it('getById finds a session across shards and refreshes cached reads after writes', () => {
-    const alpha = setup('lookup-shard-a');
-    const beta = setup('lookup-shard-b');
-    const sessionA = alpha.mgr.allocate({
-      provider: 'codex',
-      name: 'alpha',
-      model: 'gpt-5',
-      cwd: alpha.workDir,
-      projectRoot: alpha.workDir,
-      backendNamespace: 'ns-a',
-    });
-    const sessionB = beta.mgr.allocate({
-      provider: 'claude',
-      name: 'beta',
-      model: 'sonnet',
-      cwd: beta.workDir,
-      projectRoot: beta.workDir,
-      backendNamespace: 'ns-b',
-    });
-
-    expect(getSessionById(sessionA.sessionId, runtime)).toMatchObject({
-      sessionId: sessionA.sessionId,
-      provider: 'codex',
-      backendNamespace: 'ns-a',
-    });
-    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
-      sessionId: sessionB.sessionId,
-      provider: 'claude',
-      backendNamespace: 'ns-b',
-    });
-
-    beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
-
-    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
-      sessionId: sessionB.sessionId,
-      state: 'ready',
-      conversationRef: 'thread-2',
-    });
-    expect(getSessionById('missing-session-id', runtime)).toBeNull();
-  });
 });
 
-function resolveSessionDir(baseDir: string): string {
-  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
-  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((e) => e.isDirectory());
-  if (entries.length === 0) throw new Error('No session hash-dir found under ' + sessionDirBase);
-  return join(sessionDirBase, entries[0].name);
-}
-
-describe('SessionManager adversarial', () => {
+describe('sessions shell store adversarial', () => {
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'red-sm-home-'));
   });
@@ -452,7 +450,6 @@ describe('SessionManager adversarial', () => {
     const sessionDir = resolveSessionDir(tmpHome);
     writeFileSync(join(sessionDir, `${entry.sessionId}.json`), '{ not valid json }', 'utf-8');
 
-    // A fresh manager (no cache) should gracefully handle the corrupt file
     const freshMgr = SessionManager.openShard(sessionDir, runtime);
     expect(() => freshMgr.get('codex', entry.sessionId)).not.toThrow();
     expect(freshMgr.get('codex', entry.sessionId)).toBeNull();

@@ -1,0 +1,87 @@
+import { z } from 'zod';
+
+import type { ProviderInstruction } from '../shared/types.js';
+import type { ProviderContinuityBlob } from './continuity.js';
+
+export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
+
+export type SessionState = z.infer<typeof sessionStateSchema>;
+export type SessionController = string;
+
+export const DEFAULT_SESSION_CONTROLLER = 'default';
+
+export const sessionControllerProfileSchema = z
+  .object({
+    owner: z.string().optional(),
+    effort: z.string().optional(),
+    claudeModelCap: z.string().optional(),
+  })
+  .strict();
+
+export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
+
+export const providerInstructionSchema = z
+  .object({
+    content: z.string(),
+    channel: z.enum(['prompt', 'system']),
+  })
+  .strict();
+
+export interface SessionEntry {
+  sessionId: string;
+  provider: string;
+  name: string;
+  state: SessionState;
+  activeJobId?: string;
+  lastJobId?: string;
+  conversationRef?: string;
+  providerContinuity?: ProviderContinuityBlob;
+  model?: string;
+  cwd: string;
+  projectRoot?: string;
+  backendNamespace?: string;
+  agentName?: string;
+  instruction?: ProviderInstruction;
+  bypassPermissions?: boolean;
+  systemPrompt?: string;
+  controllerProfile?: SessionControllerProfile;
+  createdAt: string;
+  lastUsedAt: string;
+  version: number;
+}
+
+export type SessionHandle = SessionEntry;
+
+export const sessionEntrySchema = z
+  .object({
+    sessionId: z.string(),
+    provider: z.string(),
+    name: z.string(),
+    state: sessionStateSchema,
+    activeJobId: z.string().optional(),
+    lastJobId: z.string().optional(),
+    conversationRef: z.string().optional(),
+    providerContinuity: z.record(z.unknown()).optional(),
+    model: z.string().optional(),
+    cwd: z.string(),
+    projectRoot: z.string().optional(),
+    backendNamespace: z.string().optional(),
+    agentName: z.string().optional(),
+    instruction: providerInstructionSchema.optional(),
+    bypassPermissions: z.boolean().optional(),
+    systemPrompt: z.string().optional(),
+    controllerProfile: sessionControllerProfileSchema.optional(),
+    createdAt: z.string(),
+    lastUsedAt: z.string(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export function sessionControllerFromProfile(
+  profile?: SessionControllerProfile,
+): SessionController {
+  if (typeof profile?.owner === 'string' && profile.owner.length > 0) {
+    return profile.owner;
+  }
+  return DEFAULT_SESSION_CONTROLLER;
+}
