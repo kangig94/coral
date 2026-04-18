@@ -1,14 +1,9 @@
 import { providerIdentPattern } from '../shared/utils.js';
-import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './types.js';
+import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './ast.js';
 
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 type ScanVisitor = (char: string, index: number, inQuote: string | null) => boolean | void;
 
-/**
- * Iterate characters with quote-aware state tracking.
- * The visitor receives every character, including quote delimiters and escape pairs.
- * Return true from the visitor to stop early.
- */
 function scanQuoteAware(text: string, visitor: ScanVisitor): string | null {
   let inQuote: string | null = null;
 
@@ -86,7 +81,7 @@ function parsePromptLiteral(atomText: string): PromptAtom {
   const quoteChar = atomText[0];
   let text = '';
   let closeIndex = -1;
-  for (let i = 1; i < atomText.length; i++) {
+  for (let i = 1; i < atomText.length; i += 1) {
     if (atomText[i] === '\\' && atomText[i + 1] === quoteChar) {
       text += quoteChar;
       i += 1;

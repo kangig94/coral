@@ -293,52 +293,6 @@ export interface PersistedExitRecord {
   endTime: string;
 }
 
-/** Workflow coordinator checkpoint for active-step resume. */
-export interface WorkflowCheckpoint {
-  jobId: string;
-  sessionId: string;
-  provider: string;
-  stepIndex: number;
-  stepPrompt: string;
-  atoms: Array<{
-    jobId: string;
-    sessionId: string;
-    providerName: string;
-    coralOp: string;
-    agent: string;
-    tagName: string;
-    stepIndex: number;
-    atomIndex: number;
-    atomKey: string;
-    kind: 'agent' | 'prompt';
-  }>;
-  completedOutputs: Record<string, string>; // atomKey -> output
-  completedStepDetails: Array<{
-    stepIndex: number;
-    atomIndex: number;
-    kind: 'agent' | 'prompt';
-    label: string;
-    provider: string;
-    tagName: string;
-    output: string;
-  }>;
-  cursor: Record<string, number>; // jobId -> last eventId
-  lastActivityAt: Record<string, number>; // atomKey -> timestamp
-  staleRetries: Record<string, number>; // atomKey -> retry count
-  expectedStaleAborts: string[]; // jobIds
-  failureDrain?: {
-    firstFailure: {
-      aborted: boolean;
-      message: string;
-      failedStep?: number;
-      failedAtom?: string;
-    };
-    abortRequested: boolean;
-    drainDeadline: number;
-  };
-  updatedAt: string;
-}
-
 /** Append-only progress record persisted in progress.jsonl. */
 export interface PersistedProgressRecord {
   jobId: string;

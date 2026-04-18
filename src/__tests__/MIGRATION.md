@@ -11,3 +11,9 @@
 - `src/execution/__tests__/discuss-manager-{bids,speech,epoch,synthesis,faults,lifecycle}.test.ts` -> kept with import rewrites onto `src/discuss/shell/*`
 - `src/execution/__tests__/discuss-tools.test.ts` and `src/execution/__tests__/discuss-prompts.test.ts` -> kept with import rewrites onto `src/discuss/shell/{tools,prompts}.ts`
 - `src/execution/__tests__/discuss-runtime-sealing.test.ts` and `src/execution/__tests__/server-discuss-api.test.ts` -> kept with import rewrites onto `src/discuss/shell/*`
+- Workflow slice:
+- `src/workflow/__tests__/pipe-parser.test.ts` -> kept with import rewrites onto `src/workflow/parser.ts`
+- `src/workflow/__tests__/pipe-executor.test.ts` -> kept with import rewrites onto `src/workflow/{launch,wait,executor,command}.ts`
+- `src/workflow/__tests__/handler.test.ts` -> kept with import rewrites onto `src/workflow/api.ts`
+- `src/workflow/__tests__/integration/pipe-executor-cascade.test.ts` -> kept but now runs through `src/workflow/api.ts` + the decomposed workflow executor
+- New AC4 proof coverage: `src/workflow/__tests__/reducer-equivalence.test.ts`, `src/workflow/__tests__/pipe-executor-cascade-equivalence.test.ts`, and `src/workflow/__tests__/recover-branches.test.ts`

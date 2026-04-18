@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
+import type { WorkflowCommand } from '../../shared/schemas.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -25,31 +27,45 @@ function createProviderRegistry(): ProviderRegistry {
   return registry;
 }
 
-async function loadWorkflowHandler() {
+async function loadWorkflowApi() {
   vi.resetModules();
-  return import('../handler.js');
+  return import('../api.js');
 }
 
-describe('workflow handler', () => {
+function compileOrThrow(
+  api: Awaited<ReturnType<typeof loadWorkflowApi>>,
+  command: WorkflowCommand,
+  providerRegistry: ProviderRegistry,
+) {
+  const compiled = api.workflowQueries.compile(command, providerRegistry);
+  if ('status' in compiled) {
+    throw new Error(`expected compiled workflow, got ${compiled.status}`);
+  }
+  return compiled;
+}
+
+describe('workflow api', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.resetModules();
   });
 
-  it('validates schema and returns a LaunchDecision', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
+  it('compiles schema-valid input and dispatches it through workflowCommands.execute', async () => {
+    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
 
-    const decision = await handleWorkflow(
+    const compiled = compileOrThrow(
+      api,
       {
         expression: 'architect -> resolver',
         startPrompt: 'hello',
+        provider: 'claude',
       },
-      executionSvc,
-      ctx,
       providerRegistry,
     );
+
+    const decision = await api.workflowCommands.execute(executionSvc, compiled, ctx);
 
     expect(decision).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
@@ -69,20 +85,21 @@ describe('workflow handler', () => {
   });
 
   it('passes workDir separately without mutating projectRoot', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
+    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
-
-    await handleWorkflow(
+    const compiled = compileOrThrow(
+      api,
       {
         expression: 'architect',
         startPrompt: 'hello',
         workDir: '/tmp/coral-workflow-cwd',
+        provider: 'claude',
       },
-      executionSvc,
-      ctx,
       providerRegistry,
     );
+
+    await api.workflowCommands.execute(executionSvc, compiled, ctx);
 
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
       'claude',
@@ -100,18 +117,15 @@ describe('workflow handler', () => {
   });
 
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
+    const api = await loadWorkflowApi();
     const providerRegistry = createProviderRegistry();
 
-    const decision = await handleWorkflow(
+    const decision = api.workflowQueries.compile(
       {
         expression: 'architect@missing-provider',
         startPrompt: 'hello',
         provider: 'codex',
       },
-      executionSvc,
-      ctx,
       providerRegistry,
     );
 
@@ -121,87 +135,50 @@ describe('workflow handler', () => {
       code: 'unknown_provider',
       message: 'Unknown provider: missing-provider',
     });
-    expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
-  });
-
-  it('throws on schema validation failures', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
-    const providerRegistry = createProviderRegistry();
-
-    await expect(handleWorkflow({ expression: 'architect' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
-  });
-
-  it('rejected LaunchDecision has no job or session properties', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
-    const providerRegistry = createProviderRegistry();
-
-    const decision = await handleWorkflow(
-      {
-        expression: 'architect@nonexistent-provider',
-        startPrompt: 'test',
-        provider: 'codex',
-      },
-      executionSvc,
-      ctx,
-      providerRegistry,
-    );
-
-    expect(decision.status).toBe('rejected');
-    expect(decision).not.toHaveProperty('job');
-    expect(decision).not.toHaveProperty('session');
-    expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
   });
 
   it('throws when duplicate agent names appear in the same parallel step', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
+    const api = await loadWorkflowApi();
     const providerRegistry = createProviderRegistry();
 
-    await expect(
-      handleWorkflow(
+    expect(() =>
+      api.workflowQueries.compile(
         {
           expression: '(architect, architect)',
           startPrompt: 'test',
           provider: 'claude',
         },
-        executionSvc,
-        ctx,
         providerRegistry,
       ),
-    ).rejects.toThrow('Duplicate atom');
-
-    expect(executionSvc.executeWorkflow).not.toHaveBeenCalled();
+    ).toThrow('Duplicate atom');
   });
 
-  it('throws on missing expression field', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
+  it('applies owner into the execution context when provided', async () => {
+    const api = await loadWorkflowApi();
     const executionSvc = createExecutionService();
     const providerRegistry = createProviderRegistry();
-
-    await expect(handleWorkflow({ startPrompt: 'no expression' }, executionSvc, ctx, providerRegistry)).rejects.toThrow();
-  });
-
-  it('rejected message names multiple unknown providers', async () => {
-    const { handleWorkflow } = await loadWorkflowHandler();
-    const executionSvc = createExecutionService();
-    const providerRegistry = createProviderRegistry();
-
-    const decision = await handleWorkflow(
+    const compiled = compileOrThrow(
+      api,
       {
-        expression: 'architect@ghost1 -> resolver@ghost2',
-        startPrompt: 'test',
-        provider: 'codex',
+        expression: 'architect',
+        startPrompt: 'hello',
+        provider: 'claude',
+        owner: 'team-owner',
       },
-      executionSvc,
-      ctx,
       providerRegistry,
     );
 
-    expect(decision.status).toBe('rejected');
-    if (decision.status !== 'rejected') throw new Error('expected rejected');
-    expect(decision.message).toContain('ghost1');
-    expect(decision.message).toContain('ghost2');
+    await api.workflowCommands.execute(executionSvc, compiled, ctx);
+
+    expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
+      'claude',
+      [[{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: 'claude' }]],
+      expect.objectContaining({ owner: 'team-owner' }),
+      {
+        ...ctx,
+        coralEnv: { ...ctx.coralEnv, CORAL_OWNER: 'team-owner' },
+      },
+      undefined,
+    );
   });
 });

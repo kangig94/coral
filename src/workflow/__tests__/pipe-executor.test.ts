@@ -1,19 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkflowCheckpointWriter } from '../../shared/execution-contracts.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { TerminalResult, WaitRequest, WaitStreamEvent, WorkflowCheckpoint } from '../../shared/types.js';
-import { parseExpression } from '../pipe-parser.js';
-import type { WorkflowExecutionPort } from '../types.js';
-import {
-  BOOTSTRAP_TIMEOUT_MS,
-  WorkflowExecutionError,
-  executePipeline,
-  formatStepOutput,
-  launchAtomWithRetry,
-  toSessionHandles,
-  waitForAtoms,
-  type LaunchedAtom,
-} from '../pipe-executor.js';
+import type { TerminalResult, WaitRequest, WaitStreamEvent } from '../../shared/types.js';
+import { parseExpression } from '../parser.js';
+import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '../launch.js';
+import { executePipeline } from '../executor.js';
+import { WorkflowExecutionError, formatStepOutput, toSessionHandles, type LaunchedAtom, type WorkflowExecutionPort } from '../command.js';
+import type { PlanSlot } from '../plan.js';
+import { recoverStaleAtom } from '../recover.js';
+import { waitForAtoms } from '../wait.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -85,6 +79,7 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
 
 function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
   return {
+    slotId: 'workflow-1:0:0',
     jobId: 'job-1',
     sessionId: 'session-1',
     providerName: 'codex',
@@ -95,6 +90,20 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
     atomIndex: 0,
     atomKey: '0:0',
     kind: 'agent',
+    ...overrides,
+  };
+}
+
+function planSlot(overrides: Partial<PlanSlot> = {}): PlanSlot {
+  return {
+    slotId: 'workflow-1:0:0',
+    jobId: 'planned-job-1',
+    stepIndex: 0,
+    tagName: 'architect',
+    atomKey: '0:0',
+    label: 'architect',
+    provider: 'codex',
+    instruction: 'architect',
     ...overrides,
   };
 }
@@ -320,6 +329,7 @@ describe('workflow pipe executor', () => {
           pollIntervalMs: 1,
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
+          recoverStaleAtom,
         },
       );
 
@@ -370,6 +380,7 @@ describe('workflow pipe executor', () => {
           staleTimeoutMs: 1,
           pollIntervalMs: 1,
           onProgress: vi.fn(),
+          recoverStaleAtom,
         }),
       ).rejects.toMatchObject({
         message:
@@ -758,19 +769,17 @@ describe('launchAtomWithRetry', () => {
       awaitLaunch: vi.fn(async (): Promise<'queued'> => 'queued'),
     });
 
-    const [atom] = parseExpression('architect')[0];
     const launched = await launchAtomWithRetry({
-      atom,
+      slot: planSlot(),
       atomIndex: 0,
-      stepIndex: 0,
       stepPrompt: 'do work',
-      defaultProviderName: 'codex',
       executionSvc,
       ctx,
       completedStepDetails: [],
     });
 
     expect(launched).toEqual({
+      slotId: 'workflow-1:0:0',
       jobId: 'job-queued',
       sessionId: 'session-queued',
       providerName: 'codex',
@@ -788,6 +797,8 @@ describe('launchAtomWithRetry', () => {
       'architect',
       expect.objectContaining({
         prompt: 'do work',
+        jobId: 'planned-job-1',
+        workflowSlotId: 'workflow-1:0:0',
         cwd: ctx.projectRoot,
       }),
       ctx,
@@ -797,15 +808,12 @@ describe('launchAtomWithRetry', () => {
 
   it('uses an explicit workDir for atom launches', async () => {
     const executionSvc = createExecutionService();
-    const [atom] = parseExpression('architect')[0];
 
     await launchAtomWithRetry({
-      atom,
+      slot: planSlot(),
       atomIndex: 0,
-      stepIndex: 0,
       stepPrompt: 'do work',
       workDir: '/tmp/coral-workflow-cwd',
-      defaultProviderName: 'codex',
       executionSvc,
       ctx,
       completedStepDetails: [],
@@ -831,15 +839,11 @@ describe('launchAtomWithRetry', () => {
       })),
     });
 
-    const [atom] = parseExpression('architect')[0];
-
     await expect(
       launchAtomWithRetry({
-        atom,
+        slot: planSlot(),
         atomIndex: 0,
-        stepIndex: 0,
         stepPrompt: 'do work',
-        defaultProviderName: 'codex',
         executionSvc,
         ctx,
         completedStepDetails: [],
@@ -847,24 +851,29 @@ describe('launchAtomWithRetry', () => {
     ).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
   });
 
-  it('throws with unsupported namespace error immediately without calling coralDispatch', async () => {
+  it('passes the planned workflow identifiers through to coralDispatch', async () => {
     const executionSvc = createExecutionService();
-    const badAtom = { kind: 'agent' as const, agent: 'architect', namespace: 'custom-ns', provider: 'codex' };
+    await launchAtomWithRetry({
+      slot: planSlot({ slotId: 'workflow-9:2:4', jobId: 'planned-job-9', stepIndex: 2, atomKey: '2:4' }),
+      atomIndex: 4,
+      stepPrompt: 'test',
+      executionSvc,
+      ctx,
+      completedStepDetails: [],
+      workflowJobId: 'workflow-9',
+    });
 
-    await expect(
-      launchAtomWithRetry({
-        atom: badAtom,
-        atomIndex: 0,
-        stepIndex: 2,
-        stepPrompt: 'test',
-        defaultProviderName: 'codex',
-        executionSvc,
-        ctx,
-        completedStepDetails: [],
+    expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
+      'codex',
+      'architect',
+      expect.objectContaining({
+        prompt: 'test',
+        jobId: 'planned-job-9',
+        workflowSlotId: 'workflow-9:2:4',
+        parentWorkflowJobId: 'workflow-9',
       }),
-    ).rejects.toThrow('unsupported namespace "custom-ns"');
-
-    expect(executionSvc.coralDispatch).not.toHaveBeenCalled();
+      ctx,
+    );
   });
 });
 
@@ -972,93 +981,5 @@ describe('waitForAtoms', () => {
         onProgress: vi.fn(),
       }),
     ).rejects.toBeInstanceOf(WorkflowExecutionError);
-  });
-});
-
-describe('checkpoint persistence', () => {
-  function createMockProgressStore(): WorkflowCheckpointWriter & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> } {
-    return {
-      writeWorkflowCheckpoint: vi.fn(),
-    } as WorkflowCheckpointWriter & { writeWorkflowCheckpoint: ReturnType<typeof vi.fn> };
-  }
-
-  it('writes initial checkpoint at coordinator start', async () => {
-    const mockStore = createMockProgressStore();
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
-      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'DONE' })])),
-    });
-
-    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
-      workflowJobId: 'wf-1',
-      progressStore: mockStore,
-    });
-
-    // writeWorkflowCheckpoint is called via fire-and-forget promise
-    // Wait a tick to allow the mutex-serialized writes to flush
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(mockStore.writeWorkflowCheckpoint).toHaveBeenCalled();
-
-    // First call is the initial checkpoint (empty state at coordinator start)
-    const firstCallArgs = mockStore.writeWorkflowCheckpoint.mock.calls[0];
-    expect(firstCallArgs[0]).toBe('wf-1');
-    const initialCheckpoint: WorkflowCheckpoint = firstCallArgs[1];
-    expect(initialCheckpoint.jobId).toBe('wf-1');
-    expect(initialCheckpoint.stepIndex).toBe(0);
-    expect(initialCheckpoint.stepPrompt).toBe('seed');
-    expect(initialCheckpoint.atoms).toEqual([]);
-    expect(initialCheckpoint.completedOutputs).toEqual({});
-    expect(initialCheckpoint.provider).toBe('codex');
-  });
-
-  it('does not write checkpoints when workflowJobId or progressStore is missing', async () => {
-    const mockStore = createMockProgressStore();
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
-      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'DONE' })])),
-    });
-
-    // Case 1: no workflowJobId
-    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
-      progressStore: mockStore,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
-
-    // Case 2: no progressStore
-    await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, { workflowJobId: 'wf-1' });
-    // Still not called (from previous assertion baseline)
-    expect(mockStore.writeWorkflowCheckpoint).not.toHaveBeenCalled();
-  });
-
-  it('writes multiple checkpoints across a multi-step pipeline', async () => {
-    const mockStore = createMockProgressStore();
-    const executionSvc = createExecutionService({
-      coralDispatch: vi.fn(async (_provider, coralName) => {
-        return coralName === 'architect' ? running('job-1', 'session-1') : running('job-2', 'session-2');
-      }),
-      waitStream: vi.fn((req: WaitRequest) => {
-        if (req.jobIds[0] === 'job-1') {
-          return emit([terminal('job-1', 'session-1', { content: 'ARCH' })]);
-        }
-        return emit([terminal('job-2', 'session-2', { content: 'FINAL' })]);
-      }),
-    });
-
-    await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
-      workflowJobId: 'wf-multi',
-      progressStore: mockStore,
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // Should have at least the initial checkpoint + per-step checkpoints
-    expect(mockStore.writeWorkflowCheckpoint.mock.calls.length).toBeGreaterThanOrEqual(2);
-
-    // All checkpoints reference the same workflowJobId
-    for (const call of mockStore.writeWorkflowCheckpoint.mock.calls) {
-      expect(call[0]).toBe('wf-multi');
-    }
   });
 });

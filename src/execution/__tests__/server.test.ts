@@ -2899,10 +2899,15 @@ describe('execution backend server', () => {
       vi.resetModules();
       const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
       workflowError.name = 'WorkflowInputError';
-      vi.doMock('../../workflow/handler.js', () => ({
-        handleWorkflow: vi.fn(async () => {
-          throw workflowError;
-        }),
+      vi.doMock('../../workflow/api.js', () => ({
+        workflowQueries: {
+          compile: vi.fn(() => {
+            throw workflowError;
+          }),
+        },
+        workflowCommands: {
+          execute: vi.fn(),
+        },
         isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
       }));
 
@@ -2930,7 +2935,7 @@ describe('execution backend server', () => {
           message: "Step 0, atom 'architect' has unsupported namespace 'other'",
         });
       } finally {
-        vi.doUnmock('../../workflow/handler.js');
+        vi.doUnmock('../../workflow/api.js');
         await _closeHttpServer(started.server);
       }
     });
@@ -2944,10 +2949,15 @@ describe('execution backend server', () => {
           message: 'Expression required',
         },
       ]);
-      vi.doMock('../../workflow/handler.js', () => ({
-        handleWorkflow: vi.fn(async () => {
-          throw workflowError;
-        }),
+      vi.doMock('../../workflow/api.js', () => ({
+        workflowQueries: {
+          compile: vi.fn(() => {
+            throw workflowError;
+          }),
+        },
+        workflowCommands: {
+          execute: vi.fn(),
+        },
         isWorkflowInputFailure: (error: unknown) => error === workflowError,
       }));
 
@@ -2976,7 +2986,7 @@ describe('execution backend server', () => {
           detail: { issues: workflowError.issues },
         });
       } finally {
-        vi.doUnmock('../../workflow/handler.js');
+        vi.doUnmock('../../workflow/api.js');
         await _closeHttpServer(started.server);
       }
     });

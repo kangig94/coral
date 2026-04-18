@@ -135,9 +135,10 @@ export class LaunchOrchestrator {
     ) => Promise<SessionEntry>,
     expectedVersion: number = session.version,
     pool: LaunchPool = 'default',
+    requestedJobId?: string,
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
     const { jobPools, launchCoordinator } = this.deps;
-    const jobId = this.deps.runtime.ids.uuid();
+    const jobId = requestedJobId ?? this.deps.runtime.ids.uuid();
     jobPools.set(jobId, pool);
 
     const admission = launchCoordinator.requestLaunch(jobId, providerName, pool);

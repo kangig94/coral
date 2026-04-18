@@ -11,7 +11,6 @@ import {
   type PersistedRuntimeRecord,
   type PersistedStatusRecord,
   type TerminalResult,
-  type WorkflowCheckpoint,
 } from '../shared/types.js';
 import { backendLog } from '../shared/backend-log.js';
 import { safeParsePersistedStatusRecord } from '../shared/persistence-parsers.js';
@@ -25,7 +24,6 @@ const PROGRESS_FILE = 'progress.jsonl';
 const LAUNCH_FILE = 'launch.json';
 const RUNTIME_FILE = 'runtime.json';
 const EXIT_FILE = 'exit.json';
-const WORKFLOW_STATE_FILE = 'workflow-state.json';
 const READ_CHUNK = 8 * 1024;
 
 export type ReplayCursor = { lastOffset: number; remainder: string };
@@ -521,21 +519,6 @@ export class ProgressStore {
     }
 
     return lastTerminal;
-  }
-
-  /** Write workflow-state.json checkpoint. Best-effort — missing job dir is not fatal. */
-  writeWorkflowCheckpoint(jobId: string, checkpoint: WorkflowCheckpoint): void {
-    this.writeJobFile(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), JSON.stringify(checkpoint, null, 2));
-  }
-
-  /** Read workflow-state.json checkpoint. Returns null if not found or corrupt. */
-  readWorkflowCheckpoint(jobId: string): WorkflowCheckpoint | null {
-    try {
-      const data = this.storage.readFileSync(join(this.jobDir(jobId), WORKFLOW_STATE_FILE), 'utf-8');
-      return JSON.parse(data) as WorkflowCheckpoint;
-    } catch {
-      return null;
-    }
   }
 
   /** Rebind a job's namespace after service adoption. */

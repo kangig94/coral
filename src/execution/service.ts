@@ -33,14 +33,15 @@ import {
 } from '../shared/types.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import type { PipelineAST, WorkflowSessionHandle } from '../workflow/types.js';
+import type { PipelineAST } from '../workflow/ast.js';
 import {
-  executePipeline,
-  resumePipeline,
+  WorkflowExecutionError,
   type PipelineResult,
   type StepDetail,
-  WorkflowExecutionError,
-} from '../workflow/pipe-executor.js';
+  type WorkflowSessionHandle,
+} from '../workflow/command.js';
+import { workflowCommands } from '../workflow/api.js';
+import { createWorkflowJournal } from '../workflow/projections.js';
 import {
   describeLegacyCoralFault,
   type LegacyCoralFault,
@@ -80,6 +81,8 @@ interface LaunchIntentBase {
   name?: string;
   model?: string;
   cwd?: string;
+  jobId?: string;
+  workflowSlotId?: string;
   /** Set only by coralDispatch (agent metadata). */
   effort?: string;
   bypassPermissions?: boolean;
@@ -837,6 +840,7 @@ export class ExecutionService implements RecoveryCapableService {
       busyMessage,
       expectedVersion,
       pool,
+      input.jobId,
     );
     if ('status' in admitted) return admitted;
 
@@ -943,6 +947,7 @@ export class ExecutionService implements RecoveryCapableService {
     sessionBusyMessage: string,
     expectedVersion: number = session.version,
     pool: LaunchPool = 'default',
+    requestedJobId?: string,
   ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
     return this.launchOrchestrator.claimAndAdmitJob(
       session,
@@ -953,6 +958,7 @@ export class ExecutionService implements RecoveryCapableService {
         this.claimJobAtomic(claimSession, jobId, claimProviderName, claimProjectRoot, options),
       expectedVersion,
       pool,
+      requestedJobId,
     );
   }
 
@@ -1019,6 +1025,7 @@ export class ExecutionService implements RecoveryCapableService {
       'Session is already running a job',
       session.version,
       pool,
+      input.jobId,
     );
     if ('status' in admitted) return admitted;
 
@@ -1131,6 +1138,8 @@ export class ExecutionService implements RecoveryCapableService {
         {
           sessionId: input.sessionId,
           prompt: input.prompt,
+          jobId: input.jobId,
+          workflowSlotId: input.workflowSlotId,
           agent: forcedIdent,
           cwd: input.cwd,
           effort: input.effort,
@@ -1146,6 +1155,8 @@ export class ExecutionService implements RecoveryCapableService {
       providerName,
       {
         prompt: input.prompt,
+        jobId: input.jobId,
+        workflowSlotId: input.workflowSlotId,
         agent: forcedIdent,
         cwd: input.cwd,
         effort: input.effort,
@@ -1506,7 +1517,7 @@ export class ExecutionService implements RecoveryCapableService {
     const signal = this.abortRegistry.getSignal(jobId);
     if (!signal) return;
 
-    void executePipeline(ast, input.startPrompt, providerName, this, ctx, {
+    void workflowCommands.run(ast, input.startPrompt, providerName, this, ctx, {
       context: input.context,
       workDir,
       signal,
@@ -1514,58 +1525,7 @@ export class ExecutionService implements RecoveryCapableService {
         this.progressStore.appendProgress(jobId, sessionId, message);
       },
       workflowJobId: jobId,
-      progressStore: this.progressStore,
-    })
-      .then((result: PipelineResult) => {
-        const serialized = serializeWorkflowResult(result.stepDetails);
-        this.finishWorkflowJob(
-          sessionId,
-          jobId,
-          'completed',
-          {
-            content: result.finalOutput,
-            workflow: serialized.workflow,
-            outcome: { kind: 'completed' },
-          },
-          serialized.markdown,
-        );
-      })
-      .catch((err: unknown) => {
-        this.handleWorkflowError(err, signal, sessionId, jobId);
-      });
-  }
-
-  /**
-   * Resume a workflow coordinator from a persisted checkpoint.
-   * Reads the checkpoint, reconstructs the active step, and re-enters the
-   * pipeline via `resumePipeline`.
-   */
-  resumeWorkflowCoordinator(
-    jobId: string,
-    sessionId: string,
-    ast: PipelineAST,
-    providerName: string,
-    ctx: CallerContext,
-    options: {
-      context?: string;
-      workDir?: string;
-    },
-  ): void {
-    const checkpoint = this.progressStore.readWorkflowCheckpoint(jobId);
-    if (!checkpoint) return;
-
-    const signal = this.abortRegistry.getSignal(jobId);
-    if (!signal) return;
-
-    void resumePipeline(checkpoint, ast, providerName, this, ctx, {
-      context: options.context,
-      workDir: options.workDir,
-      signal,
-      workflowJobId: jobId,
-      progressStore: this.progressStore,
-      onProgress: (message) => {
-        this.progressStore.appendProgress(jobId, sessionId, message);
-      },
+      journal: createWorkflowJournal(this.runtime.storage),
     })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);

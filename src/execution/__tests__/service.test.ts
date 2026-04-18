@@ -21,7 +21,7 @@ import type {
 import type { PreflightRuntime, Provider } from '../../providers/types.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
-import { parseExpression } from '../../workflow/pipe-parser.js';
+import { parseExpression } from '../../workflow/parser.js';
 import {
   AgentNamespaceNotFoundError,
   AgentNotFoundError,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ArtifactCleanupRuntime, Provider, ProviderArtifactCleanup } from '../../providers/types.js';
-import type { WorkflowSessionHandle } from '../../workflow/types.js';
+import type { WorkflowSessionHandle } from '../../workflow/command.js';
 import { dispatchWorkflowSessionCleanup, type WorkflowSessionCleanupDeps } from '../service.js';
 
 const noopCleanupRuntime = {} as ArtifactCleanupRuntime;

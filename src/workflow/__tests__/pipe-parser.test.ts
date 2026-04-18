@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseExpression } from '../pipe-parser.js';
+import { parseExpression } from '../parser.js';
 
 describe('workflow pipe parser', () => {
   it('parses a single atom', () => {

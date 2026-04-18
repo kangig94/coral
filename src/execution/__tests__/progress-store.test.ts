@@ -6,7 +6,6 @@ import type {
   PersistedRuntimeRecord,
   PersistedStatusRecord,
   TerminalResult,
-  WorkflowCheckpoint,
 } from '../../shared/types.js';
 import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
@@ -597,38 +596,11 @@ describe('durable snapshot artifacts', () => {
     expect(read).toEqual(record);
   });
 
-  it('writes and reads workflow-state.json', () => {
-    const store = createStore();
-    const jobId = nextJobId('test-workflow');
-    store.initJob({ jobId, sessionId: 's1', provider: 'codex', projectRoot: '/tmp/test', backendNamespace: 'ns1' });
-
-    const checkpoint: WorkflowCheckpoint = {
-      jobId,
-      sessionId: 's1',
-      provider: 'codex',
-      stepIndex: 0,
-      stepPrompt: 'step 1',
-      atoms: [],
-      completedOutputs: {},
-      completedStepDetails: [],
-      cursor: {},
-      lastActivityAt: {},
-      staleRetries: {},
-      expectedStaleAborts: [],
-      updatedAt: isoNow(),
-    };
-    store.writeWorkflowCheckpoint(jobId, checkpoint);
-
-    const read = store.readWorkflowCheckpoint(jobId);
-    expect(read).toEqual(checkpoint);
-  });
-
   it('returns null for missing artifacts', () => {
     const store = createStore();
     expect(store.readLaunchRecord('nonexistent')).toBeNull();
     expect(store.readRuntimeRecord('nonexistent')).toBeNull();
     expect(store.readExitRecord('nonexistent')).toBeNull();
-    expect(store.readWorkflowCheckpoint('nonexistent')).toBeNull();
   });
 
   it('hasLaunchRecord/hasRuntimeRecord/hasExitRecord return false for missing', () => {

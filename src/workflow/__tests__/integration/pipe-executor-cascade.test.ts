@@ -14,6 +14,7 @@ import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderInstruction, ProviderRequest } from '../../../shared/types.js';
+import { workflowCommands, workflowQueries } from '../../api.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -103,14 +104,25 @@ describe('pipe executor coral cascade invariant', () => {
       );
 
       const ctx: CallerContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
-      const decision = await executionSvc.coralDispatch(
-        'stub-provider',
-        'architect',
-        { prompt: 'hi', cwd: projectRoot },
-        ctx,
+      const compiled = workflowQueries.compile(
+        {
+          expression: 'architect',
+          startPrompt: 'hi',
+          provider: 'stub-provider',
+        },
+        providerRegistry,
       );
+      if ('status' in compiled) {
+        throw new Error(`expected workflow compilation to succeed, got ${compiled.status}`);
+      }
+
+      const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
 
       expect(decision.status).toBe('running');
+      if (decision.status === 'rejected') {
+        throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
+      }
+      await executionSvc.waitForJobTerminal(decision.job, 1_000);
       expect(capturedLaunches).toHaveLength(1);
 
       const [launch] = capturedLaunches;
