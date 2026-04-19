@@ -69,4 +69,50 @@ describe('ConsumerDriver fault isolation', () => {
       db.close();
     }
   });
+
+  it('skips duplicate in-flight journal targets once the consumer is already caught up', async () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db });
+    let startApply!: () => void;
+    let releaseApply!: () => void;
+    const applyStarted = new Promise<void>((resolve) => {
+      startApply = resolve;
+    });
+    const applyReleased = new Promise<void>((resolve) => {
+      releaseApply = resolve;
+    });
+    const apply = vi.fn(async () => {
+      startApply();
+      await applyReleased;
+    });
+    const runApplySpy = vi.spyOn(
+      driver as unknown as {
+        runApply(state: unknown, target: number, snapshot: unknown): Promise<boolean>;
+      },
+      'runApply',
+    );
+
+    try {
+      driver.register({
+        id: 'coalesced-consumer',
+        authority: 'journal',
+        apply,
+      });
+
+      driver.notify('journal', 7);
+      await applyStarted;
+      driver.notify('journal', 7);
+      driver.notify('journal', 7);
+      releaseApply();
+      await driver.drainAll();
+
+      expect(runApplySpy).toHaveBeenCalledTimes(1);
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(readCursor(db, 'coalesced-consumer')).toBe(7);
+    } finally {
+      releaseApply?.();
+      await driver.shutdown();
+      db.close();
+    }
+  });
 });

@@ -86,7 +86,7 @@ function createMigrationStorage(runtime: { storage: MigrationStorage }): {
 }
 
 function registerConsumer(driver: ConsumerDriver): void {
-  driver.registerJournal({
+  driver.register({
     id: CONSUMER_ID,
     authority: 'journal',
     apply: async ({ db, fromSeq, upToSeq }) => {

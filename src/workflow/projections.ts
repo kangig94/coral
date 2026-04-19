@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { decodeEventBody } from '../store/body-codec.js';
 import { appendEvents, type AppendEventsFn } from '../store/append.js';
 import { createEmptyRegistry, type CoralEventInput } from '../store/envelope.js';
 import { composeReducers } from '../store/reducers.js';
@@ -90,7 +91,7 @@ export function readLatestWorkflowDrain(
     return null;
   }
 
-  return workflowDrainEnteredBodySchema.parse(JSON.parse(new TextDecoder().decode(row.body)));
+  return workflowDrainEnteredBodySchema.parse(decodeEventBody(row.body));
 }
 
 export function readLatestWorkflowCompletion(
@@ -111,7 +112,7 @@ export function readLatestWorkflowCompletion(
     return null;
   }
 
-  return workflowCompletedBodySchema.parse(JSON.parse(new TextDecoder().decode(row.body)));
+  return workflowCompletedBodySchema.parse(decodeEventBody(row.body));
 }
 
 export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): ProjectionJobRow | null {

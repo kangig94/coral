@@ -5,6 +5,8 @@ import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
+import { decodeEventBody } from '../body-codec.js';
+import type { EventsRow } from '../schema.js';
 
 export type JobLaunchRow = {
   jobId: string;
@@ -98,15 +100,11 @@ type ProjectionRow = {
   last_seq: number;
 };
 
-type EventRow = {
-  seq: number;
-  ts: string;
-  body: Uint8Array | Buffer;
+type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'body'>;
+type DecodedTerminalRow = {
+  record: JobTerminalRecord;
+  signal?: string | null;
 };
-
-function decodeJson<T>(row: { body: Uint8Array | Buffer }): T {
-  return JSON.parse(Buffer.from(row.body).toString('utf-8')) as T;
-}
 
 function readProjectionRow(
   db: BetterSqlite3.Database,
@@ -148,7 +146,7 @@ function deriveLaunchState(
   terminal: ReturnType<typeof readLatestEvent>,
 ): { state: JobStatusRecord['launch']['state']; message?: string } {
   if (rejected) {
-    const body = jobLaunchRejectedSchema.parse(decodeJson(rejected));
+    const body = jobLaunchRejectedSchema.parse(decodeEventBody(rejected.body));
     return {
       state: 'error',
       message: describeLaunchRejected(body),
@@ -175,7 +173,7 @@ function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null 
     return null;
   }
 
-  const body = jobLaunchRequestBodySchema.parse(decodeJson(row));
+  const body = jobLaunchRequestBodySchema.parse(decodeEventBody(row.body));
   return {
     jobId,
     sessionId: body.sessionId,
@@ -205,7 +203,7 @@ function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null 
 }
 
 function jobRuntimeBodyFromEvent(row: EventRow): JobRuntimeRow {
-  const parsed = jobRuntimeStartedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf-8')) as unknown);
+  const parsed = jobRuntimeStartedBodySchema.parse(decodeEventBody(row.body));
   if (parsed.transport === 'app-server') {
     const providerMeta = parsed.providerMeta;
     return {
@@ -235,44 +233,36 @@ function jobRuntimeBodyFromEvent(row: EventRow): JobRuntimeRow {
   };
 }
 
-function decodeExit(row: EventRow | null): JobExitRow | null {
+function decodeTerminalRecord(row: EventRow | null): DecodedTerminalRow | null {
   if (!row) {
     return null;
   }
 
-  const body = jobTerminalRecordedBodySchema.parse(decodeJson(row));
+  const body = jobTerminalRecordedBodySchema.parse(decodeEventBody(row.body));
   return {
-    outcome: body.outcome,
-    content: body.content ?? '',
-    durationMs: body.durationMs,
-    exitCode: body.exitCode,
+    record: {
+      content: body.content ?? '',
+      durationMs: body.durationMs,
+      exitCode: body.exitCode,
+      nonResumable: body.nonResumable,
+      warnings: body.warnings,
+      usage: body.usage,
+      workflow: body.workflow,
+      outcome: body.outcome,
+    },
     signal: body.signal,
-    endTime: row.ts,
-    nonResumable: body.nonResumable,
-    warnings: body.warnings,
-    usage: body.usage,
-    workflow: body.workflow,
   };
 }
 
-function decodeTerminalRecord(row: EventRow | null): JobTerminalRecord | null {
-  if (!row) {
-    return null;
-  }
-
-  const body = jobTerminalRecordedBodySchema.parse(decodeJson(row));
+function toJobExitRow(row: EventRow, terminal: DecodedTerminalRow): JobExitRow {
   return {
-    content: body.content ?? '',
-    durationMs: body.durationMs,
-    exitCode: body.exitCode,
-    nonResumable: body.nonResumable,
-    warnings: body.warnings,
-    usage: body.usage,
-    workflow: body.workflow,
-    outcome: body.outcome,
+    ...terminal.record,
+    signal: terminal.signal,
+    endTime: row.ts,
   };
 }
 
+// TODO(rewrite): Replace this replay helper with projection_jobs.session_id once that column exists.
 function readLaunchSessionId(
   db: BetterSqlite3.Database,
   jobId: string,
@@ -291,7 +281,7 @@ function readLaunchSessionId(
     return '';
   }
 
-  return jobLaunchRequestBodySchema.parse(decodeJson(row)).sessionId;
+  return jobLaunchRequestBodySchema.parse(decodeEventBody(row.body)).sessionId;
 }
 
 export function loadJobProjectionDetail(
@@ -304,7 +294,8 @@ export function loadJobProjectionDetail(
   const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
   const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
   const launch = decodeLaunch(jobId, requested);
-  const exit = decodeExit(terminal);
+  const terminalRecord = decodeTerminalRecord(terminal);
+  const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;
 
   const status =
     projection && launch
@@ -321,7 +312,7 @@ export function loadJobProjectionDetail(
             ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal),
             updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
           },
-          ...(terminal ? { result: decodeTerminalRecord(terminal) ?? undefined } : {}),
+          ...(terminalRecord ? { result: terminalRecord.record } : {}),
         }
       : null;
 
@@ -380,7 +371,7 @@ export function readJobProgress(
 
   return rows.flatMap<JobProgressRow>((row) => {
     if (row.type === 'job.progress.emitted') {
-      const body = jobProgressBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf-8')) as unknown);
+      const body = jobProgressBodySchema.parse(decodeEventBody(row.body));
       if (body.kind !== 'message') {
         return [];
       }
@@ -407,7 +398,7 @@ export function readJobProgress(
         seq: row.seq,
         ts: row.ts,
         body: row.body,
-      }) ?? { content: '', outcome: { kind: 'completed' } },
+      })?.record ?? { content: '', outcome: { kind: 'completed' } },
     }];
   });
 }

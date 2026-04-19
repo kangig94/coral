@@ -66,10 +66,26 @@ export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
   private readonly consumers = new Map<string, ConsumerState>();
+  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], { authority: string; lane: string | null }>;
+  private readonly insertCursorRowStmt: BetterSqlite3.Statement<[string, Authority, CorpusLane | null, string]>;
+  private readonly readCursorStmt: BetterSqlite3.Statement<[string], { cursor: number }>;
+  private readonly advanceCursorStmt: BetterSqlite3.Statement<[number, CorpusLane | null, string, number]>;
 
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
     this.now = opts.now ?? (() => new Date());
+    this.selectCursorMetadataStmt = this.db.prepare<[string], { authority: string; lane: string | null }>(
+      'SELECT authority, lane FROM equipment_cursors WHERE consumer_id = ?',
+    );
+    this.insertCursorRowStmt = this.db.prepare<[string, Authority, CorpusLane | null, string]>(
+      'INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)',
+    );
+    this.readCursorStmt = this.db.prepare<[string], { cursor: number }>(
+      'SELECT cursor FROM equipment_cursors WHERE consumer_id = ?',
+    );
+    this.advanceCursorStmt = this.db.prepare<[number, CorpusLane | null, string, number]>(
+      'UPDATE equipment_cursors SET cursor = ?, lane = ? WHERE consumer_id = ? AND cursor < ?',
+    );
   }
 
   register(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
@@ -103,10 +119,6 @@ export class ConsumerDriver {
       pendingCorpusSnapshot: null,
       waiters: new Set(),
     });
-  }
-
-  registerJournal(reg: JournalConsumerRegistration): void {
-    this.register(reg);
   }
 
   notify(authority: 'journal', version: number): void;
@@ -218,9 +230,7 @@ export class ConsumerDriver {
 
   private ensureCursorRow(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
     const requestedLane = reg.authority === 'corpus' ? reg.lane : null;
-    const row = this.db
-      .prepare('SELECT authority, lane FROM equipment_cursors WHERE consumer_id = ?')
-      .get(reg.id) as { authority: string; lane: string | null } | undefined;
+    const row = this.selectCursorMetadataStmt.get(reg.id);
 
     if (row) {
       if (row.authority !== reg.authority) {
@@ -243,12 +253,14 @@ export class ConsumerDriver {
       return;
     }
 
-    this.db
-      .prepare('INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)')
-      .run(reg.id, reg.authority, requestedLane, this.now().toISOString());
+    this.insertCursorRowStmt.run(reg.id, reg.authority, requestedLane, this.now().toISOString());
   }
 
   private scheduleApply(state: ConsumerState, target: number, snapshot: KbCorpusSnapshot | null): void {
+    if (target <= this.readCursor(state.reg.id)) {
+      return;
+    }
+
     if (state.inFlight) {
       if (
         state.pendingTarget === null ||
@@ -319,18 +331,13 @@ export class ConsumerDriver {
   }
 
   private readCursor(consumerId: string): number {
-    const row = this.db
-      .prepare('SELECT cursor FROM equipment_cursors WHERE consumer_id = ?')
-      .get(consumerId) as { cursor: number } | undefined;
-
+    const row = this.readCursorStmt.get(consumerId);
     return row?.cursor ?? 0;
   }
 
   private advanceCursor(reg: JournalConsumerRegistration | CorpusConsumerRegistration, newCursor: number): void {
     this.ensureCursorRow(reg);
-    this.db
-      .prepare('UPDATE equipment_cursors SET cursor = ?, lane = ? WHERE consumer_id = ? AND cursor < ?')
-      .run(newCursor, reg.authority === 'corpus' ? reg.lane : null, reg.id, newCursor);
+    this.advanceCursorStmt.run(newCursor, reg.authority === 'corpus' ? reg.lane : null, reg.id, newCursor);
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number): void {

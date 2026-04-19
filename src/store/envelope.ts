@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { CoralSetupError } from '../runtime/errors.js';
+import { decodeEventBody } from './body-codec.js';
+import type { EventsRow } from './schema.js';
 
 const journalEventRefsSchema = z
   .object({
@@ -54,18 +56,16 @@ export const journalEventInputSchema = journalEventEnvelopeSchema
   })
   .strict();
 
-type JournalEventEnvelopeShape = z.infer<typeof journalEventEnvelopeSchema>;
-type StreamKind = JournalEventEnvelopeShape['stream']['kind'];
+type EventEnvelopeShape = z.infer<typeof journalEventEnvelopeSchema>;
+export type StreamKind = EventEnvelopeShape['stream']['kind'];
 
-export interface CoralEvent<T = unknown> extends Omit<JournalEventEnvelopeShape, 'body'> {
+export interface CoralEvent<T = unknown> extends Omit<EventEnvelopeShape, 'body'> {
   body: T;
 }
 
 export interface CoralEventInput<T = unknown> extends Omit<CoralEvent<T>, 'seq' | 'ts'> {
   tsOverride?: string;
 }
-
-export type JournalEventEnvelope<T = unknown> = CoralEvent<T>;
 
 export const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
 
@@ -80,6 +80,22 @@ export function assertStreamKind(value: string): StreamKind {
   }
 
   return value as StreamKind;
+}
+
+export function rowToCoralEvent<T = unknown>(row: EventsRow, body: T = decodeEventBody(row.body) as T): CoralEvent<T> {
+  return {
+    seq: row.seq,
+    ts: row.ts,
+    type: row.type,
+    stream: { kind: assertStreamKind(row.stream_kind), id: row.stream_id },
+    namespace: row.namespace ?? undefined,
+    project: row.project ?? undefined,
+    correlationId: row.correlation_id ?? undefined,
+    causationSeq: row.causation_seq ?? undefined,
+    refs: row.refs ? JSON.parse(row.refs) : undefined,
+    bodyVersion: row.body_version,
+    body,
+  };
 }
 
 type Upcaster = (body: unknown) => unknown;

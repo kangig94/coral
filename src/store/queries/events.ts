@@ -1,9 +1,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { assertStreamKind, type CoralEvent } from '../envelope.js';
+import { rowToCoralEvent, type CoralEvent, type StreamKind } from '../envelope.js';
+import type { EventsRow } from '../schema.js';
 
 export interface EventsFilter {
-  streamKind?: 'job' | 'session' | 'discuss' | 'workflow';
+  streamKind?: StreamKind;
   type?: string;
   correlationId?: string;
 }
@@ -13,35 +14,6 @@ export interface EventsPage {
   nextCursor: number;
 }
 
-function decodeRow(row: {
-  seq: number;
-  ts: string;
-  type: string;
-  stream_kind: string;
-  stream_id: string;
-  namespace: string | null;
-  project: string | null;
-  correlation_id: string | null;
-  causation_seq: number | null;
-  refs: string | null;
-  body_version: number;
-  body: Uint8Array | Buffer;
-}): CoralEvent {
-  return {
-    seq: row.seq,
-    ts: row.ts,
-    type: row.type,
-    stream: { kind: assertStreamKind(row.stream_kind), id: row.stream_id },
-    namespace: row.namespace ?? undefined,
-    project: row.project ?? undefined,
-    correlationId: row.correlation_id ?? undefined,
-    causationSeq: row.causation_seq ?? undefined,
-    refs: row.refs ? JSON.parse(row.refs) : undefined,
-    bodyVersion: row.body_version,
-    body: JSON.parse(new TextDecoder().decode(row.body)),
-  };
-}
-
 export function getEvent(
   db: BetterSqlite3.Database,
   stream: { kind: string; id: string },
@@ -49,8 +21,8 @@ export function getEvent(
 ): CoralEvent | undefined {
   const row = db
     .prepare(`SELECT * FROM events WHERE stream_kind = ? AND stream_id = ? AND seq = ?`)
-    .get(stream.kind, stream.id, seq) as Parameters<typeof decodeRow>[0] | undefined;
-  return row ? decodeRow(row) : undefined;
+    .get(stream.kind, stream.id, seq) as EventsRow | undefined;
+  return row ? rowToCoralEvent(row) : undefined;
 }
 
 export function getEventsSince(
@@ -78,9 +50,9 @@ export function getEventsSince(
 
   const rows = db
     .prepare(`SELECT * FROM events WHERE ${clauses.join(' AND ')} ORDER BY seq ASC LIMIT ?`)
-    .all(...params) as Parameters<typeof decodeRow>[0][];
+    .all(...params) as EventsRow[];
 
-  const events = rows.map(decodeRow);
+  const events = rows.map((row) => rowToCoralEvent(row));
   const nextCursor = events.length > 0 ? events[events.length - 1].seq : afterSeq;
   return { events, nextCursor };
 }

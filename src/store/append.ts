@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { encodeEventBody } from './body-codec.js';
 import {
   journalEventInputSchema,
   type CoralEvent,
@@ -59,7 +60,7 @@ export function appendEvents(
     // are never rewritten; only the in-memory interpretation evolves." Upcasters
     // run on READ (rebuild/read paths) against the stored body_version. Storing
     // parsedBody here would double-upcast on later rebuild.
-    const bodyBytes = Buffer.from(JSON.stringify(input.body), 'utf-8');
+    const bodyBytes = encodeEventBody(input.body);
 
     return { input, parsedBody, bodyBytes };
   });

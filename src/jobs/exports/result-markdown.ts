@@ -1,14 +1,12 @@
 import type { Database } from 'better-sqlite3';
 
 import type { StoragePort } from '../../runtime/ports.js';
+import { decodeEventBody } from '../../store/body-codec.js';
+import type { EventsRow } from '../../store/schema.js';
 import { describeTerminalOutcome } from '../outcome.js';
 
 type JobProjectionRow = {
   terminal: string | null;
-};
-
-type EventRow = {
-  body: Uint8Array | Buffer;
 };
 
 export function buildResultMarkdown(db: Database, jobId: string): string {
@@ -18,8 +16,8 @@ export function buildResultMarkdown(db: Database, jobId: string): string {
   const terminal = projection?.terminal ? (JSON.parse(projection.terminal) as { outcome: Parameters<typeof describeTerminalOutcome>[0] }) : null;
   const event = db
     .prepare(`SELECT body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1`)
-    .get(jobId) as EventRow | undefined;
-  const body = event ? (JSON.parse(Buffer.from(event.body).toString('utf-8')) as { content?: string }) : null;
+    .get(jobId) as Pick<EventsRow, 'body'> | undefined;
+  const body = event ? (decodeEventBody(event.body) as { content?: string }) : null;
 
   const content = body?.content?.trimEnd();
   if (content && content.length > 0) {

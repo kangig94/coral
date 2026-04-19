@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { appendEvents } from '../append.js';
+import { decodeEventBody } from '../body-codec.js';
 import { createEmptyRegistry } from '../envelope.js';
 import { applyMigrations } from '../migrations.js';
 import { composeReducers, type Reducer } from '../reducers.js';
@@ -60,7 +61,7 @@ describe('append/rebuild upcaster round-trip (AC9 lock)', () => {
         body: Uint8Array | Buffer;
       };
       expect(row.body_version).toBe(1);
-      const decoded = JSON.parse(new TextDecoder().decode(row.body));
+      const decoded = decodeEventBody(row.body);
       expect(decoded).toEqual({ n: 7 });
 
       expect(receivedBodies).toEqual([{ count: 7 }]);
