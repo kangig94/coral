@@ -5,7 +5,7 @@ import type { JobTerminalRecord } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../jobs/job-store.js';
-import { decodeEventBody } from '../store/body-codec.js';
+import { decodeBody, decodeEventBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
 import { loadJobProjectionDetail } from '../store/queries/jobs.js';
 import {
@@ -46,10 +46,11 @@ function buildLaunchedAtomsForStep(
   plan: WorkflowPlan,
   db: BetterSqlite3.Database,
   stepIndex: number,
+  readCtx: StoreReadContext,
 ): LaunchedAtom[] {
   const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
   return stepSlots.map((slot, atomIndex) => {
-    const detail = loadJobProjectionDetail(db, slot.jobId);
+    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
     return {
       slotId: slot.slotId,
       jobId: slot.jobId,
@@ -66,14 +67,15 @@ function buildLaunchedAtomsForStep(
   });
 }
 
-function completedOutputForSlot(db: BetterSqlite3.Database, slot: PlanSlot): string | null {
-  const detail = loadJobProjectionDetail(db, slot.jobId);
+function completedOutputForSlot(db: BetterSqlite3.Database, slot: PlanSlot, readCtx: StoreReadContext): string | null {
+  const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
   return detail.exit?.content ?? null;
 }
 
 function summarizeCompletedSteps(
   plan: WorkflowPlan,
   db: BetterSqlite3.Database,
+  readCtx: StoreReadContext,
 ): {
   activeStepIndex: number;
   stepPrompt: string;
@@ -87,7 +89,7 @@ function summarizeCompletedSteps(
     const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
     if (stepSlots.length === 0) continue;
 
-    const completed = stepSlots.map((slot) => completedOutputForSlot(db, slot));
+    const completed = stepSlots.map((slot) => completedOutputForSlot(db, slot, readCtx));
     if (completed.some((value) => value === null)) {
       return {
         activeStepIndex: stepIndex,
@@ -96,7 +98,7 @@ function summarizeCompletedSteps(
       };
     }
 
-    const launchedAtoms = buildLaunchedAtomsForStep(plan, db, stepIndex);
+    const launchedAtoms = buildLaunchedAtomsForStep(plan, db, stepIndex, readCtx);
     const results = new Map<string, string>();
     launchedAtoms.forEach((atom, index) => {
       results.set(atom.atomKey, completed[index] ?? '');
@@ -121,6 +123,7 @@ function firstTerminalFailure(
   db: BetterSqlite3.Database,
   plan: WorkflowPlan,
   drain: { firstFailureSlotId: string; drainDeadline: number } | null,
+  readCtx: StoreReadContext,
 ): {
   aborted: boolean;
   message: string;
@@ -135,7 +138,7 @@ function firstTerminalFailure(
   const targetSlot =
     (drain ? plan.slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined)
     ?? plan.slots.find((slot) => {
-      const detail = loadJobProjectionDetail(db, slot.jobId);
+      const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
       const outcome = detail.exit?.outcome;
       return outcome && outcome.kind !== 'completed';
     });
@@ -144,7 +147,7 @@ function firstTerminalFailure(
     return null;
   }
 
-  const detail = loadJobProjectionDetail(db, targetSlot.jobId);
+  const detail = loadJobProjectionDetail(db, targetSlot.jobId, readCtx);
   const terminal = detail.exit;
   if (!terminal) {
     return null;
@@ -295,7 +298,7 @@ export async function recoverStaleAtom(
 
 async function resumeWorkflow(
   db: BetterSqlite3.Database,
-  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'>,
+  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext,
   executionSvc: WorkflowExecutionPort,
   ctx: CallerContext,
   plan: WorkflowPlan,
@@ -305,13 +308,14 @@ async function resumeWorkflow(
     pollIntervalMs: number;
   },
 ): Promise<PipelineResult | null> {
+  const readCtx: StoreReadContext = progressStore;
   const completionRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.completed');
-  const completion = completionRow ? workflowCompletedBodySchema.parse(decodeEventBody(completionRow.body)) : null;
+  const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, readCtx) : null;
   if (completion) {
     return null;
   }
 
-  const summary = summarizeCompletedSteps(plan, db);
+  const summary = summarizeCompletedSteps(plan, db, readCtx);
   const maxStepIndex = plan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
   if (summary.activeStepIndex > maxStepIndex) {
     appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
@@ -322,10 +326,10 @@ async function resumeWorkflow(
   }
 
   const stepSlots = plan.slots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
-  const activeAtoms = buildLaunchedAtomsForStep(plan, db, summary.activeStepIndex);
+  const activeAtoms = buildLaunchedAtomsForStep(plan, db, summary.activeStepIndex, readCtx);
   const missingProjection = stepSlots.some((slot) => {
     const projection = readProjectionJob(db, slot.jobId);
-    const detail = loadJobProjectionDetail(db, slot.jobId);
+    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
     return projection === null && detail.status === null;
   });
 
@@ -349,10 +353,10 @@ async function resumeWorkflow(
   const completedOutputs = new Map<string, string>();
   const cursorJobs: Record<string, number> = {};
   const drainRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.drain.entered');
-  const drain = drainRow ? workflowDrainEnteredBodySchema.parse(decodeEventBody(drainRow.body)) : null;
+  const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, readCtx) : null;
 
   for (const slot of stepSlots) {
-    const detail = loadJobProjectionDetail(db, slot.jobId);
+    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
     if (detail.exit?.outcome.kind === 'completed') {
       completedOutputs.set(slot.atomKey, detail.exit.content);
       continue;
@@ -364,7 +368,7 @@ async function resumeWorkflow(
     }
   }
 
-  const failure = firstTerminalFailure(db, plan, drain);
+  const failure = firstTerminalFailure(db, plan, drain, readCtx);
   const waitState = {
     completedOutputs,
     cursor: { jobs: cursorJobs },
@@ -383,7 +387,7 @@ async function resumeWorkflow(
   };
 
   const pendingPhases = stepSlots.flatMap((slot) => {
-    const phase = loadJobProjectionDetail(db, slot.jobId).status?.phase;
+    const phase = loadJobProjectionDetail(db, slot.jobId, readCtx).status?.phase;
     return phase === null || phase === undefined ? [] : [phase];
   });
 
@@ -451,7 +455,7 @@ async function resumeWorkflow(
 
 export async function resumeAll(options: {
   db: BetterSqlite3.Database;
-  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'>;
+  progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
   getExecutionService: (ctx: CallerContext) => WorkflowExecutionPort;
   createCallerContext: (projectRoot: string) => CallerContext;
   onProgress?: (workflowId: string, message: string) => void;

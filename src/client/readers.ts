@@ -25,6 +25,16 @@ import type { JobProgressRecord, JobStatusRecord } from '../jobs/records.js';
 import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
+import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
+import type { StoreReadContext } from '../store/body-codec.js';
+
+let cachedReadCtx: StoreReadContext | null = null;
+function readCtx(): StoreReadContext {
+  if (!cachedReadCtx) {
+    cachedReadCtx = { upcasters: createDefaultUpcasterRegistry() };
+  }
+  return cachedReadCtx;
+}
 
 export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../sessions/shell/session-read.js';
 export type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
@@ -113,14 +123,14 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
  * Reads and parses a persisted job status record.
  */
 export function readStatusRecord(jobId: string): JobStatusRecord | null {
-  return withReadonlyStore((db) => loadJobProjectionDetail(db, jobId).status, null);
+  return withReadonlyStore((db) => loadJobProjectionDetail(db, jobId, readCtx()).status, null);
 }
 
 /**
  * Reads and parses all persisted progress records for a job.
  */
 export function readProgressLog(jobId: string): JobProgressRecord[] {
-  return withReadonlyStore((db) => readJobProgress(db, jobId), []);
+  return withReadonlyStore((db) => readJobProgress(db, jobId, readCtx()), []);
 }
 
 /**

@@ -11,6 +11,7 @@ import type { WaitStreamEvent } from '../jobs/wait.js';
 import { readBuildFlavor } from '../shared/utils.js';
 import { CoralStore, openStoreDatabase } from '../store/index.js';
 import { storePaths } from '../store/paths.js';
+import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import {
   formatLaunch,
   formatWaitProgress,
@@ -118,7 +119,7 @@ function openCauseRenderer(pluginRoot: string): {
       storage: runtime.storage,
       readonly: true,
     });
-    const store = new CoralStore(db);
+    const store = new CoralStore(db, createDefaultUpcasterRegistry());
     return {
       render: (ref, fallbackOutcome) => describeCauseRef(ref, store, fallbackOutcome),
       close: () => db.close(),

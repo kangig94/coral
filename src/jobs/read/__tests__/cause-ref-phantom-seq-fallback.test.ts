@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { describeTerminalOutcome, type TerminalOutcome } from '../../outcome.js';
 import { CoralStore } from '../../../store/index.js';
 import { applyMigrations } from '../../../store/migrations.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { describeCauseRef } from '../cause-ref-render.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../store/migrations');
@@ -19,7 +20,7 @@ const storageAdapter = {
 function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {
   const db = new Database(':memory:');
   applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
-  return { db, store: new CoralStore(db) };
+  return { db, store: new CoralStore(db, createDefaultUpcasterRegistry()) };
 }
 
 describe('describeCauseRef phantom seq fallback', () => {

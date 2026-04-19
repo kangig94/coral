@@ -18,6 +18,8 @@ import {
   type JobProjectionDetail,
   type JobProgressRow,
 } from '../store/queries/jobs.js';
+import type { StoreReadContext } from '../store/body-codec.js';
+import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 
 export type JobsStartupDeps = {
   recoveryCoordinator: RecoveryCoordinator;
@@ -61,14 +63,22 @@ function queryJobDetail(
   if (hasJournalQuerySurface(source)) {
     return source.loadJobProjectionDetail(jobId);
   }
-  return loadJobProjectionDetailQuery(source, jobId);
+  return loadJobProjectionDetailQuery(source, jobId, defaultCtx());
 }
 
 function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow[] {
   if (hasJournalQuerySurface(source)) {
     return source.readJobProgress(jobId);
   }
-  return readJobProgressQuery(source, jobId);
+  return readJobProgressQuery(source, jobId, defaultCtx());
+}
+
+let cachedDefaultCtx: StoreReadContext | null = null;
+function defaultCtx(): StoreReadContext {
+  if (!cachedDefaultCtx) {
+    cachedDefaultCtx = { upcasters: createDefaultUpcasterRegistry() };
+  }
+  return cachedDefaultCtx;
 }
 
 export const jobsCommands = {
@@ -108,7 +118,7 @@ export const jobsQueries = {
       return source.listJobProjections();
     }
     if (isDatabase(source)) {
-      return listJobProjectionsQuery(source);
+      return listJobProjectionsQuery(source, defaultCtx());
     }
     return [];
   },

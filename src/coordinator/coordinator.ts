@@ -180,8 +180,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const wiredDeps = {
         ...deps,
         appendEvents: coordinatorAppendEvents,
-        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId),
-        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId),
+        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, { upcasters }),
+        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, { upcasters }),
         subscribeJobEvents,
         getCurrentJournalSeq,
       };

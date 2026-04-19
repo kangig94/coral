@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { TypedEventBus } from '../coordinator/control.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
-import { createEmptyRegistry } from '../store/envelope.js';
-import type { CoralEventInput } from '../store/envelope.js';
+import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
@@ -86,6 +86,8 @@ export class JobStore {
   private waiters: Array<() => void> = [];
   private enqueueSequence = 0;
 
+  public readonly upcasters: UpcasterRegistry;
+
   constructor(
     private readonly namespace: string,
     private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>,
@@ -93,8 +95,10 @@ export class JobStore {
     db?: Database,
     appendEvents?: AppendEventsFn,
     reducers: ComposedReducers = composeReducers(jobsRegistry),
+    upcasters: UpcasterRegistry = createDefaultUpcasterRegistry(),
   ) {
     this.eventBus = eventBus;
+    this.upcasters = upcasters;
     this.db = db ?? openStoreDatabase({
       path: this.resolveDefaultDbPath(),
       storage: this.runtime.storage,
@@ -106,7 +110,7 @@ export class JobStore {
         appendJournalEvents(this.db, inputs, {
           now: () => new Date(this.runtime.time.now()),
           reducers,
-          upcasters: createEmptyRegistry(),
+          upcasters: this.upcasters,
         });
       });
   }
@@ -184,7 +188,7 @@ export class JobStore {
   }
 
   private detail(jobId: string) {
-    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId), jobId);
+    return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this), jobId);
   }
 
   private cloneStatusRecord(status: JobStatusRecord): JobStatusRecord {
@@ -273,13 +277,13 @@ export class JobStore {
   }
 
   readJobProgress(jobId: string) {
-    return readJobProgress(this.db, jobId);
+    return readJobProgress(this.db, jobId, this);
   }
 
   listJobProjections() {
     const projections = new Map<string, JobStatusRecord>();
 
-    for (const { jobId, status } of listJobProjections(this.db)) {
+    for (const { jobId, status } of listJobProjections(this.db, this)) {
       projections.set(jobId, this.applyNamespaceOverrideToStatus(jobId, status));
     }
 

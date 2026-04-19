@@ -5,7 +5,7 @@ import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
-import { decodeEventBody } from '../body-codec.js';
+import { decodeBody, decodeEventBody, type StoreReadContext } from '../body-codec.js';
 import { readLatestEvent } from './events.js';
 import type { EventsRow } from '../schema.js';
 
@@ -101,7 +101,7 @@ type ProjectionRow = {
   last_seq: number;
 };
 
-type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'body'>;
+type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'>;
 type DecodedTerminalRow = {
   record: JobTerminalRecord;
   signal?: string | null;
@@ -127,9 +127,10 @@ function deriveLaunchState(
   rejected: ReturnType<typeof readLatestEvent>,
   runtime: ReturnType<typeof readLatestEvent>,
   terminal: ReturnType<typeof readLatestEvent>,
+  ctx: StoreReadContext,
 ): { state: JobStatusRecord['launch']['state']; message?: string } {
   if (rejected) {
-    const body = jobLaunchRejectedSchema.parse(decodeEventBody(rejected.body));
+    const body = decodeBody(rejected, jobLaunchRejectedSchema, ctx);
     return {
       state: 'error',
       message: describeLaunchRejected(body),
@@ -151,12 +152,12 @@ function deriveLaunchState(
   return { state: 'ready' };
 }
 
-function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null {
+function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext): JobLaunchRow | null {
   if (!row) {
     return null;
   }
 
-  const body = jobLaunchRequestBodySchema.parse(decodeEventBody(row.body));
+  const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
   return {
     jobId,
     sessionId: body.sessionId,
@@ -185,8 +186,8 @@ function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null 
   };
 }
 
-function jobRuntimeBodyFromEvent(row: EventRow): JobRuntimeRow {
-  const parsed = jobRuntimeStartedBodySchema.parse(decodeEventBody(row.body));
+function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRuntimeRow {
+  const parsed = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
   if (parsed.transport === 'app-server') {
     const providerMeta = parsed.providerMeta;
     return {
@@ -216,12 +217,12 @@ function jobRuntimeBodyFromEvent(row: EventRow): JobRuntimeRow {
   };
 }
 
-function decodeTerminalRecord(row: EventRow | null): DecodedTerminalRow | null {
+function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): DecodedTerminalRow | null {
   if (!row) {
     return null;
   }
 
-  const body = jobTerminalRecordedBodySchema.parse(decodeEventBody(row.body));
+  const body = decodeBody(row, jobTerminalRecordedBodySchema, ctx);
   return {
     record: {
       content: body.content ?? '',
@@ -249,35 +250,37 @@ function toJobExitRow(row: EventRow, terminal: DecodedTerminalRow): JobExitRow {
 function readLaunchSessionId(
   db: BetterSqlite3.Database,
   jobId: string,
+  ctx: StoreReadContext,
 ): string {
   const row = db
     .prepare(
-      `SELECT body
+      `SELECT type, body_version, body
          FROM events
         WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'
         ORDER BY seq ASC
         LIMIT 1`,
     )
-    .get(jobId) as Pick<EventRow, 'body'> | undefined;
+    .get(jobId) as Pick<EventsRow, 'type' | 'body_version' | 'body'> | undefined;
 
   if (!row) {
     return '';
   }
 
-  return jobLaunchRequestBodySchema.parse(decodeEventBody(row.body)).sessionId;
+  return decodeBody(row, jobLaunchRequestBodySchema, ctx).sessionId;
 }
 
 export function loadJobProjectionDetail(
   db: BetterSqlite3.Database,
   jobId: string,
+  ctx: StoreReadContext,
 ): JobProjectionDetail {
   const projection = readProjectionRow(db, jobId);
   const requested = readLatestEvent(db, 'job', jobId, 'job.launch.requested');
   const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');
   const runtime = readLatestEvent(db, 'job', jobId, 'job.runtime.started');
   const terminal = readLatestEvent(db, 'job', jobId, 'job.terminal.recorded');
-  const launch = decodeLaunch(jobId, requested);
-  const terminalRecord = decodeTerminalRecord(terminal);
+  const launch = decodeLaunch(jobId, requested, ctx);
+  const terminalRecord = decodeTerminalRecord(terminal, ctx);
   const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;
 
   const status =
@@ -292,7 +295,7 @@ export function loadJobProjectionDetail(
           jobKind: launch.jobKind,
           phase: projection.phase as JobPhase,
           launch: {
-            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal),
+            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
             updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
           },
           ...(terminalRecord ? { result: terminalRecord.record } : {}),
@@ -302,13 +305,14 @@ export function loadJobProjectionDetail(
   return {
     status,
     launch,
-    runtime: runtime ? jobRuntimeBodyFromEvent(runtime) : null,
+    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
     exit,
   };
 }
 
 export function listJobProjections(
   db: BetterSqlite3.Database,
+  ctx: StoreReadContext,
 ): Array<{ jobId: string; status: JobStatusRecord }> {
   const rows = db
     .prepare(
@@ -319,7 +323,7 @@ export function listJobProjections(
     .all() as Array<{ job_id: string }>;
 
   return rows.flatMap(({ job_id: jobId }) => {
-    const detail = loadJobProjectionDetail(db, jobId);
+    const detail = loadJobProjectionDetail(db, jobId, ctx);
     return detail.status ? [{ jobId, status: detail.status }] : [];
   });
 }
@@ -327,6 +331,7 @@ export function listJobProjections(
 export function readJobProgress(
   db: BetterSqlite3.Database,
   jobId: string,
+  ctx: StoreReadContext,
 ): JobProgressRow[] {
   const rows = db
     .prepare(
@@ -334,6 +339,7 @@ export function readJobProgress(
          seq,
          ts,
          type,
+         body_version,
          ROW_NUMBER() OVER (ORDER BY seq) AS per_job_index,
          body
        FROM events
@@ -346,15 +352,16 @@ export function readJobProgress(
       seq: number;
       ts: string;
       type: string;
+      body_version: number;
       per_job_index: number;
       body: Uint8Array | Buffer;
     }>;
 
-  const sessionId = readLaunchSessionId(db, jobId);
+  const sessionId = readLaunchSessionId(db, jobId, ctx);
 
   return rows.flatMap<JobProgressRow>((row) => {
     if (row.type === 'job.progress.emitted') {
-      const body = jobProgressBodySchema.parse(decodeEventBody(row.body));
+      const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {
         return [];
       }
@@ -380,8 +387,10 @@ export function readJobProgress(
       result: decodeTerminalRecord({
         seq: row.seq,
         ts: row.ts,
+        type: row.type,
+        body_version: row.body_version,
         body: row.body,
-      })?.record ?? { content: '', outcome: { kind: 'completed' } },
+      }, ctx)?.record ?? { content: '', outcome: { kind: 'completed' } },
     }];
   });
 }

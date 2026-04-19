@@ -160,8 +160,8 @@ describe('wait SSE reconnect', () => {
       eventBus,
       jobPools: new Map(),
       time: runtime.time,
-      loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId),
-      readJobProgress: (targetJobId) => readJobProgress(db, targetJobId),
+      loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
+      readJobProgress: (targetJobId) => readJobProgress(db, targetJobId, progressStore),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
