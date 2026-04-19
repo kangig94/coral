@@ -1,6 +1,6 @@
 import type { StorePaths } from '../store/paths.js';
 import type { CorpusPaths } from '../kb/corpus/paths.js';
-import type { CoordinatorPaths } from '../coordinator/info.js';
+import type { CoordinatorPaths } from '../coordinator/paths.js';
 import type { ExportsPaths } from '../jobs/exports/paths.js';
 import type { EquipmentPaths } from './equipment-paths.js';
 

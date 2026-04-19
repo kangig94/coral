@@ -1,27 +1,13 @@
-import { mkdirSync as nodeMkdirSync, readFileSync as nodeReadFileSync, readdirSync as nodeReaddirSync } from 'node:fs';
-
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { currentBuildFlavor } from '../infra/paths.js';
-import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
-import { CoralStore } from '../store/index.js';
-import { openStoreDatabase } from '../store/db.js';
-import { appendEvents } from '../store/append.js';
+import { appendEvents, type AppendEventsFn } from '../store/append.js';
 import { createEmptyRegistry, type CoralEventInput } from '../store/envelope.js';
 import { composeReducers } from '../store/reducers.js';
-import { storePaths } from '../store/paths.js';
-import type { RuntimeStoragePort } from '../runtime/ports.js';
 import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema, workflowRegistry } from './events.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
 const workflowReducers = composeReducers(workflowRegistry);
 const upcasters = createEmptyRegistry();
-const inMemoryJournalByStorage = new WeakMap<RuntimeStoragePort, BetterSqlite3.Database>();
-const migrationStorage = {
-  mkdirSync: nodeMkdirSync,
-  readFileSync: nodeReadFileSync,
-  readdirSync: nodeReaddirSync,
-} as unknown as RuntimeStoragePort;
 
 export type WorkflowProjectionRow = {
   workflowId: string;
@@ -34,52 +20,8 @@ export type ProjectionJobRow = {
   lastSeq: number;
 };
 
-function storeDbPath(): string {
-  return storePaths(currentBuildFlavor()).dbFile;
-}
-
-function isInMemoryStorage(storage: RuntimeStoragePort): boolean {
-  return storage.constructor?.name === 'InMemoryStorage';
-}
-
-function openWorkflowDatabase(storage: RuntimeStoragePort): { db: BetterSqlite3.Database; persistent: boolean } {
-  if (isInMemoryStorage(storage)) {
-    const cached = inMemoryJournalByStorage.get(storage);
-    if (cached) {
-      return { db: cached, persistent: true };
-    }
-
-    const created = openStoreDatabase({
-      path: ':memory:',
-      storage: migrationStorage,
-    });
-    inMemoryJournalByStorage.set(storage, created);
-    return { db: created, persistent: true };
-  }
-
-  return {
-    db: openStoreDatabase({
-      path: storeDbPath(),
-      storage: migrationStorage,
-    }),
-    persistent: false,
-  };
-}
-
-function withWorkflowDatabase<T>(storage: RuntimeStoragePort, fn: (db: BetterSqlite3.Database) => T): T {
-  const { db, persistent } = openWorkflowDatabase(storage);
-  try {
-    return fn(db);
-  } finally {
-    if (!persistent) {
-      db.close();
-    }
-  }
-}
-
 export type WorkflowJournal = {
   append(inputs: readonly CoralEventInput[]): void;
-  describeCauseRef(ref: { stream: { kind: 'job' | 'session' | 'discuss' | 'workflow'; id: string }; seq: number }): string;
 };
 
 export function appendWorkflowEvents(db: BetterSqlite3.Database, inputs: readonly CoralEventInput[]): void {
@@ -90,18 +32,10 @@ export function appendWorkflowEvents(db: BetterSqlite3.Database, inputs: readonl
   });
 }
 
-export function createWorkflowJournal(storage: RuntimeStoragePort): WorkflowJournal {
+export function createWorkflowJournal(options: { appendEvents: AppendEventsFn }): WorkflowJournal {
   return {
     append(inputs) {
-      withWorkflowDatabase(storage, (db) => {
-        appendWorkflowEvents(db, inputs);
-      });
-    },
-    describeCauseRef(ref) {
-      return withWorkflowDatabase(storage, (db) => {
-        const store = new CoralStore(db);
-        return describeCauseRef(ref, store);
-      });
+      options.appendEvents(inputs);
     },
   };
 }

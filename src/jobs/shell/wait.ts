@@ -13,6 +13,9 @@ import {
 } from '../../execution/job-lifecycle-contracts.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../execution/session-manager.js';
+import type { JobProjectionDetail, JobProgressRow } from '../../store/queries/jobs.js';
+import type { JobEvent } from './event-subscription.js';
+import { resultPathFor } from './result-artifact.js';
 
 const JOB_TERMINAL_RELEASE_POLL_MS = 10;
 
@@ -23,6 +26,14 @@ export interface WaitCoordinatorDeps {
   eventBus: TypedEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;
+  loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
+  readJobProgress?: (jobId: string) => JobProgressRow[];
+  subscribeJobEvents?: (options: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }) => AsyncIterable<JobEvent>;
+  getCurrentJournalSeq?: () => number;
 }
 
 export class WaitCoordinator {
@@ -130,6 +141,16 @@ export class WaitCoordinator {
   }
 
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+    if (
+      this.deps.loadJobProjectionDetail &&
+      this.deps.readJobProgress &&
+      this.deps.subscribeJobEvents &&
+      this.deps.getCurrentJournalSeq
+    ) {
+      yield* this.waitForJobsFromJournal(req);
+      return;
+    }
+
     const { progressStore, launchCoordinator, jobPools } = this.deps;
     const { jobIds, timeoutSeconds = 600, cursor } = req;
     const startMs = this.deps.time.now();
@@ -236,6 +257,131 @@ export class WaitCoordinator {
         progressStore.waitForChange(seq),
         this.deps.time.sleep(remainingMs),
       ]);
+    }
+  }
+
+  private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+    const { launchCoordinator, jobPools, loadJobProjectionDetail, readJobProgress, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    if (!loadJobProjectionDetail || !readJobProgress || !subscribeJobEvents || !getCurrentJournalSeq) {
+      return;
+    }
+
+    const { jobIds, timeoutSeconds = 600, cursor } = req;
+    const startMs = this.deps.time.now();
+    const timeoutMs = timeoutSeconds * 1000;
+    const deadlineMs = startMs + timeoutMs;
+    const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
+    const pending = new Set(jobIds);
+    const emittedQueued = new Set<string>();
+    const currentMaxSeq = getCurrentJournalSeq();
+
+    for (const jobId of [...pending]) {
+      const detail = loadJobProjectionDetail(jobId);
+      const status = detail.status;
+      if (!status) {
+        continue;
+      }
+
+      if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
+        emittedQueued.add(jobId);
+        const pool = jobPools.get(jobId) ?? 'default';
+        yield {
+          type: 'queued',
+          jobId,
+          sessionId: status.sessionId,
+          queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
+          runningJobIds: launchCoordinator.getActiveJobIds(pool),
+        };
+      }
+
+      const history = readJobProgress(jobId).filter(
+        (event) => event.seq <= currentMaxSeq && event.eventId > (fromEventIds[jobId] ?? 0),
+      );
+      for (const event of history) {
+        fromEventIds[jobId] = event.eventId;
+        if (event.type === 'progress') {
+          yield {
+            type: 'progress',
+            jobId,
+            eventId: event.eventId,
+            message: event.message ?? '',
+          };
+          continue;
+        }
+
+        yield {
+          type: 'terminal',
+          jobId,
+          remainingJobIds: [...pending].filter((id) => id !== jobId),
+          resultPath: resultPathFor(jobId),
+          result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+        };
+        return;
+      }
+
+      if (status && isTerminalPhase(status.phase)) {
+        yield {
+          type: 'terminal',
+          jobId,
+          remainingJobIds: [...pending].filter((id) => id !== jobId),
+          resultPath: resultPathFor(jobId),
+          result: status.result ?? { content: '', outcome: { kind: 'completed' } },
+        };
+        return;
+      }
+    }
+
+    const controller = new AbortController();
+    const iterator = subscribeJobEvents({
+      afterSeq: currentMaxSeq,
+      jobIds,
+      abortSignal: controller.signal,
+    })[Symbol.asyncIterator]();
+
+    try {
+      while (pending.size > 0) {
+        const now = this.deps.time.now();
+        if (now > deadlineMs) {
+          yield { type: 'waiting', waitingJobIds: [...pending] };
+          return;
+        }
+
+        const remainingMs = deadlineMs - now;
+        const next = await Promise.race([
+          iterator.next(),
+          this.deps.time.sleep(remainingMs).then(() => ({ done: true, value: null as JobEvent | null })),
+        ]);
+
+        if (next.done || !next.value) {
+          yield { type: 'waiting', waitingJobIds: [...pending] };
+          return;
+        }
+
+        const event = next.value;
+        fromEventIds[event.jobId] = event.eventId;
+
+        if (event.type === 'progress') {
+          yield {
+            type: 'progress',
+            jobId: event.jobId,
+            eventId: event.eventId,
+            message: event.message ?? '',
+          };
+          continue;
+        }
+
+        yield {
+          type: 'terminal',
+          jobId: event.jobId,
+          remainingJobIds: [...pending].filter((id) => id !== event.jobId),
+          resultPath: resultPathFor(event.jobId),
+          result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+        };
+        return;
+      }
+    } finally {
+      controller.abort();
+      await iterator.return?.();
     }
   }
 

@@ -4,6 +4,7 @@ import { isNoEntryError, isRecord } from '../../shared/utils.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionEntry } from '../entry.js';
 import { SessionManager } from './store.js';
+import { noopAppendEvents } from '../../store/append.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
@@ -60,7 +61,7 @@ export function resolveSession(
   const target = typeof ref === 'string' ? { sessionId: ref } : ref;
 
   if (target.shardDir) {
-    const sessionManager = SessionManager.openShard(target.shardDir, runtime);
+    const sessionManager = SessionManager.openShard(target.shardDir, runtime, noopAppendEvents);
     const entry = target.provider
       ? sessionManager.get(target.provider, target.sessionId)
       : sessionManager.readById(target.sessionId, { forceFresh: true });

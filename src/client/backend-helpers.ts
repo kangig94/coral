@@ -1,7 +1,7 @@
 import { withAbortTimeout } from './backend-lifecycle.js';
 import { isBackendHealth } from './backend-health.js';
 import { BackendToolHttpError } from './http-client.js';
-import { readBackendInfo } from '../infra/backend-info.js';
+import { readBackendInfo } from '../coordinator/discovery.js';
 import {
   BackendUnreachableError,
   TransientHttpError,

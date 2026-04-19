@@ -13,6 +13,7 @@ import {
 } from '../../shared/legacy-terminal-outcome-compat.js';
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
+import { getCallerContext } from '../../coordinator/caller-context.js';
 import {
   isTerminalPhase,
   type JobPhase,
@@ -29,10 +30,13 @@ import {
 import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
 import { type AbortRegistry } from './abort-registry.js';
+import { writeWorkflowResult } from './result-artifact.js';
 import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../execution/engine.js';
 import { type ProgressStore } from '../../execution/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../execution/session-manager.js';
+import type { AppendEventsFn } from '../../store/append.js';
+import type { CoralEventInput } from '../../store/envelope.js';
 import {
   SessionClaimError,
   rejectLaunch,
@@ -83,6 +87,7 @@ export interface LaunchOrchestratorDeps {
   backendNamespace: string;
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
+  appendEvents: AppendEventsFn;
   acquireServer: (
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
@@ -99,6 +104,67 @@ export interface LaunchOrchestratorDeps {
 
 export class LaunchOrchestrator {
   constructor(private readonly deps: LaunchOrchestratorDeps) {}
+
+  private resolveEventMetadata(
+    jobId: string,
+    projectRoot?: string,
+  ): Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> {
+    const caller = getCallerContext();
+    if (caller) {
+      return {
+        namespace: caller.namespace,
+        project: caller.project,
+        correlationId: caller.correlationId,
+      };
+    }
+
+    const launch = this.deps.progressStore.readLaunchRecord(jobId);
+    const status = this.deps.progressStore.readStatus(jobId);
+    return {
+      namespace: launch?.backendNamespace ?? status?.backendNamespace ?? this.deps.backendNamespace,
+      project: launch?.projectRoot ?? status?.projectRoot ?? projectRoot,
+      correlationId: undefined,
+    };
+  }
+
+  private appendJobEvent(
+    jobId: string,
+    sessionId: string,
+    type: CoralEventInput['type'],
+    body: unknown,
+    options: {
+      parentJobId?: string;
+      workflowSlotId?: string;
+      projectRoot?: string;
+    } = {},
+  ): void {
+    const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
+    this.deps.appendEvents([
+      {
+        type,
+        stream: { kind: 'job', id: jobId },
+        namespace: metadata.namespace,
+        project: metadata.project,
+        correlationId: metadata.correlationId,
+        refs: {
+          jobId,
+          sessionId,
+          ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+          ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
+        },
+        bodyVersion: 1,
+        body,
+      },
+    ]);
+  }
+
+  private appendProgressEvent(jobId: string, sessionId: string, message: string): void {
+    this.appendJobEvent(jobId, sessionId, 'job.progress.emitted', {
+      kind: 'message',
+      message,
+      ts: nowIsoString(this.deps.runtime.time),
+    });
+  }
 
   private normalizeLegacyOutcome(jobId: string, sessionId: string, legacyOutcome: ProviderTurnResult['outcome']): TerminalOutcome {
     const plan = planLegacyTerminalOutcome(legacyOutcome, { jobId, sessionId });
@@ -173,21 +239,24 @@ export class LaunchOrchestrator {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string } = {},
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string } = {},
   ): LaunchDecision {
     const { abortRegistry, backendNamespace, bundleHash, progressStore } = this.deps;
     const pool = opts.pool ?? 'default';
+    const projectRoot = opts.projectRoot ?? request.cwd ?? '';
+    const enqueueSequence = progressStore.nextEnqueueSequence();
+    const createdAt = nowIsoString(this.deps.runtime.time);
 
     abortRegistry.register(jobId);
     progressStore.writeLaunchRecord(jobId, {
       jobId,
       sessionId,
       provider: provider.name,
-      projectRoot: opts.projectRoot ?? request.cwd ?? '',
+      projectRoot,
       backendNamespace,
       bundleHash,
       pool,
-      enqueueSequence: progressStore.nextEnqueueSequence(),
+      enqueueSequence,
       providerAction: request.action,
       request: {
         prompt: request.prompt,
@@ -202,12 +271,49 @@ export class LaunchOrchestrator {
         coralEnv: request.coralEnv,
       },
       parentWorkflowJobId: opts.parentWorkflowJobId,
-      createdAt: nowIsoString(this.deps.runtime.time),
+      createdAt,
     });
+    this.appendJobEvent(
+      jobId,
+      sessionId,
+      'job.launch.requested',
+      {
+        sessionId,
+        provider: provider.name,
+        providerAction: request.action,
+        projectRoot,
+        backendNamespace,
+        bundleHash,
+        pool,
+        enqueueSequence,
+        request: {
+          prompt: request.prompt,
+          name: request.name,
+          model: request.model,
+          cwd: request.cwd ?? '',
+          effort: request.effort,
+          bypassPermissions: request.bypassPermissions,
+          systemPrompt: request.systemPrompt,
+          conversationRef: request.conversationRef,
+          instruction: request.instruction,
+          coralEnv: request.coralEnv,
+        },
+        parentJobId: opts.parentWorkflowJobId,
+        workflowSlot: opts.workflowSlotId,
+        createdAt,
+      },
+      {
+        parentJobId: opts.parentWorkflowJobId,
+        workflowSlotId: opts.workflowSlotId,
+        projectRoot,
+      },
+    );
 
     const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
     if (admission.type === 'queued') {
       this.markJobQueued(jobId, sessionId, admission.queuePosition);
+    } else {
+      this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', { queuePosition: 0 }, { projectRoot });
     }
 
     this.runAsync(provider, sessionId, jobId, request, admission, pool);
@@ -247,6 +353,8 @@ export class LaunchOrchestrator {
           permitAcquired = true;
           this.markJobLaunching(jobId);
           this.deps.progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
+          this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
+          this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
 
         launchCoordinator.bindLaunchPermit(jobId, signal, pool);
@@ -286,6 +394,8 @@ export class LaunchOrchestrator {
 
         this.markJobLaunching(jobId);
         progressStore.appendProgress(jobId, sessionId, 'dequeued, launching');
+        this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
+        this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
         launchCoordinator.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
@@ -305,6 +415,9 @@ export class LaunchOrchestrator {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
     const outcome = this.normalizeLegacyOutcome(jobId, sessionId, { kind: 'legacy_fault', fault });
     progressStore.updateLaunchState(jobId, launchState, describeLegacyCoralFault(fault));
+    if (fault.kind === 'launch_rejected') {
+      this.appendJobEvent(jobId, sessionId, 'job.launch.rejected', fault);
+    }
     this.writeJobTerminalRecord(jobId, sessionId, { content: '', outcome }, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
@@ -314,6 +427,19 @@ export class LaunchOrchestrator {
   markJobRunning(jobId: string): void {
     this.markJobReady(jobId);
     this.deps.progressStore.updatePhase(jobId, 'running');
+    const launch = this.deps.progressStore.readLaunchRecord(jobId);
+    if (launch && this.deps.progressStore.readRuntimeRecord(jobId) === null) {
+      this.appendJobEvent(
+        jobId,
+        launch.sessionId,
+        'job.runtime.started',
+        {
+          transport: 'durable-cli',
+          startedAt: nowIsoString(this.deps.runtime.time),
+        },
+        { projectRoot: launch.projectRoot },
+      );
+    }
   }
 
   writeJobTerminalRecord(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): void {
@@ -327,6 +453,16 @@ export class LaunchOrchestrator {
         /* best-effort terminal write */
       }
     }
+    this.appendJobEvent(jobId, sessionId, 'job.terminal.recorded', {
+      outcome: result.outcome,
+      durationMs: result.durationMs ?? 0,
+      content: result.content,
+      exitCode: result.exitCode,
+      warnings: result.warnings,
+      usage: result.usage,
+      workflow: result.workflow,
+      ...(result.outcome.kind === 'provider_exit' ? { code: result.outcome.code, note: result.outcome.note } : {}),
+    });
   }
 
   private async executeJob(
@@ -343,6 +479,7 @@ export class LaunchOrchestrator {
         this.markJobRunning(jobId);
       }
       this.deps.progressStore.appendProgress(jobId, sessionId, event.message);
+      this.appendProgressEvent(jobId, sessionId, event.message);
     };
 
     try {
@@ -385,6 +522,7 @@ export class LaunchOrchestrator {
 
     this.writeJobTerminalRecord(jobId, sessionId, terminalResult, phase);
     progressStore.writeResultMd(jobId, result.content);
+    writeWorkflowResult(jobId, result.content);
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     try {
@@ -425,6 +563,11 @@ export class LaunchOrchestrator {
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
     this.deps.progressStore.updateLaunchState(jobId, 'queued');
     this.deps.progressStore.appendProgress(jobId, sessionId, `queued (position ${queuePosition})`);
+    this.appendJobEvent(jobId, sessionId, 'job.queue.queued', {
+      queuePosition,
+      runningJobIds: [],
+    });
+    this.appendProgressEvent(jobId, sessionId, `queued (position ${queuePosition})`);
   }
 
   private createProviderRuntime(
@@ -505,6 +648,7 @@ export class LaunchOrchestrator {
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
     progressStore.updateLaunchState(jobId, 'error', `Aborted: ${reason}`);
+    this.appendJobEvent(jobId, sessionId, 'job.aborted', { reason });
     this.writeJobTerminalRecord(
       jobId,
       sessionId,

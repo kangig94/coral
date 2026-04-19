@@ -9,7 +9,7 @@ import type {
   SpawnEvent,
   SpawnListener,
 } from '../../../runtime/ports.js';
-import { coordinatorPaths } from '../../../coordinator/info.js';
+import { coordinatorPaths } from '../../../coordinator/paths.js';
 import type { CoralPaths } from '../../../infra/coral-paths.js';
 import { equipmentPaths } from '../../../infra/equipment-paths.js';
 import { exportsPaths } from '../../../jobs/exports/paths.js';

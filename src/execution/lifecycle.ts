@@ -8,13 +8,11 @@
  * All dependencies are received through the explicit `LifecycleDeps` contract.
  */
 
-import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import type { Server, ServerResponse } from 'node:http';
-import { dirname } from 'node:path';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { type LaunchCoordinator } from './engine.js';
-import { type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-info.js';
+import { type writeBackendInfo, type removeBackendInfoIfOwner } from '../coordinator/discovery.js';
 import type { RecoveryRegistry } from './recovery-registry.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IdleTimer } from './idle-timer.js';
@@ -23,8 +21,6 @@ import type { CallerContext } from '../shared/request-context.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
-import { discussReconcile } from '../discuss/api.js';
-import { jobsReconcile } from '../jobs/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase } from '../shared/types.js';
@@ -41,16 +37,6 @@ import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ShutdownMode } from './lifecycle/shutdown-mode.js';
 import type { RecoveryCapableService } from './service.js';
-import { workflowRecover } from '../workflow/api.js';
-import { openStoreDatabase } from '../store/db.js';
-import { storePaths } from '../store/paths.js';
-import { createEmptyRegistry } from '../store/envelope.js';
-import { composeReducers } from '../store/reducers.js';
-import { rebuildProjections } from '../store/rebuild.js';
-import { jobsRegistry } from '../jobs/events.js';
-import { sessionsRegistry } from '../sessions/events.js';
-import { discussRegistry } from '../discuss/store-registry.js';
-import { workflowRegistry } from '../workflow/events.js';
 
 export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
 export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
@@ -170,6 +156,25 @@ export type RecoverPersistedDiscussFn = (
   deps: RecoverPersistedDiscussDeps,
 ) => Promise<RecoveredDiscussResume[]>;
 
+export type StartupRecoveryDeps = {
+  readonly identity: BackendIdentity;
+  readonly runtime: Runtime;
+  readonly progressStore: ProgressStore;
+  readonly providerRegistry: ProviderRegistry;
+  readonly getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+  readonly getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  readonly knownDiscussSources: () => Set<string>;
+  readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
+  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  readonly createCallerContext: (projectRoot: string) => CallerContext;
+  readonly recoveryCoordinator: RecoveryCoordinator;
+  readonly assertStartupStillActive: () => void;
+  readonly cleanupStaleJobs: (currentBundleHash: string) => void;
+  readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
+};
+
+export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<RecoveredDiscussResume[]>;
+
 export type LifecycleDeps = {
   readonly identity: BackendIdentity;
   readonly runtime: Runtime;
@@ -206,6 +211,7 @@ export type LifecycleDeps = {
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
+  readonly runStartupRecoveryFn?: RunStartupRecoveryFn;
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
@@ -265,6 +271,7 @@ async function runLifecycleStartup({
     createKbSubsystemFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
+    runStartupRecoveryFn,
     hooks,
     closeServerFn,
     listenFn,
@@ -305,68 +312,23 @@ async function runLifecycleStartup({
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
-    let storeDbPath = storePaths(flavor).dbFile;
-    try {
-      storeDbPath = runtime.paths.coral.store.dbFile;
-    } catch {
-      // Some direct lifecycle tests intentionally bypass flavor-settled bootstrap.
-    }
-    const storeDbStorage = {
-      ...runtime.storage,
-      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
-      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
-    };
-    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
-    const storeDb = openStoreDatabase({
-      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
-      storage: storeDbStorage,
-    });
-    let recoveredDiscussResumes: RecoveredDiscussResume[] = [];
-
-    try {
-      const cutoffSeq = storeDb.prepare('SELECT COALESCE(MAX(seq), 0) FROM events').pluck().get() as number;
-      rebuildProjections({
-        db: storeDb,
-        cutoffSeq,
-        reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
-        upcasters: createEmptyRegistry(),
-      });
-      assertStartupStillActive();
-
-      await jobsReconcile.runStartup({
-        recoveryCoordinator,
-        namespace,
-        bundleHash,
+    const recoveredDiscussResumes =
+      (await runStartupRecoveryFn?.({
+        identity,
         runtime,
         progressStore,
         providerRegistry,
+        getExecutionService,
         getRecoveryService,
-        createCallerContext,
-        assertStartupStillActive,
-        log: identity.log,
-        cleanupStaleJobs: cleanupStaleJobsFn,
-      });
-      assertStartupStillActive();
-
-      recoveredDiscussResumes = await (recoverPersistedDiscussFn ?? discussReconcile.runStartup)({
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
         createCallerContext,
+        recoveryCoordinator,
         assertStartupStillActive,
-      });
-      assertStartupStillActive();
-
-      await workflowRecover.resumeAll({
-        db: storeDb,
-        progressStore,
-        getExecutionService: (ctx) => getExecutionService(ctx) as never,
-        createCallerContext,
-      });
-      assertStartupStillActive();
-    } finally {
-      storeDb.close();
-    }
+        cleanupStaleJobs: cleanupStaleJobsFn,
+        recoverPersistedDiscussFn,
+      })) ?? [];
 
     assertStartupStillActive();
     const startedAt = runtimeState.getStartedAt();

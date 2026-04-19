@@ -1,5 +1,5 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { BackendInfo } from '../infra/backend-info.js';
+import type { BackendInfo } from '../coordinator/discovery.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type {
@@ -21,6 +21,7 @@ import type {
   LifecycleHooks,
   RecoverPersistedDiscussFn,
   RegisterBuiltInProvidersFn,
+  RunStartupRecoveryFn,
 } from './lifecycle.js';
 import type { ProgressStore } from './progress-store.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -73,6 +74,7 @@ export type BackendCoreOptions = {
   createKbSubsystemFn?: CreateKbSubsystemFn;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
+  runStartupRecoveryFn?: RunStartupRecoveryFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;

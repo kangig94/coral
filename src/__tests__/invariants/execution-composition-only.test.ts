@@ -152,7 +152,7 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
     COORDINATOR_ALLOWED,
     {
       forbiddenDiscriminants: ['coral_fault'],
-      forbiddenCallees: ['appendEvents', 'rebuildProjections'],
+      forbiddenCallees: ['rebuildProjections'],
     },
   ),
   ...entries(
@@ -274,21 +274,25 @@ describe('execution composition-only invariant (AC5)', () => {
     });
   }
 
-  it('rebuilds projections before startup reconcile/resume ordering in lifecycle.ts', () => {
-    const lifecycleSource = readFileSync(join(ROOT, 'src/execution/lifecycle.ts'), 'utf-8');
+  it('uses coordinator consumer freshness before startup reconcile/resume ordering', () => {
+    const coordinatorSource = readFileSync(join(ROOT, 'src/coordinator/coordinator.ts'), 'utf-8');
     const markers = [
-      'const cutoffSeq =',
-      'rebuildProjections(',
+      "registerJobsConsumer(driver, db);",
+      "registerSessionsConsumer(driver, db);",
+      "registerDiscussConsumer(driver, db);",
+      "registerWorkflowConsumer(driver, db);",
+      "driver.notify('journal', currentMaxSeq);",
+      "driver.waitFreshUntil(currentMaxSeq, consumerId, bootFreshnessTimeoutMs);",
       'jobsReconcile.runStartup(',
-      'recoveredDiscussResumes = await (recoverPersistedDiscussFn ?? discussReconcile.runStartup)({',
+      'const recoveredDiscussResumes = await recoverPersistedDiscussFn({',
       'workflowRecover.resumeAll(',
     ];
 
     let previousIndex = -1;
     for (const marker of markers) {
-      const index = lifecycleSource.indexOf(marker);
-      expect(index, `Missing lifecycle startup marker: ${marker}`).toBeGreaterThan(-1);
-      expect(index, `Lifecycle startup order regressed around ${marker}`).toBeGreaterThan(previousIndex);
+      const index = coordinatorSource.indexOf(marker);
+      expect(index, `Missing coordinator startup marker: ${marker}`).toBeGreaterThan(-1);
+      expect(index, `Coordinator startup order regressed around ${marker}`).toBeGreaterThan(previousIndex);
       previousIndex = index;
     }
   });

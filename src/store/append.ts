@@ -23,6 +23,8 @@ export interface AppendedEvent extends CoralEvent {
 }
 
 export type AppendInput = CoralEventInput;
+export type AppendEventsFn = (inputs: readonly AppendInput[]) => void;
+export const noopAppendEvents: AppendEventsFn = () => {};
 
 function toTimestamp(value: Date): string {
   return value.toISOString();

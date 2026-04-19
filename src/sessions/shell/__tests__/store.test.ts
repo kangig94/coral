@@ -17,19 +17,18 @@ vi.mock('node:os', async () => {
 
 import { currentBuildFlavor } from '../../../infra/paths.js';
 import { createRealRuntime } from '../../../runtime/real.js';
+import { appendEvents } from '../../../store/append.js';
 import { openStoreDatabase } from '../../../store/db.js';
+import { createEmptyRegistry } from '../../../store/envelope.js';
+import { discussRegistry } from '../../../discuss/store-registry.js';
+import { jobsRegistry } from '../../../jobs/events.js';
+import { composeReducers } from '../../../store/reducers.js';
 import { storePaths } from '../../../store/paths.js';
+import { sessionsRegistry } from '../../events.js';
+import { workflowRegistry } from '../../../workflow/events.js';
 import { SessionManager } from '../store.js';
 
 const runtime = createRealRuntime();
-
-function openJournal() {
-  return openStoreDatabase({
-    path: storePaths(currentBuildFlavor()).dbFile,
-    storage: runtime.storage,
-    readonly: true,
-  });
-}
 
 function resolveSessionDir(baseDir: string): string {
   const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
@@ -52,6 +51,35 @@ describe('sessions shell store', () => {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
     return { mgr: new SessionManager(workDir, runtime), workDir };
+  }
+
+  function setupWithJournal(projectName: string): {
+    db: ReturnType<typeof openStoreDatabase>;
+    mgr: SessionManager;
+    workDir: string;
+  } {
+    const workDir = join(tmpHome, projectName);
+    mkdirSync(workDir, { recursive: true });
+
+    const db = openStoreDatabase({
+      path: storePaths(currentBuildFlavor()).dbFile,
+      storage: runtime.storage,
+    });
+    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const upcasters = createEmptyRegistry();
+    const coordinatorAppendEvents = (inputs: Parameters<typeof appendEvents>[1]) => {
+      appendEvents(db, inputs, {
+        now: () => new Date('2026-04-19T00:00:00.000Z'),
+        reducers,
+        upcasters,
+      });
+    };
+
+    return {
+      db,
+      mgr: new SessionManager(workDir, runtime, coordinatorAppendEvents),
+      workDir,
+    };
   }
 
   it('allocate creates an entry with state pending', () => {
@@ -78,7 +106,7 @@ describe('sessions shell store', () => {
   });
 
   it('allocate appends session.opened and continuity checkpoints append to the journal', () => {
-    const { mgr, workDir } = setup('journal-events');
+    const { db, mgr, workDir } = setupWithJournal('journal-events');
     const entry = mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -91,7 +119,6 @@ describe('sessions shell store', () => {
 
     mgr.setConversationRef(entry.sessionId, 'thread-1');
 
-    const db = openJournal();
     try {
       const rows = db
         .prepare(

@@ -2,7 +2,7 @@ import { isNoEntryError } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { LockRecord } from '../shared/lock-types.js';
 import type { Runtime, RuntimePathsPort, RuntimeStoragePort } from '../runtime/ports.js';
-import { probeProcessStartedAtSeconds } from '../infra/backend-info.js';
+import { probeProcessStartedAtSeconds } from '../coordinator/discovery.js';
 
 export { backendLockPath } from '../infra/paths.js';
 export type { LockRecord } from '../shared/lock-types.js';

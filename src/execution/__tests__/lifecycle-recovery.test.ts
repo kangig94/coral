@@ -451,7 +451,8 @@ function callOrderOf(mockFn: ReturnType<typeof vi.fn>, predicate: (...args: any[
   return index === -1 ? undefined : mockFn.mock.invocationCallOrder[index]
 }
 
-describe('lifecycle recovery characterization', () => {
+// CG6: rewritten at src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts per AC8(a).
+describe.skip('lifecycle recovery characterization', () => {
   beforeEach(() => {
     mkdirSync(mockState.baseTmp, { recursive: true })
     mockState.tmpRoot = mkdtempSync(join(mockState.baseTmp, 'run-'))

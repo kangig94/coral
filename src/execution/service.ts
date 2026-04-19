@@ -10,6 +10,7 @@ import type {
 } from '../providers/types.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
+import { getCallerContext, withCallerContext } from '../coordinator/caller-context.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { resolveEffort, type EffortLevel, type WorkflowCommand } from '../shared/schemas.js';
 import {
@@ -75,6 +76,11 @@ import {
 } from '../jobs/shell/agent-resolution.js';
 import { SessionManager, getSessionById, type SessionAllocateOptions } from './session-manager.js';
 import type { Runtime } from '../runtime/ports.js';
+import { noopAppendEvents, type AppendEventsFn } from '../store/append.js';
+import type { CoralEventInput } from '../store/envelope.js';
+import type { JobProjectionDetail, JobProgressRow } from '../store/queries/jobs.js';
+import type { JobEvent } from '../jobs/shell/event-subscription.js';
+import { writeWorkflowResult } from '../jobs/shell/result-artifact.js';
 
 interface LaunchIntentBase {
   prompt: string;
@@ -258,6 +264,15 @@ export type ExecutionServiceDeps = {
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };
+  appendEvents?: AppendEventsFn;
+  loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
+  readJobProgress?: (jobId: string) => JobProgressRow[];
+  subscribeJobEvents?: (options: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }) => AsyncIterable<JobEvent>;
+  getCurrentJournalSeq?: () => number;
 };
 
 function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
@@ -394,12 +409,22 @@ export class ExecutionService implements RecoveryCapableService {
   private readonly pluginRegistry: ExecutionServiceDeps['pluginRegistry'];
   private readonly launchOrchestrator: LaunchOrchestrator;
   private readonly waitCoordinator: WaitCoordinator;
+  private readonly appendEvents: AppendEventsFn;
+  private readonly loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
+  private readonly readJobProgress?: (jobId: string) => JobProgressRow[];
+  private readonly subscribeJobEvents?: (options: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }) => AsyncIterable<JobEvent>;
+  private readonly getCurrentJournalSeq?: () => number;
+  private callerCorrelationSeq = 0;
 
   constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime);
+    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime, deps.appendEvents ?? noopAppendEvents);
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
@@ -408,6 +433,11 @@ export class ExecutionService implements RecoveryCapableService {
     this.launchCoordinator = deps.launchCoordinator;
     this.providerRegistry = deps.providerRegistry;
     this.pluginRegistry = deps.pluginRegistry;
+    this.appendEvents = deps.appendEvents ?? noopAppendEvents;
+    this.loadJobProjectionDetail = deps.loadJobProjectionDetail;
+    this.readJobProgress = deps.readJobProgress;
+    this.subscribeJobEvents = deps.subscribeJobEvents;
+    this.getCurrentJournalSeq = deps.getCurrentJournalSeq;
     this.launchOrchestrator = new LaunchOrchestrator({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
@@ -417,6 +447,7 @@ export class ExecutionService implements RecoveryCapableService {
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
+      appendEvents: this.appendEvents,
       acquireServer: (spec, options) => this.acquireServer(spec, options),
       checkpointRecovery: (jobId, update) => this.checkpointRecovery(jobId, update),
       finalizeProviderSession: (providerName, request, sessionId, jobId, result) =>
@@ -429,6 +460,73 @@ export class ExecutionService implements RecoveryCapableService {
       eventBus: this.eventBus,
       jobPools: this.jobPools,
       time: this.runtime.time,
+      loadJobProjectionDetail: this.loadJobProjectionDetail,
+      readJobProgress: this.readJobProgress,
+      subscribeJobEvents: this.subscribeJobEvents,
+      getCurrentJournalSeq: this.getCurrentJournalSeq,
+    });
+  }
+
+  private runWithCallerContext<T>(ctx: CallerContext, run: () => T): T {
+    return withCallerContext(
+      {
+        namespace: this.backendNamespace,
+        project: ctx.projectRoot,
+        correlationId: `${this.backendNamespace}:${this.projectRoot}:${++this.callerCorrelationSeq}`,
+      },
+      run,
+    );
+  }
+
+  private resolveJobEventMetadata(
+    jobId: string,
+    projectRoot?: string,
+  ): Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> {
+    const caller = getCallerContext();
+    if (caller) {
+      return {
+        namespace: caller.namespace,
+        project: caller.project,
+        correlationId: caller.correlationId,
+      };
+    }
+
+    const launch = this.progressStore.readLaunchRecord(jobId);
+    const status = this.progressStore.readStatus(jobId);
+    return {
+      namespace: launch?.backendNamespace ?? status?.backendNamespace ?? this.backendNamespace,
+      project: launch?.projectRoot ?? status?.projectRoot ?? projectRoot,
+      correlationId: undefined,
+    };
+  }
+
+  private appendJobEvent(
+    jobId: string,
+    sessionId: string,
+    type: CoralEventInput['type'],
+    body: unknown,
+    options: { projectRoot?: string } = {},
+  ): void {
+    const metadata = this.resolveJobEventMetadata(jobId, options.projectRoot);
+    this.appendEvents([
+      {
+        type,
+        stream: { kind: 'job', id: jobId },
+        namespace: metadata.namespace,
+        project: metadata.project,
+        correlationId: metadata.correlationId,
+        refs: { jobId, sessionId },
+        bodyVersion: 1,
+        body,
+      },
+    ]);
+  }
+
+  private appendJobProgressEvent(jobId: string, sessionId: string, message: string): void {
+    this.appendJobEvent(jobId, sessionId, 'job.progress.emitted', {
+      kind: 'message',
+      message,
+      ts: nowIsoString(this.runtime.time),
     });
   }
 
@@ -658,6 +756,7 @@ export class ExecutionService implements RecoveryCapableService {
       'error',
     );
     this.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
+    writeWorkflowResult(launchRecord.jobId, interruptedReport);
     this.abortRegistry.remove(launchRecord.jobId);
     this.launchCoordinator.releaseLaunch(
       launchRecord.jobId,
@@ -751,6 +850,20 @@ export class ExecutionService implements RecoveryCapableService {
       },
     };
     this.progressStore.writeRuntimeRecord(jobId, record);
+    const launch = this.progressStore.readLaunchRecord(jobId);
+    if (launch) {
+      this.appendJobEvent(
+        jobId,
+        launch.sessionId,
+        'job.runtime.started',
+        {
+          transport: 'app-server',
+          startedAt: record.startTime,
+          providerMeta: record.providerMeta,
+        },
+        { projectRoot: launch.projectRoot },
+      );
+    }
   }
 
   private resolveSessionByIdForContinuation(
@@ -863,6 +976,7 @@ export class ExecutionService implements RecoveryCapableService {
       pool,
       projectRoot: ctx.projectRoot,
       parentWorkflowJobId: input.parentWorkflowJobId,
+      workflowSlotId: input.workflowSlotId,
     });
   }
 
@@ -934,6 +1048,7 @@ export class ExecutionService implements RecoveryCapableService {
 
       return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
         projectRoot: ctx.projectRoot,
+        workflowSlotId: input.workflowSlotId,
       });
     } finally {
       this.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
@@ -968,157 +1083,167 @@ export class ExecutionService implements RecoveryCapableService {
     jobId: string,
     request: ProviderRequest,
     admission: AcceptedAdmission,
-    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string } = {},
+    opts: { pool?: LaunchPool; projectRoot?: string; parentWorkflowJobId?: string; workflowSlotId?: string } = {},
   ): LaunchDecision {
     return this.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }
 
   async start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.getExecutor(providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    return this.runWithCallerContext(ctx, async () => {
+      const provider = this.providerRegistry.getExecutor(providerName);
+      if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+      const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.runtime));
+      if (preflightError) return rejectLaunch('preflight_failed', preflightError);
 
-    let resolvedAgent: ResolvedAgentLaunchProfile | null = null;
-    if (input.agent) {
-      try {
-        resolvedAgent = resolveAgentLaunchProfile(input.agent, {
-          projectRoot: ctx.projectRoot,
-          coralPluginRoot: ctx.pluginRoot,
-          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
-          storage: this.runtime.storage,
-        });
-      } catch (err) {
-        const rejection = mapResolverError(err);
-        if (rejection) return rejection;
-        throw err;
+      let resolvedAgent: ResolvedAgentLaunchProfile | null = null;
+      if (input.agent) {
+        try {
+          resolvedAgent = resolveAgentLaunchProfile(input.agent, {
+            projectRoot: ctx.projectRoot,
+            coralPluginRoot: ctx.pluginRoot,
+            discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+            storage: this.runtime.storage,
+          });
+        } catch (err) {
+          const rejection = mapResolverError(err);
+          if (rejection) return rejection;
+          throw err;
+        }
       }
-    }
-    const effectiveCoralEnv = buildEffectiveCoralEnv(ctx.coralEnv, { effort: input.effort });
-    const cwd = input.cwd ?? ctx.projectRoot;
-    const requestName = resolvedAgent?.name ?? input.name;
-    const name = requestName ?? `session-${this.runtime.time.now()}`;
-    const model = input.model ?? resolvedAgent?.model;
-    const pool = input.pool ?? 'default';
-    const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
-    const instruction = resolvedAgent?.instruction ?? input.instruction;
-    const bypassPermissions = input.bypassPermissions ?? (resolvedAgent !== null);
+      const effectiveCoralEnv = buildEffectiveCoralEnv(ctx.coralEnv, { effort: input.effort });
+      const cwd = input.cwd ?? ctx.projectRoot;
+      const requestName = resolvedAgent?.name ?? input.name;
+      const name = requestName ?? `session-${this.runtime.time.now()}`;
+      const model = input.model ?? resolvedAgent?.model;
+      const pool = input.pool ?? 'default';
+      const controllerProfile = buildSessionControllerProfile(effectiveCoralEnv);
+      const instruction = resolvedAgent?.instruction ?? input.instruction;
+      const bypassPermissions = input.bypassPermissions ?? (resolvedAgent !== null);
 
-    const session = this.sessionManager.allocate({
-      provider: providerName,
-      name,
-      model,
-      cwd,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: this.backendNamespace,
-      ...(resolvedAgent !== null ? { agentName: resolvedAgent.agentName } : {}),
-      ...(instruction !== undefined ? { instruction } : {}),
-      bypassPermissions,
-      ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
-      ...(controllerProfile !== undefined ? { controllerProfile } : {}),
-    });
-    const admitted = await this.claimAndAdmitJob(
-      session,
-      providerName,
-      ctx.projectRoot,
-      'Session is already running a job',
-      session.version,
-      pool,
-      input.jobId,
-    );
-    if ('status' in admitted) return admitted;
+      const session = this.sessionManager.allocate({
+        provider: providerName,
+        name,
+        model,
+        cwd,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: this.backendNamespace,
+        ...(resolvedAgent !== null ? { agentName: resolvedAgent.agentName } : {}),
+        ...(instruction !== undefined ? { instruction } : {}),
+        bypassPermissions,
+        ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+        ...(controllerProfile !== undefined ? { controllerProfile } : {}),
+      });
+      const admitted = await this.claimAndAdmitJob(
+        session,
+        providerName,
+        ctx.projectRoot,
+        'Session is already running a job',
+        session.version,
+        pool,
+        input.jobId,
+      );
+      if ('status' in admitted) return admitted;
 
-    const request: ProviderRequest = {
-      action: 'exec',
-      sessionId: session.sessionId,
-      name: requestName,
-      prompt: input.prompt,
-      model,
-      cwd,
-      effort: resolveEffort(input.effort),
-      bypassPermissions,
-      systemPrompt: input.systemPrompt,
-      instruction,
-      coralEnv: effectiveCoralEnv,
-    };
+      const request: ProviderRequest = {
+        action: 'exec',
+        sessionId: session.sessionId,
+        name: requestName,
+        prompt: input.prompt,
+        model,
+        cwd,
+        effort: resolveEffort(input.effort),
+        bypassPermissions,
+        systemPrompt: input.systemPrompt,
+        instruction,
+        coralEnv: effectiveCoralEnv,
+      };
 
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
-      pool,
-      projectRoot: ctx.projectRoot,
-      parentWorkflowJobId: input.parentWorkflowJobId,
+      return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
+        pool,
+        projectRoot: ctx.projectRoot,
+        parentWorkflowJobId: input.parentWorkflowJobId,
+        workflowSlotId: input.workflowSlotId,
+      });
     });
   }
 
   async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.getExecutor(providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    return this.runWithCallerContext(ctx, async () => {
+      const provider = this.providerRegistry.getExecutor(providerName);
+      if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const session = this.sessionManager.get(providerName, input.sessionId);
-    if (!session)
-      return rejectLaunch(
-        'session_not_found',
-        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-      );
+      const session = this.sessionManager.get(providerName, input.sessionId);
+      if (!session)
+        return rejectLaunch(
+          'session_not_found',
+          `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+        );
 
-    // Resolve agent profile before continuation so instruction/model are available
-    let effectiveInput = input;
-    if (input.agent) {
-      let resolvedAgent: ResolvedAgentLaunchProfile;
-      try {
-        resolvedAgent = resolveAgentLaunchProfile(input.agent, {
-          projectRoot: ctx.projectRoot,
-          coralPluginRoot: ctx.pluginRoot,
-          discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
-          storage: this.runtime.storage,
-        });
-      } catch (err) {
-        const rejection = mapResolverError(err);
-        if (rejection) return rejection;
-        throw err;
+      let effectiveInput = input;
+      if (input.agent) {
+        let resolvedAgent: ResolvedAgentLaunchProfile;
+        try {
+          resolvedAgent = resolveAgentLaunchProfile(input.agent, {
+            projectRoot: ctx.projectRoot,
+            coralPluginRoot: ctx.pluginRoot,
+            discoverPluginRoot: this.pluginRegistry.discoverPluginRoot.bind(this.pluginRegistry),
+            storage: this.runtime.storage,
+          });
+        } catch (err) {
+          const rejection = mapResolverError(err);
+          if (rejection) return rejection;
+          throw err;
+        }
+        effectiveInput = {
+          ...input,
+          name: resolvedAgent.name,
+          model: input.model ?? resolvedAgent.model,
+          instruction: input.instruction ?? resolvedAgent.instruction,
+        };
       }
-      effectiveInput = {
-        ...input,
-        name: resolvedAgent.name,
-        model: input.model ?? resolvedAgent.model,
-        instruction: input.instruction ?? resolvedAgent.instruction,
-      };
-    }
 
-    return this.resumeResolved(providerName, provider, session, effectiveInput, ctx);
+      return this.resumeResolved(providerName, provider, session, effectiveInput, ctx);
+    });
   }
 
   async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.providerRegistry.getExecutor(providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    return this.runWithCallerContext(ctx, async () => {
+      const provider = this.providerRegistry.getExecutor(providerName);
+      if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const sourceSession = this.sessionManager.get(providerName, input.sessionId);
-    if (!sourceSession)
-      return rejectLaunch(
-        'session_not_found',
-        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-      );
-    return this.forkResolved(providerName, provider, sourceSession, input, ctx);
+      const sourceSession = this.sessionManager.get(providerName, input.sessionId);
+      if (!sourceSession)
+        return rejectLaunch(
+          'session_not_found',
+          `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+        );
+      return this.forkResolved(providerName, provider, sourceSession, input, ctx);
+    });
   }
 
   async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
-    if ('status' in resolved) return resolved;
+    return this.runWithCallerContext(ctx, async () => {
+      const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
+      if ('status' in resolved) return resolved;
 
-    const provider = this.providerRegistry.getExecutor(resolved.providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
+      const provider = this.providerRegistry.getExecutor(resolved.providerName);
+      if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
-    return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
+      return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
+    });
   }
 
   async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
-    if ('status' in resolved) return resolved;
+    return this.runWithCallerContext(ctx, async () => {
+      const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
+      if ('status' in resolved) return resolved;
 
-    const provider = this.providerRegistry.getExecutor(resolved.providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
+      const provider = this.providerRegistry.getExecutor(resolved.providerName);
+      if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
-    return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
+      return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
+    });
   }
 
   async coralDispatch(
@@ -1353,6 +1478,7 @@ export class ExecutionService implements RecoveryCapableService {
   ): void {
     this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.progressStore.writeResultMd(jobId, result.content);
+    writeWorkflowResult(jobId, result.content);
     this.abortRegistry.remove(jobId);
     const pool = this.jobPools.get(jobId) ?? 'default';
     this.launchCoordinator.releaseLaunch(jobId, pool);
@@ -1455,6 +1581,43 @@ export class ExecutionService implements RecoveryCapableService {
    * Use waitStream() to monitor actual completion after a 'queued' return.
    */
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
+    if (this.loadJobProjectionDetail && this.subscribeJobEvents && this.getCurrentJournalSeq) {
+      const current = this.loadJobProjectionDetail(jobId).status;
+      if (current && current.launch.state !== 'pending') {
+        return current.launch.state;
+      }
+
+      const controller = new AbortController();
+      const iterator = this.subscribeJobEvents({
+        afterSeq: this.getCurrentJournalSeq(),
+        jobIds: [jobId],
+        abortSignal: controller.signal,
+      })[Symbol.asyncIterator]();
+
+      try {
+        const start = this.runtime.time.now();
+        while (true) {
+          const status = this.loadJobProjectionDetail(jobId).status;
+          if (status && status.launch.state !== 'pending') {
+            return status.launch.state;
+          }
+
+          const remainingMs = timeoutMs - (this.runtime.time.now() - start);
+          if (remainingMs <= 0) {
+            return 'pending';
+          }
+
+          await Promise.race([
+            iterator.next(),
+            this.runtime.time.sleep(remainingMs),
+          ]);
+        }
+      } finally {
+        controller.abort();
+        await iterator.return?.();
+      }
+    }
+
     const start = this.runtime.time.now();
     while (true) {
       const seq = this.progressStore.getChangeSeq();
@@ -1495,6 +1658,7 @@ export class ExecutionService implements RecoveryCapableService {
     markdown: string,
   ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
+    writeWorkflowResult(jobId, markdown);
     this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.sessionManager.setNonResumable(sessionId);
     this.abortRegistry.remove(jobId);
@@ -1523,9 +1687,10 @@ export class ExecutionService implements RecoveryCapableService {
       signal,
       onProgress: (message) => {
         this.progressStore.appendProgress(jobId, sessionId, message);
+        this.appendJobProgressEvent(jobId, sessionId, message);
       },
       workflowJobId: jobId,
-      journal: createWorkflowJournal(this.runtime.storage),
+      journal: createWorkflowJournal({ appendEvents: this.appendEvents }),
     })
       .then((result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);

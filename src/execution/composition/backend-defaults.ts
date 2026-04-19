@@ -2,7 +2,7 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-info.js';
+import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../coordinator/discovery.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { acquireLock, removeLockIfOwner, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../backend-lock.js';
 import type { LaunchCoordinator } from '../engine.js';

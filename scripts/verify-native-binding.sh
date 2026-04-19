@@ -17,13 +17,17 @@ cd "$REPO_ROOT"
 echo "[verify-native-binding] npm run build"
 npm run build > /dev/null
 
+mkdir -p "$REPO_ROOT/bridge"
+cp "$REPO_ROOT/build/coral-backend.cjs" "$REPO_ROOT/bridge/coral-backend.cjs"
+cp "$REPO_ROOT/build/manifest.json" "$REPO_ROOT/bridge/manifest.json"
+
 TMPDIR_BASE="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_BASE"' EXIT
 
 echo "[verify-native-binding] spawn smoke in scratch cwd"
 cd "$TMPDIR_BASE"
 
-OUT="$(node "$REPO_ROOT/build/coral-backend.cjs" --smoke-open-store --path "$TMPDIR_BASE/s.db")"
+OUT="$(node "$REPO_ROOT/bridge/coral-backend.cjs" --smoke-open-store --path "$TMPDIR_BASE/s.db")"
 echo "[verify-native-binding] output: $OUT"
 
 if [[ "$OUT" != "ok" ]]; then

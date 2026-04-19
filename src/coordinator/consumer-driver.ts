@@ -31,6 +31,13 @@ export interface JournalConsumerRegistration {
   apply(ctx: JournalApplyContext): Promise<void>;
 }
 
+export interface CorpusConsumerRegistration {
+  readonly id: string;
+  readonly authority: 'corpus';
+  readonly lane: 'content' | 'metadata';
+  apply(_ctx: { contentSeq: number; metadataSeq: number; db: BetterSqlite3.Database }): Promise<void>;
+}
+
 interface Waiter {
   target: number;
   resolve: () => void;
@@ -40,7 +47,7 @@ interface Waiter {
 }
 
 interface ConsumerState {
-  readonly reg: JournalConsumerRegistration;
+  readonly reg: JournalConsumerRegistration | CorpusConsumerRegistration;
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
   waiters: Set<Waiter>;
@@ -61,17 +68,17 @@ export class ConsumerDriver {
     this.now = opts.now ?? (() => new Date());
   }
 
-  register(reg: JournalConsumerRegistration): void {
-    if (reg.authority !== 'journal') {
+  register(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
+    if (reg.authority === 'corpus' && (reg.lane !== 'content' && reg.lane !== 'metadata')) {
       throw new CoralSetupError({
-        code: 'consumer_authority_unsupported',
-        userMessage: `Consumer authority '${reg.authority}' not supported in Phase 1`,
-        remediation: 'Only journal consumers are supported in Phase 1; corpus arrives in Phase 3.',
-        context: { consumerId: reg.id, authority: reg.authority },
+        code: 'consumer_lane_invalid',
+        userMessage: `Corpus consumer '${reg.id}' must declare a valid lane`,
+        remediation: "Register corpus consumers with lane 'content' or 'metadata'.",
+        context: { consumerId: reg.id, authority: reg.authority, lane: reg.lane },
       });
     }
 
-    this.ensureCursorRow(reg.id, 'journal');
+    this.ensureCursorRow(reg.id, reg.authority);
 
     if (this.consumers.has(reg.id)) {
       return;
@@ -100,6 +107,9 @@ export class ConsumerDriver {
     }
 
     for (const state of this.consumers.values()) {
+      if (state.reg.authority !== authority) {
+        continue;
+      }
       this.scheduleApply(state, version);
     }
   }
@@ -225,6 +235,10 @@ export class ConsumerDriver {
   }
 
   private async runApply(state: ConsumerState, target: number): Promise<boolean> {
+    if (state.reg.authority !== 'journal') {
+      return true;
+    }
+
     const fromSeq = this.readCursor(state.reg.id);
     const upToSeq = Math.max(fromSeq, target);
 

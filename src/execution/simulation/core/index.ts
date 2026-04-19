@@ -5,7 +5,7 @@ import {
   removeBackendInfoIfOwner,
   writeBackendInfo,
   type BackendInfo,
-} from '../../../infra/backend-info.js';
+} from '../../../coordinator/discovery.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { PreflightRuntime, Provider } from '../../../providers/types.js';
 import { readAppendedLines } from '../../../shared/file-tail.js';

@@ -77,7 +77,7 @@ const sharedOpts = {
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/execution/server.ts'],
+  entryPoints: ['src/coordinator/bootstrap.ts'],
   outfile: 'build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });

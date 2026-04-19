@@ -69,6 +69,7 @@ export class IdleTimer {
       this.onIdle?.(this.drainReason ?? 'idle');
     }, IDLE_CHECK_INTERVAL_MS);
     this.interval.unref?.();
+    this.tryDrain();
   }
 
   stopWatching(): void {

@@ -14,7 +14,7 @@ import {
 import {
   probeProcessStartedAtSeconds,
   type BackendInfo,
-} from '../infra/backend-info.js';
+} from '../coordinator/discovery.js';
 import { type LockRecord } from '../shared/lock-types.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';

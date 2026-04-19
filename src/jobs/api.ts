@@ -1,3 +1,5 @@
+import type { Database } from 'better-sqlite3';
+
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ExecutionServiceLike } from '../execution/backend-contracts.js';
 import { createReplayCursor, type ProgressStore } from '../execution/progress-store.js';
@@ -21,6 +23,7 @@ import type { RecoveryCapableService } from '../execution/service.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { TerminalOutcome } from './outcome.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
+import { loadJobProjectionDetail as loadJobProjectionDetailQuery, readJobProgress as readJobProgressQuery } from '../store/queries/jobs.js';
 
 export type JobStatusRow = {
   jobId: string;
@@ -119,6 +122,120 @@ export type JobsStartupDeps = {
   cleanupStaleJobs: (currentBundleHash: string) => void;
 };
 
+type JobQuerySource =
+  | ProgressStore
+  | Database
+  | {
+      loadJobProjectionDetail(jobId: string): {
+        status: JobStatusRecord | null;
+        launch: JobLaunchRow | null;
+        runtime: JobRuntimeRow;
+        exit: JobExitRow | null;
+      };
+      readJobProgress(jobId: string): JobProgressRow[];
+    };
+
+function isDatabase(value: JobQuerySource): value is Database {
+  return typeof (value as Database).prepare === 'function';
+}
+
+function hasJournalQuerySurface(
+  value: JobQuerySource,
+): value is Extract<JobQuerySource, { loadJobProjectionDetail(jobId: string): unknown; readJobProgress(jobId: string): unknown }> {
+  return (
+    typeof (value as { loadJobProjectionDetail?: unknown }).loadJobProjectionDetail === 'function'
+    && typeof (value as { readJobProgress?: unknown }).readJobProgress === 'function'
+  );
+}
+
+function queryJobDetail(
+  source: JobQuerySource,
+  jobId: string,
+): {
+  status: JobStatusRecord | null;
+  launch: JobLaunchRow | null;
+  runtime: JobRuntimeRow;
+  exit: JobExitRow | null;
+} {
+  if (hasJournalQuerySurface(source)) {
+    return source.loadJobProjectionDetail(jobId);
+  }
+  if (isDatabase(source)) {
+    return loadJobProjectionDetailQuery(source, jobId);
+  }
+
+  const status = source.readStatus(jobId);
+  const launch = source.readLaunchRecord(jobId);
+  const runtime = source.readRuntimeRecord(jobId);
+  const exit = source.readTerminalPayload(jobId);
+  return {
+    status,
+    launch:
+      launch === null
+        ? null
+        : {
+            ...launch,
+            request: {
+              ...launch.request,
+              coralEnv: { ...launch.request.coralEnv },
+              ...(launch.request.instruction ? { instruction: { ...launch.request.instruction } } : {}),
+            },
+          },
+    runtime:
+      runtime === null
+        ? null
+        : runtime.transport === 'app-server'
+          ? {
+              ...runtime,
+              providerMeta: {
+                ...runtime.providerMeta,
+                ...(runtime.providerMeta.providerContinuity
+                  ? { providerContinuity: { ...runtime.providerMeta.providerContinuity } }
+                  : {}),
+              },
+            }
+          : {
+              ...runtime,
+              ...(runtime.providerMeta ? { providerMeta: { ...runtime.providerMeta } } : {}),
+            },
+    exit:
+      exit === null
+        ? null
+        : {
+            outcome: exit.outcome,
+            content: exit.content,
+            durationMs: exit.durationMs,
+            exitCode: exit.exitCode,
+            nonResumable: exit.nonResumable,
+            warnings: exit.warnings,
+            usage: exit.usage ? { ...exit.usage } : undefined,
+            workflow:
+              exit.workflow === undefined
+                ? undefined
+                : {
+                    steps: exit.workflow.steps.map((step) => ({ ...step })),
+                  },
+          },
+  };
+}
+
+function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow[] {
+  if (hasJournalQuerySurface(source)) {
+    return source.readJobProgress(jobId);
+  }
+  if (isDatabase(source)) {
+    return readJobProgressQuery(source, jobId);
+  }
+
+  return source
+    .replayFrom(jobId, 0, createReplayCursor())
+    .filter((record): record is JobProgressRow => record.type === 'progress' || record.type === 'terminal')
+    .map((record) => ({
+      ...record,
+      ...(record.result ? { result: { ...record.result } } : {}),
+    }));
+}
+
 export const jobsCommands = {
   start(
     service: Pick<ExecutionServiceLike, 'start'>,
@@ -157,74 +274,22 @@ export const jobsQueries = {
       return status ? [{ jobId, status }] : [];
     });
   },
-  detail(progressStore: ProgressStore, jobId: string): {
+  detail(source: JobQuerySource, jobId: string): {
     status: JobStatusRecord | null;
     launch: JobLaunchRow | null;
     runtime: JobRuntimeRow;
     exit: JobExitRow | null;
   } {
-    const status = progressStore.readStatus(jobId);
-    const launch = progressStore.readLaunchRecord(jobId);
-    const runtime = progressStore.readRuntimeRecord(jobId);
-    const exit = progressStore.readTerminalPayload(jobId);
-    return {
-      status,
-      launch:
-        launch === null
-          ? null
-          : {
-              ...launch,
-              request: {
-                ...launch.request,
-                coralEnv: { ...launch.request.coralEnv },
-                ...(launch.request.instruction ? { instruction: { ...launch.request.instruction } } : {}),
-              },
-            },
-      runtime:
-        runtime === null
-          ? null
-          : runtime.transport === 'app-server'
-            ? {
-                ...runtime,
-                providerMeta: {
-                  ...runtime.providerMeta,
-                  ...(runtime.providerMeta.providerContinuity
-                    ? { providerContinuity: { ...runtime.providerMeta.providerContinuity } }
-                    : {}),
-                },
-              }
-            : {
-                ...runtime,
-                ...(runtime.providerMeta ? { providerMeta: { ...runtime.providerMeta } } : {}),
-              },
-      exit:
-        exit === null
-          ? null
-          : {
-              outcome: exit.outcome,
-              content: exit.content,
-              durationMs: exit.durationMs,
-              exitCode: exit.exitCode,
-              nonResumable: exit.nonResumable,
-              warnings: exit.warnings,
-              usage: exit.usage ? { ...exit.usage } : undefined,
-              workflow:
-                exit.workflow === undefined
-                  ? undefined
-                  : {
-                      steps: exit.workflow.steps.map((step) => ({ ...step })),
-                    },
-            },
-    };
+    return queryJobDetail(source, jobId);
   },
   scopeCheck(
-    progressStore: ProgressStore,
+    source: JobQuerySource,
     jobId: string,
     projectRoot: string,
     namespace: string,
     recoveryRegistry?: Pick<RecoveryRegistry, 'has'> | null,
   ): boolean {
-    const status = progressStore.readStatus(jobId);
+    const status = queryJobDetail(source, jobId).status;
     if (!status) {
       return recoveryRegistry?.has(jobId) ?? false;
     }
@@ -239,14 +304,8 @@ export const jobsQueries = {
   ): ReturnType<ExecutionServiceLike['waitStream']> {
     return service.waitStream(request);
   },
-  progress(progressStore: ProgressStore, jobId: string): JobProgressRow[] {
-    return progressStore
-      .replayFrom(jobId, 0, createReplayCursor())
-      .filter((record): record is JobProgressRow => record.type === 'progress' || record.type === 'terminal')
-      .map((record) => ({
-        ...record,
-        ...(record.result ? { result: { ...record.result } } : {}),
-      }));
+  progress(source: JobQuerySource, jobId: string): JobProgressRow[] {
+    return queryJobProgress(source, jobId);
   },
 } as const;
 

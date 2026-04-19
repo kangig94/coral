@@ -1,10 +1,11 @@
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '../../client/backend-health.js';
 import { ensureBackend } from '../../client/backend-lifecycle.js';
-import { readBackendInfo, type BackendInfo } from '../../infra/backend-info.js';
+import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
 import type { JobStatusRecord } from '../../shared/types.js';
@@ -67,8 +68,25 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
     JSON.stringify({ bundleHash: sourceManifest.bundleHash, flavor }) + '\n',
     'utf-8',
   );
-  symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
   cpSync(join(process.cwd(), 'dist', 'store', 'migrations'), join(root, 'dist', 'store', 'migrations'), { recursive: true });
+  mkdirSync(join(root, 'node_modules'), { recursive: true });
+  symlinkSync(join(process.cwd(), 'node_modules', 'better-sqlite3'), join(root, 'node_modules', 'better-sqlite3'), 'dir');
+
+  const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${flavor}-`));
+  tempRoots.push(scratchCwd);
+  const smokeDbPath = join(root, 'fixture.db');
+  const smokeOut = execFileSync(
+    'node',
+    [join(root, 'bridge', 'coral-backend.cjs'), '--smoke-open-store', '--path', smokeDbPath],
+    {
+      cwd: scratchCwd,
+      encoding: 'utf-8',
+    },
+  );
+  if (smokeOut.trim() !== 'ok') {
+    throw new Error(`fixture smoke failed for ${root}: ${smokeOut}`);
+  }
+
   return { root, bundleHash: sourceManifest.bundleHash, manifestFlavor: flavor };
 }
 

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { backendInfoPath } from '../../coordinator/discovery.js';
 import { MAX_BUFFER } from '../../shared/process-constants.js';
 import { SessionManager } from '../session-manager.js';
 import {
@@ -459,7 +460,7 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendLockPath(worldA.pluginRoot))).toBe(false);
-    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(true);
+    expect(worldA.runtime.storage.existsSync(backendInfoPath(worldA.pluginRoot))).toBe(true);
 
     worldA.progressStore.initJob({
       jobId: 'job-a',
@@ -485,7 +486,7 @@ describe('simulation runtime', () => {
 
     await worldA.backend.shutdown('done');
     await worldA.backend.waitForShutdown();
-    expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.backendInfoPath(worldA.pluginRoot))).toBe(false);
+    expect(worldA.runtime.storage.existsSync(backendInfoPath(worldA.pluginRoot))).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 });

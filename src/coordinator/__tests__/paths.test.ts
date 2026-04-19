@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { composeCoralPaths } from '../paths.js';
-import { coordinatorPaths } from '../info.js';
+import { coordinatorPaths } from '../paths.js';
 import { corpusPaths } from '../../kb/corpus/paths.js';
 import { equipmentPaths } from '../../infra/equipment-paths.js';
 import { exportsPaths } from '../../jobs/exports/paths.js';

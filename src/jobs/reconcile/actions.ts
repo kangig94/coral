@@ -19,6 +19,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import { SessionManager } from '../../execution/session-manager.js';
 import type { RecoveryCapableService } from '../../execution/service.js';
 import { markJobAsError } from './job-helpers.js';
+import { noopAppendEvents } from '../../store/append.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunchRecord };
 export type RunningRecoverableJob = {
@@ -48,7 +49,10 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       return;
     case 'markError': {
       markJobAsError(progressStore, action.status, action.fault, log);
-      new SessionManager(action.status.projectRoot, runtime).releaseJob(action.status.sessionId, action.status.jobId);
+      new SessionManager(action.status.projectRoot, runtime, noopAppendEvents).releaseJob(
+        action.status.sessionId,
+        action.status.jobId,
+      );
       switch (action.fault.kind) {
         case 'stale_status_schema':
           log(`Marked incompatible old-format job: ${action.jobId}\n`);
@@ -81,7 +85,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       runningRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord, runtimeRecord: action.runtimeRecord });
       return;
     case 'releaseSessionClaim': {
-      SessionManager.openShard(action.shardDir, runtime).releaseJob(action.sessionId, action.jobId);
+      SessionManager.openShard(action.shardDir, runtime, noopAppendEvents).releaseJob(action.sessionId, action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
         log(`Released terminal session claim: ${action.sessionId}\n`);

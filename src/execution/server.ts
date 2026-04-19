@@ -1,5 +1,8 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
+import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { backendLog } from '../shared/backend-log.js';
 import { BackendAlreadyRunningError } from './backend-lock.js';
@@ -13,6 +16,10 @@ import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { StartupInterruptedError } from './lifecycle.js';
 import type { BackendServerInfo, LifecycleState } from './server-types.js';
 import { handleSmokeOpenStore } from './smoke-open-store.js';
+import { openStoreDatabase } from '../store/db.js';
+import { storePaths } from '../store/paths.js';
+import { jobsReconcile } from '../jobs/api.js';
+import { workflowRecover } from '../workflow/api.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -20,6 +27,82 @@ import {
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
 } from './recording-observer.js';
+
+function createLegacyStartupRecoveryFn(
+  runtime: Runtime,
+): NonNullable<BackendCoreOptions['runStartupRecoveryFn']> {
+  return async ({
+    identity,
+    progressStore,
+    providerRegistry,
+    getExecutionService,
+    getRecoveryService,
+    knownDiscussSources,
+    getDiscussStoreForSource,
+    getDiscussContext,
+    createCallerContext,
+    recoveryCoordinator,
+    assertStartupStillActive,
+    cleanupStaleJobs,
+    recoverPersistedDiscussFn,
+  }) => {
+    let storeDbPath = storePaths(identity.flavor).dbFile;
+    try {
+      storeDbPath = runtime.paths.coral.store.dbFile;
+    } catch {
+      // Some direct server tests intentionally bypass flavor-settled bootstrap.
+    }
+
+    const storeDbStorage = {
+      ...runtime.storage,
+      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
+      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
+    };
+    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
+    const storeDb = openStoreDatabase({
+      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
+      storage: storeDbStorage,
+    });
+
+    try {
+      await jobsReconcile.runStartup({
+        recoveryCoordinator,
+        namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createCallerContext,
+        assertStartupStillActive,
+        log: identity.log,
+        cleanupStaleJobs,
+      });
+      assertStartupStillActive();
+
+      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createCallerContext,
+        assertStartupStillActive,
+      });
+      assertStartupStillActive();
+
+      await workflowRecover.resumeAll({
+        db: storeDb,
+        progressStore,
+        getExecutionService: (ctx) => getExecutionService(ctx) as never,
+        createCallerContext,
+      });
+      assertStartupStillActive();
+
+      return recoveredDiscussResumes;
+    } finally {
+      storeDb.close();
+    }
+  };
+}
 
 export {
   createBackendCore,
@@ -66,6 +149,7 @@ export function createBackendServer(options: BackendServerOptions = {}): Backend
     ...coreOptions,
     runtime,
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
+    runStartupRecoveryFn: coreOptions.runStartupRecoveryFn ?? createLegacyStartupRecoveryFn(runtime),
   });
 
   return {

@@ -1,13 +1,7 @@
-import { mkdirSync as nodeMkdirSync, readFileSync as nodeReadFileSync, readdirSync as nodeReaddirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import type BetterSqlite3 from 'better-sqlite3';
-import { currentBuildFlavor } from '../../infra/paths.js';
-import { openStoreDatabase } from '../../store/db.js';
-import { appendEvents } from '../../store/append.js';
-import { createEmptyRegistry, type CoralEventInput } from '../../store/envelope.js';
-import { composeReducers } from '../../store/reducers.js';
-import { storePaths } from '../../store/paths.js';
+import { noopAppendEvents, type AppendEventsFn } from '../../store/append.js';
+import type { CoralEventInput } from '../../store/envelope.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { acquireDirectoryLock } from '../../shared/fs-lock.js';
 import { isValidSessionEntry } from '../../shared/session-entry.js';
@@ -26,15 +20,6 @@ import type {
   SessionCloseReason,
   SessionInterruptedFault,
 } from '../fault.js';
-import { sessionsRegistry } from '../events.js';
-
-const sessionReducers = composeReducers(sessionsRegistry);
-const inMemoryJournalByStorage = new WeakMap<RuntimeStoragePort, BetterSqlite3.Database>();
-const migrationStorage = {
-  mkdirSync: nodeMkdirSync,
-  readFileSync: nodeReadFileSync,
-  readdirSync: nodeReaddirSync,
-} as unknown as RuntimeStoragePort;
 
 export type SessionContinuityMutation =
   | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
@@ -87,14 +72,6 @@ function normalizeEntry(entry: SessionEntry): SessionEntry {
 
 function cloneEntry(entry: SessionEntry): SessionEntry {
   return JSON.parse(JSON.stringify(entry)) as SessionEntry;
-}
-
-function storeDbPath(): string {
-  return storePaths(currentBuildFlavor()).dbFile;
-}
-
-function isInMemoryStorage(storage: RuntimeStoragePort): boolean {
-  return storage.constructor?.name === 'InMemoryStorage';
 }
 
 function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>): ContinuitySnapshot {
@@ -156,17 +133,24 @@ export class SessionManager {
   private readonly paths: RuntimePathsPort;
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
+  private readonly appendEvents: AppendEventsFn;
   private readonly sessionDir: string;
   private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
   private shardStamp = 0;
   private cacheHydrated = false;
 
-  constructor(workingDirectory: string, runtime: SessionRuntime, isRawShardPath = false) {
+  constructor(
+    workingDirectory: string,
+    runtime: SessionRuntime,
+    appendEvents: AppendEventsFn = noopAppendEvents,
+    isRawShardPath = false,
+  ) {
     this.storage = runtime.storage;
     this.paths = runtime.paths;
     this.time = runtime.time;
     this.ids = runtime.ids;
+    this.appendEvents = appendEvents;
     this.sessionDir = isRawShardPath
       ? workingDirectory
       : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
@@ -177,8 +161,12 @@ export class SessionManager {
   }
 
   /** Open an existing shard directory without creating it (recovery path). */
-  static openShard(shardDir: string, runtime: SessionRuntime): SessionManager {
-    return new SessionManager(shardDir, runtime, true);
+  static openShard(
+    shardDir: string,
+    runtime: SessionRuntime,
+    appendEvents: AppendEventsFn = noopAppendEvents,
+  ): SessionManager {
+    return new SessionManager(shardDir, runtime, appendEvents, true);
   }
 
   private sessionPath(sessionId: string): string {
@@ -275,46 +263,7 @@ export class SessionManager {
   }
 
   private appendSessionEvent(input: CoralEventInput): void {
-    const { db, close } = isInMemoryStorage(this.storage)
-      ? {
-          db:
-            inMemoryJournalByStorage.get(this.storage)
-            ?? (() => {
-                const created = openStoreDatabase({
-                  path: ':memory:',
-                  storage: migrationStorage,
-                });
-                inMemoryJournalByStorage.set(this.storage, created);
-                return created;
-              })(),
-          close: () => {},
-        }
-      : {
-          ...(() => {
-            const db = openStoreDatabase({
-              path: storeDbPath(),
-              storage: this.storage,
-            });
-            return {
-              db,
-              close: () => db.close(),
-            };
-          })(),
-        };
-
-    try {
-      appendEvents(
-        db,
-        [input],
-        {
-          now: () => new Date(this.time.now()),
-          reducers: sessionReducers,
-          upcasters: createEmptyRegistry(),
-        },
-      );
-    } finally {
-      close();
-    }
+    this.appendEvents([input]);
   }
 
   private persistAndAppend(

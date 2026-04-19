@@ -15,6 +15,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobStoreSnapshot } from './plan.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { withBackendNamespace } from './job-helpers.js';
+import { noopAppendEvents } from '../../store/append.js';
 
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,
@@ -56,7 +57,7 @@ export function buildRecoverySnapshot(
 
   for (const shardDir of listSessionShards(runtime)) {
     try {
-      const sessionManager = SessionManager.openShard(shardDir, runtime);
+      const sessionManager = SessionManager.openShard(shardDir, runtime, noopAppendEvents);
       for (const sessionRef of readSessionRefs(shardDir, runtime.storage)) {
         try {
           sessionRefs.push({ shardDir, ...sessionRef });

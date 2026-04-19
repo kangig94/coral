@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
-import { probeProcessStartedAtSeconds } from '../../infra/backend-info.js';
+import { probeProcessStartedAtSeconds } from '../../coordinator/discovery.js';
 import { BackendUnreachableError } from '../../shared/utils.js';
 import {
   ensureBackend,

@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { createReplayCursor, type ReplayCursor } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
 import type { BackendServerInfo, LifecycleState } from '../server-types.js';
+import { backendInfoPath } from '../../coordinator/discovery.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
@@ -17,6 +18,7 @@ import {
 import { normalizeWorldConfig } from './normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
 import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
+import { noopAppendEvents } from '../../store/append.js';
 import {
   isTerminalPhase,
   type DurableCliRuntimeRecord,
@@ -452,7 +454,7 @@ export class SimulationWorld {
   listSessions(provider: string, projectRoot?: string): SessionEntry[] {
     this.assertUsable();
     const targetRoot = projectRoot ?? this.current.backend.projectRoot;
-    return new SessionManager(targetRoot, this.current.backend.runtime).list(provider);
+    return new SessionManager(targetRoot, this.current.backend.runtime, noopAppendEvents).list(provider);
   }
 
   getHookLog(): SimulationHookLog {
@@ -480,9 +482,7 @@ export class SimulationWorld {
 
   backendInfoExists(): boolean {
     this.assertUsable();
-    return this.current.backend.runtime.storage.existsSync(
-      this.current.backend.runtime.paths.backendInfoPath(this.current.backend.pluginRoot),
-    );
+    return this.current.backend.runtime.storage.existsSync(backendInfoPath(this.current.backend.pluginRoot));
   }
 
   hasProjectSourceCache(projectRoot: string): boolean {
