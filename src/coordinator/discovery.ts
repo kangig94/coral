@@ -106,7 +106,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
     return null;
   }
 
-  return {
+  const normalized: CoordinatorDiscoveryRecord = {
     pid,
     port,
     bundleHash,
@@ -114,11 +114,12 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
     namespace,
     startedAt,
     token,
-    ...(host !== undefined ? { host } : {}),
-    ...(version !== undefined ? { version } : {}),
-    ...(instanceId !== undefined ? { instanceId } : {}),
-    ...(processStartedAt !== undefined ? { processStartedAt } : {}),
   };
+  if (host !== undefined) normalized.host = host;
+  if (version !== undefined) normalized.version = version;
+  if (instanceId !== undefined) normalized.instanceId = instanceId;
+  if (processStartedAt !== undefined) normalized.processStartedAt = processStartedAt;
+  return normalized;
 }
 
 let linuxBootTimeSecondsCache: number | null | undefined;
