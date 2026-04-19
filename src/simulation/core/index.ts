@@ -22,7 +22,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
-import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/reconcile.js';
+import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/api.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { openBackendStoreDb } from '../../store/db.js';
@@ -439,7 +439,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;
       if (scenario.recoverPersistedDiscuss === 'default') {
-        return defaultRecoverPersistedDiscuss(deps);
+        return discussReconcile.runStartup(deps);
       }
       return [];
     },

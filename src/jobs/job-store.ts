@@ -508,10 +508,6 @@ export class JobStore {
     return this.detail(jobId).runtime as JobRuntimeRecord | null;
   }
 
-  writeExitRecord(): void {
-    // Satisfies legacy JobStoreInterface contract; journal authority owns terminal state via job.terminal.recorded events.
-  }
-
   readExitRecord(jobId: string): JobExitRecord | null {
     const exit = this.detail(jobId).exit;
     if (!exit) {

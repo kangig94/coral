@@ -21,7 +21,7 @@ export {
 } from './readers.js';
 export type { DiscussEventLogEntry } from './readers.js';
 export type { DiscussDiscoverySession, DiscussDiscoveryData } from '../shared/persistence-types.js';
-export type { ProvenanceState } from '../shared/session-entry.js';
+export type { ProvenanceState } from '../sessions/shell/session-read.js';
 
 // ./discuss.js
 export { buildDiscussDetail, buildDiscussSummary } from './discuss.js';
