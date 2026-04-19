@@ -34,7 +34,7 @@ export interface BackendInfo extends CoordinatorDiscoveryRecord {
 
 type DiscoveryStorage = Pick<
   RuntimeStoragePort,
-  'chmodSync' | 'mkdirSync' | 'readFileSync' | 'renameSync' | 'unlinkSync' | 'writeFileSync'
+  'chmodSync' | 'mkdirSync' | 'readFileSync' | 'unlinkSync' | 'writeAtomicSync'
 >;
 type DiscoveryEnv = Pick<RuntimeEnvPort, 'platform'>;
 type DiscoveryRuntime = {
@@ -265,7 +265,25 @@ export function probeProcessStartedAtSeconds(pid: number, platform = process.pla
 }
 
 function defaultStorage(): DiscoveryStorage {
-  return { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync };
+  return {
+    chmodSync,
+    mkdirSync,
+    readFileSync,
+    unlinkSync,
+    writeAtomicSync: (path, data, options) => {
+      const tempPath = `${path}.tmp`;
+      try {
+        writeFileSync(tempPath, data, options);
+        renameSync(tempPath, path);
+        return true;
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          return false;
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 function defaultEnv(): DiscoveryEnv {
@@ -307,18 +325,9 @@ function writeCompatFile(
   }
 
   runtime.storage.mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-
-  try {
-    runtime.storage.writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
+  if (!runtime.storage.writeAtomicSync(filePath, payload, { encoding: 'utf-8', mode: 0o600 })) {
+    return;
   }
-
-  runtime.storage.renameSync(tmpPath, filePath);
   if (runtime.env.platform() !== 'win32') {
     try {
       runtime.storage.chmodSync(filePath, 0o600);
@@ -382,18 +391,9 @@ export function writeDiscoveryRecord(
   });
 
   deps.storage.mkdirSync(dirname(infoPath), { recursive: true });
-  const tmpPath = `${infoPath}.tmp`;
-
-  try {
-    deps.storage.writeFileSync(tmpPath, payload, { encoding: 'utf-8', mode: 0o600 });
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return;
-    }
-    throw error;
+  if (!deps.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {
+    return;
   }
-
-  deps.storage.renameSync(tmpPath, infoPath);
   if (deps.env.platform() !== 'win32') {
     try {
       deps.storage.chmodSync(infoPath, 0o600);
