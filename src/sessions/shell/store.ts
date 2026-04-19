@@ -41,6 +41,7 @@ export type SessionAllocateOptions = {
 };
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
+type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
 
 function toSessionNamespace(
   dir: string,
@@ -82,15 +83,16 @@ function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'provid
   };
 }
 
-function sessionOpenedEvent(entry: SessionEntry): CoralEventInput {
+function sessionOpenedEvent(entry: SessionEntry, shardDir: string): CoralEventInput {
   return {
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
+    bodyVersion: 2,
     body: {
       controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
       provider: entry.provider,
+      shard_dir: shardDir,
     },
   };
 }
@@ -134,6 +136,7 @@ export class SessionManager {
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
   private readonly appendEvents: AppendEventsFn;
+  private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly sessionDir: string;
   private readonly cache = new Map<string, SessionEntry>();
   private readonly knownSessionIds = new Set<string>();
@@ -145,12 +148,14 @@ export class SessionManager {
     runtime: SessionRuntime,
     appendEvents: AppendEventsFn = noopAppendEvents,
     isRawShardPath = false,
+    releaseEmitter: SessionReleasedEmitter = () => {},
   ) {
     this.storage = runtime.storage;
     this.paths = runtime.paths;
     this.time = runtime.time;
     this.ids = runtime.ids;
     this.appendEvents = appendEvents;
+    this.releaseEmitter = releaseEmitter;
     this.sessionDir = isRawShardPath
       ? workingDirectory
       : join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
@@ -167,6 +172,22 @@ export class SessionManager {
     appendEvents: AppendEventsFn = noopAppendEvents,
   ): SessionManager {
     return new SessionManager(shardDir, runtime, appendEvents, true);
+  }
+
+  static forProduction(
+    workingDirectory: string,
+    runtime: SessionRuntime,
+    appendEvents: AppendEventsFn,
+    releaseEmitter: SessionReleasedEmitter,
+    options: { isRawShardPath?: boolean } = {},
+  ): SessionManager {
+    return new SessionManager(
+      workingDirectory,
+      runtime,
+      appendEvents,
+      options.isRawShardPath === true,
+      releaseEmitter,
+    );
   }
 
   private sessionPath(sessionId: string): string {
@@ -302,7 +323,7 @@ export class SessionManager {
       version: 0,
     };
 
-    return this.persistAndAppend(entry, sessionOpenedEvent(entry), null);
+    return this.persistAndAppend(entry, sessionOpenedEvent(entry, this.sessionDir), null);
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
@@ -457,6 +478,7 @@ export class SessionManager {
       }
 
       this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+      this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
       return true;
     } finally {
       release();
@@ -496,6 +518,7 @@ export class SessionManager {
     entry.lastJobId = jobId;
     entry.lastUsedAt = nowIsoString(this.time);
     this.persistEntry(entry);
+    this.releaseEmitter({ sessionId, jobId });
   }
 
   /** Provider-scoped lookup. Returns null if sessionId not found or provider mismatch. */

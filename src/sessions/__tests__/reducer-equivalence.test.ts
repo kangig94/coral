@@ -6,10 +6,11 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '../../store/append.js';
-import { createEmptyRegistry } from '../../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { composeReducers } from '../../store/reducers.js';
 import { rebuildProjections } from '../../store/rebuild.js';
+import { sessionBase } from '../../infra/paths.js';
 import { sessionsRegistry } from '../events.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../store/migrations');
@@ -25,7 +26,7 @@ describe('sessions reducer equivalence (AC2)', () => {
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const appended = appendEvents(
         db,
@@ -110,7 +111,7 @@ describe('sessions reducer equivalence (AC2)', () => {
       );
 
       const before = db.prepare(
-        `SELECT session_id, controller, provider, resumable, conversation_ref, last_seq
+        `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -122,6 +123,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
+        shard_dir: join(sessionBase(), 'legacy'),
         last_seq: appended.at(-1)?.seq,
       });
 
@@ -133,7 +135,7 @@ describe('sessions reducer equivalence (AC2)', () => {
       });
 
       const after = db.prepare(
-        `SELECT session_id, controller, provider, resumable, conversation_ref, last_seq
+        `SELECT session_id, controller, provider, resumable, conversation_ref, shard_dir, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,

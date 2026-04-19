@@ -43,7 +43,7 @@ export type RecoveryAction =
       launchRecord: JobLaunch;
       runtimeRecord: JobRuntime;
     }
-  | { type: 'releaseSessionClaim'; shardDir: string; sessionId: string; jobId: string };
+  | { type: 'releaseSessionClaim'; sessionId: string; jobId: string };
 
 export type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
 export type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
@@ -270,7 +270,6 @@ function planSessionClaimReleases(snapshot: JobStoreSnapshot, jobIds: readonly s
     if (!knownJobIds.has(activeJobId)) {
       actions.push({
         type: 'releaseSessionClaim',
-        shardDir: ref.shardDir,
         sessionId: ref.sessionId,
         jobId: activeJobId,
       });
@@ -281,7 +280,6 @@ function planSessionClaimReleases(snapshot: JobStoreSnapshot, jobIds: readonly s
     if (status !== null && isTerminalPhase(status.phase)) {
       actions.push({
         type: 'releaseSessionClaim',
-        shardDir: ref.shardDir,
         sessionId: ref.sessionId,
         jobId: activeJobId,
       });

@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { encodeEventBody } from './body-codec.js';
+import { encodeEventBody, prepareBodyForUpcast } from './body-codec.js';
 import {
   journalEventInputSchema,
   type CoralEvent,
@@ -54,7 +54,20 @@ export function appendEvents(
     const input = journalEventInputSchema.parse(rawInput) as AppendInput;
     const schema = reducers.schemas.get(input.type);
     const parsedBody = schema
-      ? upcasters.parseBody(input.type, input.bodyVersion, input.body, schema)
+      ? upcasters.parseBody(
+          input.type,
+          input.bodyVersion,
+          prepareBodyForUpcast(
+            {
+              type: input.type,
+              body_version: input.bodyVersion,
+              stream_kind: input.stream.kind,
+              stream_id: input.stream.id,
+            },
+            input.body,
+          ),
+          schema,
+        )
       : input.body;
     // Persist RAW input bytes (not parsedBody) per architecture §4.2: "Old events
     // are never rewritten; only the in-memory interpretation evolves." Upcasters

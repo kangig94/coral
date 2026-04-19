@@ -4,7 +4,7 @@ import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../views.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { MutableRuntimeState } from '../../coordinator/control.js';
+import type { MutableRuntimeState, TypedEventBus } from '../../coordinator/control.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
@@ -21,6 +21,7 @@ import {
   type RunningRecoverableJob,
 } from './actions.js';
 import { buildRecoverySnapshot } from './snapshot.js';
+import type { SessionLookup } from '../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -43,6 +44,7 @@ type RecoveryCoordinatorContext = {
   progressStore: ProgressStore;
   runtime: Runtime;
   runtimeState: MutableRuntimeState;
+  eventBus: TypedEventBus;
   providerRegistry: ProviderRegistry;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;
@@ -60,9 +62,17 @@ type StartupRecoveryContext = {
   assertStartupStillActive: () => void;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
+  sessionLookup: SessionLookup;
 };
 
-type RecoveryAdoptionContext = RecoveryCoordinatorContext & {
+type RecoveryAdoptionContext = {
+  progressStore: ProgressStore;
+  runtime: Runtime;
+  runtimeState: MutableRuntimeState;
+  providerRegistry: ProviderRegistry;
+  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  createCallerContext: (projectRoot: string) => CallerContext;
+  log: (message: string) => void;
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
   assertStartupStillActive: () => void;
@@ -72,6 +82,7 @@ export function createRecoveryCoordinator({
   progressStore,
   runtime,
   runtimeState,
+  eventBus,
   providerRegistry,
   getRecoveryService,
   createCallerContext,
@@ -296,7 +307,7 @@ export function createRecoveryCoordinator({
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }
 
-      const snapshot = buildRecoverySnapshot(progressStore, namespace, runtime, log);
+      const snapshot = buildRecoverySnapshot(progressStore, namespace, runtime, log, ctx.sessionLookup);
       const plan = planRecovery(snapshot);
 
       for (const action of [...plan.register, ...plan.cleanup]) {
@@ -310,6 +321,10 @@ export function createRecoveryCoordinator({
             runtime,
             createCallerContext,
             getRecoveryService,
+            sessionLookup: ctx.sessionLookup,
+            emitSessionReleased: (payload) => {
+              eventBus.emit('session:released', payload);
+            },
           });
         } catch (error: unknown) {
           logRecoveryActionFailure(action, error, log);

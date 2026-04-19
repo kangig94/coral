@@ -4,7 +4,7 @@ import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js'
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../job-store.js';
-import { readSessionRefs, listSessionShards } from '../../sessions/shell/resolve.js';
+import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import type { JobStoreSnapshot } from './plan.js';
@@ -53,6 +53,7 @@ export function buildRecoverySnapshot(
   namespace: string,
   runtime: Runtime,
   log: (message: string) => void,
+  sessionLookup: SessionLookup,
 ): JobStoreSnapshot {
   const jobIds = Object.freeze([...progressStore.listJobIds()]);
   const hasLaunchByJob = new Map<string, boolean>();
@@ -90,23 +91,21 @@ export function buildRecoverySnapshot(
   const sessionsByRef = new Map<string, SessionEntry | null>();
   const sessionKey = (shardDir: string, provider: string, sessionId: string): string =>
     `${shardDir}\u0000${provider}\u0000${sessionId}`;
+  const managersByShard = new Map<string, SessionManager>();
 
-  for (const shardDir of listSessionShards(runtime)) {
+  for (const sessionRef of sessionLookup.listSessionRefs()) {
     try {
-      const sessionManager = SessionManager.openShard(shardDir, runtime, noopAppendEvents);
-      for (const sessionRef of readSessionRefs(shardDir, runtime.storage)) {
-        try {
-          sessionRefs.push({ shardDir, ...sessionRef });
-          sessionsByRef.set(
-            sessionKey(shardDir, sessionRef.provider, sessionRef.sessionId),
-            sessionManager.get(sessionRef.provider, sessionRef.sessionId),
-          );
-        } catch (error: unknown) {
-          log(`Failed to check session ${sessionRef.sessionId}: ${formatError(error)}\n`);
-        }
-      }
+      const sessionManager =
+        managersByShard.get(sessionRef.shardDir)
+        ?? SessionManager.openShard(sessionRef.shardDir, runtime, noopAppendEvents);
+      managersByShard.set(sessionRef.shardDir, sessionManager);
+      sessionRefs.push({ ...sessionRef });
+      sessionsByRef.set(
+        sessionKey(sessionRef.shardDir, sessionRef.provider, sessionRef.sessionId),
+        sessionManager.get(sessionRef.provider, sessionRef.sessionId),
+      );
     } catch (error: unknown) {
-      log(`Failed to scan session shard ${shardDir}: ${formatError(error)}\n`);
+      log(`Failed to check session ${sessionRef.sessionId}: ${formatError(error)}\n`);
     }
   }
 

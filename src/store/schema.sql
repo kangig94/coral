@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS projection_sessions (
   provider         TEXT NOT NULL,
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
+  shard_dir        TEXT NOT NULL,
   last_seq         INTEGER NOT NULL
 );
 

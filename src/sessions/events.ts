@@ -23,6 +23,7 @@ export const sessionOpenedBodySchema = z
     // only payload fields so session.opened never duplicates sessionId.
     controller: z.string().min(1),
     provider: z.string().min(1),
+    shard_dir: z.string().min(1),
   })
   .strict();
 

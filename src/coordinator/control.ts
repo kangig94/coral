@@ -93,6 +93,7 @@ export type EventBusEvents = {
       outputTokens?: number;
     };
   };
+  'session:released': { sessionId: string; jobId: string };
   'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
 };
 
@@ -568,6 +569,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     progressStore,
     runtime,
     runtimeState,
+    eventBus: deps.eventBus,
     providerRegistry,
     getRecoveryService,
     createCallerContext,

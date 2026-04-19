@@ -12,6 +12,7 @@ import type { ProgressStore } from '../job-store.js';
 import type { RecoveryAction } from './plan.js';
 import type { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
 import type { Runtime } from '../../runtime/ports.js';
+import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from '../../coordinator/api.js';
 import { markJobAsError } from './job-helpers.js';
@@ -33,10 +34,23 @@ type RecoveryActionContext = {
   runtime: Runtime;
   createCallerContext: (projectRoot: string) => CallerContext;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>;
+  emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
 };
 
 export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionContext): void {
-  const { progressStore, recoveryRegistry, queuedRecoverable, runningRecoverable, log, runtime, createCallerContext, getRecoveryService } = ctx;
+  const {
+    progressStore,
+    recoveryRegistry,
+    queuedRecoverable,
+    runningRecoverable,
+    log,
+    runtime,
+    createCallerContext,
+    getRecoveryService,
+    sessionLookup,
+    emitSessionReleased,
+  } = ctx;
 
   switch (action.type) {
     case 'deleteIncompleteDir':
@@ -45,7 +59,12 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       return;
     case 'markError': {
       markJobAsError(progressStore, action.status, action.fault, log);
-      new SessionManager(action.status.projectRoot, runtime, noopAppendEvents).releaseJob(
+      SessionManager.forProduction(
+        action.status.projectRoot,
+        runtime,
+        noopAppendEvents,
+        emitSessionReleased,
+      ).releaseJob(
         action.status.sessionId,
         action.status.jobId,
       );
@@ -81,7 +100,18 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       runningRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord, runtimeRecord: action.runtimeRecord });
       return;
     case 'releaseSessionClaim': {
-      SessionManager.openShard(action.shardDir, runtime, noopAppendEvents).releaseJob(action.sessionId, action.jobId);
+      const shard = sessionLookup.lookupSessionShard(action.sessionId);
+      if (!shard) {
+        throw new Error(`Session shard not found for ${action.sessionId}`);
+      }
+
+      SessionManager.forProduction(
+        shard.shardDir,
+        runtime,
+        noopAppendEvents,
+        emitSessionReleased,
+        { isRawShardPath: true },
+      ).releaseJob(action.sessionId, action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
         log(`Released terminal session claim: ${action.sessionId}\n`);

@@ -2,6 +2,7 @@ import type { Runtime } from '../runtime/ports.js';
 import type { SessionCloseReason, SessionInterruptedFault } from './fault.js';
 import type { SessionEntry, SessionHandle } from './entry.js';
 import type { ContinuitySnapshot } from './continuity.js';
+import type { SessionLookup } from './lookup.js';
 import { resolveSession, type SessionResolveRef } from './shell/resolve.js';
 import { type SessionAllocateOptions, type SessionManager } from './shell/store.js';
 
@@ -45,8 +46,12 @@ export const sessionsQueries = {
   list(store: Pick<SessionManager, 'list'>, filter: SessionListFilter): SessionEntry[] {
     return store.list(filter.provider);
   },
-  resolve(runtime: SessionRuntime, ref: SessionResolveRef): SessionEntry | undefined {
-    return resolveSession(ref, runtime) ?? undefined;
+  resolve(
+    runtime: SessionRuntime,
+    ref: SessionResolveRef,
+    sessionLookup?: Pick<SessionLookup, 'lookupSessionShard'>,
+  ): SessionEntry | undefined {
+    return resolveSession(ref, runtime, sessionLookup) ?? undefined;
   },
 } as const;
 

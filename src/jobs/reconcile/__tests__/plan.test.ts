@@ -277,7 +277,6 @@ function summarizeActions(actions: RecoveryAction[]) {
       case 'releaseSessionClaim':
         return {
           type: action.type,
-          shardDir: action.shardDir,
           sessionId: action.sessionId,
           jobId: action.jobId,
         }
@@ -488,7 +487,6 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
-        shardDir: '/sessions/a',
         sessionId: 'terminal-claim',
         jobId: 'terminal-claimed-job',
       },
@@ -508,7 +506,6 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
-        shardDir: '/sessions/a',
         sessionId: 'orphan-claim',
         jobId: 'missing-job',
       },
@@ -533,7 +530,6 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([
       {
         type: 'releaseSessionClaim',
-        shardDir: '/sessions/foreign',
         sessionId: 'foreign-terminal-claim',
         jobId: 'foreign-terminal-job',
       },
@@ -767,13 +763,11 @@ describe('planRecovery', () => {
       { type: 'markError', jobId: 'ghost', fault: 'ghost_launch' },
       {
         type: 'releaseSessionClaim',
-        shardDir: '/sessions/order',
         sessionId: 'terminal-claim',
         jobId: 'terminal',
       },
       {
         type: 'releaseSessionClaim',
-        shardDir: '/sessions/order',
         sessionId: 'orphan-claim',
         jobId: 'missing-job',
       },

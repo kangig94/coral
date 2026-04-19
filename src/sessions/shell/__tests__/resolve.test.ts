@@ -15,6 +15,18 @@ vi.mock('node:os', async () => {
 });
 
 import { createRealRuntime } from '../../../runtime/real.js';
+import { appendEvents } from '../../../store/append.js';
+import { openStoreDatabase } from '../../../store/db.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { ensureStoreMigrationsDir } from '../../../store/migrations.js';
+import { composeReducers } from '../../../store/reducers.js';
+import { currentBuildFlavor } from '../../../infra/paths.js';
+import { storePaths } from '../../../store/paths.js';
+import { createProjectionSessionLookup } from '../../../store/queries/sessions.js';
+import { jobsRegistry } from '../../../jobs/events.js';
+import { discussRegistry } from '../../../discuss/store-registry.js';
+import { sessionsRegistry } from '../../events.js';
+import { workflowRegistry } from '../../../workflow/events.js';
 import { getSessionById, listSessionShards, resolveSession } from '../resolve.js';
 import { SessionManager } from '../store.js';
 
@@ -41,6 +53,14 @@ describe('sessions shell resolve', () => {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
     return { mgr: new SessionManager(workDir, runtime), workDir };
+  }
+
+  function createSessionDb() {
+    return openStoreDatabase({
+      path: storePaths(currentBuildFlavor()).dbFile,
+      storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    });
   }
 
   it('openShard reads an existing shard and listSessionShards enumerates it', () => {
@@ -147,5 +167,56 @@ describe('sessions shell resolve', () => {
       sessionId: sessionB.sessionId,
       provider: 'claude',
     });
+  });
+
+  it('projection lookup resolves a legacy v1 session.opened shard mapping', () => {
+    const { mgr, workDir } = setup('legacy-lookup');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      model: 'gpt-5',
+      cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-a',
+    });
+    const shardDir = resolveSessionDir(tmpHome);
+    const db = createSessionDb();
+
+    try {
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+      appendEvents(
+        db,
+        [
+          {
+            type: 'session.opened',
+            stream: { kind: 'session', id: entry.sessionId },
+            refs: { sessionId: entry.sessionId },
+            bodyVersion: 1,
+            body: {
+              controller: 'default',
+              provider: 'codex',
+            },
+          },
+        ],
+        {
+          now: () => new Date('2026-04-20T00:00:00.000Z'),
+          reducers,
+          upcasters: createDefaultUpcasterRegistry(),
+        },
+      );
+
+      const sessionLookup = createProjectionSessionLookup(db);
+      expect(sessionLookup.lookupSessionShard(entry.sessionId)).toEqual({
+        shardDir,
+        provider: 'codex',
+      });
+      expect(getSessionById(entry.sessionId, runtime, sessionLookup)).toMatchObject({
+        sessionId: entry.sessionId,
+        provider: 'codex',
+        backendNamespace: 'ns-a',
+      });
+    } finally {
+      db.close();
+    }
   });
 });

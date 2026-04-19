@@ -242,8 +242,8 @@ export async function runFollowUpTurns(
       return { shouldResume: false };
     }
 
-    const item = snapshot.runtime.followUpQueue[0];
-    if (!item) {
+    const queue = snapshot.runtime.followUpQueue.slice();
+    if (queue.length === 0) {
       const ended = await commitDecision(ctx, sessionId, (current) =>
         decideEnd(
           current.state,
@@ -259,24 +259,35 @@ export async function runFollowUpTurns(
       return { shouldResume: ended.ok };
     }
 
-    const answer = await collectFollowUpAnswer(ctx, sessionId, item, callerCtx);
+    const answers = await Promise.all(
+      queue.map(async (item) => ({
+        item,
+        answer: await collectFollowUpAnswer(ctx, sessionId, item, callerCtx),
+      })),
+    );
     const committed = await commitDecision(ctx, sessionId, (current) => ({
       ok: true,
-      value: [
-        makeEvent(
-          sessionId,
-          ctx.projectRoot,
-          current.state.topic,
-          current.lastAppliedSeq + 1,
-          'follow_up.answered',
-          ctxTs(ctx),
-          {
-            agent: item.agent,
-            question: item.question,
-            answer,
-          },
+      value: answers
+        .filter(({ item }) =>
+          current.runtime.followUpQueue.some(
+            (queued) => queued.agent === item.agent && queued.question === item.question,
+          ),
+        )
+        .map(({ item, answer }, index) =>
+          makeEvent(
+            sessionId,
+            ctx.projectRoot,
+            current.state.topic,
+            current.lastAppliedSeq + 1 + index,
+            'follow_up.answered',
+            ctxTs(ctx),
+            {
+              agent: item.agent,
+              question: item.question,
+              answer,
+            },
+          ),
         ),
-      ],
     }));
     if (!committed.ok && committed.error !== 'session_not_found') {
       throw new DiscussManagerError(committed.error, committed.detail);

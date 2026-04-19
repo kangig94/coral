@@ -36,6 +36,7 @@ async function loadModules() {
     engineModule,
     eventBusModule,
     pathsModule,
+    sessionLookupModule,
     providerRegistryModule,
   ] = await Promise.all([
     import('../../job-store.js'),
@@ -45,6 +46,7 @@ async function loadModules() {
     import('../../../coordinator/live/admission.js'),
     import('../../../coordinator/control.js'),
     import('../../../infra/paths.js'),
+    import('../../../sessions/lookup.js'),
     import('../../../providers/registry.js'),
   ]);
 
@@ -56,6 +58,7 @@ async function loadModules() {
     engineModule,
     eventBusModule,
     pathsModule,
+    sessionLookupModule,
     providerRegistryModule,
   };
 }
@@ -374,6 +377,7 @@ function createLifecycleHarness(
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
+        sessionLookup: modules.sessionLookupModule.createFilesystemSessionLookup(runtime),
       });
       return [];
     },

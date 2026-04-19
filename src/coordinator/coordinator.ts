@@ -22,6 +22,7 @@ import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-st
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
+import { createProjectionSessionLookup } from '../store/queries/sessions.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/api.js';
@@ -29,6 +30,7 @@ import { jobsRegistry } from '../jobs/events.js';
 import { registerJobsConsumer } from '../jobs/consumer.js';
 import { registerDiscussConsumer } from '../discuss/consumer.js';
 import { sessionsRegistry } from '../sessions/events.js';
+import { createFilesystemSessionLookup, mergeSessionLookups } from '../sessions/lookup.js';
 import { registerSessionsConsumer } from '../sessions/consumer.js';
 import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
@@ -133,6 +135,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const getCurrentJournalSeq = () =>
     (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  const getSessionLookup = () =>
+    mergeSessionLookups(
+      createProjectionSessionLookup(getQueryDb()),
+      createFilesystemSessionLookup(runtime),
+    );
 
   const coordinatorAppendEvents: AppendEventsFn = (inputs) => {
     const db = getStoreDb();
@@ -185,6 +192,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, readCtx),
         subscribeJobEvents,
         getCurrentJournalSeq,
+        sessionLookup: getSessionLookup(),
       };
       return providedCreateExecutionService
         ? providedCreateExecutionService(ctx, wiredDeps)
@@ -236,6 +244,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
+        sessionLookup: getSessionLookup(),
       });
       assertStartupStillActive();
 

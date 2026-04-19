@@ -124,20 +124,22 @@ describe('sessions shell store', () => {
     try {
       const rows = db
         .prepare(
-          `SELECT type, body
+          `SELECT type, body_version, body
              FROM events
             WHERE stream_kind = 'session' AND stream_id = ?
             ORDER BY seq ASC`,
         )
-        .all(entry.sessionId) as Array<{ type: string; body: Uint8Array | Buffer }>;
+        .all(entry.sessionId) as Array<{ type: string; body_version: number; body: Uint8Array | Buffer }>;
 
       expect(rows.map((row) => row.type)).toEqual([
         'session.opened',
         'session.continuity.checkpointed',
       ]);
+      expect(rows[0]?.body_version).toBe(2);
       expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toEqual({
         controller: 'team-a',
         provider: 'codex',
+        shard_dir: resolveSessionDir(tmpHome),
       });
       expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toEqual({
         conversationRef: 'thread-1',

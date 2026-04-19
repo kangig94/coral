@@ -16,12 +16,14 @@ export type ProjectionSessionRow = {
   provider: string;
   resumable: boolean;
   conversationRef: string | null;
+  shardDir: string;
   lastSeq: number;
 };
 
 type SessionOpenedBody = {
   controller: string;
   provider: string;
+  shard_dir: string;
 };
 
 type SessionClosedBody = {
@@ -33,6 +35,7 @@ type SessionProjectionPatch = {
   provider?: string;
   resumable?: boolean;
   conversationRef?: string | null;
+  shardDir?: string;
 };
 
 function readProjectionSession(
@@ -41,7 +44,7 @@ function readProjectionSession(
 ): Omit<ProjectionSessionRow, 'lastSeq'> | null {
   const row = db
     .prepare(
-      `SELECT controller, provider, resumable, conversation_ref
+      `SELECT controller, provider, resumable, conversation_ref, shard_dir
          FROM projection_sessions
         WHERE session_id = ?`,
     )
@@ -51,6 +54,7 @@ function readProjectionSession(
         provider: string;
         resumable: number;
         conversation_ref: string | null;
+        shard_dir: string;
       }
     | undefined;
 
@@ -63,6 +67,7 @@ function readProjectionSession(
     provider: row.provider,
     resumable: row.resumable === 1,
     conversationRef: row.conversation_ref,
+    shardDir: row.shard_dir,
   };
 }
 
@@ -81,6 +86,7 @@ function upsertProjectionSession(
     provider: patch.provider ?? previous?.provider ?? 'unknown',
     resumable: patch.resumable ?? previous?.resumable ?? false,
     conversationRef: hasConversationRefPatch(patch) ? patch.conversationRef : (previous?.conversationRef ?? null),
+    shardDir: patch.shardDir ?? previous?.shardDir ?? '',
   };
 
   upsertProjection(db, {
@@ -92,6 +98,7 @@ function upsertProjectionSession(
       provider: next.provider,
       resumable: next.resumable ? 1 : 0,
       conversation_ref: next.conversationRef,
+      shard_dir: next.shardDir,
     },
     lastSeq: event.seq,
   });
@@ -103,6 +110,7 @@ export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {
     provider: event.body.provider,
     resumable: false,
     conversationRef: null,
+    shardDir: event.body.shard_dir,
   });
 };
 

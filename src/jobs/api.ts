@@ -12,6 +12,7 @@ import type { Runtime } from '../runtime/ports.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
 import type { JobProjectionDetail } from './read-contracts.js';
+import type { SessionLookup } from '../sessions/lookup.js';
 import {
   listJobProjections as listJobProjectionsQuery,
   loadJobProjectionDetail as loadJobProjectionDetailQuery,
@@ -32,6 +33,7 @@ export type JobsStartupDeps = {
   assertStartupStillActive: () => void;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
+  sessionLookup: SessionLookup;
 };
 
 type JobQuerySource =

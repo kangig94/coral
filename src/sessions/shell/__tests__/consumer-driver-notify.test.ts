@@ -27,6 +27,15 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
+function resolveSessionDir(baseDir: string): string {
+  const sessionDirBase = join(baseDir, '.claude', 'coral', 'execution', 'sessions');
+  const entries = readdirSync(sessionDirBase, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  if (entries.length === 0) {
+    throw new Error(`No session hash-dir found under ${sessionDirBase}`);
+  }
+  return join(sessionDirBase, entries[0].name);
+}
+
 afterEach(() => {
   if (previousHome === undefined) {
     delete process.env.HOME;
@@ -89,7 +98,7 @@ describe('sessions consumer-driver notify', () => {
       await driver.drainAll();
       const row = db
         .prepare(
-          `SELECT controller, provider, resumable, conversation_ref, last_seq
+          `SELECT controller, provider, resumable, conversation_ref, shard_dir, last_seq
              FROM projection_sessions
             WHERE session_id = ?`,
         )
@@ -102,6 +111,7 @@ describe('sessions consumer-driver notify', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
+        shard_dir: resolveSessionDir(tempHome),
         last_seq: 1,
       });
     } finally {

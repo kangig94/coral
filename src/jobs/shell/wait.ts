@@ -12,8 +12,6 @@ import type { JobProgress } from '../views.js';
 import type { JobEvent } from './event-subscription.js';
 import { resultPathFor } from './result-artifact.js';
 
-const JOB_TERMINAL_RELEASE_POLL_MS = 10;
-
 export interface WaitCoordinatorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
@@ -39,23 +37,13 @@ export class WaitCoordinator {
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
-    const initialStatus = this.readStatusOrThrow(jobId);
-    const owner = {
-      provider: initialStatus.provider,
-      sessionId: initialStatus.sessionId,
-    };
     const timeoutError = new Error(
       `Timed out waiting for job ${jobId} to reach a terminal state and release its session`,
     );
 
-    if (this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, initialStatus)) {
-      return;
-    }
-
     const startedAt = this.deps.time.now();
     await new Promise<void>((resolve, reject) => {
       let settled = false;
-      let releasePollTimer: ReturnType<RuntimeTimePort['setTimeout']> | undefined;
 
       const remainingMs = timeoutMs - (this.deps.time.now() - startedAt);
       if (remainingMs <= 0) {
@@ -71,7 +59,7 @@ export class WaitCoordinator {
         this.deps.eventBus.off('job:completed', onJobCompleted);
         this.deps.eventBus.off('job:phase_changed', onJobPhaseChanged);
         this.deps.eventBus.off('job:progress', onJobProgress);
-        this.deps.time.clearTimeout(releasePollTimer ?? null);
+        this.deps.eventBus.off('session:released', onSessionReleased);
         this.deps.time.clearTimeout(timer);
       };
 
@@ -87,27 +75,20 @@ export class WaitCoordinator {
       const recheck = (): void => {
         try {
           const status = this.readStatusOrThrow(jobId);
-          if (!isTerminalPhase(status.phase)) {
-            return;
-          }
+          const owner = {
+            provider: status.provider,
+            sessionId: status.sessionId,
+          };
           if (!this.isTerminalAndReleased(jobId, owner.provider, owner.sessionId, status)) {
-            scheduleReleasePoll();
+            if (!isTerminalPhase(status.phase)) {
+              return;
+            }
             return;
           }
           finish(resolve);
         } catch (error: unknown) {
           finish(() => reject(error instanceof Error ? error : new Error(String(error))));
         }
-      };
-
-      const scheduleReleasePoll = (): void => {
-        if (settled || releasePollTimer) {
-          return;
-        }
-        releasePollTimer = this.deps.time.setTimeout(() => {
-          releasePollTimer = undefined;
-          recheck();
-        }, JOB_TERMINAL_RELEASE_POLL_MS);
       };
 
       const onJobCompleted = ({ jobId: completedId }: { jobId: string }): void => {
@@ -128,9 +109,16 @@ export class WaitCoordinator {
         }
       };
 
+      const onSessionReleased = ({ jobId: releasedJobId }: { jobId: string }): void => {
+        if (releasedJobId === jobId) {
+          recheck();
+        }
+      };
+
       this.deps.eventBus.on('job:completed', onJobCompleted);
       this.deps.eventBus.on('job:phase_changed', onJobPhaseChanged);
       this.deps.eventBus.on('job:progress', onJobProgress);
+      this.deps.eventBus.on('session:released', onSessionReleased);
 
       recheck();
       if (settled) {
@@ -405,7 +393,7 @@ export class WaitCoordinator {
   }
 
   private readStatusOrThrow(jobId: string): JobStatus {
-    const status = this.deps.progressStore.readStatus(jobId);
+    const status = this.readQueryStatus(jobId) ?? this.deps.progressStore.readStatus(jobId);
     if (!status) {
       throw new Error(`Job not found: ${jobId}`);
     }

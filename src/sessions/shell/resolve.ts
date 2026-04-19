@@ -5,6 +5,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionEntry } from '../entry.js';
 import { SessionManager } from './store.js';
 import { noopAppendEvents } from '../../store/append.js';
+import { createFilesystemSessionLookup, type SessionLookup } from '../lookup.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
@@ -57,30 +58,35 @@ export function readSessionRefs(
 export function resolveSession(
   ref: SessionResolveRef,
   runtime: SessionRuntime,
+  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'> = createFilesystemSessionLookup(runtime),
 ): SessionEntry | null {
   const target = typeof ref === 'string' ? { sessionId: ref } : ref;
+  const shardLookup = target.shardDir
+    ? {
+        shardDir: target.shardDir,
+        provider: target.provider ?? '',
+      }
+    : sessionLookup.lookupSessionShard(target.sessionId);
 
-  if (target.shardDir) {
-    const sessionManager = SessionManager.openShard(target.shardDir, runtime, noopAppendEvents);
-    const entry = target.provider
-      ? sessionManager.get(target.provider, target.sessionId)
-      : sessionManager.readById(target.sessionId, { forceFresh: true });
-    return entry ?? null;
+  if (!shardLookup) {
+    return null;
   }
 
-  for (const shardDir of listSessionShards(runtime)) {
-    const entry = resolveSession({ ...target, shardDir }, runtime);
-    if (entry) {
-      return entry;
-    }
+  const sessionManager = SessionManager.openShard(shardLookup.shardDir, runtime, noopAppendEvents);
+  if (target.provider && shardLookup.provider && target.provider !== shardLookup.provider) {
+    return null;
   }
 
-  return null;
+  const entry = target.provider
+    ? sessionManager.get(target.provider, target.sessionId)
+    : sessionManager.readById(target.sessionId, { forceFresh: true });
+  return entry ?? null;
 }
 
 export function getSessionById(
   sessionId: string,
   runtime: SessionRuntime,
+  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'> = createFilesystemSessionLookup(runtime),
 ): SessionEntry | null {
-  return resolveSession({ sessionId }, runtime);
+  return resolveSession({ sessionId }, runtime, sessionLookup);
 }

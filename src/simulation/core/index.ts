@@ -26,6 +26,8 @@ import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/api.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { openBackendStoreDb } from '../../store/db.js';
+import { createProjectionSessionLookup } from '../../store/queries/sessions.js';
+import { createFilesystemSessionLookup, mergeSessionLookups } from '../../sessions/lookup.js';
 import { workflowRecover } from '../../workflow/api.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
@@ -470,6 +472,10 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
+        sessionLookup: mergeSessionLookups(
+          createProjectionSessionLookup(storeDb),
+          createFilesystemSessionLookup(runtime),
+        ),
       });
       assertStartupStillActive();
 

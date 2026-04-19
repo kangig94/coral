@@ -602,36 +602,31 @@ describe('ExecutionService wait', () => {
       await expect(service.waitForJobTerminal('missing-job', 100)).rejects.toThrow('Job not found: missing-job');
     });
 
-    it('waits for both terminal status and session claim release without session events', async () => {
-      vi.useFakeTimers();
-      try {
-        const service = createService(ctx);
-        const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
+    it('waits for both terminal status and session claim release via session:released without timer polling', async () => {
+      const service = createService(ctx);
+      const { jobId, sessionId, progressStore, sessionManager } = createClaimedJob(service, ctx);
 
-        let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
-        const waiter = service.waitForJobTerminal(jobId, 250);
-        void waiter.then(
-          () => {
-            outcome = 'resolved';
-          },
-          () => {
-            outcome = 'rejected';
-          },
-        );
+      let outcome: 'pending' | 'resolved' | 'rejected' = 'pending';
+      const waiter = service.waitForJobTerminal(jobId, 250);
+      void waiter.then(
+        () => {
+          outcome = 'resolved';
+        },
+        () => {
+          outcome = 'rejected';
+        },
+      );
 
-        await Promise.resolve();
-        progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
-        await Promise.resolve();
-        expect(outcome).toBe('pending');
+      await Promise.resolve();
+      progressStore.markTerminalStatus(jobId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+      await flushMicrotasks();
+      expect(outcome).toBe('pending');
 
-        sessionManager.releaseJob(sessionId, jobId);
-        await vi.advanceTimersByTimeAsync(20);
+      sessionManager.releaseJob(sessionId, jobId);
+      await flushMicrotasks();
 
-        await expect(waiter).resolves.toBeUndefined();
-        expect(outcome).toBe('resolved');
-      } finally {
-        vi.useRealTimers();
-      }
+      await expect(waiter).resolves.toBeUndefined();
+      expect(outcome).toBe('resolved');
     });
 
     it('rechecks persisted state after subscribing so listener-install races cannot miss completion', async () => {

@@ -87,6 +87,7 @@ import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type { EventStreamHandlers, ScopeCheckResult } from '../transport/http/contracts.js';
 import type { BackendIdentity, ReadonlyRuntimeState } from './control.js';
 import type { IdleTimer } from './live/idle.js';
+import type { SessionLookup } from '../sessions/lookup.js';
 export type { EventStreamHandlers, ScopeCheckResult } from '../transport/http/contracts.js';
 
 interface LaunchIntentBase {
@@ -350,6 +351,7 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq?: () => number;
+  sessionLookup?: SessionLookup;
 };
 
 function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
@@ -495,13 +497,21 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   private readonly getCurrentJournalSeq?: () => number;
+  private readonly sessionLookup?: SessionLookup;
   private callerCorrelationSeq = 0;
 
   constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    this.sessionManager = new SessionManager(ctx.projectRoot, deps.runtime, deps.appendEvents ?? noopAppendEvents);
+    this.sessionManager = SessionManager.forProduction(
+      ctx.projectRoot,
+      deps.runtime,
+      deps.appendEvents ?? noopAppendEvents,
+      (payload) => {
+        this.eventBus.emit('session:released', payload);
+      },
+    );
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;
     this.bundleHash = deps.bundleHash ?? 'unknown';
@@ -515,6 +525,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.readJobProgress = deps.readJobProgress;
     this.subscribeJobEvents = deps.subscribeJobEvents;
     this.getCurrentJournalSeq = deps.getCurrentJournalSeq;
+    this.sessionLookup = deps.sessionLookup;
     this.launchOrchestrator = new LaunchOrchestrator({
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
@@ -924,7 +935,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     ctx: CallerContext,
     expectedProvider?: string,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
-    const session = getSessionById(sessionId, this.runtime);
+    const session = getSessionById(sessionId, this.runtime, this.sessionLookup);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
     }
