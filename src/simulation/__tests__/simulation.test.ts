@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
-import { isDurableCliRuntime } from '../../shared/types.js';
+import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import { runScenario, type StepResult } from '../runner.js';
 import type { SimulationDocument } from '../schema.js';
 import { SimulationWorld } from '../world.js';

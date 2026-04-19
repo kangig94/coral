@@ -1,6 +1,8 @@
 import { describeLegacyCoralFault, type RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
-import { isLivePhase, readBackendNamespace, type JobStatusRecord, type JobTerminalRecord } from '../../shared/types.js';
+import { isLivePhase } from '../phase.js';
+import { readBackendNamespace } from '../records.js';
+import type { JobStatusRecord, JobTerminalRecord } from '../records.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 import { writeWorkflowResult } from '../shell/result-artifact.js';

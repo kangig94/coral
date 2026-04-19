@@ -8,7 +8,7 @@ import {
   mapTurnStartParams,
   resolveCodexServiceTier,
 } from '../codex/request-mapping.js';
-import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRequest } from '../protocol.js';
 
 const tempHomes: string[] = [];
 

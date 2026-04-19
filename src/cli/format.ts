@@ -28,7 +28,8 @@ import type {
   ReindexResult,
 } from '../kb/types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { JobStatusRecord, JobTerminalRecord, WaitStreamEvent } from '../shared/types.js';
+import type { JobStatusRecord, JobTerminalRecord } from '../jobs/records.js';
+import type { WaitStreamEvent } from '../jobs/wait.js';
 import type { CliErrorEnvelope } from './errors.js';
 
 type DiscussAbortResult = {

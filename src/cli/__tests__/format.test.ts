@@ -7,7 +7,7 @@ import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/t
 import type { WatchState } from '../../discuss/watch.js';
 import type { KbReadResult } from '../../kb/types.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
-import type { WaitStreamEvent } from '../../shared/types.js';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { BackendUnreachableError, TransientHttpError } from '../../shared/utils.js';
 import { buildErrorEnvelope, UsageError } from '../errors.js';
 import {

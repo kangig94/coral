@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import type { ProviderContinuityBlob, ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
+import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { readString } from '../../shared/utils.js';
 import { runAppServerTurn } from '../app-server/runner.js';
 import {

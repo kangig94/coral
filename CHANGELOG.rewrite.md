@@ -7,6 +7,7 @@ Tag: `phase-0-complete` @ rewrite branch.
 Phase 0 lays down the skeleton of the new Journal + Corpus architecture on the `rewrite` branch. No behavior change — the marketplace-installed plugin at `~/.claude/plugins/cache/coral/coral/<version>/` continues to serve users from the pre-rewrite release.
 
 **Delivered**:
+
 - Legacy-isolation invariant + scanner exclusions (`src/__tests__/__helpers__/ts-import-scanner.ts`, `scripts/verify-simulation-sealing.mjs`). AC1 move set: 0 files — the per-file collision rule kept every pre-rewrite module in place.
 - Full SQLite schema at `src/store/schema.sql` and `src/store/migrations/001_initial.sql` (content-identical at Phase 0). TypeScript row types in `src/store/schema.ts`. Idempotent migration runner at `src/store/migrations.ts` (zero `db.totalChanges` delta on rerun). Build-time asset copy into `dist/store/`.
 - `CoralSetupError` class contract at `src/runtime/errors.ts`.
@@ -29,6 +30,7 @@ Tag: `phase-1-complete` @ rewrite branch.
 Phase 1 builds the complete Journal truth spine on top of Phase 0's skeleton. Live plugin stays unaffected.
 
 **Delivered**:
+
 - `better-sqlite3`-backed Journal at `src/store/db.ts` — WAL mode, `foreign_keys=ON`, `busy_timeout`, prepared-statement cache.
 - Transactional append at `src/store/append.ts` — `appendEvents()` runs inside `db.transaction(fn).immediate(...)`, assigns `seq` from SQLite ROWID, dispatches reducers and updates `projection_*` rows in the same transaction. 10k-event bulk append passes with monotonic `seq`; mid-batch reducer throw rolls back events and projections.
 - Canonical decode→parseBody→reduce pipeline architecture §4.2 literal: append stores RAW input bytes (`Buffer.from(JSON.stringify(input.body), 'utf-8')`) with `body_version = input.bodyVersion`. Both append AND rebuild call `parseBody(type, row.body_version, decoded, schema)` before reducer dispatch. Prevents upcaster double-application regression.
@@ -44,6 +46,7 @@ Phase 1 builds the complete Journal truth spine on top of Phase 0's skeleton. Li
 - Phase 0 debt cleared: `src/store/migrations.ts` routes file I/O through `Runtime.storage`; path factories accept `{baseDir}` option; `buildInMemoryCoralPaths` delegates to factories.
 
 **Retirement ledger progression**:
+
 - ✅ `src/shared/runtime-ports.ts` — DELETED (§1.6).
 - ✅ `src/execution/runtime.ts` — DELETED (§1.6).
 - ✅ `Runtime*` compat aliases in `src/runtime/ports.ts` — REMOVED (§1.6).
@@ -59,6 +62,7 @@ Tag: `phase-2-complete` @ rewrite branch.
 Phase 2 turns the Phase 1 Journal substrate into real domain ownership. Each of `src/jobs/`, `src/sessions/`, `src/discuss/`, `src/workflow/` now owns its events, projection reducer, shell, and `api.ts` facade. `CoralFault`, `WorkflowCheckpoint`, `SessionContinuityPatch`, and the `Persisted*Record` / `ProviderResult` / `ProviderProgressEvent` / `TerminalResult` families are gone from `src/**/*.ts`. Live plugin remains unaffected (rewrite branch only; no `build:release`).
 
 **Delivered**:
+
 - **§2.1 Phase 1 debt cleared** (commit `ba58f6c6`): `src/runtime/exec-builder.ts` exposes the shared `buildExecPromise` factory consumed by both runtimes — duplicate exec lifecycle bodies gone. `src/store/append.ts` requires `AppendContext.reducers: ComposedReducers`; `normalizeReducers`/`isComposedReducers` deleted. New invariant: `src/__tests__/invariants/exec-no-duplication.test.ts`.
 - **§2.2 Jobs domain** (commit `ae7eeb8a` — AC1 + AC8): `src/jobs/` ships `outcome.ts` (pure 5-variant ADT + 3-variant `JobLifecycleFault` + `CauseRef`), `phase.ts`, `launch.ts`, `result.ts`, `wait.ts`, `events.ts`, `projections.ts`, `api.ts` (`jobsCommands` + `jobsQueries` + `jobsReconcile`), `shell/{launch,abort,wait,abort-registry,agent-resolution,instruction,legacy-ingest}.ts`, `reconcile/{plan,snapshot,actions,coordinator,cross-namespace-adoption,claim-protocol,ownership-checker,job-helpers,errors}.ts`, `exports/result-markdown.ts`, and `read/cause-ref-render.ts`. `src/shared/legacy-terminal-outcome-compat.ts` (discriminant renamed `coral_fault → legacy_fault`) is the sole provider→domain bridge for Phase 6 retirement. `src/jobs/shell/legacy-ingest.ts` is the single authorized Legacy→domain converter. `src/shared/coral-fault.ts` and `src/execution/{recovery-core,recovery-registry,abort-controller-registry,agent-resolution,instruction,progress-store,job-lifecycle}.ts` + `src/execution/lifecycle/*` deleted. `src/cli/format.ts` + `src/cli/follow.ts` rewired to the 5-variant `TerminalOutcome` exit-code table.
 - **§2.3 Sessions domain** (commit `02301ae2` — AC2): `src/sessions/{entry,continuity,fault,events,projections,api,index}.ts` + `shell/{store,resolve}.ts`. `SessionContinuityPatch` purged repo-wide; `CauseRef` reused from `src/jobs/outcome.ts`. `src/execution/session-manager.ts` deleted.
@@ -68,6 +72,7 @@ Phase 2 turns the Phase 1 Journal substrate into real domain ownership. Each of 
 - **§2.7 MIGRATION + tag** (this commit): `src/__tests__/MIGRATION.md` finalized with per-file DELETED/SPLIT/KEPT/DEFERRED entries against the `phase-1-complete` baseline. `phase-2-complete` tag applied.
 
 **Retirement ledger progression**:
+
 - ✅ `src/shared/coral-fault.ts` — DELETED (§2.2).
 - ✅ `src/execution/{recovery-core,abort-controller-registry,agent-resolution,instruction}.ts` — DELETED (§2.2).
 - ✅ `src/execution/lifecycle/*` — DELETED (§2.2).
@@ -87,3 +92,22 @@ Phase 2 turns the Phase 1 Journal substrate into real domain ownership. Each of 
 - ⏭ `src/execution/simulation/**` — handoff to `src/simulation/**` in Phase 7; `src/execution/simulation/schema.ts` and `src/execution/simulation/core/index.ts` remain the named `legacy-terminal-outcome-compat` consumers until Phase 7.
 
 **Verification**: `npm run build` (prod + dev) clean; `npm run lint` clean; `npm test` green; integration suite green; `rg "\bCoralFault\b" src/ --type ts` → zero; `rg "coral_fault\s*\{\s*fault:" src/ --type ts` → zero; `rg "PersistedStatusRecord|PersistedLaunchRecord|PersistedRuntimeRecord|PersistedExitRecord|PersistedProgressRecord|WorkflowCheckpoint|ProviderResult|ProviderProgressEvent|TerminalResult|SessionContinuityPatch" src/ --type ts` → zero. All 12 Phase 2 acceptance criteria satisfied.
+
+## Phase 3 — Coordinator Consolidation (in progress)
+
+Current carry-over cleanup commit group: `phase-3/shared-ownership-cleanup` (AC7 debt closure + AC9 MINOR remainder).
+
+**Delivered in CG6**:
+
+- `src/execution/__tests__/service.test.ts` retired after the mechanical split. Handler-owned coverage now lives at `src/jobs/shell/__tests__/{launch,abort,wait}.test.ts`, lifecycle recovery lives at `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts`, and coordinator-only residue stays at `src/coordinator/__tests__/service-composition.test.ts`. The destination `it(...)` count stays above the original 94-test floor.
+- `src/execution/__tests__/progress-store.test.ts` retired. The live projection rebuild path is now covered by `src/jobs/__tests__/projection-rebuild.test.ts`, which drives the jobs consumer through `ConsumerDriver.notify(...)` + `waitFreshUntil(...)`.
+- `src/shared/types.ts`, `src/shared/persistence-parsers.ts`, and `src/shared/persistence-readers.ts` are deleted. Remaining callers import domain-owned types directly, job status parsing lives under `src/jobs/records.ts`, discuss filesystem reads live under `src/discuss/shell/discuss-sources-catalog.ts`, and `src/client/readers.ts` now reads jobs through the store-backed projection/query path.
+- AC9 MINOR remainder landed: schema rationale comments in `src/sessions/events.ts` and `src/discuss/store-registry.ts`, wait-wire ownership note in `src/jobs/api.ts`, workflow test comments/fixture extraction, hook stub stderr-shape assertions, and migration/changelog consistency updates.
+
+**Retirement ledger progression**:
+
+- ✅ `src/execution/__tests__/service.test.ts` — DELETED after the CG6 split.
+- ✅ `src/execution/__tests__/progress-store.test.ts` — DELETED in CG6.
+- ✅ `src/shared/types.ts` — DELETED in CG6.
+- ✅ `src/shared/persistence-parsers.ts` — DELETED in CG6.
+- ✅ `src/shared/persistence-readers.ts` — DELETED in CG6.

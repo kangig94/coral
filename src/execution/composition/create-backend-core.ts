@@ -52,7 +52,8 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
 import { createReplayCursor } from '../progress-store.js';
-import { belongsToNamespace, isLivePhase } from '../../shared/types.js';
+import { isLivePhase } from '../../jobs/phase.js';
+import { belongsToNamespace } from '../../jobs/records.js';
 
 export type {
   BackendBootSnapshot,

@@ -10,7 +10,7 @@ import { createDiscussContextRegistry } from '../../discuss/shell/live-registry.
 import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { JobTerminalRecord } from '../../shared/types.js';
+import type { JobTerminalRecord } from '../../jobs/records.js';
 
 const terminalResult: JobTerminalRecord = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
 

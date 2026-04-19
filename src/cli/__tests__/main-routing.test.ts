@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '../main.js';
-import type { JobStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../jobs/records.js';
 import {
   formatAbortResult,
   formatDiscussAbort,

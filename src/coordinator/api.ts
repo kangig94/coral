@@ -13,25 +13,15 @@ import type { AbortResult } from '../shared/execution-contracts.js';
 import { getCallerContext, withCallerContext } from './caller-context.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { resolveEffort, type EffortLevel, type WorkflowCommand } from '../shared/schemas.js';
-import {
-  isAppServerRuntime,
-  isDurableCliRuntime,
-  isTerminalPhase,
-  type AppServerRuntimeRecord,
-  type JobPhase,
-  type LaunchDecision,
-  type LaunchState,
-  type JobLaunchRecord,
-  type JobRuntimeRecord,
-  type ProviderInstruction,
-  type ProviderRequest,
-  type ProviderTurnResult,
-  type SessionEntry,
-  type JobTerminalRecord,
-  type WaitStreamEvent,
-  type WaitStreamRequest,
-  type WorkflowResultMeta,
-} from '../shared/types.js';
+import type { LaunchDecision } from '../jobs/launch.js';
+import { isTerminalPhase } from '../jobs/phase.js';
+import type { JobPhase } from '../jobs/phase.js';
+import { isAppServerRuntime } from '../jobs/records.js';
+import type { AppServerRuntimeRecord, LaunchState, JobLaunchRecord, JobRuntimeRecord, JobTerminalRecord, WorkflowResultMeta } from '../jobs/records.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { ProviderInstruction, ProviderRequest, ProviderTurnResult } from '../providers/protocol.js';
+import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
+import type { SessionEntry } from '../sessions/entry.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { DiscussContext } from '../discuss/shell/context.js';

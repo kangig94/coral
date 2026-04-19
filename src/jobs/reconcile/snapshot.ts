@@ -1,14 +1,9 @@
 import { formatError } from '../../shared/utils.js';
-import {
-  isLivePhase,
-  readBackendNamespace,
-  type JobExitRecord,
-  type JobLaunchRecord,
-  type JobRuntimeRecord,
-  type JobStatusRecord,
-  type SessionEntry,
-  type JobTerminalRecord,
-} from '../../shared/types.js';
+import { isLivePhase } from '../phase.js';
+import { readBackendNamespace } from '../records.js';
+import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
+import type { JobExitRecord } from '../../runtime/durable-runtime.js';
+import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { readSessionRefs, listSessionShards } from '../../sessions/shell/resolve.js';
 import { SessionManager } from '../../sessions/shell/store.js';

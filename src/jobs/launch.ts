@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { LaunchPool } from '../coordinator/live/admission.js';
-import type { EffortLevel, ProviderAction, ProviderInstruction } from '../shared/types.js';
+import type { EffortLevel, ProviderAction, ProviderInstruction } from '../providers/protocol.js';
 
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }

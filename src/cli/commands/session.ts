@@ -3,7 +3,7 @@ import { z, ZodError } from 'zod';
 
 import { ensureBackend } from '../backend-lifecycle.js';
 import { streamWait, type WaitCursorRef } from '../../client/backend-helpers.js';
-import { isLivePhase, jobPhaseSchema } from '../../shared/types.js';
+import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
   emitError,

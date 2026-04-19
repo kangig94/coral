@@ -1,5 +1,5 @@
 import type { CallerContext } from '../shared/request-context.js';
-import type { WaitCursor, WaitStreamEvent } from '../shared/types.js';
+import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
   buildStepDetailsForAtoms,

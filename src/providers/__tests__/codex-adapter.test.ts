@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { codexProvider } from '../codex/adapter.js';
-import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRequest } from '../protocol.js';
 import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../types.js';
 
 type CodexPreflightRuntimeFixture = {

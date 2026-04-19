@@ -3,7 +3,8 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
-import type { JobPhase, JobStatusRecord, JobTerminalRecord } from '../../shared/types.js';
+import type { JobPhase } from '../../jobs/phase.js';
+import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
 
 export type JobLaunchRow = {
   jobId: string;

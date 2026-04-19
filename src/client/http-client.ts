@@ -45,7 +45,8 @@ import {
   parseWaitStreamEvent,
   TOOL_TIMEOUT_MS,
 } from '../shared/sse-parser.js';
-import type { JobProgressRecord, JobStatusRecord, WaitCursor, WaitStreamEvent } from '../shared/types.js';
+import type { JobProgressRecord, JobStatusRecord } from '../jobs/records.js';
+import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { isRecord } from '../shared/utils.js';
 
 export type AcceptedLaunchResponse = {

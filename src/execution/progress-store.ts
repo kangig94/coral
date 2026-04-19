@@ -1,19 +1,11 @@
 import { join } from 'node:path';
-import {
-  isLivePhase,
-  readBackendNamespace,
-  type JobKind,
-  type JobPhase,
-  type LaunchState,
-  type JobExitRecord,
-  type JobLaunchRecord,
-  type JobProgressRecord,
-  type JobRuntimeRecord,
-  type JobStatusRecord,
-  type JobTerminalRecord,
-} from '../shared/types.js';
+import { isLivePhase } from '../jobs/phase.js';
+import type { JobPhase } from '../jobs/phase.js';
+import { readBackendNamespace } from '../jobs/records.js';
+import type { JobKind, LaunchState, JobLaunchRecord, JobProgressRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../jobs/records.js';
+import type { JobExitRecord } from '../runtime/durable-runtime.js';
 import { backendLog } from '../shared/backend-log.js';
-import { safeParseJobStatusRecord } from '../shared/persistence-parsers.js';
+import { safeParseJobStatusRecord } from '../jobs/records.js';
 import { errorMessage, isNoEntryError, nowIsoString } from '../shared/utils.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { TypedEventBus } from '../coordinator/control.js';

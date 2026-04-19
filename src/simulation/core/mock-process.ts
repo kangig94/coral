@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
-import type { DurableCliRuntimeRecord, JobExitRecord } from '../../shared/types.js';
+import type { DurableCliRuntimeRecord, JobExitRecord } from '../../runtime/durable-runtime.js';
 import { nowIsoString } from '../../shared/utils.js';
 import { attachSpawnRecordingMetadata } from '../recording.js';
 import type {

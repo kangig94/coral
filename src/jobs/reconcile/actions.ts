@@ -1,13 +1,9 @@
 import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
-import {
-  isAppServerRuntime,
-  isTerminalPhase,
-  type DurableCliRuntimeRecord,
-  type JobLaunchRecord,
-  type JobRuntimeRecord,
-  type JobTerminalRecord,
-} from '../../shared/types.js';
+import { isTerminalPhase } from '../phase.js';
+import { isAppServerRuntime } from '../records.js';
+import type { JobLaunchRecord, JobRuntimeRecord, JobTerminalRecord } from '../records.js';
+import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/types.js';
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';

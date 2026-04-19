@@ -1,9 +1,10 @@
-import type { ProviderContinuityBlob, ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from '../shared/types.js';
+import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from './protocol.js';
 import type { Runtime } from '../runtime/ports.js';
 import { nowIsoString } from '../shared/utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
 
-export type { ProviderContinuityBlob } from '../shared/types.js';
+export type { ProviderContinuityBlob } from '../sessions/continuity.js';
 
 /** Recovery metadata persisted at launch time by the provider. */
 export interface ProviderRecoveryMeta {

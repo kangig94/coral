@@ -3,7 +3,7 @@ import type { Result } from '../types.js';
 import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
-import type { JobStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../jobs/records.js';
 
 export type { WatchEvent, WatchState } from '../watch.js';
 

@@ -1,21 +1,15 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  currentBuildFlavor,
   discussBaseDirForSource,
   discussDiscoveryPathForSource,
   discussSourcesPath,
   discussSummaryIndexPathForSource,
   resolveProjectSource,
 } from '../../infra/paths.js';
-
-// JOBS_DIR is the module-level constant tmpdir()/coral-jobs — not overridable without
-// mocking the paths module. Tests write unique job IDs here and clean up in afterEach.
-// Risk: if a test worker is killed before cleanup, a test-* directory remains in the
-// production jobs path. This is acceptable because job IDs are unique and the directory
-// contains only test fixtures, not real job state.
-const jobsDir = join(tmpdir(), 'coral-jobs');
 import {
   readDiscussDiscoveryForSource,
   readDiscussEventLog,
@@ -26,12 +20,16 @@ import {
   readProgressLog,
   readStatusRecord,
 } from '../readers.js';
+import { openStoreDatabase } from '../../store/db.js';
+import { storePaths } from '../../store/paths.js';
+import { createRealRuntime } from '../../runtime/real.js';
+
+const originalHome = process.env.HOME;
 
 let testJobId: string;
-let testJobDir: string;
 let fixtureDir: string;
 let testSource: string;
-let discussSourcesBackup: string | null;
+let testHomeDir: string;
 let cleanupPaths: string[];
 
 const NOW = '2026-01-01T00:00:00Z';
@@ -53,6 +51,110 @@ function writeTextFixture(filePath: string, value: string): void {
 
 function fixturePath(name: string): string {
   return join(fixtureDir, name);
+}
+
+const nodeStoreStorage = createRealRuntime().storage;
+
+function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
+  const db = openStoreDatabase({
+    path: storePaths(currentBuildFlavor()).dbFile,
+    storage: nodeStoreStorage,
+  });
+
+  try {
+    write(db);
+  } finally {
+    db.close();
+  }
+}
+
+function makeLaunchBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    sessionId: 's1',
+    provider: 'codex',
+    projectRoot: '/tmp/project',
+    backendNamespace: 'ns',
+    pool: 'default',
+    enqueueSequence: 0,
+    providerAction: 'exec',
+    request: {
+      prompt: 'hello',
+      cwd: '/tmp/project',
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: NOW,
+    ...overrides,
+  };
+}
+
+function insertJobEvent(
+  db: ReturnType<typeof openStoreDatabase>,
+  {
+    jobId = testJobId,
+    type,
+    body,
+    ts = NOW,
+  }: {
+    jobId?: string;
+    type: string;
+    body: string | Record<string, unknown>;
+    ts?: string;
+  },
+): number {
+  const payload = typeof body === 'string' ? Buffer.from(body, 'utf-8') : Buffer.from(JSON.stringify(body), 'utf-8');
+  const result = db
+    .prepare(
+      `INSERT INTO events (
+         ts,
+         type,
+         stream_kind,
+         stream_id,
+         namespace,
+         project,
+         refs,
+         body_version,
+         body
+       ) VALUES (?, ?, 'job', ?, 'ns', '/tmp/project', ?, 1, ?)`,
+    )
+    .run(ts, type, jobId, JSON.stringify({ jobId }), payload);
+  return Number(result.lastInsertRowid);
+}
+
+function seedJobProjection(
+  options: {
+    jobId?: string;
+    phase?: string;
+    launchBody?: string | Record<string, unknown> | null;
+    events?: Array<{ type: string; body: string | Record<string, unknown>; ts?: string }>;
+  } = {},
+): void {
+  const jobId = options.jobId ?? testJobId;
+  withWritableStore((db) => {
+    let lastSeq = 0;
+    if (options.launchBody !== null) {
+      lastSeq = insertJobEvent(db, {
+        jobId,
+        type: 'job.launch.requested',
+        body: options.launchBody ?? makeLaunchBody(),
+      });
+    }
+    for (const event of options.events ?? []) {
+      lastSeq = insertJobEvent(db, { jobId, ...event });
+    }
+
+    db.prepare(
+      `INSERT INTO projection_jobs (
+         job_id,
+         phase,
+         terminal,
+         diagnostics,
+         parent_job_id,
+         workflow_slot,
+         last_seq
+       ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?)`,
+    ).run(jobId, options.phase ?? 'running', lastSeq);
+  });
 }
 
 function makePersistedDiscussState(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -147,157 +249,143 @@ function makeSummaryIndexRow(overrides: Record<string, unknown> = {}): Record<st
 
 beforeEach(() => {
   testJobId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  testJobDir = join(jobsDir, testJobId);
-  mkdirSync(testJobDir, { recursive: true });
+  testHomeDir = mkdtempSync(join(tmpdir(), 'coral-readers-home-'));
+  process.env.HOME = testHomeDir;
   fixtureDir = mkdtempSync(join(tmpdir(), 'coral-readers-'));
   testSource = `tests/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  cleanupPaths = [fixtureDir, discussBaseDirForSource(testSource)];
-  discussSourcesBackup = existsSync(discussSourcesPath()) ? readFileSync(discussSourcesPath(), 'utf-8') : null;
+  cleanupPaths = [fixtureDir, testHomeDir, discussBaseDirForSource(testSource)];
 });
 
 afterEach(() => {
-  rmSync(testJobDir, { recursive: true, force: true });
   for (const cleanupPath of cleanupPaths) {
     rmSync(cleanupPath, { recursive: true, force: true });
   }
-
-  if (discussSourcesBackup === null) {
-    rmSync(discussSourcesPath(), { force: true });
-  } else {
-    mkdirSync(dirname(discussSourcesPath()), { recursive: true });
-    writeFileSync(discussSourcesPath(), discussSourcesBackup);
-  }
+  process.env.HOME = originalHome;
 });
 
 describe('readStatusRecord', () => {
-  const validStatus = {
-    jobId: 'j1',
-    sessionId: 's1',
-    provider: 'codex',
-    projectRoot: '/tmp/project',
-    backendNamespace: 'ns',
-    phase: 'completed',
-    launch: { state: 'ready', updatedAt: '2026-01-01T00:00:00Z' },
-  };
-
   it('returns a valid status record with all required fields', () => {
-    writeFileSync(join(testJobDir, 'status.json'), JSON.stringify(validStatus));
+    seedJobProjection({ phase: 'completed' });
     const result = readStatusRecord(testJobId);
     expect(result).not.toBeNull();
-    expect(result!.jobId).toBe('j1');
+    expect(result!.jobId).toBe(testJobId);
     expect(result!.sessionId).toBe('s1');
     expect(result!.provider).toBe('codex');
     expect(result!.projectRoot).toBe('/tmp/project');
     expect(result!.backendNamespace).toBe('ns');
     expect(result!.phase).toBe('completed');
     expect(result!.launch.state).toBe('ready');
-    expect(result!.launch.updatedAt).toBe('2026-01-01T00:00:00Z');
+    expect(result!.launch.updatedAt).toBe(NOW);
   });
 
-  it('returns null for missing file', () => {
+  it('returns null when the projection store has no matching job', () => {
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null for invalid JSON', () => {
-    writeFileSync(join(testJobDir, 'status.json'), 'not json');
+  it('returns null when the launch event body is invalid JSON', () => {
+    seedJobProjection({ launchBody: 'not json' });
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null for valid JSON with wrong shape (string)', () => {
-    writeFileSync(join(testJobDir, 'status.json'), '"just a string"');
+  it('returns null when the launch event body has the wrong shape', () => {
+    seedJobProjection({ launchBody: { jobId: 'wrong-shape' } });
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null for valid JSON with missing required fields', () => {
-    writeFileSync(join(testJobDir, 'status.json'), JSON.stringify({ jobId: 'j1' }));
+  it('returns null when the projection exists without a launch request event', () => {
+    seedJobProjection({ launchBody: null });
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null for valid JSON with wrong nested shape (launch as string)', () => {
-    writeFileSync(
-      join(testJobDir, 'status.json'),
-      JSON.stringify({ ...validStatus, launch: 'not an object' }),
-    );
+  it('returns null when the launch request body contains unexpected fields under the journal schema', () => {
+    seedJobProjection({ launchBody: { ...makeLaunchBody(), futureField: true } });
     expect(readStatusRecord(testJobId)).toBeNull();
-  });
-
-  it('accepts and preserves additional fields (forward compatibility)', () => {
-    const extended = { ...validStatus, futureField: true };
-    writeFileSync(join(testJobDir, 'status.json'), JSON.stringify(extended));
-    const result = readStatusRecord(testJobId);
-    expect(result).not.toBeNull();
-    expect(result!.jobId).toBe('j1');
-    expect(result!).toHaveProperty('futureField', true);
   });
 });
 
 describe('readProgressLog', () => {
-  const validLine = {
-    jobId: 'j1',
-    sessionId: 's1',
-    eventId: 1,
-    type: 'progress',
-    ts: '2026-01-01T00:00:00Z',
-    message: 'working',
-  };
-
   it('returns valid progress entries with all required fields', () => {
-    writeFileSync(join(testJobDir, 'progress.jsonl'), JSON.stringify(validLine) + '\n');
+    seedJobProjection({
+      phase: 'running',
+      events: [{ type: 'job.progress.emitted', body: { kind: 'message', message: 'working' } }],
+    });
     const result = readProgressLog(testJobId);
     expect(result).toHaveLength(1);
-    expect(result[0].jobId).toBe('j1');
+    expect(result[0].jobId).toBe(testJobId);
     expect(result[0].sessionId).toBe('s1');
     expect(result[0].eventId).toBe(1);
     expect(result[0].type).toBe('progress');
-    expect(result[0].ts).toBe('2026-01-01T00:00:00Z');
+    expect(result[0].ts).toBe(NOW);
     expect(result[0].message).toBe('working');
   });
 
-  it('returns empty array for missing file', () => {
+  it('returns empty array when the projection store has no matching job', () => {
     expect(readProgressLog(testJobId)).toEqual([]);
   });
 
-  it('skips lines with invalid JSON', () => {
-    const content = [JSON.stringify(validLine), 'not json', JSON.stringify({ ...validLine, eventId: 2 })].join('\n');
-    writeFileSync(join(testJobDir, 'progress.jsonl'), content);
-    const result = readProgressLog(testJobId);
-    expect(result).toHaveLength(2);
-  });
-
-  it('skips lines with wrong shape (missing required fields)', () => {
-    const badLine = { jobId: 'j1' }; // missing sessionId, eventId, type, ts
-    const content = [JSON.stringify(validLine), JSON.stringify(badLine)].join('\n');
-    writeFileSync(join(testJobDir, 'progress.jsonl'), content);
-    const result = readProgressLog(testJobId);
-    expect(result).toHaveLength(1);
-    expect(result[0].eventId).toBe(1);
-  });
-
-  it('skips lines where eventId is not a number', () => {
-    const badLine = { ...validLine, eventId: 'not-a-number' };
-    const content = [JSON.stringify(validLine), JSON.stringify(badLine)].join('\n');
-    writeFileSync(join(testJobDir, 'progress.jsonl'), content);
-    const result = readProgressLog(testJobId);
-    expect(result).toHaveLength(1);
-  });
-
-  it('accepts and preserves additional fields (forward compatibility)', () => {
-    const extended = { ...validLine, futureField: 'data' };
-    writeFileSync(join(testJobDir, 'progress.jsonl'), JSON.stringify(extended) + '\n');
-    const result = readProgressLog(testJobId);
-    expect(result).toHaveLength(1);
-    expect(result[0].jobId).toBe('j1');
-    expect(result[0]).toHaveProperty('futureField', 'data');
-  });
-
-  it('returns empty array for empty file', () => {
-    writeFileSync(join(testJobDir, 'progress.jsonl'), '');
+  it('returns an empty array when a progress event body is invalid JSON', () => {
+    seedJobProjection({
+      phase: 'running',
+      events: [{ type: 'job.progress.emitted', body: 'not json' }],
+    });
     expect(readProgressLog(testJobId)).toEqual([]);
   });
 
-  it('returns empty array for whitespace-only file', () => {
-    writeFileSync(join(testJobDir, 'progress.jsonl'), '\n\n  \n');
+  it('returns an empty array when a progress event body has the wrong shape', () => {
+    seedJobProjection({
+      phase: 'running',
+      events: [{ type: 'job.progress.emitted', body: { message: 'working' } }],
+    });
     expect(readProgressLog(testJobId)).toEqual([]);
+  });
+
+  it('skips non-message job progress events that do not surface to the client', () => {
+    seedJobProjection({
+      phase: 'running',
+      events: [{ type: 'job.progress.emitted', body: { kind: 'stale_status_schema' } }],
+    });
+    expect(readProgressLog(testJobId)).toEqual([]);
+  });
+
+  it('returns an empty array when a progress event body contains unexpected fields', () => {
+    seedJobProjection({
+      phase: 'running',
+      events: [{ type: 'job.progress.emitted', body: { kind: 'message', message: 'working', futureField: 'data' } }],
+    });
+    expect(readProgressLog(testJobId)).toEqual([]);
+  });
+
+  it('returns terminal records from journal events when present', () => {
+    seedJobProjection({
+      phase: 'completed',
+      events: [
+        {
+          type: 'job.terminal.recorded',
+          body: {
+            outcome: { kind: 'completed' },
+            durationMs: 1,
+            content: 'done',
+          },
+        },
+      ],
+    });
+
+    expect(readProgressLog(testJobId)).toEqual([
+      {
+        jobId: testJobId,
+        sessionId: 's1',
+        seq: 2,
+        perJobIndex: 1,
+        eventId: 1,
+        type: 'terminal',
+        ts: NOW,
+        result: {
+          content: 'done',
+          durationMs: 1,
+          outcome: { kind: 'completed' },
+        },
+      },
+    ]);
   });
 });
 

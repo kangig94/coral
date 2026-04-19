@@ -1,5 +1,5 @@
 import type { CoralPaths } from '../infra/coral-paths.js';
-import type { DurableCliRuntimeRecord, JobExitRecord } from '../shared/types.js';
+import type { DurableCliRuntimeRecord, JobExitRecord } from './durable-runtime.js';
 
 export interface RuntimeTimerHandle {
   unref?(): void;

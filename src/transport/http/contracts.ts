@@ -10,18 +10,13 @@ import {
   sessionMessageSchema,
   workflowRequestSchema,
 } from '../../shared/schemas.js';
-import type { JobTerminalRecord, LaunchDecision } from '../../shared/types.js';
-import {
-  belongsToNamespace,
-  isLivePhase,
-  jobPhaseSchema,
-  type JobPhase,
-  type JobProgressRecord,
-  type JobStatusRecord,
-  type WaitCursor,
-  type WaitStreamEvent,
-  type WaitStreamRequest,
-} from '../../shared/types.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
+import type { JobTerminalRecord } from '../../jobs/records.js';
+import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
+import type { JobPhase } from '../../jobs/phase.js';
+import { belongsToNamespace } from '../../jobs/records.js';
+import type { JobProgressRecord, JobStatusRecord } from '../../jobs/records.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/views.js';
 import type { ToolDomainResult } from './tool-response.js';
 

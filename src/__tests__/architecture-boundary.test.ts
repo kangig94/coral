@@ -186,7 +186,7 @@ describe('architecture boundary guard', () => {
     const violations = collectViolations(
       EXECUTION_ROOT,
       'execution/ must not import from client/ (production only)',
-      'use src/shared/persistence-readers.ts instead.',
+      'use src/discuss/shell/discuss-sources-catalog.ts instead.',
       (target) => isWithinPath(target, CLIENT_ROOT),
     );
 

@@ -1,0 +1,2644 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeOs from 'node:os';
+import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
+import { createDeferred } from '../../shared/test-deferred.js';
+import type { AppServerRuntimeRecord, JobLaunchRecord, JobStatusRecord } from '../../jobs/records.js';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
+import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
+import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
+
+import type { PreflightRuntime, Provider } from '../../providers/types.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
+import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
+import { parseExpression } from '../../workflow/parser.js';
+import { type AgentRef } from '../../jobs/shell/agent-resolution.js';
+import {
+  LaunchCoordinator,
+  getMaxWorkers,
+  type ProviderServerHandle,
+  type SpawnProviderServerFn,
+} from '../live/admission.js';
+import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
+import { TypedEventBus } from '../control.js';
+import { ProgressStore } from '../../execution/progress-store.js';
+import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import { SessionManager } from '../../execution/session-manager.js';
+import type { CallerContext } from '../../shared/request-context.js';
+import { ExecutionService } from '../api.js';
+
+const mockState = vi.hoisted(() => ({
+  tmpHome: '',
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-service-composition-test-tmp`,
+  getNewProvider: vi.fn(),
+  resolveAgent: vi.fn(),
+}));
+const TEST_BACKEND_NAMESPACE = 'test-namespace';
+
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof NodeOs>('node:os');
+  return {
+    ...actual,
+    homedir: () => mockState.tmpHome,
+    tmpdir: () => mockState.tmpRoot,
+  };
+});
+
+vi.mock('../../providers/registry.js', () => ({
+  getNewProvider: mockState.getNewProvider,
+}));
+
+vi.mock('../../jobs/shell/agent-resolution.js', async () => {
+  const actual = await vi.importActual<typeof AgentResolutionMod>('../../jobs/shell/agent-resolution.js');
+  return {
+    ...actual,
+    resolveAgent: mockState.resolveAgent,
+  };
+});
+
+type ServiceInternals = {
+  abortRegistry: AbortRegistry;
+  progressStore: ProgressStore;
+  sessionManager: SessionManager;
+};
+
+const createdJobIds = new Set<string>();
+let baselineJobIds = new Set<string>();
+let eventBus: TypedEventBus;
+let launchCoordinator: LaunchCoordinator;
+let spawnProviderServer: SpawnProviderServerFn;
+let runtime: ReturnType<typeof createRealRuntime>;
+let JOBS_DIR = '';
+
+function jobResultPath(jobId: string): string {
+  return join(JOBS_DIR, jobId, 'result.md');
+}
+
+function cancelQueued(jobId: string, pool?: 'default' | 'discuss' | 'curate'): boolean {
+  return launchCoordinator.cancelQueued(jobId, pool);
+}
+
+function getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
+  return launchCoordinator.getActiveJobIds(pool);
+}
+
+function terminateAll(): void {
+  launchCoordinator.terminateAll();
+}
+
+function queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {
+  return launchCoordinator.queueDepth(pool);
+}
+
+function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.releaseLaunch(jobId, pool);
+}
+
+function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
+  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
+}
+
+function getInternals(service: ExecutionService): ServiceInternals {
+  return service as unknown as ServiceInternals;
+}
+
+function createService(
+  ctx: CallerContext,
+  options: {
+    progressStore?: ProgressStore;
+    bundleHash?: string;
+    backendNamespace?: string;
+    providerHostManager?: ProviderHostManager;
+    pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
+  } = {},
+): ExecutionService {
+  const resolveProvider = (name: string) => mockState.getNewProvider(name);
+  return new ExecutionService(ctx, {
+    runtime,
+    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
+    bundleHash: options.bundleHash,
+    backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
+    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
+    launchCoordinator,
+    eventBus,
+    providerRegistry: {
+      get: resolveProvider,
+      getExecutor: resolveProvider,
+      getAppServerLifecycle: (name: string) => resolveProvider(name)?.appServerLifecycle,
+      getArtifactRecovery: (name: string) => resolveProvider(name)?.artifactRecovery,
+      getArtifactCleanup: (name: string) => resolveProvider(name)?.artifactCleanup,
+      getAll: () => [],
+    } as never,
+    pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
+  });
+}
+
+function createResolvedAgent(ref: AgentRef, content: string) {
+  return {
+    ref: { namespace: ref.namespace ?? 'coral', name: ref.name },
+    source: 'agent' as const,
+    content,
+    path: `/tmp/${ref.name}.md`,
+  };
+}
+
+function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
+  const fallback = handles.at(-1);
+  const mock = vi.fn(async () => {
+    if (!fallback) {
+      throw new Error('No provider server handle configured');
+    }
+    return fallback;
+  });
+  for (const handle of handles) {
+    mock.mockResolvedValueOnce(handle);
+  }
+  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
+  return mock;
+}
+
+function trackJob(jobId: string): void {
+  createdJobIds.add(jobId);
+}
+
+function listJobDirs(): Set<string> {
+  try {
+    return new Set(
+      readdirSync(JOBS_DIR, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name),
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function trackAllJobDirs(): void {
+  try {
+    for (const jobId of listJobDirs()) {
+      if (baselineJobIds.has(jobId)) continue;
+      createdJobIds.add(jobId);
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function createFakeProviderServerHandle(options?: {
+  generation?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}) {
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
+  const request =
+    options?.request ??
+    (async (_method: string, _params: Record<string, unknown>) => {
+      return {};
+    });
+  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
+  const notifyMock = vi.fn();
+  const onNotificationMock = vi.fn(
+    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
+      handlers.add(handler);
+      return () => {
+        handlers.delete(handler);
+      };
+    },
+  );
+  const markExpectedCloseMock = vi.fn();
+  const closeMock = vi.fn(async () => {});
+  const closePromise = new Promise<Error | void>(() => {});
+
+  return {
+    handle: {
+      pid: 43210,
+      child: {} as never,
+      generation: options?.generation ?? 7,
+      rpc: {
+        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
+        notify: notifyMock,
+      },
+      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
+      closePromise,
+      markExpectedClose: markExpectedCloseMock,
+      close: closeMock,
+    } satisfies ProviderServerHandle,
+    requestMock,
+    notifyMock,
+    onNotificationMock,
+    markExpectedCloseMock,
+    closeMock,
+    emit(message: { method: string; params?: Record<string, unknown> }) {
+      for (const handler of handlers) {
+        handler(message);
+      }
+    },
+  };
+}
+
+type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
+  outcome?: ProviderTurnResult['outcome'];
+};
+
+type _TestJobTerminalRecord = Omit<NonNullable<JobStatusRecord['result']>, 'outcome'> & {
+  outcome?: NonNullable<JobStatusRecord['result']>['outcome'];
+};
+
+function completedOutcome() {
+  return { kind: 'completed' } as const;
+}
+
+function withCompletedOutcome<T extends { content: string; outcome?: unknown }>(
+  result: T,
+): T & {
+  outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome>;
+} {
+  if (result.outcome !== undefined) {
+    return result as T & { outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome> };
+  }
+  return { ...result, outcome: completedOutcome() };
+}
+
+function makeProvider(options?: {
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult>;
+  preflight?: Provider['preflight'];
+}): {
+  provider: Provider;
+  execute: ReturnType<typeof vi.fn>;
+  preflight?: ReturnType<typeof vi.fn>;
+} {
+  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderTurnResult> => {
+    const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
+    return withCompletedOutcome(result) as ProviderTurnResult;
+  });
+  const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
+  const provider: Provider = {
+    name: 'codex',
+    execute,
+    ...(preflight ? { preflight } : {}),
+  };
+  return { provider, execute, preflight };
+}
+
+function makeCodexAppServerProvider(): Provider {
+  return {
+    name: 'codex',
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    appServerLifecycle: {
+      buildServerSpec: (_continuity, request) =>
+        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      interrupt: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        const turnId = continuity.turnId;
+        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
+          return;
+        }
+        await lease.rpc('turn/interrupt', { threadId, turnId });
+      },
+      probe: async (lease, continuity) => {
+        const threadId = continuity.threadId;
+        if (typeof threadId !== 'string') {
+          return { resumable: false, updatedContinuity: continuity };
+        }
+        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
+        try {
+          await lease.rpc('thread/resume', {
+            threadId,
+            cwd,
+            model: null,
+            approvalPolicy: 'never',
+            sandbox: 'workspace-write',
+          });
+          return { resumable: true, updatedContinuity: continuity };
+        } catch (error) {
+          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+          if (
+            message.includes('not found') ||
+            message.includes('missing thread') ||
+            message.includes('unknown thread') ||
+            message.includes('does not exist') ||
+            message.includes('no such thread')
+          ) {
+            return { resumable: false, updatedContinuity: continuity };
+          }
+          throw error;
+        }
+      },
+      finalizeInterrupted: (probeResult, continuity) =>
+        probeResult.resumable
+          ? {
+              conversationRef: typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
+              continuityMutation: continuity,
+            }
+          : {
+              nonResumable: true,
+              continuityMutation: continuity,
+            },
+    },
+  };
+}
+
+function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
+  expect(preflight).toHaveBeenCalledWith({
+    process: runtime.process,
+    storage: runtime.storage,
+    env: runtime.env,
+  } satisfies PreflightRuntime);
+}
+
+function _makeSharedClaudeAppServerProvider(spec: {
+  provider: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  shared: true;
+}): Provider {
+  return {
+    name: 'claude',
+    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    appServerLifecycle: {
+      buildServerSpec: () => spec,
+      interrupt: async (lease, continuity) => {
+        const brokerSessionKey =
+          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
+        if (!brokerSessionKey) {
+          return;
+        }
+        await lease.rpc('turn/interrupt', {
+          brokerSessionKey,
+          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
+        });
+      },
+      probe: async (_lease, continuity) => ({
+        resumable: true,
+        updatedContinuity: continuity,
+      }),
+      finalizeInterrupted: (probeResult) => ({
+        continuityMutation: probeResult.updatedContinuity,
+      }),
+    },
+  };
+}
+
+async function occupyProviderSlots(
+  service: ExecutionService,
+  ctx: CallerContext,
+  providerName: string,
+): Promise<string[]> {
+  const decisions = await Promise.all(
+    Array.from({ length: getMaxWorkers(runtime.env) }, (_value, index) =>
+      service.start(providerName, { prompt: `occupy-${index}` }, ctx),
+    ),
+  );
+
+  const jobIds: string[] = [];
+  for (const decision of decisions) {
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') {
+      throw new Error('expected running launch while occupying capacity');
+    }
+    trackJob(decision.job);
+    jobIds.push(decision.job);
+  }
+
+  return jobIds;
+}
+
+async function waitForTerminalEvent(
+  service: ExecutionService,
+  jobId: string,
+): Promise<Extract<WaitStreamEvent, { type: 'terminal' }>> {
+  for await (const event of service.waitStream({ jobIds: [jobId], timeoutSeconds: 5 })) {
+    if (event.type === 'terminal') {
+      return event;
+    }
+  }
+
+  throw new Error(`Expected terminal event for ${jobId}`);
+}
+
+function realizePluginRoot(ctx: CallerContext): string {
+  mkdirSync(ctx.pluginRoot, { recursive: true });
+  return pluginRootNamespace(ctx.pluginRoot);
+}
+
+function createScopedContext(name: string): CallerContext {
+  const projectRoot = join(mockState.tmpHome, name);
+  mkdirSync(projectRoot, { recursive: true });
+  const pluginRoot = join(projectRoot, 'plugin');
+  mkdirSync(pluginRoot, { recursive: true });
+  return { projectRoot, pluginRoot, coralEnv: {} };
+}
+
+describe('ExecutionService', () => {
+  let ctx: CallerContext;
+
+  beforeEach(() => {
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mkdirSync(mockState.tmpRoot, { recursive: true });
+    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    baselineJobIds = listJobDirs();
+    eventBus = new TypedEventBus();
+    runtime = createRealRuntime();
+    JOBS_DIR = runtime.paths.jobsDir();
+    launchCoordinator = new LaunchCoordinator({ runtime });
+    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
+    mockState.getNewProvider.mockReset();
+    mockState.resolveAgent.mockReset();
+  });
+
+  afterEach(async () => {
+    trackAllJobDirs();
+    terminateAll();
+    for (const jobId of createdJobIds) {
+      cancelQueued(jobId);
+      releaseLaunch(jobId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const jobId of createdJobIds) {
+      rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
+    }
+    createdJobIds.clear();
+    rmSync(mockState.tmpHome, { recursive: true, force: true });
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mockState.getNewProvider.mockReset();
+    mockState.resolveAgent.mockReset();
+    vi.restoreAllMocks();
+  });
+
+  // @flaky — queue-slot timing sensitive; passes in isolation, intermittent under parallel suite
+  describe('queue admission', { retry: 2 }, () => {
+    it('resume rejects when the session is missing', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: 'missing', prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_not_found',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toContain('Session not found: missing');
+      }
+    });
+
+    it('resumeBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'claude', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${entry.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${entry.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('resumeBySessionId continues when the asserted provider matches the stored provider', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId(
+        { provider: 'codex', sessionId: entry.sessionId, prompt: 'hello' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+      });
+    });
+
+    it('resumeBySessionId continues the stored provider when no provider assertion is supplied', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+      });
+    });
+
+    it('resumeBySessionId rejects missing sessions', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: 'missing', prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_not_found',
+      });
+    });
+
+    it('resumeBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'legacy_session_unsupported',
+      });
+    });
+
+    it('resumeBySessionId rejects sessions outside the current scope', async () => {
+      const otherCtx = createScopedContext('other-project');
+      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
+      const foreignEntry = foreignMgr.allocate({
+        provider: 'codex',
+        name: 'foreign',
+        model: 'gpt-5',
+        cwd: otherCtx.projectRoot,
+        projectRoot: otherCtx.projectRoot,
+        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+      });
+      const service = createService(ctx);
+
+      const decision = await service.resumeBySessionId({ sessionId: foreignEntry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'scope_mismatch',
+      });
+    });
+
+    it('resume inherits stored continuation profile fields when the input omits them', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate({
+        provider: 'codex',
+        name: 'alpha',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request).toMatchObject({
+        action: 'resume',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBeUndefined();
+    });
+
+    it('resume rejects when the session already has an active job', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      mgr.claimForJobSync(entry.sessionId, 'job-1');
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_busy',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      }
+    });
+
+    it('resume rolls back queued admission when the session becomes busy during preflight', async () => {
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const blockingProvider = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
+      const service = createService(ctx);
+      await occupyProviderSlots(service, ctx, 'codex');
+
+      const gate = createDeferred<void>();
+      const racingProvider = makeProvider({
+        preflight: async (_preflightRuntime) => {
+          await gate.promise;
+        },
+      });
+      mockState.getNewProvider.mockReturnValue(racingProvider.provider);
+
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const jobDirsBefore = listJobDirs();
+
+      const decisionPromise = service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+      expect(mgr.claimForJobSync(entry.sessionId, 'job-race')).toBe(true);
+      gate.resolve();
+
+      const decision = await decisionPromise;
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('session_busy');
+      expect(decision.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(racingProvider.preflight!);
+      expect(queueDepth()).toBe(0);
+      expect(listJobDirs()).toEqual(jobDirsBefore);
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-race');
+    });
+
+    it('resume clears conversationRef and marks the session non_resumable on invalid-thread results', async () => {
+      const { provider } = makeProvider({
+        execute: async () => ({
+          content: '',
+          nonResumable: true,
+          outcome: {
+            kind: 'legacy_fault',
+            fault: {
+              kind: 'provider_session_unavailable',
+              provider: 'codex',
+              note: 'Conversation thread-stale is no longer resumable.',
+            },
+          },
+        }),
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      mgr.setConversationRef(entry.sessionId, 'thread-stale');
+      const service = createService(ctx);
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const terminal = await waitForTerminalEvent(service, decision.job);
+      const updatedSession = mgr.get('codex', entry.sessionId);
+
+      expect(terminal.result).toMatchObject({
+        content: '',
+        nonResumable: true,
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: {
+              kind: 'session',
+              id: expect.any(String),
+            },
+            seq: 1,
+          },
+        },
+      });
+      expect(updatedSession?.activeJobId).toBeUndefined();
+      expect(updatedSession?.lastJobId).toBe(decision.job);
+      expect(updatedSession?.state).toBe('non_resumable');
+      expect(updatedSession?.conversationRef).toBeUndefined();
+    });
+
+    it('fork allocates a new session id', async () => {
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const service = createService(ctx);
+
+      const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status === 'running') {
+        trackJob(decision.job);
+        expect(decision.session).not.toBe(source.sessionId);
+        expect(mgr.get('codex', decision.session)?.name).toMatch(/^fork-/);
+      }
+    });
+
+    it('forkBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+      realizePluginRoot(ctx);
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+      });
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'claude', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_mismatch',
+      });
+      if (decision.status === 'rejected') {
+        expect(decision.message).toBe(
+          `Session ${source.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${source.sessionId} ...\` instead.`,
+        );
+      }
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when the asserted provider matches', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(source.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId(
+        { provider: 'codex', sessionId: source.sessionId, prompt: 'branch' },
+        ctx,
+      );
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const child = mgr.get('codex', decision.session);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+
+      expect(child).toMatchObject({
+        model: 'gpt-5.1',
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      expect(request).toMatchObject({
+        action: 'fork',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBeUndefined();
+    });
+
+    it('forkBySessionId persists the merged continuation profile onto the child session when no provider assertion is supplied', async () => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const instruction = {
+        content: 'Persisted instruction',
+        channel: 'system' as const,
+      };
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate({
+        provider: 'codex',
+        name: 'architect',
+        model: 'gpt-5.1',
+        cwd: ctx.projectRoot,
+        projectRoot: ctx.projectRoot,
+        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      mgr.setConversationRef(source.sessionId, 'thread-1');
+      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
+
+      const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') {
+        throw new Error('expected running launch');
+      }
+      trackJob(decision.job);
+
+      const child = mgr.get('codex', decision.session);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+
+      expect(child).toMatchObject({
+        model: 'gpt-5.1',
+        agentName: 'architect',
+        instruction,
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        controllerProfile: {
+          owner: 'alice',
+          effort: 'high',
+          claudeModelCap: 'opus',
+        },
+      });
+      expect(request).toMatchObject({
+        action: 'fork',
+        conversationRef: 'thread-1',
+        model: 'gpt-5.1',
+        bypassPermissions: true,
+        systemPrompt: 'Persisted system prompt',
+        instruction,
+        coralEnv: {
+          CORAL_OWNER: 'alice',
+          CORAL_EFFORT: 'high',
+          CORAL_CLAUDE_MODEL_CAP: 'opus',
+        },
+      });
+      expect(request.effort).toBeUndefined();
+    });
+
+    it('forkBySessionId rejects missing sessions', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: 'missing', prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'session_not_found',
+      });
+    });
+
+    it('forkBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'legacy_session_unsupported',
+      });
+    });
+
+    it('forkBySessionId rejects sessions outside the current scope', async () => {
+      const otherCtx = createScopedContext('fork-foreign-project');
+      const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
+      const foreignEntry = foreignMgr.allocate({
+        provider: 'codex',
+        name: 'foreign',
+        model: 'gpt-5',
+        cwd: otherCtx.projectRoot,
+        projectRoot: otherCtx.projectRoot,
+        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
+      });
+      const service = createService(ctx);
+
+      const decision = await service.forkBySessionId({ sessionId: foreignEntry.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'scope_mismatch',
+      });
+    });
+  }); // end queue admission
+
+  it('persists successful workflow results before exposing the terminal event', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return { content: 'FINAL' };
+        }
+        return { content: 'unexpected' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
+
+    const service = createService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        startPrompt: 'seed',
+        provider: 'codex',
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(existsSync(terminal.resultPath)).toBe(true);
+    expect(markdownAtTerminal).toBe(
+      ['# Step 0.0: architect', '', 'ARCH', '', '# Step 1.0: resolver', '', 'FINAL', ''].join('\n'),
+    );
+    expect(terminal.result).toEqual({
+      content: 'FINAL',
+      outcome: { kind: 'completed' },
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 0,
+            atom: 0,
+            provider: 'codex',
+            start: 3,
+            end: 3,
+          },
+          {
+            agent: 'resolver',
+            step: 1,
+            atom: 0,
+            provider: 'codex',
+            start: 7,
+            end: 7,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'completed',
+      jobKind: 'workflow',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
+  });
+
+  it('keeps workflow session provenance on projectRoot while launching atoms in workDir', async () => {
+    const seenCwds: string[] = [];
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (!request.cwd) throw new Error('expected workflow atom cwd');
+        seenCwds.push(request.cwd);
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH' };
+        }
+        return { content: 'FINAL' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
+
+    const service = createService(ctx);
+    const workDir = join(mockState.tmpHome, 'child-workdir');
+    mkdirSync(workDir, { recursive: true });
+
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        startPrompt: 'seed',
+        provider: 'codex',
+      },
+      ctx,
+      workDir,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    await waitForTerminalEvent(service, decision.job);
+
+    const workflowSession = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const workDirSession = new SessionManager(workDir, runtime).get('codex', decision.session);
+
+    expect(seenCwds).toEqual([workDir, workDir]);
+    expect(workflowSession?.cwd).toBe(ctx.projectRoot);
+    expect(workDirSession).toBeNull();
+  });
+
+  it('executeWorkflow bypasses launch admission when provider slots are full', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
+
+    const service = createService(ctx);
+    for (const jobId of getActiveJobIds()) {
+      releaseLaunch(jobId);
+    }
+    expect(queueDepth()).toBe(0);
+    const activeJobIds = await occupyProviderSlots(service, ctx, 'codex');
+
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect'),
+      {
+        expression: 'architect',
+        startPrompt: 'seed',
+        provider: 'codex',
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackJob(decision.job);
+    expect(getActiveJobIds()).toEqual(activeJobIds);
+    const { progressStore } = getInternals(service);
+    expect(progressStore.readStatus(decision.job)).toMatchObject({
+      jobId: decision.job,
+      sessionId: decision.session,
+      jobKind: 'workflow',
+      phase: 'running',
+    });
+  });
+
+  it('persists partial workflow results on failure and marks the workflow session non_resumable', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return {
+            content: '',
+            outcome: {
+              kind: 'legacy_fault',
+              fault: {
+                kind: 'provider_request_failed',
+                provider: 'codex',
+                message: 'resolver failed',
+              },
+            },
+          };
+        }
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
+
+    const service = createService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        startPrompt: 'seed',
+        provider: 'codex',
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
+    expect(terminal.result).toMatchObject({
+      content: '',
+      outcome: {
+        kind: 'failed',
+        causeRef: {
+          stream: {
+            kind: 'session',
+            id: expect.any(String),
+          },
+          seq: 1,
+        },
+      },
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 0,
+            atom: 0,
+            provider: 'codex',
+            start: 3,
+            end: 3,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'error',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
+  });
+
+  it('persists partial workflow results on abort and marks the workflow session non_resumable', async () => {
+    const { provider } = makeProvider({
+      execute: async (request) => {
+        if (request.name?.startsWith('architect')) {
+          return { content: 'ARCH', outcome: { kind: 'completed' as const } };
+        }
+        if (request.name?.startsWith('resolver')) {
+          return { content: '', outcome: { kind: 'aborted', reason: 'signal_abort' } };
+        }
+        return { content: 'unexpected', outcome: { kind: 'completed' as const } };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    mockState.resolveAgent.mockImplementation((ref: AgentRef) =>
+      createResolvedAgent(ref, `Injected ${ref.name} content`),
+    );
+
+    const service = createService(ctx);
+    const decision = await service.executeWorkflow(
+      'codex',
+      parseExpression('architect -> resolver'),
+      {
+        expression: 'architect -> resolver',
+        startPrompt: 'seed',
+        provider: 'codex',
+      },
+      ctx,
+    );
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackAllJobDirs();
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
+    const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
+    const { progressStore } = getInternals(service);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
+    expect(terminal.result).toMatchObject({
+      content: '',
+      outcome: {
+        kind: 'aborted',
+        reason: 'signal_abort',
+      },
+      workflow: {
+        steps: [
+          {
+            agent: 'architect',
+            step: 0,
+            atom: 0,
+            provider: 'codex',
+            start: 3,
+            end: 3,
+          },
+        ],
+      },
+    });
+    expect(status).toMatchObject({
+      phase: 'error',
+      result: terminal.result,
+    });
+    expect(session?.state).toBe('non_resumable');
+  });
+
+  it('start falls back to status-only terminal persistence when appendTerminal throws', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running');
+    trackJob(decision.job);
+
+    const terminal = await waitForTerminalEvent(service, decision.job);
+    const status = progressStore.readStatus(decision.job);
+
+    expect(appendTerminal).toHaveBeenCalled();
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      decision.job,
+      expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
+      'completed',
+    );
+    expect(terminal.result).toMatchObject({ content: 'ok', outcome: { kind: 'completed' } });
+    expect(status).toMatchObject({
+      phase: 'completed',
+      result: { content: 'ok', outcome: { kind: 'completed' } },
+    });
+  });
+
+  it('finishQueuedAbort falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `queued-abort-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: 'test-ns',
+    });
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    (
+      service as unknown as {
+        finishQueuedAbort(jobId: string, sessionId: string, message: string): void;
+      }
+    ).finishQueuedAbort(jobId, 'session-1', 'queue_shutdown');
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
+      'aborted',
+    );
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
+  });
+
+  it('failJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `fail-job-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: 'test-ns',
+    });
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+
+    (
+      service as unknown as {
+        launchOrchestrator: {
+          failJob(
+            jobId: string,
+            sessionId: string,
+            launchState: string,
+            fault: { kind: 'provider_request_failed'; provider: 'codex'; message: string },
+          ): void;
+        };
+      }
+    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', {
+      kind: 'provider_request_failed',
+      provider: 'codex',
+      message: 'provider failed',
+    });
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(
+      jobId,
+      {
+        content: '',
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: {
+              kind: 'session',
+              id: 'session-1',
+            },
+            seq: 1,
+          },
+        },
+      },
+      'error',
+    );
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });
+  });
+
+  it('finishWorkflowJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+    const service = createService(ctx);
+    const { progressStore } = getInternals(service);
+    const jobId = `workflow-terminal-${randomUUID()}`;
+    trackJob(jobId);
+    progressStore.initJob({
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: 'test-ns',
+    });
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
+    const result = { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } };
+
+    (
+      service as unknown as {
+        finishWorkflowJob(
+          sessionId: string,
+          jobId: string,
+          phase: 'completed' | 'error' | 'aborted',
+          result: { content: string; workflow: { steps: unknown[] } },
+          markdown: string,
+        ): void;
+      }
+    ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
+
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed');
+    expect(progressStore.readStatus(jobId)).toMatchObject({
+      phase: 'completed',
+      result,
+    });
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
+  });
+
+  it.each([
+    {
+      phase: 'completed' as const,
+      result: { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } },
+      markdown: '# completed\n',
+    },
+    {
+      phase: 'error' as const,
+      result: {
+        content: '',
+        workflow: { steps: [] },
+        outcome: {
+          kind: 'failed',
+          causeRef: {
+            stream: {
+              kind: 'workflow',
+              id: 'workflow-1',
+            },
+            seq: 1,
+          },
+        },
+      },
+      markdown: '# failed\n',
+    },
+    {
+      phase: 'error' as const,
+      result: {
+        content: '',
+        workflow: { steps: [] },
+        outcome: { kind: 'aborted', reason: 'signal_abort' as const },
+      },
+      markdown: '# aborted\n',
+    },
+  ])(
+    'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
+    ({ phase, result, markdown }) => {
+      const service = createService(ctx);
+      const { progressStore, sessionManager } = getInternals(service);
+      const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
+      const jobId = `workflow-order-${phase}-${randomUUID()}`;
+      trackJob(jobId);
+      progressStore.initJob({
+        jobId,
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot: ctx.projectRoot,
+        backendNamespace: 'test-ns',
+        jobKind: 'workflow',
+      });
+      expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+
+      const order: string[] = [];
+      const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
+      const originalAppendTerminal = progressStore.appendTerminal.bind(progressStore);
+      const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
+
+      vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
+        order.push('artifact');
+        return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+      });
+      vi.spyOn(progressStore, 'appendTerminal').mockImplementation(
+        (targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+          order.push('terminal');
+          expect(existsSync(jobResultPath(targetJobId))).toBe(true);
+          expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+          expect(new SessionManager(ctx.projectRoot, runtime).get('codex', targetSessionId)?.state).toBe('pending');
+          return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase);
+        },
+      );
+      vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
+        order.push('non_resumable');
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase,
+          result,
+        });
+        return originalSetNonResumable(targetSessionId);
+      });
+
+      (
+        service as unknown as {
+          finishWorkflowJob(
+            sessionId: string,
+            jobId: string,
+            terminalPhase: 'completed' | 'error' | 'aborted',
+            terminalResult: typeof result,
+            persistedMarkdown: string,
+          ): void;
+        }
+      ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+
+      expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+      expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
+      expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+    },
+  );
+
+  it('finishWorkflowJob writes result.md before status-only terminal fallback and marks the session non_resumable afterward', () => {
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
+    const jobId = `workflow-fallback-order-${randomUUID()}`;
+    const phase = 'error' as const;
+    const result = {
+      content: '',
+      workflow: { steps: [] },
+      outcome: { kind: 'aborted', reason: 'signal_abort' as const },
+    };
+    const markdown = '# fallback\n';
+    trackJob(jobId);
+    progressStore.initJob({
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: 'test-ns',
+      jobKind: 'workflow',
+    });
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+
+    const order: string[] = [];
+    const originalWriteWorkflowResult = progressStore.writeWorkflowResultMdOrThrow.bind(progressStore);
+    const originalMarkTerminalStatus = progressStore.markTerminalStatus.bind(progressStore);
+    const originalSetNonResumable = sessionManager.setNonResumable.bind(sessionManager);
+
+    vi.spyOn(progressStore, 'writeWorkflowResultMdOrThrow').mockImplementation((targetJobId, persistedMarkdown) => {
+      order.push('artifact');
+      return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
+    });
+    vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase) => {
+      order.push('terminal');
+      expect(existsSync(jobResultPath(targetJobId))).toBe(true);
+      expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
+      expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
+      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase);
+    });
+    vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
+      order.push('non_resumable');
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase,
+        result,
+      });
+      return originalSetNonResumable(targetSessionId);
+    });
+
+    (
+      service as unknown as {
+        finishWorkflowJob(
+          sessionId: string,
+          jobId: string,
+          terminalPhase: 'completed' | 'error' | 'aborted',
+          terminalResult: typeof result,
+          persistedMarkdown: string,
+        ): void;
+      }
+    ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+
+    expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
+    expect(sessionManager.get('codex', session.sessionId)?.state).toBe('non_resumable');
+  });
+
+  describe('recovery adoption APIs', () => {
+    function makeLaunchRecord(
+      overrides: Partial<JobLaunchRecord> & { jobId: string; sessionId: string },
+    ): JobLaunchRecord {
+      return {
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+        backendNamespace: 'old-backend-ns',
+        pool: 'default',
+        enqueueSequence: 0,
+        providerAction: 'exec',
+        request: {
+          prompt: 'recover me',
+          cwd: '/tmp/project',
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    function makeRuntimeRecord(overrides?: Partial<DurableCliRuntimeRecord>): DurableCliRuntimeRecord {
+      return {
+        pid: process.pid,
+        stdoutPath: '/dev/null',
+        stderrPath: '/dev/null',
+        startTime: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    function makeAppServerRuntimeRecord(
+      overrides?: Partial<AppServerRuntimeRecord['providerMeta']>,
+    ): AppServerRuntimeRecord {
+      return {
+        transport: 'app-server',
+        startTime: new Date().toISOString(),
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'acquired',
+          recoveryPolicy: 'session_continuity_only',
+          ...overrides,
+        },
+      };
+    }
+
+    function buildExpectedInterruptedReport(
+      reason: 'restart' | 'handoff',
+      continuity: 'verified' | 'missing' | 'unavailable' | 'pre_checkpoint_preserved',
+      ...detailLines: string[]
+    ): string {
+      const triggerText =
+        reason === 'restart' ? 'App-server restarted during the turn' : 'App-server handoff occurred during the turn';
+      const continuityText =
+        continuity === 'verified'
+          ? 'continuity verified'
+          : continuity === 'missing'
+            ? 'continuity missing'
+            : continuity === 'unavailable'
+              ? 'continuity unavailable'
+              : 'existing conversation reference was preserved';
+      const baseNotice = `${triggerText}; ${continuityText}.`;
+      return [baseNotice, '', ...detailLines].join('\n');
+    }
+
+    describe('recoverQueuedJob', () => {
+      it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-queued-${randomUUID()}`;
+        const sessionId = `session-recover-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const recovered = service.recoverQueuedJob(launchRecord);
+
+        expect(recovered).toBe(jobId);
+        expect(queueDepth()).toBeGreaterThanOrEqual(1);
+      });
+
+      it('rebinds namespace to current backend', async () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-rebind-${randomUUID()}`;
+        const sessionId = `session-rebind-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        service.recoverQueuedJob(launchRecord);
+
+        const status = progressStore.readStatus(jobId);
+        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+      });
+
+      it('hydrates event counter before new appends', () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `recover-hydrate-${randomUUID()}`;
+        const sessionId = `session-hydrate-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+        // Write some progress so the counter has something to hydrate
+        progressStore.appendProgress(jobId, sessionId, 'step-1');
+        progressStore.appendProgress(jobId, sessionId, 'step-2');
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const hydrateSpy = vi.spyOn(progressStore, 'hydrateEventCounter');
+        service.recoverQueuedJob(launchRecord);
+
+        expect(hydrateSpy).toHaveBeenCalledWith(jobId);
+      });
+
+      it('job eventually executes when queue capacity opens', async () => {
+        const never = new Promise<ProviderTurnResult>(() => {});
+        const { provider } = makeProvider({ execute: () => never });
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+        const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
+
+        const jobId = `recover-exec-${randomUUID()}`;
+        const mgr = new SessionManager(ctx.projectRoot, runtime);
+        const session = mgr.allocate('codex', 'recover', 'gpt-5', ctx.projectRoot);
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        service.recoverQueuedJob(launchRecord);
+
+        expect(queueDepth()).toBeGreaterThanOrEqual(1);
+
+        // Release an occupied slot to trigger queue drain
+        const releasedJob = occupyIds[0];
+        releaseLaunch(releasedJob);
+
+        // Give the async drain a tick to process
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // The recovered job should have been dequeued (queue depth should decrease)
+        expect(queueDepth()).toBe(0);
+      });
+    });
+
+    describe('adoptRunningJob', () => {
+      it('adopts a running job with a live PID and returns a cleanup handle', () => {
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-running-${randomUUID()}`;
+        const sessionId = `session-adopt-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(typeof cleanup).toBe('function');
+        expect(getActiveJobIds()).toContain(jobId);
+
+        // Cleanup should release the resources
+        cleanup();
+        expect(getActiveJobIds()).not.toContain(jobId);
+      });
+
+      it('restores pool mapping and active permit', () => {
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-pool-${randomUUID()}`;
+        const sessionId = `session-pool-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId, pool: 'default' });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const activeIdsBefore = getActiveJobIds();
+        expect(activeIdsBefore).not.toContain(jobId);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(getActiveJobIds()).toContain(jobId);
+        cleanup();
+      });
+
+      it('rebinds namespace', () => {
+        const service = createService(ctx);
+        const { progressStore } = getInternals(service);
+
+        const jobId = `adopt-rebind-${randomUUID()}`;
+        const sessionId = `session-rebind-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+
+        const runtimeRecord = makeRuntimeRecord();
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        const status = progressStore.readStatus(jobId);
+        expect(status?.backendNamespace).not.toBe('old-backend-ns');
+        cleanup();
+      });
+
+      it('routes abort through runtime.process.kill', () => {
+        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {});
+        const service = createService(ctx);
+        const { progressStore, abortRegistry } = getInternals(service);
+
+        const jobId = `adopt-abort-${randomUUID()}`;
+        const sessionId = `session-adopt-abort-${randomUUID()}`;
+        trackJob(jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        const runtimeRecord = makeRuntimeRecord({ pid: 54321 });
+        progressStore.writeLaunchRecord(jobId, launchRecord);
+        progressStore.writeRuntimeRecord(jobId, runtimeRecord);
+
+        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(abortRegistry.abort([jobId])).toEqual({
+          aborted: [jobId],
+          notFound: [],
+        });
+        expect(killSpy).toHaveBeenCalledWith(54321, 'SIGTERM');
+
+        cleanup();
+      });
+    });
+
+    describe('completeRecoveredJob', () => {
+      it('writes terminal result and releases session', () => {
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+
+        const jobId = `complete-recovered-${randomUUID()}`;
+        trackJob(jobId);
+
+        const session = sessionManager.allocate('codex', 'recover-complete', 'gpt-5', ctx.projectRoot);
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        // Simulate a running job being adopted: register active launch + claim session
+        restoreActiveLaunch(jobId, 'codex');
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        service.completeRecoveredJob(
+          jobId,
+          session.sessionId,
+          { content: 'recovered done', outcome: { kind: 'completed' } },
+          'completed',
+        );
+
+        const status = progressStore.readStatus(jobId);
+        expect(status).toMatchObject({
+          phase: 'completed',
+          result: { content: 'recovered done', outcome: { kind: 'completed' } },
+        });
+        expect(existsSync(jobResultPath(jobId))).toBe(true);
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('recovered done');
+
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession?.activeJobId).toBeUndefined();
+        expect(updatedSession?.lastJobId).toBe(jobId);
+      });
+    });
+
+    describe('finalizeInterruptedAppServerJob', () => {
+      it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
+        const spawnProviderServerMock = vi.fn();
+        spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-waiting-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-existing',
+          },
+          conversationRef: 'thread-existing',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          projectRoot: ctx.projectRoot,
+          request: {
+            prompt: 'recover me',
+            cwd: '/tmp/project',
+            bypassPermissions: false,
+            conversationRef: 'thread-existing',
+            coralEnv: {},
+          },
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'pre_checkpoint_preserved',
+          'Session was interrupted before completion. The existing conversation reference was preserved.',
+        );
+
+        expect(spawnProviderServerMock).not.toHaveBeenCalled();
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
+              },
+            },
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-existing',
+        });
+      });
+
+      it('stores the recovered threadId when continuity is verified', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                return { thread: { id: 'thread-recovered' } };
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-verified-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-recovered',
+            },
+          }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'verified',
+          'Session is resumable. Use resume to continue.',
+          'Conversation reference preserved: thread-recovered',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
+              },
+            },
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'ready',
+          conversationRef: 'thread-recovered',
+        });
+      });
+
+      it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('No such thread');
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-missing-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-stale',
+          },
+          conversationRef: 'thread-stale',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              cwd: '/tmp/project',
+              bypassPermissions: false,
+              conversationRef: 'thread-stale',
+              coralEnv: {},
+            },
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-stale',
+            },
+          }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'missing',
+          'Session thread is no longer available. Marked as non-resumable.',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            nonResumable: true,
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
+              },
+            },
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'non_resumable',
+        });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+      });
+
+      it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        setSpawnProviderServerMock(
+          createFakeProviderServerHandle({
+            request: async (method) => {
+              if (method === 'thread/resume') {
+                throw new Error('transport unavailable');
+              }
+              return {};
+            },
+          }).handle,
+        );
+        const service = createService(ctx);
+        const { progressStore, sessionManager } = getInternals(service);
+        const jobId = `app-server-unavailable-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
+        sessionManager.checkpointProviderContinuity(session.sessionId, {
+          providerContinuity: {
+            threadId: 'thread-unverified',
+          },
+          conversationRef: 'thread-unverified',
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+
+        progressStore.initJob({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+
+        await service.finalizeInterruptedAppServerJob(
+          makeLaunchRecord({
+            jobId,
+            sessionId: session.sessionId,
+            projectRoot: ctx.projectRoot,
+            request: {
+              prompt: 'recover me',
+              cwd: '/tmp/project',
+              bypassPermissions: false,
+              conversationRef: 'thread-unverified',
+              coralEnv: {},
+            },
+          }),
+          makeAppServerRuntimeRecord({
+            providerContinuity: {
+              threadId: 'thread-unverified',
+            },
+          }),
+          { reason: 'handoff' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'handoff',
+          'unavailable',
+          'Could not reach provider server to verify session. Marked as non-resumable.',
+        );
+
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            content: expectedReport,
+            nonResumable: true,
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: {
+                  kind: 'session',
+                  id: session.sessionId,
+                },
+                seq: 1,
+              },
+            },
+          },
+        });
+        expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+          activeJobId: undefined,
+          lastJobId: jobId,
+          state: 'non_resumable',
+        });
+        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+        stderrSpy.mockRestore();
+      });
+    });
+  });
+});
+
+// @flaky — timing-sensitive concurrent fork tests; passes in isolation, retry under parallel suite
+describe('ExecutionService adversarial', { retry: 2 }, () => {
+  let ctx: CallerContext;
+
+  beforeEach(() => {
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    mkdirSync(mockState.tmpRoot, { recursive: true });
+    mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    baselineJobIds = listJobDirs();
+    mockState.getNewProvider.mockReset();
+    mockState.resolveAgent.mockReset();
+  });
+
+  afterEach(() => {
+    trackAllJobDirs();
+    for (const jobId of createdJobIds) {
+      rmSync(join(JOBS_DIR, jobId), { recursive: true, force: true });
+    }
+    createdJobIds.clear();
+    rmSync(mockState.tmpHome, { recursive: true, force: true });
+    rmSync(mockState.tmpRoot, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    mockState.getNewProvider.mockReset();
+    mockState.resolveAgent.mockReset();
+  });
+
+  describe('ExecutionService.resume() adversarial', () => {
+    it('rejects with non_resumable code when session state is non_resumable', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      mgr.setNonResumable(entry.sessionId);
+
+      const service = createService(ctx);
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('non_resumable');
+      expect(decision.message).toContain(`Session ${entry.sessionId} is non-resumable`);
+    });
+
+    it('rejects with session_busy when session has activeJobId set (via live start)', async () => {
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const service = createService(ctx);
+      const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
+      expect(firstDecision.status).toBe('running');
+      if (firstDecision.status !== 'running') throw new Error('expected running');
+      trackJob(firstDecision.job);
+
+      const decision = await service.resume('codex', { sessionId: firstDecision.session, prompt: 'resume' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('session_busy');
+      expect(decision.message).toContain(`Session ${firstDecision.session} already has an active job`);
+    });
+
+    it('rejects with unknown_provider without setting activeJobId on the session', async () => {
+      mockState.getNewProvider.mockReturnValue(undefined);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+
+      const service = createService(ctx);
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hi' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('unknown_provider');
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
+    });
+
+    it('allows exactly one concurrent resume and rejects the stale loser with session_busy', async () => {
+      const gate = createDeferred<void>();
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
+          await gate.promise;
+        },
+        execute: async () => never,
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const jobDirsBefore = listJobDirs();
+      const service = createService(ctx);
+
+      const firstResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'one' }, ctx);
+      const secondResume = service.resume('codex', { sessionId: entry.sessionId, prompt: 'two' }, ctx);
+      gate.resolve();
+
+      const decisions = await Promise.all([firstResume, secondResume]);
+      const running = decisions.filter((decision) => decision.status === 'running');
+      const rejected = decisions.filter((decision) => decision.status === 'rejected');
+
+      expect(running).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const winner = running[0];
+      if (!winner || winner.status !== 'running') throw new Error('expected running winner');
+      trackJob(winner.job);
+
+      const loser = rejected[0];
+      if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
+      expect(loser.code).toBe('session_busy');
+      expect(loser.message).toContain(`Session ${entry.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe(winner.job);
+      expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
+    });
+  });
+
+  describe('ExecutionService.fork() adversarial', () => {
+    it('rejects with session_busy when source session has an active job', async () => {
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const service = createService(ctx);
+      const firstDecision = await service.start('codex', { prompt: 'first' }, ctx);
+      expect(firstDecision.status).toBe('running');
+      if (firstDecision.status !== 'running') throw new Error('expected running');
+      trackJob(firstDecision.job);
+
+      const forkDecision = await service.fork('codex', { sessionId: firstDecision.session, prompt: 'branch' }, ctx);
+
+      expect(forkDecision.status).toBe('rejected');
+      if (forkDecision.status !== 'rejected') throw new Error('expected rejected');
+      expect(forkDecision.code).toBe('session_busy');
+      expect(forkDecision.message).toContain(`Session ${firstDecision.session} already has an active job`);
+    });
+
+    it('rejects with unknown_provider without allocating a new session', async () => {
+      mockState.getNewProvider.mockReturnValue(undefined);
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const sessionsBefore = mgr.list('codex').length;
+
+      const service = createService(ctx);
+      const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('unknown_provider');
+      expect(mgr.list('codex').length).toBe(sessionsBefore);
+    });
+
+    it('rejects when the source session becomes busy during preflight without allocating a new fork session', async () => {
+      const gate = createDeferred<void>();
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
+          await gate.promise;
+        },
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const sessionsBefore = mgr.list('codex').length;
+      const jobDirsBefore = listJobDirs();
+
+      const service = createService(ctx);
+      const decisionPromise = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
+      expect(mgr.claimForJobSync(source.sessionId, 'job-race')).toBe(true);
+      gate.resolve();
+
+      const decision = await decisionPromise;
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('session_busy');
+      expect(decision.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
+      expect(mgr.list('codex').length).toBe(sessionsBefore);
+      expect(listJobDirs()).toEqual(jobDirsBefore);
+    });
+
+    it('allows exactly one concurrent fork and rejects the stale loser with session_busy', async () => {
+      const gate = createDeferred<void>();
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, preflight } = makeProvider({
+        preflight: async (_preflightRuntime) => {
+          await gate.promise;
+        },
+        execute: async () => never,
+      });
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const mgr = new SessionManager(ctx.projectRoot, runtime);
+      const source = mgr.allocate('codex', 'source', 'gpt-5', ctx.projectRoot);
+      const sessionsBefore = mgr.list('codex').length;
+      const sourceVersionBefore = mgr.get('codex', source.sessionId)?.version;
+      const jobDirsBefore = listJobDirs();
+      const service = createService(ctx);
+
+      const firstFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-one' }, ctx);
+      const secondFork = service.fork('codex', { sessionId: source.sessionId, prompt: 'branch-two' }, ctx);
+      gate.resolve();
+
+      const decisions = await Promise.all([firstFork, secondFork]);
+      const running = decisions.filter((decision) => decision.status === 'running');
+      const rejected = decisions.filter((decision) => decision.status === 'rejected');
+
+      expect(running).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const winner = running[0];
+      if (!winner || winner.status !== 'running') throw new Error('expected running winner');
+      trackJob(winner.job);
+
+      const loser = rejected[0];
+      if (!loser || loser.status !== 'rejected') throw new Error('expected rejected loser');
+      expect(loser.code).toBe('session_busy');
+      expect(loser.message).toContain(`Session ${source.sessionId} already has an active job`);
+      expectRuntimePreflightArg(preflight!);
+      expect(mgr.list('codex')).toHaveLength(sessionsBefore + 1);
+      expect(mgr.get('codex', source.sessionId)?.activeJobId).toBeUndefined();
+      expect(mgr.get('codex', source.sessionId)?.version).toBeGreaterThan(sourceVersionBefore ?? 0);
+      expect([...listJobDirs()].filter((jobId) => !jobDirsBefore.has(jobId))).toHaveLength(1);
+    });
+
+    it('rejects with session_not_found for a non-existent source session', async () => {
+      const { provider } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+
+      const service = createService(ctx);
+      const decision = await service.fork('codex', { sessionId: 'ghost-session', prompt: 'branch' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      if (decision.status !== 'rejected') throw new Error('expected rejected');
+      expect(decision.code).toBe('session_not_found');
+      expect(decision.message).toContain('Session not found: ghost-session');
+    });
+  });
+
+  describe('rejected LaunchDecision does not allocate job or session resources', () => {
+    it('start() rejected decision has no job or session property', async () => {
+      mockState.getNewProvider.mockReturnValue(undefined);
+      const service = createService(ctx);
+
+      const decision = await service.start('missing', { prompt: 'test' }, ctx);
+
+      expect(decision.status).toBe('rejected');
+      expect(decision).not.toHaveProperty('job');
+      expect(decision).not.toHaveProperty('session');
+    });
+
+    it('abort() reports all jobIds as notFound after a series of preflight rejections', async () => {
+      mockState.getNewProvider.mockReturnValue(undefined);
+      const service = createService(ctx);
+
+      await service.start('missing', { prompt: 'a' }, ctx);
+      await service.start('missing', { prompt: 'b' }, ctx);
+
+      const result = service.abort(['phantom-job-1', 'phantom-job-2']);
+      expect(result.aborted).toEqual([]);
+      expect(result.notFound).toEqual(['phantom-job-1', 'phantom-job-2']);
+    });
+  });
+});

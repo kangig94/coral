@@ -1,4 +1,5 @@
-import { isDurableCliRuntime, type JobLaunchRecord, type JobRuntimeRecord } from '../shared/types.js';
+import type { JobLaunchRecord, JobRuntimeRecord } from '../jobs/records.js';
+import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { RuntimeProcessPort } from '../runtime/ports.js';
 

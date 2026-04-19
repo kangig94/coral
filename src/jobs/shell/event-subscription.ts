@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobProgressRow } from '../../store/queries/jobs.js';
-import type { JobTerminalRecord } from '../../shared/types.js';
+import type { JobTerminalRecord } from '../records.js';
 
 export type JobEvent = JobProgressRow;
 

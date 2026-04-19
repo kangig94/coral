@@ -20,7 +20,7 @@ import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
-import type { ProviderInstruction, ProviderRequest } from '../../shared/types.js';
+import type { ProviderInstruction, ProviderRequest } from '../../providers/protocol.js';
 import type { LifecycleState } from '../../coordinator/control.js';
 
 function assertNotMocked(name: string, value: unknown): void {

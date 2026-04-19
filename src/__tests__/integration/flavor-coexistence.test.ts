@@ -8,7 +8,7 @@ import { ensureBackend } from '../../cli/backend-lifecycle.js';
 import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
-import type { JobStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../../jobs/records.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {

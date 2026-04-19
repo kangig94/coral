@@ -1,14 +1,8 @@
-import {
-  belongsToNamespace,
-  isLivePhase,
-  isTerminalPhase,
-  type JobExitRecord,
-  type JobLaunchRecord,
-  type JobRuntimeRecord,
-  type JobStatusRecord,
-  type SessionEntry,
-  type JobTerminalRecord,
-} from '../../shared/types.js';
+import { isLivePhase, isTerminalPhase } from '../phase.js';
+import { belongsToNamespace } from '../records.js';
+import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
+import type { JobExitRecord } from '../../runtime/durable-runtime.js';
+import type { SessionEntry } from '../../sessions/entry.js';
 import type { RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 
 /**

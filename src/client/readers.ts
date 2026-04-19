@@ -1,22 +1,9 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { z } from 'zod';
+
 import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../discuss/events.js';
 import type { DiscussState } from '../discuss/types.js';
-import { parseWithSchema } from '../shared/persistence-parsers.js';
-import {
-  listPersistedDiscussSessionsForSourceWithStorage,
-  parseJsonLines,
-  readDiscussDiscoveryForSourceWithStorage,
-  readDiscussEventLogWithStorage,
-  readDiscussSnapshotWithStorage,
-  readDiscussSourcesWithStorage,
-  readDiscussSummaryIndexForSourceWithStorage,
-  readJsonFileWithStorage,
-  readStatusRecordWithStorage,
-  readTextFileWithStorage,
-  resolveDiscussSessionDirForSourceWithStorage,
-} from '../shared/persistence-readers.js';
+import { listPersistedDiscussSessionsForSourceWithStorage, readDiscussDiscoveryForSourceWithStorage, readDiscussEventLogWithStorage, readDiscussSnapshotWithStorage, readDiscussSourcesWithStorage, readDiscussSummaryIndexForSourceWithStorage, readJsonFileWithStorage, resolveDiscussSessionDirForSourceWithStorage } from '../discuss/shell/discuss-sources-catalog.js';
 import type {
   DiscussDiscoveryData,
   DiscussDiscoverySession,
@@ -31,10 +18,13 @@ import {
   discussSessionDirForSource,
   discussStatePath,
   discussSummaryIndexPathForSource,
-  jobsDir,
+  currentBuildFlavor,
   resolveProjectSource,
 } from '../infra/paths.js';
-import type { JobProgressRecord, JobStatusRecord } from '../shared/types.js';
+import type { JobProgressRecord, JobStatusRecord } from '../jobs/records.js';
+import { openStoreDatabase } from '../store/db.js';
+import { storePaths } from '../store/paths.js';
+import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 
 export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../shared/session-entry.js';
 export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
@@ -48,21 +38,6 @@ export type {
 function readJsonFile(filePath: string): unknown | null {
   return readJsonFileWithStorage(nodeDiscussReaderStorage, filePath);
 }
-
-function readTextFile(filePath: string): string | null {
-  return readTextFileWithStorage(nodeDiscussReaderStorage, filePath);
-}
-
-/** Structural schema for persisted progress records. */
-const persistedProgressRecordSchema = z
-  .object({
-    jobId: z.string(),
-    sessionId: z.string(),
-    eventId: z.number(),
-    type: z.string(),
-    ts: z.string(),
-  })
-  .passthrough();
 
 function isValidDiscussState(value: unknown): value is DiscussState {
   const discussStateSchema = z
@@ -82,6 +57,11 @@ const nodeDiscussReaderStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'
   existsSync: (filePath) => existsSync(filePath),
 };
 
+const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync'> = {
+  ...nodeDiscussReaderStorage,
+  mkdirSync: (dirPath, options) => mkdirSync(dirPath, options),
+};
+
 const nodeDiscussReaderPaths: Pick<
   DiscussPathResolver,
   | 'projectSource'
@@ -92,7 +72,6 @@ const nodeDiscussReaderPaths: Pick<
   | 'discussSessionDirForSource'
   | 'discussStatePath'
   | 'discussEventLogPath'
-  | 'jobStatusPath'
 > = {
   projectSource: resolveProjectSource,
   discussSourcesPath,
@@ -102,7 +81,6 @@ const nodeDiscussReaderPaths: Pick<
   discussSessionDirForSource,
   discussStatePath,
   discussEventLogPath,
-  jobStatusPath: (jobId) => join(jobsDir(), jobId, 'status.json'),
 };
 
 /**
@@ -110,23 +88,39 @@ const nodeDiscussReaderPaths: Pick<
  */
 export type DiscussEventLogEntry = DiscussDomainEvent;
 
+function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) => T, fallback: T): T {
+  const dbPath = storePaths(currentBuildFlavor()).dbFile;
+  if (!existsSync(dbPath)) {
+    return fallback;
+  }
+
+  const db = openStoreDatabase({
+    path: dbPath,
+    storage: nodeStoreReaderStorage as StoragePort,
+    readonly: true,
+  });
+
+  try {
+    return read(db);
+  } catch {
+    return fallback;
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * Reads and parses a persisted job status record.
  */
 export function readStatusRecord(jobId: string): JobStatusRecord | null {
-  return readStatusRecordWithStorage(nodeDiscussReaderStorage, nodeDiscussReaderPaths, jobId);
+  return withReadonlyStore((db) => loadJobProjectionDetail(db, jobId).status, null);
 }
 
 /**
  * Reads and parses all persisted progress records for a job.
  */
 export function readProgressLog(jobId: string): JobProgressRecord[] {
-  const log = readTextFile(join(jobsDir(), jobId, 'progress.jsonl'));
-  if (log === null) return [];
-  return parseJsonLines(
-    log,
-    (lineValue) => parseWithSchema(persistedProgressRecordSchema, lineValue) as JobProgressRecord | null,
-  );
+  return withReadonlyStore((db) => readJobProgress(db, jobId), []);
 }
 
 /**

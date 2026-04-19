@@ -1,6 +1,7 @@
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { LaunchState, WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../shared/types.js';
+import type { LaunchState } from '../../jobs/records.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
 
 export type StepDetail = {

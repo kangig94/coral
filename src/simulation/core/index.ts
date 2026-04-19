@@ -10,7 +10,7 @@ import { ProviderRegistry } from '../../providers/registry.js';
 import type { PreflightRuntime, Provider } from '../../providers/types.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { ProviderTurnResult } from '../../shared/types.js';
+import type { ProviderTurnResult } from '../../providers/protocol.js';
 import type { LegacyProviderName, LegacyTerminalOutcome } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import { SimulationRuntime } from '../runtime.js';

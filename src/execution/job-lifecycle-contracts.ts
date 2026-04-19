@@ -1,4 +1,7 @@
-import type { JobKind, JobPhase, LaunchDecision, JobLaunchRecord, ProviderRequest } from '../shared/types.js';
+import type { LaunchDecision } from '../jobs/launch.js';
+import type { JobPhase } from '../jobs/phase.js';
+import type { JobKind, JobLaunchRecord } from '../jobs/records.js';
+import type { ProviderRequest } from '../providers/protocol.js';
 import { resolveEffort } from '../shared/schemas.js';
 import type { AdmissionResult } from '../coordinator/live/admission.js';
 

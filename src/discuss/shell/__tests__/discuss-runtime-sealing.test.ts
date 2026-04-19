@@ -3,13 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readStatusRecord } from '../../../client/readers.js';
-import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../../../shared/persistence-readers.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../discuss-sources-catalog.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
 import { renderEntries } from '../../transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { JobStatusRecord } from '../../../shared/types.js';
+import type { JobStatusRecord } from '../../../jobs/records.js';
 import { nowIsoString } from '../../util/time.js';
 import {
   createDiscussContextRegistry,

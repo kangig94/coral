@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import type { LaunchDecision } from '../../../shared/types.js';
+import type { LaunchDecision } from '../../../jobs/launch.js';
 import {
   deriveErrorMessage,
   domainError,

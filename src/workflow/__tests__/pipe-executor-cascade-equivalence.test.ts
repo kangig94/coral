@@ -1,10 +1,17 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminalRecord, WaitRequest, WaitStreamEvent } from '../../shared/types.js';
+import type { JobTerminalRecord } from '../../jobs/records.js';
+import type { WaitRequest, WaitStreamEvent } from '../../jobs/wait.js';
 import { executePipeline } from '../executor.js';
 import { parseExpression } from '../parser.js';
 import type { WorkflowExecutionPort } from '../command.js';
+
+const GOLDEN_PATH = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/pipe-executor-cascade.golden.json');
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',
@@ -93,54 +100,6 @@ describe('workflow cascade equivalence golden master (AC4)', () => {
       { context: 'SHARED' },
     );
 
-    expect(JSON.stringify({ prompts, result }, null, 2)).toBe(`{
-  "prompts": [
-    "SHARED\\n\\nseed",
-    "SHARED\\n\\nUse A",
-    "SHARED\\n\\n<architect>\\nARCH\\n</architect>\\n\\n<step-result>\\nLIT A\\n</step-result>",
-    "SHARED\\n\\nUse B\\n\\n<architect>\\nARCH\\n</architect>\\n\\n<step-result>\\nLIT A\\n</step-result>"
-  ],
-  "result": {
-    "finalOutput": "<resolver>\\nFINAL\\n</resolver>\\n\\n<step-result>\\nLIT B\\n</step-result>",
-    "stepDetails": [
-      {
-        "stepIndex": 0,
-        "atomIndex": 0,
-        "kind": "agent",
-        "label": "architect",
-        "provider": "codex",
-        "tagName": "architect",
-        "output": "ARCH"
-      },
-      {
-        "stepIndex": 0,
-        "atomIndex": 1,
-        "kind": "prompt",
-        "label": "prompt#1(Use A)",
-        "provider": "codex",
-        "tagName": "step-result",
-        "output": "LIT A"
-      },
-      {
-        "stepIndex": 1,
-        "atomIndex": 0,
-        "kind": "agent",
-        "label": "resolver",
-        "provider": "codex",
-        "tagName": "resolver",
-        "output": "FINAL"
-      },
-      {
-        "stepIndex": 1,
-        "atomIndex": 1,
-        "kind": "prompt",
-        "label": "prompt#1(Use B)",
-        "provider": "codex",
-        "tagName": "step-result",
-        "output": "LIT B"
-      }
-    ]
-  }
-}`);
+    expect({ prompts, result }).toEqual(JSON.parse(readFileSync(GOLDEN_PATH, 'utf-8')) as unknown);
   });
 });

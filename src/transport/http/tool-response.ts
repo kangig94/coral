@@ -1,6 +1,6 @@
 import type { ZodError, ZodIssue } from 'zod';
 import { isRecord } from '../../shared/utils.js';
-import type { LaunchDecision } from '../../shared/types.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
 
 export type ToolDomainResult =
   | { ok: true; data: unknown }

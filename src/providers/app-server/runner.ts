@@ -1,5 +1,5 @@
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
+import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
 import { requireAppServerRuntime, type ProviderRuntime } from '../types.js';
 import type { AppServerSessionDriver, DriverContext, TurnOutcome } from './driver.js';
 

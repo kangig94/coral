@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CallerContext } from '../shared/request-context.js';
-import type { JobTerminalRecord } from '../shared/types.js';
+import type { JobTerminalRecord } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../execution/progress-store.js';

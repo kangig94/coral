@@ -57,21 +57,19 @@ export type {
   WorkflowLaunchResponse,
 } from './http-client.js';
 
-// ../shared/types.js
+// Domain types
 export type {
   JobStatusRecord,
   JobProgressRecord,
-  SessionEntry,
-  WaitStreamEvent,
-  WaitCursor,
   JobTerminalRecord,
-  JobPhase,
-  SessionState,
   JobKind,
   WorkflowResultMeta,
   WorkflowStepMeta,
-  UsageSummary,
-} from '../shared/types.js';
+} from '../jobs/records.js';
+export type { WaitStreamEvent, WaitCursor } from '../jobs/wait.js';
+export type { JobPhase } from '../jobs/phase.js';
+export type { SessionEntry, SessionState } from '../sessions/entry.js';
+export type { UsageSummary } from '../providers/protocol.js';
 
 // ../discuss/types.js
 export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/types.js';

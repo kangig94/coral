@@ -2,7 +2,8 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../../shared/backend-log.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../../shared/utils.js';
-import type { JobExitRecord, JobRuntimeRecord } from '../../shared/types.js';
+import type { JobRuntimeRecord } from '../../jobs/records.js';
+import type { JobExitRecord } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';
 import type { LaunchPool } from './admission.js';
 

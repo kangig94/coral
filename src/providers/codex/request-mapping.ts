@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRequest } from '../protocol.js';
 import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
 import type { ProviderRuntime, ProviderServerSpec } from '../types.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';

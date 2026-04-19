@@ -1,7 +1,7 @@
 import { isNoEntryError, isRecord } from '../../shared/utils.js';
-import { parseJobStatusRecord } from '../../shared/persistence-parsers.js';
+import { parseJobStatusRecord } from '../records.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobStatusRecord } from '../../shared/types.js';
+import type { JobStatusRecord } from '../records.js';
 
 const ADOPTION_CLAIM_STALE_MS = 30_000;
 

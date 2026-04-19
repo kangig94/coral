@@ -18,7 +18,7 @@ import {
   parseWaitStreamEvent,
   WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
-import type { WaitStreamEvent } from '../shared/types.js';
+import type { WaitStreamEvent } from '../jobs/wait.js';
 
 export type BackendStatus = {
   status: 'ok';

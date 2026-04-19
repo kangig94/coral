@@ -1,7 +1,7 @@
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { WorkflowCommand } from '../shared/schemas.js';
-import type { LaunchDecision } from '../shared/types.js';
+import type { LaunchDecision } from '../jobs/launch.js';
 import { isOwnerId } from '../shared/utils.js';
 import { ZodError } from 'zod';
 import type { PipelineAST } from './ast.js';

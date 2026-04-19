@@ -7,7 +7,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import type { WaitStreamEvent } from '../../../shared/types.js';
+import type { WaitStreamEvent } from '../../../jobs/wait.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '../../../execution/server.js';
 import type * as ServerTestDepsMod from '../../../execution/__tests__/server-test-deps.js';
@@ -19,7 +19,7 @@ import type { ProviderServerHandle } from '../../../execution/__tests__/server-t
 import { createDeferred } from '../../../shared/test-deferred.js';
 
 import { readDiscussEventLog } from '../../../client/readers.js';
-import { readStatusRecordWithStorage } from '../../../shared/persistence-readers.js';
+import { readStatusRecordWithStorage } from '../../../discuss/shell/discuss-sources-catalog.js';
 import { makeEvent } from '../../../discuss/events.js';
 import { decideSessionCreate } from '../../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../../../discuss/shell/live-registry.js';
@@ -35,7 +35,7 @@ import {
 } from '../../../infra/paths.js';
 import type { BackendServerController } from '../../../execution/server.js';
 import type { LifecycleState } from '../../../execution/server-types.js';
-import type { JobLaunchRecord } from '../../../shared/types.js';
+import type { JobLaunchRecord } from '../../../jobs/records.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
 import {
   handleKbCommunityRead,

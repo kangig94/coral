@@ -9,7 +9,7 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { isRecord } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderTurnResult } from '../../shared/types.js';
+import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
 import { runAppServerTurn } from '../app-server/runner.js';
 import { mapProviderTurnResultBase } from '../result-mapping.js';
 import {

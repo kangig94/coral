@@ -5,18 +5,12 @@ import type { ExecutionServiceLike, RecoveryCapableService } from '../coordinato
 import { createReplayCursor, type ProgressStore } from '../execution/progress-store.js';
 import type { RecoveryRegistry } from '../execution/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type {
-  JobPhase,
-  JobStatusRecord,
-  JobTerminalRecord,
-  ProviderAction,
-  ProviderInstruction,
-  ProviderContinuityBlob,
-  WaitStreamEvent,
-  WaitStreamRequest,
-  WorkflowResultMeta,
-  UsageSummary,
-} from '../shared/types.js';
+import type { JobPhase } from './phase.js';
+import type { JobStatusRecord, JobTerminalRecord, WorkflowResultMeta } from './records.js';
+// Phase 4: wait-stream wire types move under src/transport/** once the HTTP contract is isolated.
+import type { WaitStreamEvent, WaitStreamRequest } from './wait.js';
+import type { ProviderAction, ProviderInstruction, UsageSummary } from '../providers/protocol.js';
+import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';

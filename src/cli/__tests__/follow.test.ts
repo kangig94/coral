@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
-import type { JobTerminalRecord, WaitStreamEvent } from '../../shared/types.js';
+import type { JobTerminalRecord } from '../../jobs/records.js';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type * as FollowMod from '../follow.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '../format.js';

@@ -13,7 +13,7 @@ import { pluginRootNamespace } from '../../../infra/paths.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/types.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { ProviderInstruction, ProviderRequest } from '../../../shared/types.js';
+import type { ProviderInstruction, ProviderRequest } from '../../../providers/protocol.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
 
 type RecordedLaunchRequest = ProviderRequest & {

@@ -1,12 +1,5 @@
 import { dirname, join } from 'node:path';
-import {
-  readDiscussSourcesWithStorage,
-  listPersistedDiscussSessionsForSourceWithStorage,
-  readDiscussEventLogWithStorage,
-  readDiscussSnapshotWithStorage,
-  readDiscussSummaryIndexForSourceWithStorage,
-  resolveDiscussSessionDirForSourceWithStorage,
-} from '../../shared/persistence-readers.js';
+import { readDiscussSourcesWithStorage, listPersistedDiscussSessionsForSourceWithStorage, readDiscussEventLogWithStorage, readDiscussSnapshotWithStorage, readDiscussSummaryIndexForSourceWithStorage, resolveDiscussSessionDirForSourceWithStorage } from './discuss-sources-catalog.js';
 import { type DiscussSummaryDto } from '../views.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type {

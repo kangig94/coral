@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { terminalResultSchema } from './types.js';
-import type { WaitStreamEvent } from './types.js';
+import { terminalResultSchema } from '../jobs/records.js';
+import type { WaitStreamEvent } from '../jobs/wait.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;
 export const TOOL_TIMEOUT_MS = 300_000;

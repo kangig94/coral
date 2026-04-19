@@ -14,19 +14,12 @@ import {
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { getCallerContext } from '../../coordinator/caller-context.js';
-import {
-  isTerminalPhase,
-  type JobPhase,
-  type LaunchDecision,
-  type LaunchState,
-  type ProviderTurnProgressEvent,
-  type ProviderRequest,
-  type JobLaunchRecord,
-  type JobStatusRecord,
-  type ProviderTurnResult,
-  type SessionEntry,
-  type JobTerminalRecord,
-} from '../../shared/types.js';
+import type { LaunchDecision } from '../launch.js';
+import { isTerminalPhase } from '../phase.js';
+import type { JobPhase } from '../phase.js';
+import type { LaunchState, JobLaunchRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
+import type { ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
+import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
 import { type AbortRegistry } from './abort-registry.js';

@@ -1,6 +1,6 @@
 import { resolveInjectMd } from '../inject.js';
 import { isRecord } from '../../shared/utils.js';
-import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRequest } from '../protocol.js';
 import { resolveModelTier } from '../../shared/schemas.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
 import { brokerNotificationMethods } from '../claude-appserver/protocol.js';

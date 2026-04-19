@@ -3,20 +3,21 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSy
 import { createServer, type Server as HttpServer } from 'node:http'
 import type * as NodeOs from 'node:os'
 import { dirname, join } from 'node:path'
-import type { JobLaunchRecord, JobProgressRecord, JobTerminalRecord, WaitStreamEvent } from '../../shared/types.js'
-import type * as ProgressStoreModule from '../progress-store.js'
-import type * as SessionManagerModule from '../session-manager.js'
-import type * as LifecycleModule from '../lifecycle.js'
-import type * as HttpHandlerModule from '../../transport/http/handler.js'
-import type * as ServiceModule from '../service.js'
-import type * as ServerModule from '../server.js'
-import type * as EngineModule from '../../coordinator/live/admission.js'
-import type * as EventBusModule from '../../coordinator/control.js'
-import type * as PathsModule from '../../infra/paths.js'
-import type * as ProviderRegistryModule from '../../providers/registry.js'
-import type * as DiscussOperationsModule from '../../discuss/shell/operations.js'
-import { createRealRuntime } from '../../runtime/real.js'
-import { createDeferred } from '../../shared/test-deferred.js'
+import type { JobLaunchRecord, JobProgressRecord, JobTerminalRecord } from '../../records.js';
+import type { WaitStreamEvent } from '../../wait.js';
+import type * as ProgressStoreModule from '../../../execution/progress-store.js'
+import type * as SessionManagerModule from '../../../execution/session-manager.js'
+import type * as LifecycleModule from '../../../execution/lifecycle.js'
+import type * as HttpHandlerModule from '../../../transport/http/handler.js'
+import type * as ServiceModule from '../../../execution/service.js'
+import type * as ServerModule from '../../../execution/server.js'
+import type * as EngineModule from '../../../coordinator/live/admission.js'
+import type * as EventBusModule from '../../../coordinator/control.js'
+import type * as PathsModule from '../../../infra/paths.js'
+import type * as ProviderRegistryModule from '../../../providers/registry.js'
+import type * as DiscussOperationsModule from '../../../discuss/shell/operations.js'
+import { createRealRuntime } from '../../../runtime/real.js'
+import { createDeferred } from '../../../shared/test-deferred.js'
 
 const runtime = createRealRuntime()
 
@@ -68,17 +69,17 @@ async function loadModules(): Promise<LoadedModules> {
     providerRegistryModule,
     discussOperationsModule,
   ] = await Promise.all([
-    import('../progress-store.js'),
-    import('../session-manager.js'),
-    import('../lifecycle.js'),
-    import('../../transport/http/handler.js'),
-    import('../service.js'),
-    import('../server.js'),
-    import('../../coordinator/live/admission.js'),
-    import('../../coordinator/control.js'),
-    import('../../infra/paths.js'),
-    import('../../providers/registry.js'),
-    import('../../discuss/shell/operations.js'),
+    import('../../../execution/progress-store.js'),
+    import('../../../execution/session-manager.js'),
+    import('../../../execution/lifecycle.js'),
+    import('../../../transport/http/handler.js'),
+    import('../../../execution/service.js'),
+    import('../../../execution/server.js'),
+    import('../../../coordinator/live/admission.js'),
+    import('../../../coordinator/control.js'),
+    import('../../../infra/paths.js'),
+    import('../../../providers/registry.js'),
+    import('../../../discuss/shell/operations.js'),
   ])
 
   return {
@@ -2092,7 +2093,7 @@ describe.skip('lifecycle recovery characterization', () => {
 
   it('3b. legacy status.json is warned once, skipped during hydration, preserved on disk, and releases its session claim', async () => {
     const modules = await loadModules()
-    const { backendLog } = await import('../../shared/backend-log.js')
+    const { backendLog } = await import('../../../shared/backend-log.js')
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {})
     const pluginRoot = createProjectRoot('plugin-legacy-status')
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot)

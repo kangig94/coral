@@ -19,17 +19,11 @@ import { normalizeWorldConfig } from './normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
 import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
 import { noopAppendEvents } from '../store/append.js';
-import {
-  isTerminalPhase,
-  type DurableCliRuntimeRecord,
-  type LaunchDecision,
-  type JobExitRecord,
-  type JobProgressRecord,
-  type JobRuntimeRecord,
-  type JobStatusRecord,
-  type SessionEntry,
-  type JobTerminalRecord,
-} from '../shared/types.js';
+import type { LaunchDecision } from '../jobs/launch.js';
+import { isTerminalPhase } from '../jobs/phase.js';
+import type { JobProgressRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../jobs/records.js';
+import type { DurableCliRuntimeRecord, JobExitRecord } from '../runtime/durable-runtime.js';
+import type { SessionEntry } from '../sessions/entry.js';
 
 const STATUS_FILE = 'status.json';
 const RUNTIME_FILE = 'runtime.json';

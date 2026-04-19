@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type {
-  JobExitRecord,
-  JobLaunchRecord,
-  JobRuntimeRecord,
-  JobStatusRecord,
-  SessionEntry,
-  JobTerminalRecord,
-} from '../../../shared/types.js'
+import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../../records.js';
+import type { JobExitRecord } from '../../../runtime/durable-runtime.js';
+import type { SessionEntry } from '../../../sessions/entry.js';
 import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../plan.js'
 import { planRecovery } from '../plan.js'
 

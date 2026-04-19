@@ -1,7 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
-import { isAppServerRuntime } from '../../shared/types.js';
+import { isAppServerRuntime } from '../../jobs/records.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { MutableRuntimeState } from '../control.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';

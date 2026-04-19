@@ -45,31 +45,32 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (3
 All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFERRED** with explicit later-phase owners. The residue map lives at `src/__tests__/invariants/execution-composition-only.test.ts` + `src/__tests__/__helpers__/execution-residue-ast.ts`; every file below is also pinned there with its allowed imports, forbidden identifiers, and retirement trigger.
 
 ### Coordinator handoff (Phase 3, `nextHome = src/coordinator/**`)
+
 - `backend-isolation.test.ts`
 - `backend-lock.test.ts`
 - `discuss-acyclic.test.ts`
 - `engine.test.ts`
 - `event-bus.test.ts`
 - `host-manager.test.ts`
-- `lifecycle-recovery.test.ts`
 - `recording-observer.test.ts`
 - `recovery-registry.test.ts`
 - `runtime-coral-paths-settlement.test.ts`
 - `runtime.test.ts`
 - `server-discuss-api.test.ts`
 - `server.test.ts`
-- `service.test.ts`
 - `workflow-session-cleanup.test.ts`
 
 ### Transport handoff (Phase 4, `nextHome = src/transport/**`)
-- `progress-store.test.ts` — retires with `src/execution/progress-store.ts` once the last transport adapter reads Journal projections directly.
+
 - `query-coerce.test.ts`
 - `tool-response.test.ts`
 
 ### KB handoff (Phase 5)
+
 - `kb-tools.test.ts` — retires with `src/execution/kb-tools.ts` in Phase 5 KB cleanup.
 
 ### Discuss shell coverage kept for parity until coordinator extraction (Phase 3 / Phase 7 simulation)
+
 - `discuss-manager-bids.test.ts`
 - `discuss-manager-epoch.test.ts`
 - `discuss-manager-faults.test.ts`
@@ -84,6 +85,7 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - `discuss-tools.test.ts`
 
 ### Simulation handoff (Phase 7, `nextHome = src/simulation/**`)
+
 - `simulation-adversarial.test.ts`
 - `simulation-recording.test.ts`
 - `simulation-runner.test.ts`
@@ -97,6 +99,18 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - `src/__tests__/invariants/execution-composition-only.test.ts` (AC5).
 - `src/__tests__/invariants/legacy-boundary.test.ts` (AC7).
 - `src/__tests__/__helpers__/execution-residue-ast.ts` — AST helper extending `ts-import-scanner.ts` with named-import, facade-member-access, identifier, literal, callee, and object-construction capture.
+
+## Phase 3 carry-over debt cleanup (CG6 — `phase-3/shared-ownership-cleanup`)
+
+- `src/execution/__tests__/service.test.ts` → **SPLIT** across:
+  - `src/jobs/shell/__tests__/launch.test.ts`
+  - `src/jobs/shell/__tests__/abort.test.ts`
+  - `src/jobs/shell/__tests__/wait.test.ts`
+  - `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts`
+  - `src/coordinator/__tests__/service-composition.test.ts`
+- Zero-drop gate preserved: destination files retain `52 + 19 + 2 + 18 + 22 + 3 + 23 = 139` `it(...)` blocks against the original 94-test baseline. The coordinator file now carries only cross-cutting resume/fork/workflow/recovery residue; launch/abort/wait-specific coverage moved to the domain-owned destinations above.
+- `src/execution/__tests__/progress-store.test.ts` → **DELETED**; replaced by `src/jobs/__tests__/projection-rebuild.test.ts`, which proves the live ConsumerDriver projection rebuild path over `projection_jobs`.
+- `src/shared/types.ts`, `src/shared/persistence-parsers.ts`, and `src/shared/persistence-readers.ts` → **DELETED** in the same commit group. Type imports now come from domain-owned modules, discuss persistence helpers live at `src/discuss/shell/discuss-sources-catalog.ts`, and job status parsing lives at `src/jobs/records.ts`.
 
 ## Repo-wide grep closures (Phase 2 exit gate)
 

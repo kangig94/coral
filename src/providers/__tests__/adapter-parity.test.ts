@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../../shared/types.js';
+import type { ProviderRequest } from '../protocol.js';
 import type { ProviderRuntime, ProviderServerLease } from '../types.js';
 
 vi.mock('../claude/claude-executor.js', () => {

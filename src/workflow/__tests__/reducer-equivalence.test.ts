@@ -52,6 +52,8 @@ describe('workflow reducer equivalence (AC4)', () => {
         db,
         [
           workflowPlanDeclaredEvent('workflow-1', declaredPlan),
+          // drain.entered is projection-only state: replay must preserve the drain window
+          // without reviving the deleted legacy workflow checkpoint persistence layer.
           workflowDrainEnteredEvent('workflow-1', {
             firstFailureSlotId: declaredPlan.slots[1].slotId,
             drainDeadline: Date.parse('2026-04-19T00:00:15.000Z'),

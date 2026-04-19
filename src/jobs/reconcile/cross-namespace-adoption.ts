@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
-import { isLivePhase, readBackendNamespace, type JobStatusRecord } from '../../shared/types.js';
+import { isLivePhase } from '../phase.js';
+import { readBackendNamespace } from '../records.js';
+import type { JobStatusRecord } from '../records.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   claimPathForStatus,

@@ -19,6 +19,8 @@ import {
 
 export const sessionOpenedBodySchema = z
   .object({
+    // Session identity is carried by event.stream.id across the journal; the body keeps
+    // only payload fields so session.opened never duplicates sessionId.
     controller: z.string().min(1),
     provider: z.string().min(1),
   })

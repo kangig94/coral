@@ -4,10 +4,10 @@ import {
   type SessionCreatedAgentExecutionConfig,
 } from '../events.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
-import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../../shared/persistence-readers.js';
+import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from './discuss-sources-catalog.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { nowIsoString } from '../util/time.js';
-import { isLivePhase } from '../../shared/types.js';
+import { isLivePhase } from '../../jobs/phase.js';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
