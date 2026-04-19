@@ -15,6 +15,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 interface CursorRow {
   consumer_id: string;
   authority: string;
+  lane: string | null;
   cursor: number;
   equipped_at: string;
 }
@@ -59,12 +60,12 @@ function createRegistration(
 
 function readCursorRow(db: InstanceType<typeof Database>, consumerId: string): CursorRow {
   return db
-    .prepare('SELECT consumer_id, authority, cursor, equipped_at FROM equipment_cursors WHERE consumer_id = ?')
+    .prepare('SELECT consumer_id, authority, lane, cursor, equipped_at FROM equipment_cursors WHERE consumer_id = ?')
     .get(consumerId) as CursorRow;
 }
 
 describe('ConsumerDriver notify + drain + cursor', () => {
-  it('register() populates all four equipment_cursors columns and re-registering journal is idempotent', () => {
+  it('register() populates equipment_cursors and re-registering journal is idempotent', () => {
     const db = createDb();
     const now = new Date('2026-04-18T10:11:12.345Z');
     const driver = new ConsumerDriver({ db, now: () => now });
@@ -77,6 +78,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       expect(readCursorRow(db, reg.id)).toEqual({
         consumer_id: reg.id,
         authority: 'journal',
+        lane: null,
         cursor: 0,
         equipped_at: now.toISOString(),
       });
@@ -112,6 +114,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       expect(readCursorRow(db, reg.id)).toEqual({
         consumer_id: reg.id,
         authority: 'journal',
+        lane: null,
         cursor: 5,
         equipped_at: now.toISOString(),
       });
@@ -123,6 +126,7 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       expect(readCursorRow(db, reg.id)).toEqual({
         consumer_id: reg.id,
         authority: 'journal',
+        lane: null,
         cursor: 5,
         equipped_at: now.toISOString(),
       });
@@ -178,8 +182,8 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       driver.register(reg);
 
       db.prepare('DELETE FROM equipment_cursors WHERE consumer_id = ?').run(reg.id);
-      db.prepare('INSERT INTO equipment_cursors (consumer_id, authority, cursor, equipped_at) VALUES (?, ?, 0, ?)')
-        .run(reg.id, 'corpus', '2026-04-18T00:00:00.000Z');
+      db.prepare('INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)')
+        .run(reg.id, 'corpus', 'content', '2026-04-18T00:00:00.000Z');
 
       let thrown: unknown;
       try {
@@ -201,30 +205,4 @@ describe('ConsumerDriver notify + drain + cursor', () => {
     }
   });
 
-  it('throws CoralSetupError(consumer_authority_unsupported) for notify(corpus, ...)', () => {
-    const db = createDb();
-    const driver = new ConsumerDriver({ db });
-    const reg = createRegistration('journal-consumer', async () => {});
-
-    try {
-      driver.register(reg);
-
-      let thrown: unknown;
-      try {
-        driver.notify('corpus', 1);
-      } catch (error) {
-        thrown = error;
-      }
-
-      expect(thrown).toBeInstanceOf(CoralSetupError);
-      expect((thrown as CoralSetupError).code).toBe('consumer_authority_unsupported');
-      expect((thrown as CoralSetupError).context).toMatchObject({
-        authority: 'corpus',
-        version: 1,
-      });
-    } finally {
-      void driver.shutdown();
-      db.close();
-    }
-  });
 });

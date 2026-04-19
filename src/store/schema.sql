@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS corpus_state (
 CREATE TABLE IF NOT EXISTS equipment_cursors (
   consumer_id TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
   authority   TEXT NOT NULL,         -- 'journal' | 'corpus'
+  lane        TEXT,                  -- NULL for journal, 'content' | 'metadata' for corpus
   cursor      INTEGER NOT NULL,      -- last successfully-applied seq/contentSeq
   equipped_at TEXT    NOT NULL       -- ISO 8601 of most recent equip
 );
@@ -114,7 +115,7 @@ CREATE TABLE IF NOT EXISTS curate_retry_queue (
 CREATE INDEX IF NOT EXISTS curate_retry_by_time ON curate_retry_queue(retry_not_before);
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '1'),
+  ('schema_version', '2'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));

@@ -1057,13 +1057,14 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
     }
 
     if (highestAssignedEntrySeq > indexState.mutationSeq) {
-      kb.writeIndexState({
+      const nextIndexState = {
         ...indexState,
         contentSeq: highestAssignedEntrySeq,
         metadataSeq: highestAssignedEntrySeq,
         mutationSeq: highestAssignedEntrySeq,
         textIndexedSeq: highestAssignedEntrySeq,
-      });
+      };
+      kb.writeIndexState(nextIndexState);
     }
 
     writeCurateState(kb, {

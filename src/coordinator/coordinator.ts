@@ -14,9 +14,11 @@ import {
   type BackendCoreOptions,
   type BackendCoreResult,
 } from '../execution/backend-core.js';
+import { createKbSubsystem } from '../execution/kb-tools.js';
 import type { BackendServerInfo, LifecycleState } from '../execution/server-types.js';
 import { ExecutionService } from '../execution/service.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
+import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
 import { openStoreDatabase } from '../store/db.js';
 import { createEmptyRegistry } from '../store/envelope.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
@@ -33,7 +35,9 @@ import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerWorkflowConsumer } from '../workflow/consumer.js';
 import { workflowRecover } from '../workflow/api.js';
+import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
+import { createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime'> & {
@@ -86,6 +90,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let storeDb: ReturnType<typeof openStoreDatabase> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
+  const curateSchedulerHealth = createCurateSchedulerHealthBridge();
 
   const getStoreDb = () => {
     if (storeDb !== null) {
@@ -139,6 +144,21 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const core = createBackendCore({
     ...coreOptions,
     runtime,
+    createKbSubsystemFn: async (ctx) =>
+      createKbSubsystem({
+        ...ctx,
+        persistCorpusState: (snapshot) =>
+          persistCorpusStateInDb(getStoreDb(), snapshot, {
+            now: () => new Date(runtime.time.now()),
+          }),
+        notifyCorpusMutation: createNotifyCorpusMutation(getConsumerDriver()),
+        onCorpusPublishFailure: (failure) => {
+          curateSchedulerHealth.onCorpusPublishFailure(failure);
+        },
+        onCorpusPublishSuccess: () => {
+          curateSchedulerHealth.onCorpusPublishSuccess();
+        },
+      }),
     createExecutionService: (ctx, deps) =>
       new ExecutionService(ctx, {
         ...deps,
@@ -225,6 +245,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     },
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
+  curateSchedulerHealth.attachRuntimeState(core.runtimeState);
 
   return {
     server: core.server,

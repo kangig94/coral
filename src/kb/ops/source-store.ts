@@ -9,7 +9,6 @@ import {
 } from '../mutation-helpers.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
 import {
   deleteEntry,
   isSourceEntry,
@@ -45,7 +44,7 @@ export async function persistPreparedSource(
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
   return kb.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(kb);
+    kb.runEntrySeqUpgradeGuardIfNeeded();
     const filePath = kb.sourcePath(normalizedSlug);
     const principlePath = kb.principlePath(normalizedSlug);
     const stagedCandidate = assertWithin(kb.sourceImportStageDir(), stagedPath, 'KB source staged markdown path');
@@ -62,10 +61,7 @@ export async function persistPreparedSource(
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
       const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
       const parsedMeta = parseSourceFrontmatter(renderedSource);
-      const entrySeq = recordContentAndMetadataMutation(
-        kb,
-        'KB text snapshot is stale after kb_source_import.',
-      ).contentSeq;
+      const entrySeq = kb.readIndexState().mutationSeq + 1;
       const persistedMeta = {
         ...parsedMeta,
         entrySeq,
@@ -84,6 +80,7 @@ export async function persistPreparedSource(
           }),
         );
       });
+      recordContentAndMetadataMutation(kb, 'KB text snapshot is stale after kb_source_import.');
     } finally {
       rmSync(stagedCandidate, { force: true });
     }

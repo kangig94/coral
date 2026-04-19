@@ -2,7 +2,6 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../../shared/utils.js';
 import { parseMemoFrontmatter, serializeNote } from '../frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
 import {
@@ -39,14 +38,14 @@ export async function promote(
   }
 
   const result = await rt.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(rt);
+    rt.runEntrySeqUpgradeGuardIfNeeded();
     if (existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
 
     const memoContent = readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
-    const entrySeq = recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.').contentSeq;
+    const entrySeq = rt.readIndexState().mutationSeq + 1;
     const createdAt = nowIsoString();
     const noteMeta = {
       tags: [domain],
@@ -72,6 +71,7 @@ export async function promote(
         }),
       );
     });
+    recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.');
 
     rmSync(memoPath, { force: true });
     return { path: notePath };

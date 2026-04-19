@@ -1,6 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { CoralSetupError } from '../runtime/errors.js';
+import type { KbCorpusSnapshot } from '../kb/contracts.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number, timeoutMs: number) {
@@ -11,6 +12,7 @@ export class FreshnessTimeout extends Error {
 }
 
 export type Authority = 'journal' | 'corpus';
+export type CorpusLane = 'content' | 'metadata';
 
 export interface JournalApplyContext {
   readonly fromSeq: number;
@@ -34,7 +36,7 @@ export interface JournalConsumerRegistration {
 export interface CorpusConsumerRegistration {
   readonly id: string;
   readonly authority: 'corpus';
-  readonly lane: 'content' | 'metadata';
+  readonly lane: CorpusLane;
   apply(_ctx: { contentSeq: number; metadataSeq: number; db: BetterSqlite3.Database }): Promise<void>;
 }
 
@@ -50,6 +52,7 @@ interface ConsumerState {
   readonly reg: JournalConsumerRegistration | CorpusConsumerRegistration;
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
+  pendingCorpusSnapshot: KbCorpusSnapshot | null;
   waiters: Set<Waiter>;
 }
 
@@ -77,8 +80,16 @@ export class ConsumerDriver {
         context: { consumerId: reg.id, authority: reg.authority, lane: reg.lane },
       });
     }
+    if (reg.authority === 'journal' && 'lane' in reg) {
+      throw new CoralSetupError({
+        code: 'consumer_lane_invalid',
+        userMessage: `Journal consumer '${reg.id}' must not declare a corpus lane`,
+        remediation: 'Remove the lane field from journal consumers.',
+        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
+      });
+    }
 
-    this.ensureCursorRow(reg.id, reg.authority);
+    this.ensureCursorRow(reg);
 
     if (this.consumers.has(reg.id)) {
       return;
@@ -88,6 +99,7 @@ export class ConsumerDriver {
       reg,
       inFlight: null,
       pendingTarget: null,
+      pendingCorpusSnapshot: null,
       waiters: new Set(),
     });
   }
@@ -96,21 +108,36 @@ export class ConsumerDriver {
     this.register(reg);
   }
 
-  notify(authority: Authority, version: number): void {
-    if (authority !== 'journal') {
+  notify(authority: 'journal', version: number): void;
+  notify(authority: 'corpus', snapshot: KbCorpusSnapshot, lane: CorpusLane): void;
+  notify(authority: Authority, versionOrSnapshot: number | KbCorpusSnapshot, lane?: CorpusLane): void {
+    if (authority === 'journal') {
+      for (const state of this.consumers.values()) {
+        if (state.reg.authority !== 'journal') {
+          continue;
+        }
+        this.scheduleApply(state, versionOrSnapshot as number, null);
+      }
+      return;
+    }
+
+    if (lane !== 'content' && lane !== 'metadata') {
       throw new CoralSetupError({
-        code: 'consumer_authority_unsupported',
-        userMessage: `notify('${authority}', ...) not supported in Phase 1`,
-        remediation: 'Only journal notifies are supported in Phase 1; corpus arrives in Phase 3.',
-        context: { authority, version },
+        code: 'consumer_lane_invalid',
+        userMessage: 'Corpus notifications require an explicit lane',
+        remediation: "Call notify('corpus', snapshot, lane) with lane 'content' or 'metadata'.",
+        context: { authority, lane },
       });
     }
 
+    const snapshot = versionOrSnapshot as KbCorpusSnapshot;
     for (const state of this.consumers.values()) {
-      if (state.reg.authority !== authority) {
+      if (state.reg.authority !== 'corpus' || state.reg.lane !== lane) {
         continue;
       }
-      this.scheduleApply(state, version);
+
+      const target = lane === 'content' ? snapshot.contentSeq : snapshot.metadataSeq;
+      this.scheduleApply(state, target, snapshot);
     }
   }
 
@@ -188,18 +215,27 @@ export class ConsumerDriver {
     return this.consumers.get(consumerId)?.waiters.size ?? 0;
   }
 
-  private ensureCursorRow(consumerId: string, authority: Authority): void {
+  private ensureCursorRow(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
+    const requestedLane = reg.authority === 'corpus' ? reg.lane : null;
     const row = this.db
-      .prepare('SELECT authority FROM equipment_cursors WHERE consumer_id = ?')
-      .get(consumerId) as { authority: string } | undefined;
+      .prepare('SELECT authority, lane FROM equipment_cursors WHERE consumer_id = ?')
+      .get(reg.id) as { authority: string; lane: string | null } | undefined;
 
     if (row) {
-      if (row.authority !== authority) {
+      if (row.authority !== reg.authority) {
         throw new CoralSetupError({
           code: 'consumer_authority_mismatch',
-          userMessage: `Consumer '${consumerId}' registered with conflicting authority`,
+          userMessage: `Consumer '${reg.id}' registered with conflicting authority`,
           remediation: 'Either delete the stored cursor row or reconcile the registration.',
-          context: { consumerId, existing: row.authority, requested: authority },
+          context: { consumerId: reg.id, existing: row.authority, requested: reg.authority },
+        });
+      }
+      if ((row.lane ?? null) !== requestedLane) {
+        throw new CoralSetupError({
+          code: 'consumer_lane_mismatch',
+          userMessage: `Consumer '${reg.id}' registered with conflicting corpus lane`,
+          remediation: 'Either delete the stored cursor row or reconcile the lane registration.',
+          context: { consumerId: reg.id, existing: row.lane ?? null, requested: requestedLane },
         });
       }
 
@@ -207,48 +243,72 @@ export class ConsumerDriver {
     }
 
     this.db
-      .prepare('INSERT INTO equipment_cursors (consumer_id, authority, cursor, equipped_at) VALUES (?, ?, 0, ?)')
-      .run(consumerId, authority, this.now().toISOString());
+      .prepare('INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)')
+      .run(reg.id, reg.authority, requestedLane, this.now().toISOString());
   }
 
-  private scheduleApply(state: ConsumerState, target: number): void {
+  private scheduleApply(state: ConsumerState, target: number, snapshot: KbCorpusSnapshot | null): void {
     if (state.inFlight) {
-      state.pendingTarget = state.pendingTarget === null ? target : Math.max(state.pendingTarget, target);
+      if (
+        state.pendingTarget === null ||
+        target > state.pendingTarget ||
+        (target === state.pendingTarget && snapshot !== null)
+      ) {
+        state.pendingTarget = target;
+        state.pendingCorpusSnapshot = snapshot;
+      }
       return;
     }
 
     state.inFlight = (async () => {
-      const succeeded = await this.runApply(state, target);
+      const succeeded = await this.runApply(state, target, snapshot);
       state.inFlight = null;
 
       if (!succeeded) {
         state.pendingTarget = null;
+        state.pendingCorpusSnapshot = null;
         return;
       }
 
       if (state.pendingTarget !== null) {
         const nextTarget = state.pendingTarget;
+        const nextSnapshot = state.pendingCorpusSnapshot;
         state.pendingTarget = null;
-        this.scheduleApply(state, nextTarget);
+        state.pendingCorpusSnapshot = null;
+        this.scheduleApply(state, nextTarget, nextSnapshot);
       }
     })();
   }
 
-  private async runApply(state: ConsumerState, target: number): Promise<boolean> {
-    if (state.reg.authority !== 'journal') {
-      return true;
-    }
-
-    const fromSeq = this.readCursor(state.reg.id);
-    const upToSeq = Math.max(fromSeq, target);
-
-    if (upToSeq <= fromSeq) {
-      return true;
-    }
-
+  private async runApply(state: ConsumerState, target: number, snapshot: KbCorpusSnapshot | null): Promise<boolean> {
     try {
-      await state.reg.apply({ fromSeq, upToSeq, db: this.db });
-      this.advanceCursor(state.reg.id, upToSeq);
+      if (state.reg.authority === 'journal') {
+        const fromSeq = this.readCursor(state.reg.id);
+        const upToSeq = Math.max(fromSeq, target);
+
+        if (upToSeq <= fromSeq) {
+          return true;
+        }
+
+        await state.reg.apply({ fromSeq, upToSeq, db: this.db });
+        this.advanceCursor(state.reg, upToSeq);
+        this.resolveWaiters(state, upToSeq);
+        return true;
+      }
+
+      const corpusSnapshot = snapshot ?? { contentSeq: target, metadataSeq: target };
+      const fromSeq = this.readCursor(state.reg.id);
+      const upToSeq = Math.max(
+        fromSeq,
+        state.reg.lane === 'content' ? corpusSnapshot.contentSeq : corpusSnapshot.metadataSeq,
+      );
+
+      if (upToSeq <= fromSeq) {
+        return true;
+      }
+
+      await state.reg.apply({ ...corpusSnapshot, db: this.db });
+      this.advanceCursor(state.reg, upToSeq);
       this.resolveWaiters(state, upToSeq);
       return true;
     } catch (err) {
@@ -266,10 +326,11 @@ export class ConsumerDriver {
     return row?.cursor ?? 0;
   }
 
-  private advanceCursor(consumerId: string, newCursor: number): void {
+  private advanceCursor(reg: JournalConsumerRegistration | CorpusConsumerRegistration, newCursor: number): void {
+    this.ensureCursorRow(reg);
     this.db
-      .prepare('UPDATE equipment_cursors SET cursor = ? WHERE consumer_id = ? AND cursor < ?')
-      .run(newCursor, consumerId, newCursor);
+      .prepare('UPDATE equipment_cursors SET cursor = ?, lane = ? WHERE consumer_id = ? AND cursor < ?')
+      .run(newCursor, reg.authority === 'corpus' ? reg.lane : null, reg.id, newCursor);
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number): void {

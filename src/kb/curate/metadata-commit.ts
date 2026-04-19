@@ -17,7 +17,6 @@ import {
   recordMetadataMutation,
   writeFileAtomic,
 } from '../mutation-helpers.js';
-import { runEntrySeqUpgradeGuard } from '../entry-seq-guard.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -381,7 +380,7 @@ export async function commitMetadataTargets(
   plan: MetadataCommitPlan = {},
 ): Promise<void> {
   await kb.withMutationLock(async () => {
-    runEntrySeqUpgradeGuard(kb);
+    kb.runEntrySeqUpgradeGuardIfNeeded();
     const state = readCurateState(kb);
     await commitMetadataTargetsLocked(kb, targets, state, plan);
   });

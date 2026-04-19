@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
-import type { KbRuntime } from '../kb/contracts.js';
+import type { KbCorpusPublishCallbacks, KbRuntime } from '../kb/contracts.js';
 import type { GitSyncRuntimePicks } from '../kb/curate/types.js';
 import { z } from 'zod';
 import { deleteFn as kbDeleteFn } from '../kb/ops/delete.js';
@@ -60,6 +60,10 @@ export type KnowledgeBaseRuntime = KbSubsystem;
 export type CreateKbSubsystemOptions = {
   pluginRoot: string;
   spawnCli: SpawnCliFn;
+  persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
+  notifyCorpusMutation?: KbCorpusPublishCallbacks['notifyCorpusMutation'];
+  onCorpusPublishFailure?: KbCorpusPublishCallbacks['onPublishFailure'];
+  onCorpusPublishSuccess?: KbCorpusPublishCallbacks['onPublishSuccess'];
 } & GitSyncRuntimePicks;
 
 export async function createKbSubsystem({
@@ -68,10 +72,26 @@ export async function createKbSubsystem({
   processPort,
   storagePort,
   envPort,
+  persistCorpusState,
+  notifyCorpusMutation,
+  onCorpusPublishFailure,
+  onCorpusPublishSuccess,
 }: CreateKbSubsystemOptions): Promise<KbSubsystem> {
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
+  });
+  if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {
+    kb.register({
+      persistCorpusState,
+      notifyCorpusMutation,
+      ...(onCorpusPublishFailure === undefined ? {} : { onPublishFailure: onCorpusPublishFailure }),
+      ...(onCorpusPublishSuccess === undefined ? {} : { onPublishSuccess: onCorpusPublishSuccess }),
+    });
+  }
+  await kb.retryPendingCorpusPublication();
+  await kb.withMutationLock(() => {
+    kb.runEntrySeqUpgradeGuardIfNeeded();
   });
   await kb.initVectorStore(pluginRoot);
 

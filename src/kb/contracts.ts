@@ -4,6 +4,38 @@ import type { VectorStore } from './vector/contracts.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
+export interface KbCorpusSnapshot {
+  contentSeq: number;
+  metadataSeq: number;
+}
+
+export type KbCorpusLane = 'content' | 'metadata';
+
+export interface KbCorpusPublication {
+  snapshot: KbCorpusSnapshot;
+  changedLanes: KbCorpusLane[];
+}
+
+export interface KbPersistCorpusStateResult {
+  snapshot: KbCorpusSnapshot;
+  changedLanes: KbCorpusLane[];
+}
+
+export interface KbCorpusPublishFailure {
+  stage: 'persist' | 'notify';
+  snapshot: KbCorpusSnapshot;
+  changedLanes: KbCorpusLane[];
+  consecutiveFailures: number;
+  error: unknown;
+}
+
+export interface KbCorpusPublishCallbacks {
+  persistCorpusState(snapshot: KbCorpusSnapshot): Promise<KbPersistCorpusStateResult> | KbPersistCorpusStateResult;
+  notifyCorpusMutation(publication: KbCorpusPublication): Promise<void> | void;
+  onPublishFailure?(failure: KbCorpusPublishFailure): void;
+  onPublishSuccess?(): void;
+}
+
 export interface KbVectorSpecState {
   indexedSeq: number;
   staleReason?: string;
@@ -64,6 +96,8 @@ export interface KbRuntime {
   readIndexStateIfPresent(): KbIndexState | null;
   readIndexState(): KbIndexState;
   writeIndexState(state: KbIndexState): void;
+  register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void;
+  runEntrySeqUpgradeGuardIfNeeded(): boolean;
   recordMutationCommitted(lane?: KbIndexMutationLane, reason?: string): KbIndexState;
   recordIndexSyncSuccess(): KbIndexState;
   recordIndexSyncFailure(reason: string): KbIndexState;
@@ -82,6 +116,8 @@ export interface KbRuntime {
   }>;
   ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot>;
   withMutationLock<T>(fn: () => Promise<T> | T): Promise<T>;
+  retryPendingCorpusPublication(): Promise<void>;
+  runInboundSync<T>(fn: () => Promise<T> | T): Promise<T>;
   invalidateKbCache(): void;
   invalidateTextSnapshot(reason: string): KbIndexState;
   installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex;

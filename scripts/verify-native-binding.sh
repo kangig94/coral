@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "[verify-native-binding] npm run build"
-npm run build > /dev/null
+npm run build
 
 mkdir -p "$REPO_ROOT/bridge"
 cp "$REPO_ROOT/build/coral-backend.cjs" "$REPO_ROOT/bridge/coral-backend.cjs"

@@ -39,13 +39,17 @@ import type { KbIndexMutationLane, KbIndexState, KbRuntime } from '../contracts.
 import {
   communityEntryId,
   isCommunityEntry,
+  isNoteEntry,
+  isSourceEntry,
   noteEntryId,
   sourceEntryId,
   type KbIndex,
+  type NoteEntry,
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type ReindexResult,
+  type SourceEntry,
 } from '../types.js';
 
 const INDEX_FILE = 'index.json';
@@ -68,26 +72,147 @@ function mergeMutationLane(
   return 'both';
 }
 
-function dirModifiedAfter(dir: string, threshold: number): boolean {
+function modifiedAtNs(path: string): bigint | null {
   try {
-    return statSync(dir).mtimeMs > threshold;
+    return statSync(path, { bigint: true }).mtimeNs;
   } catch {
-    return false;
+    return null;
   }
 }
 
-function fileModifiedAfter(filePath: string, threshold: number): boolean {
-  try {
-    return statSync(filePath).mtimeMs > threshold;
-  } catch {
-    return false;
+function markdownDirModifiedAfter(dir: string, threshold: bigint): boolean {
+  const dirModifiedAt = modifiedAtNs(dir);
+  if (dirModifiedAt !== null && dirModifiedAt > threshold) {
+    return true;
   }
+
+  return sortedMarkdownEntries(dir).some((entry) => fileModifiedAfter(join(dir, entry), threshold));
+}
+
+function markdownFilesModifiedAfter(
+  dir: string,
+  threshold: bigint,
+  ignoredBasenames: ReadonlySet<string> = new Set<string>(),
+): boolean {
+  return sortedMarkdownEntries(dir).some((entry) => !ignoredBasenames.has(stripMdExt(entry)) && fileModifiedAfter(join(dir, entry), threshold));
+}
+
+function fileModifiedAfter(filePath: string, threshold: bigint): boolean {
+  const modifiedAt = modifiedAtNs(filePath);
+  return modifiedAt !== null && modifiedAt > threshold;
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((entry, index) => right[index] === entry);
+}
+
+function sameNoteEntry(left: NoteEntry | undefined, right: NoteEntry): boolean {
+  return (
+    left !== undefined &&
+    left.title === right.title &&
+    left.entrySeq === right.entrySeq &&
+    sameStringList(left.tags, right.tags) &&
+    sameStringList(left.principles, right.principles) &&
+    sameStringList(left.source, right.source) &&
+    sameStringList(left.related ?? [], right.related ?? []) &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+function sameSourceEntry(left: SourceEntry | undefined, right: SourceEntry): boolean {
+  return (
+    left !== undefined &&
+    left.title === right.title &&
+    left.type === right.type &&
+    left.url === right.url &&
+    left.importedAt === right.importedAt &&
+    left.entrySeq === right.entrySeq &&
+    sameStringList(left.tags, right.tags) &&
+    sameStringList(left.related ?? [], right.related ?? [])
+  );
+}
+
+function detectStructuredTextDrift(
+  kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir'>,
+  index: KbIndex,
+  pendingRepairIds: ReadonlySet<string>,
+): KbIndexMutationLane | null {
+  const noteSlugs = new Set<string>();
+  for (const entry of sortedMarkdownEntries(kb.notesDir())) {
+    const note = stripMdExt(entry);
+    noteSlugs.add(note);
+    const entryId = noteEntryId(note);
+    if (pendingRepairIds.has(entryId)) {
+      continue;
+    }
+    try {
+      const loaded = loadKbNote(join(kb.notesDir(), entry));
+      const nextEntry = buildNoteIndexEntry({
+        slug: note,
+        title: loaded.title,
+        ...loaded.frontmatter,
+      });
+      const existingEntry = index.entries[entryId];
+      const existing = existingEntry !== undefined && isNoteEntry(existingEntry) ? existingEntry : undefined;
+      if (!sameNoteEntry(existing, nextEntry)) {
+        return 'both';
+      }
+    } catch {
+      return 'both';
+    }
+  }
+
+  for (const entry of Object.values(index.entries)) {
+    if (isNoteEntry(entry) && !noteSlugs.has(entry.slug)) {
+      return 'both';
+    }
+  }
+
+  const sourceSlugs = new Set<string>();
+  for (const entry of sortedMarkdownEntries(kb.sourcesDir())) {
+    const slug = stripMdExt(entry);
+    sourceSlugs.add(slug);
+    const entryId = sourceEntryId(slug);
+    if (pendingRepairIds.has(entryId)) {
+      continue;
+    }
+    try {
+      const raw = readFileSync(join(kb.sourcesDir(), entry), 'utf-8');
+      const nextEntry = buildSourceIndexEntry({
+        slug,
+        ...parseSourceFrontmatter(raw),
+      });
+      const existingEntry = index.entries[entryId];
+      const existing = existingEntry !== undefined && isSourceEntry(existingEntry) ? existingEntry : undefined;
+      if (!sameSourceEntry(existing, nextEntry)) {
+        return 'both';
+      }
+    } catch {
+      return 'both';
+    }
+  }
+
+  for (const entry of Object.values(index.entries)) {
+    if (isSourceEntry(entry) && !sourceSlugs.has(entry.slug)) {
+      return 'both';
+    }
+  }
+
+  return null;
 }
 
 export function detectTextArtifactRebuildInfo(
   kb: Pick<
     KbRuntime,
-    'runtimeDir' | 'readIndex' | 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'
+    | 'runtimeDir'
+    | 'readIndex'
+    | 'notesDir'
+    | 'sourcesDir'
+    | 'communitiesDir'
+    | 'principlesDir'
+    | 'entityGraphPath'
+    | 'curateStatePath'
   >,
 ): {
   needsRebuild: boolean;
@@ -102,8 +227,19 @@ export function detectTextArtifactRebuildInfo(
   }
 
   try {
-    const indexMtime = statSync(indexPath).mtimeMs;
+    const indexMtime = statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
+    const pendingRepairIds = new Set((readCurateState(kb).pendingRepair ?? []).map((entry) => entry.entryId));
+    const pendingRepairNotes = new Set(
+      [...pendingRepairIds]
+        .filter((entryId) => entryId.startsWith('note:'))
+        .map((entryId) => entryId.slice('note:'.length)),
+    );
+    const pendingRepairSources = new Set(
+      [...pendingRepairIds]
+        .filter((entryId) => entryId.startsWith('source:'))
+        .map((entryId) => entryId.slice('source:'.length)),
+    );
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (!existsSync(kb.entityGraphPath())) {
@@ -114,12 +250,18 @@ export function detectTextArtifactRebuildInfo(
       externalMutation = mergeMutationLane(externalMutation, 'metadata');
     }
 
-    if (dirModifiedAfter(kb.principlesDir(), indexMtime) || dirModifiedAfter(kb.communitiesDir(), indexMtime)) {
+    if (markdownDirModifiedAfter(kb.principlesDir(), indexMtime) || markdownDirModifiedAfter(kb.communitiesDir(), indexMtime)) {
       externalMutation = mergeMutationLane(externalMutation, 'metadata');
     }
 
-    if (dirModifiedAfter(kb.notesDir(), indexMtime) || dirModifiedAfter(kb.sourcesDir(), indexMtime)) {
+    if (
+      markdownFilesModifiedAfter(kb.notesDir(), indexMtime, pendingRepairNotes) ||
+      markdownFilesModifiedAfter(kb.sourcesDir(), indexMtime, pendingRepairSources)
+    ) {
       externalMutation = mergeMutationLane(externalMutation, 'both');
+    }
+    if (externalMutation === null && currentIndex !== null) {
+      externalMutation = mergeMutationLane(externalMutation, detectStructuredTextDrift(kb, currentIndex, pendingRepairIds));
     }
 
     return {

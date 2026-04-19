@@ -10,7 +10,6 @@ import type { StoragePort } from '../../runtime/ports.js';
 
 const STORE_DIR = fileURLToPath(new URL('../', import.meta.url));
 const SCHEMA_SQL_PATH = join(STORE_DIR, 'schema.sql');
-const INITIAL_MIGRATION_PATH = join(STORE_DIR, 'migrations/001_initial.sql');
 type TrackedDatabase = InstanceType<typeof Database> & { totalChanges: number };
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -42,17 +41,15 @@ describe('migrations idempotency', () => {
     }
   });
 
-  it('schema.sql and migrations/001_initial.sql remain byte-identical and yield matching schema state', () => {
+  it('schema.sql and the applied migrations yield matching schema state', () => {
     const schemaSql = readFileSync(SCHEMA_SQL_PATH, 'utf8');
-    const migrationSql = readFileSync(INITIAL_MIGRATION_PATH, 'utf8');
-    expect(migrationSql).toBe(schemaSql);
 
     const dbFromSchema = new Database(':memory:');
     const dbFromMigration = new Database(':memory:');
 
     try {
       dbFromSchema.exec(schemaSql);
-      dbFromMigration.exec(migrationSql);
+      applyMigrations({ db: dbFromMigration, storage: nodeStorage });
 
       const objectsA = (
         dbFromSchema
@@ -74,6 +71,7 @@ describe('migrations idempotency', () => {
       ).map(({ key, value }) => ({ key, value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value }));
       expect(metaA).toEqual(metaB);
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
+      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
 
       const corpusStateA = dbFromSchema.prepare('SELECT id, content_seq, metadata_seq FROM corpus_state').get() as {
         id: number;
@@ -87,6 +85,15 @@ describe('migrations idempotency', () => {
       };
       expect(corpusStateA).toEqual({ id: 1, content_seq: 0, metadata_seq: 0 });
       expect(corpusStateB).toEqual(corpusStateA);
+
+      const equipmentCursorColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('equipment_cursors')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const equipmentCursorColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('equipment_cursors')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(equipmentCursorColumnsA).toEqual(['consumer_id', 'authority', 'lane', 'cursor', 'equipped_at']);
+      expect(new Set(equipmentCursorColumnsB)).toEqual(new Set(equipmentCursorColumnsA));
 
       const curateSchedulerA = dbFromSchema
         .prepare(

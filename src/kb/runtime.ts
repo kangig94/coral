@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
@@ -6,8 +6,13 @@ import { backendLog } from '../shared/backend-log.js';
 import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate/state.js';
 import type {
   KbCachedOramaIndex,
+  KbCorpusLane,
+  KbCorpusPublishCallbacks,
+  KbCorpusPublication,
+  KbCorpusSnapshot,
   KbIndexMutationLane,
   KbIndexState,
+  KbPersistCorpusStateResult,
   KbRuntime,
   KbVectorLease,
   KbVectorSpecState,
@@ -463,6 +468,171 @@ function isFreshTextSnapshot(state: KbIndexState | null): state is KbIndexState 
   return state !== null && state.textStaleReason === undefined;
 }
 
+type PublishQueueEntry = {
+  publication: KbCorpusPublication;
+  persisted: boolean;
+};
+
+type MutationLockContext = {
+  pendingMutationLane: KbIndexMutationLane | null;
+  pendingMutationReason?: string;
+  publication: KbCorpusPublication | null;
+};
+
+type CorpusFilesystemSnapshot = {
+  notes: number;
+  sources: number;
+  principles: number;
+  communities: number;
+  entityGraph: number;
+};
+
+export interface CreateKbRuntimeOptions {
+  markdownRoot: string;
+  runtimeDir: string;
+  corpusPublishCallbacks?: KbCorpusPublishCallbacks;
+}
+
+const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
+  persistCorpusState(snapshot) {
+    return {
+      snapshot,
+      changedLanes: [],
+    };
+  },
+  notifyCorpusMutation() {},
+};
+
+function mergeMutationLane(
+  current: KbIndexMutationLane | null,
+  next: KbIndexMutationLane | null,
+): KbIndexMutationLane | null {
+  if (next === null || current === 'both') {
+    return current;
+  }
+  if (current === null || current === next) {
+    return next;
+  }
+  return 'both';
+}
+
+function mergeCorpusLanes(current: readonly KbCorpusLane[], next: readonly KbCorpusLane[]): KbCorpusLane[] {
+  const merged = new Set<KbCorpusLane>(current);
+  for (const lane of next) {
+    merged.add(lane);
+  }
+
+  return [...merged].sort();
+}
+
+function mutationLanesFromDiff(before: KbCorpusSnapshot, after: KbCorpusSnapshot): KbCorpusLane[] {
+  const changedLanes: KbCorpusLane[] = [];
+  if (after.contentSeq > before.contentSeq) {
+    changedLanes.push('content');
+  }
+  if (after.metadataSeq > before.metadataSeq) {
+    changedLanes.push('metadata');
+  }
+
+  return changedLanes;
+}
+
+function mergePublication(
+  current: KbCorpusPublication | null,
+  next: KbCorpusPublication,
+): KbCorpusPublication {
+  if (current === null) {
+    return {
+      snapshot: {
+        contentSeq: next.snapshot.contentSeq,
+        metadataSeq: next.snapshot.metadataSeq,
+      },
+      changedLanes: [...next.changedLanes].sort(),
+    };
+  }
+
+  return {
+    snapshot: {
+      contentSeq: Math.max(current.snapshot.contentSeq, next.snapshot.contentSeq),
+      metadataSeq: Math.max(current.snapshot.metadataSeq, next.snapshot.metadataSeq),
+    },
+    changedLanes: mergeCorpusLanes(current.changedLanes, next.changedLanes),
+  };
+}
+
+function latestMarkdownMtime(dirPath: string): number {
+  let latestMtime = 0;
+
+  try {
+    latestMtime = Math.max(latestMtime, statSync(dirPath).mtimeMs);
+  } catch (error: unknown) {
+    if (!isNoEntryError(error)) {
+      throw error;
+    }
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath).filter((entry) => entry.endsWith('.md'));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return latestMtime;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    try {
+      latestMtime = Math.max(latestMtime, statSync(join(dirPath, entry)).mtimeMs);
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  return latestMtime;
+}
+
+function fileMtime(filePath: string): number {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+function captureCorpusFilesystemSnapshot(
+  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'principlesDir' | 'communitiesDir' | 'entityGraphPath'>,
+): CorpusFilesystemSnapshot {
+  return {
+    notes: latestMarkdownMtime(runtime.notesDir()),
+    sources: latestMarkdownMtime(runtime.sourcesDir()),
+    principles: latestMarkdownMtime(runtime.principlesDir()),
+    communities: latestMarkdownMtime(runtime.communitiesDir()),
+    entityGraph: fileMtime(runtime.entityGraphPath()),
+  };
+}
+
+function detectMutationLaneFromFilesystemSnapshots(
+  before: CorpusFilesystemSnapshot,
+  after: CorpusFilesystemSnapshot,
+): KbIndexMutationLane | null {
+  let lane: KbIndexMutationLane | null = null;
+
+  if (before.entityGraph !== after.entityGraph || before.principles !== after.principles || before.communities !== after.communities) {
+    lane = mergeMutationLane(lane, 'metadata');
+  }
+  if (before.notes !== after.notes || before.sources !== after.sources) {
+    lane = mergeMutationLane(lane, 'both');
+  }
+
+  return lane;
+}
+
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
@@ -474,8 +644,14 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly vectorLifecycle: VectorHandleLifecycle;
   private upgradeGuardDone = false;
   private pendingRepairCache: { mtime: number; result: boolean } | null = null;
+  private corpusPublishCallbacks: KbCorpusPublishCallbacks = NOOP_CORPUS_PUBLISH_CALLBACKS;
+  private activeMutationContext: MutationLockContext | null = null;
+  private readonly publishQueue: PublishQueueEntry[] = [];
+  private publishDrain: Promise<void> | null = null;
+  private publishDrainRequested = false;
+  private consecutivePublishFailures = 0;
 
-  constructor({ markdownRoot, runtimeDir }: { markdownRoot: string; runtimeDir: string }) {
+  constructor({ markdownRoot, runtimeDir, corpusPublishCallbacks }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
     this.vectorLifecycle = new VectorHandleLifecycle({
@@ -487,8 +663,10 @@ class KbRuntimeImpl implements KbRuntime {
     });
 
     mkdirSync(this.runtimeDir, { recursive: true });
-    runEntrySeqUpgradeGuard(this);
-    this.upgradeGuardDone = true;
+
+    if (corpusPublishCallbacks !== undefined) {
+      this.register(corpusPublishCallbacks);
+    }
   }
 
   notesDir(): string {
@@ -576,10 +754,6 @@ class KbRuntimeImpl implements KbRuntime {
     rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
     await this.closeVectorStores();
     mkdirSync(this.runtimeDir, { recursive: true });
-    if (!this.upgradeGuardDone) {
-      runEntrySeqUpgradeGuard(this);
-      this.upgradeGuardDone = true;
-    }
 
     if (this.textArtifactsNeedRebuild()) {
       return;
@@ -701,16 +875,54 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   writeIndexState(state: KbIndexState): void {
-    writeJsonAtomic(this.indexStatePath(), stripLegacyIndexStateAliases(state));
+    const previousSnapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
+    const normalizedState = withLegacyIndexStateAliases(stripLegacyIndexStateAliases(state));
+    writeJsonAtomic(this.indexStatePath(), stripLegacyIndexStateAliases(normalizedState));
+    this.capturePublicationFromStateChange(previousSnapshot, captureIndexStateSnapshot(normalizedState));
+  }
+
+  register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
+    this.corpusPublishCallbacks = corpusPublishCallbacks;
+  }
+
+  runEntrySeqUpgradeGuardIfNeeded(): boolean {
+    if (this.upgradeGuardDone) {
+      return false;
+    }
+
+    const changed = runEntrySeqUpgradeGuard(this);
+    this.upgradeGuardDone = true;
+    if (changed) {
+      this.recordMutationCommitted('both', 'KB text snapshot is stale after entry-seq upgrade.');
+    }
+    return changed;
   }
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
+    if (this.activeMutationContext !== null) {
+      this.activeMutationContext.pendingMutationLane = mergeMutationLane(this.activeMutationContext.pendingMutationLane, lane);
+      if (reason !== undefined) {
+        this.activeMutationContext.pendingMutationReason = reason;
+      }
+
+      const state = stripLegacyIndexStateAliases(this.readIndexState());
+      return withLegacyIndexStateAliases({
+        ...applyMutationLane(state, this.activeMutationContext.pendingMutationLane),
+        ...(this.activeMutationContext.pendingMutationReason === undefined
+          ? state.textStaleReason === undefined
+            ? {}
+            : { textStaleReason: state.textStaleReason }
+          : { textStaleReason: this.activeMutationContext.pendingMutationReason }),
+      });
+    }
+
     const state = stripLegacyIndexStateAliases(this.readIndexState());
     const nextState = withLegacyIndexStateAliases({
       ...applyMutationLane(state, lane),
       ...(reason === undefined ? {} : { textStaleReason: reason }),
     });
     this.writeIndexState(nextState);
+    this.refreshIndexBaselineIfPresent();
     return nextState;
   }
 
@@ -804,10 +1016,7 @@ class KbRuntimeImpl implements KbRuntime {
   async ensureIndex(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
       await this.withMutationLock(async () => {
-        if (!this.upgradeGuardDone) {
-          runEntrySeqUpgradeGuard(this);
-          this.upgradeGuardDone = true;
-        }
+        this.runEntrySeqUpgradeGuardIfNeeded();
         const state = this.readIndexStateIfPresent();
         if (!this.textArtifactsNeedRebuild(state)) {
           return;
@@ -907,11 +1116,56 @@ class KbRuntimeImpl implements KbRuntime {
 
     await previous;
 
+    const lockContext: MutationLockContext = {
+      pendingMutationLane: null,
+      pendingMutationReason: undefined,
+      publication: null,
+    };
+    this.activeMutationContext = lockContext;
+    let succeeded = false;
+
     try {
-      return await fn();
+      const result = await fn();
+      succeeded = true;
+      return result;
     } finally {
+      if (succeeded) {
+        this.finalizePendingMutation(lockContext);
+      }
+      this.activeMutationContext = null;
+      if (succeeded && lockContext.publication !== null) {
+        this.publishQueue.push({
+          publication: lockContext.publication,
+          persisted: false,
+        });
+      }
       release();
+      if (this.publishQueue.length > 0) {
+        void this.processPublishQueue();
+      }
     }
+  }
+
+  async retryPendingCorpusPublication(): Promise<void> {
+    this.publishCurrentSnapshot();
+    if (this.publishQueue.length === 0) {
+      return;
+    }
+
+    await this.processPublishQueue();
+  }
+
+  async runInboundSync<T>(fn: () => Promise<T> | T): Promise<T> {
+    return this.withMutationLock(async () => {
+      const before = captureCorpusFilesystemSnapshot(this);
+      const result = await fn();
+      const after = captureCorpusFilesystemSnapshot(this);
+      const lane = detectMutationLaneFromFilesystemSnapshots(before, after);
+      if (lane !== null) {
+        this.recordMutationCommitted(lane, 'KB text snapshot is stale after inbound git sync.');
+      }
+      return result;
+    });
   }
 
   invalidateKbCache(): void {
@@ -935,6 +1189,155 @@ class KbRuntimeImpl implements KbRuntime {
   persistOramaSnapshot(db: KbOramaDb): void {
     const snapshot = save(db) as unknown as RawData;
     writeJsonAtomic(this.oramaIndexPath(), snapshot);
+  }
+
+  private publishCurrentSnapshot(): void {
+    const snapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
+    if (snapshot.contentSeq === 0 && snapshot.metadataSeq === 0) {
+      return;
+    }
+
+    this.publishQueue.push({
+      publication: {
+        snapshot,
+        changedLanes: ['content', 'metadata'],
+      },
+      persisted: false,
+    });
+  }
+
+  private refreshIndexBaselineIfPresent(): void {
+    const currentIndex = this.readIndex();
+    if (currentIndex === null) {
+      return;
+    }
+
+    this.persistIndexToDisk(currentIndex);
+  }
+
+  private async processPublishQueue(): Promise<void> {
+    if (this.publishDrain !== null) {
+      this.publishDrainRequested = true;
+      return this.publishDrain;
+    }
+
+    this.publishDrainRequested = false;
+    const drain = Promise.resolve().then(async () => {
+      try {
+        while (this.publishQueue.length > 0) {
+          const current = this.publishQueue[0];
+          if (current === undefined) {
+            return;
+          }
+
+          if (!current.persisted) {
+            try {
+              const persisted = await this.corpusPublishCallbacks.persistCorpusState(current.publication.snapshot);
+              current.publication = this.normalizePersistResult(current.publication, persisted);
+              current.persisted = true;
+            } catch (error: unknown) {
+              this.consecutivePublishFailures += 1;
+              this.corpusPublishCallbacks.onPublishFailure?.({
+                stage: 'persist',
+                snapshot: current.publication.snapshot,
+                changedLanes: current.publication.changedLanes,
+                consecutiveFailures: this.consecutivePublishFailures,
+                error,
+              });
+              return;
+            }
+          }
+
+          if (current.publication.changedLanes.length === 0) {
+            this.publishQueue.shift();
+            this.consecutivePublishFailures = 0;
+            this.corpusPublishCallbacks.onPublishSuccess?.();
+            continue;
+          }
+
+          try {
+            await this.corpusPublishCallbacks.notifyCorpusMutation(current.publication);
+          } catch (error: unknown) {
+            this.consecutivePublishFailures += 1;
+            this.corpusPublishCallbacks.onPublishFailure?.({
+              stage: 'notify',
+              snapshot: current.publication.snapshot,
+              changedLanes: current.publication.changedLanes,
+              consecutiveFailures: this.consecutivePublishFailures,
+              error,
+            });
+            return;
+          }
+
+          this.publishQueue.shift();
+          this.consecutivePublishFailures = 0;
+          this.corpusPublishCallbacks.onPublishSuccess?.();
+        }
+      } finally {
+        if (this.publishDrain === drain) {
+          this.publishDrain = null;
+        }
+        const shouldRestart = this.publishQueue.length > 0 && this.publishDrainRequested;
+        this.publishDrainRequested = false;
+        if (shouldRestart) {
+          void this.processPublishQueue();
+        }
+      }
+    });
+    this.publishDrain = drain;
+
+    return drain;
+  }
+
+  private finalizePendingMutation(lockContext: MutationLockContext): void {
+    if (lockContext.pendingMutationLane === null) {
+      return;
+    }
+
+    const state = stripLegacyIndexStateAliases(this.readIndexState());
+    const nextState = withLegacyIndexStateAliases({
+      ...applyMutationLane(state, lockContext.pendingMutationLane),
+      ...(lockContext.pendingMutationReason === undefined
+        ? state.textStaleReason === undefined
+          ? {}
+          : { textStaleReason: state.textStaleReason }
+        : { textStaleReason: lockContext.pendingMutationReason }),
+    });
+    this.writeIndexState(nextState);
+    this.refreshIndexBaselineIfPresent();
+  }
+
+  private capturePublicationFromStateChange(previous: KbCorpusSnapshot, next: KbCorpusSnapshot): void {
+    if (this.activeMutationContext === null) {
+      return;
+    }
+
+    const changedLanes = mutationLanesFromDiff(previous, next);
+    if (changedLanes.length === 0) {
+      return;
+    }
+
+    this.activeMutationContext.publication = mergePublication(this.activeMutationContext.publication, {
+      snapshot: next,
+      changedLanes,
+    });
+  }
+
+  private normalizePersistResult(
+    fallbackPublication: KbCorpusPublication,
+    result: KbPersistCorpusStateResult | void,
+  ): KbCorpusPublication {
+    if (result === undefined) {
+      return {
+        snapshot: fallbackPublication.snapshot,
+        changedLanes: [...fallbackPublication.changedLanes],
+      };
+    }
+
+    return {
+      snapshot: result.snapshot,
+      changedLanes: [...result.changedLanes].sort(),
+    };
   }
 
   private indexPath(): string {
@@ -1073,6 +1476,6 @@ class KbRuntimeImpl implements KbRuntime {
   }
 }
 
-export function createKbRuntime(opts: { markdownRoot: string; runtimeDir: string }): KbRuntime {
+export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {
   return new KbRuntimeImpl(opts);
 }

@@ -51,6 +51,9 @@ export function applyMigrations({ db, storage, migrationsDir = defaultMigrations
 
   const applyTxn = db.transaction(() => {
     for (const entry of files) {
+      if (entry.version <= readCurrentVersion(db)) {
+        continue;
+      }
       const sql = storage.readFileSync(join(migrationsDir, entry.name), 'utf-8');
       db.exec(sql);
     }
