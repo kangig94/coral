@@ -138,10 +138,23 @@ export function createRealRuntime(): Runtime {
   const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
   const time: TimePort = {
     now: () => Date.now(),
-    sleep: (ms) =>
+    sleep: (ms, options) =>
       new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, ms);
+        const signal = options?.signal;
+        if (signal?.aborted) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, ms);
         timer.unref?.();
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
       }),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (handle) => {

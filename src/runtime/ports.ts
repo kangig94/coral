@@ -7,7 +7,7 @@ export interface RuntimeTimerHandle {
 
 export interface TimePort {
   now(): number;
-  sleep(ms: number): Promise<void>;
+  sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void>;
   setTimeout(fn: () => void, ms: number): RuntimeTimerHandle;
   clearTimeout(handle: RuntimeTimerHandle | null): void;
   setInterval(fn: () => void, ms: number): RuntimeTimerHandle;

@@ -95,10 +95,23 @@ export class VirtualTime implements TimePort {
     return this.currentTime;
   }
 
-  sleep(ms: number): Promise<void> {
+  sleep(ms: number, options?: { signal?: AbortSignal }): Promise<void> {
     assertFiniteNonNegative(ms, 'sleep(ms)');
     return new Promise<void>((resolve) => {
-      this.setTimeout(resolve, ms);
+      const signal = options?.signal;
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+      const handle = this.setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = (): void => {
+        this.clearTimeout(handle);
+        resolve();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
