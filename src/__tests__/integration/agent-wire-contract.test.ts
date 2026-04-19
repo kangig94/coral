@@ -17,7 +17,7 @@ import { ExecutionService } from '../../coordinator/api.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { Provider } from '../../providers/types.js';
+import type { Provider } from '../../providers/provider-contracts.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
 import type { ProviderInstruction, ProviderRequest } from '../../providers/protocol.js';

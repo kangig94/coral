@@ -11,7 +11,7 @@ import {
   parseSummaryFromBody,
 } from './frontmatter.js';
 import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
-import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './types.js';
+import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './entry-types.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';
 
 export type KbLoadedNote = {

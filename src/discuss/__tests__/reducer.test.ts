@@ -9,7 +9,7 @@ import {
   decideSpeech,
   type SessionCreateOptions,
 } from '../state-machine.js';
-import type { DiscussCreateInput, DiscussState, Result } from '../types.js';
+import type { DiscussCreateInput, DiscussState, Result } from '../session-types.js';
 
 const NOW = '2026-03-11T00:00:00.000Z';
 const PROJECT_ROOT = '/tmp/project';

@@ -23,7 +23,7 @@ import { promote as kbPromote } from '../../kb/ops/promote.js';
 import { reindex as kbReindex } from '../../kb/ops/reindex.js';
 import { searchKb } from '../../kb/ops/search.js';
 import { deleteSource, listSources, persistPreparedSource } from '../../kb/ops/source-store.js';
-import { isNoteEntry } from '../../kb/types.js';
+import { isNoteEntry } from '../../kb/entry-types.js';
 import { update as kbUpdate } from '../../kb/ops/update.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from '../../kb/validation.js';
 import {

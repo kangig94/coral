@@ -4,7 +4,7 @@ import type {
   ProviderArtifactCleanup,
   ProviderArtifactRecovery,
   ProviderExecutor,
-} from './types.js';
+} from './provider-contracts.js';
 
 /** Read-only view of the provider registry. */
 export interface ProviderCatalog {

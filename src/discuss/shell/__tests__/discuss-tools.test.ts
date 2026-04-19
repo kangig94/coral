@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
-import type { BidResult, SpeechResult } from '../../types.js';
+import type { BidResult, SpeechResult } from '../../session-types.js';
 import * as discussLoop from '../../shell/loop.js';
 import {
   createDiscussContextRegistry,

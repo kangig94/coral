@@ -10,7 +10,7 @@ import {
   sessionEventKinds,
   speakerTypes,
   transcriptResolveTypes,
-} from '../types.js';
+} from '../session-types.js';
 import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../../runtime/ports.js';
 import { parseJobStatusRecord, type JobStatusRecord } from '../../jobs/records.js';
 import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../../shared/persistence-types.js';

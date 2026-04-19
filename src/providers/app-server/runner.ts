@@ -1,6 +1,6 @@
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
-import { requireAppServerRuntime, type ProviderRuntime } from '../types.js';
+import { requireAppServerRuntime, type ProviderRuntime } from '../provider-contracts.js';
 import type { AppServerSessionDriver, DriverContext, TurnOutcome } from './driver.js';
 
 export async function runAppServerTurn<TState>(

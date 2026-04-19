@@ -6,7 +6,7 @@ import {
   type EntityRelationship,
   type EntityType,
   type RelationshipType,
-} from '../types.js';
+} from '../entry-types.js';
 import { compareLocale } from '../validation.js';
 import { uniqueTrimmedList } from './shared.js';
 

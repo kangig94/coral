@@ -10,7 +10,7 @@ import type {
 } from './view-types.js';
 import type { WatchEvent } from './watch.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
-import type { TranscriptEntry } from './types.js';
+import type { TranscriptEntry } from './session-types.js';
 
 type ProjectionDiscussRow = {
   state: PersistedDiscussSnapshot;

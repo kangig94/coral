@@ -10,7 +10,7 @@ import {
   decideSessionCreate,
   decideSpeech,
 } from '../state-machine.js';
-import type { DiscussCreateInput, Result } from '../types.js';
+import type { DiscussCreateInput, Result } from '../session-types.js';
 
 const NOW = '2026-03-11T00:00:00.000Z';
 const SESSION_ID = 'session-123';

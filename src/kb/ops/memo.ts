@@ -9,7 +9,7 @@ import type {
   KbMemoInput,
   KbMemoListResult,
   KbMemoPurgeResult,
-} from '../types.js';
+} from '../entry-types.js';
 import { writeFileAtomic } from '../mutation-helpers.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';

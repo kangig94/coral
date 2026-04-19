@@ -1,4 +1,4 @@
-import type { DiscussState, TranscriptEntry } from './types.js';
+import type { DiscussState, TranscriptEntry } from './session-types.js';
 
 export function appendEntry(state: DiscussState, entry: TranscriptEntry, now: string): DiscussState {
   return {

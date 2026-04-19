@@ -6,7 +6,7 @@ import { readStatusRecord } from '../../../client/readers.js';
 import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../discuss-sources-catalog.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
 import { renderEntries } from '../../transcript.js';
-import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../types.js';
+import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { JobStatusRecord } from '../../../jobs/records.js';

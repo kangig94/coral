@@ -7,7 +7,7 @@ import {
   sourceEntryId,
   type CuratableEntry,
   type KbIndex,
-} from '../types.js';
+} from '../entry-types.js';
 import {
   buildClassificationPrompt,
   buildPrincipleNames,

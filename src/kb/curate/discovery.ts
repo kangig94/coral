@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isRecord, isStringArray } from '../../shared/utils.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
-import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { parseJsonArray, uniqueTrimmedList } from './shared.js';
 import {

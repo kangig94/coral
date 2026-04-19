@@ -4,7 +4,7 @@ import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-helpers.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
+import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {
@@ -29,7 +29,7 @@ import type {
   KbSourcePersistInput,
   KbUpdateInput,
   ReindexResult,
-} from '../kb/types.js';
+} from '../kb/entry-types.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import {
   KB_BARE_READ_ORDER,

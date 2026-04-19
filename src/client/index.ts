@@ -71,5 +71,5 @@ export type { JobPhase } from '../jobs/phase.js';
 export type { SessionEntry, SessionState } from '../sessions/entry.js';
 export type { UsageSummary } from '../providers/protocol.js';
 
-// ../discuss/types.js
-export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/types.js';
+// ../discuss/session-types.js
+export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/session-types.js';

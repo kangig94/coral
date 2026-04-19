@@ -23,7 +23,7 @@ import {
   type ProviderExecutor,
   type ProviderRuntime,
   type ProviderServerLease,
-} from '../types.js';
+} from '../provider-contracts.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
 import {

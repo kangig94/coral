@@ -12,7 +12,7 @@ import type { WaitStreamEvent } from '../../wait.js';
 import type { ProviderRequest, ProviderTurnResult } from '../../../providers/protocol.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 
-import type { PreflightRuntime, Provider } from '../../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../../providers/provider-contracts.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../../providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '../../../workflow/parser.js';

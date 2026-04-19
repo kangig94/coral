@@ -23,7 +23,7 @@ import {
 } from '../curate/state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
-import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {

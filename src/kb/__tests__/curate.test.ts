@@ -23,7 +23,7 @@ import {
 import { readCurateState, writeCurateState, type CurateState } from '../curate/state.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
-import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../types.js';
+import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 import { createRealRuntime } from '../../runtime/real.js';
 

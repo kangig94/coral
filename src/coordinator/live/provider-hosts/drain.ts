@@ -1,6 +1,6 @@
 import { raceTimeout } from '../../../shared/utils.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
-import type { ProviderServerSpec } from '../../../providers/types.js';
+import type { ProviderServerSpec } from '../../../providers/provider-contracts.js';
 import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
 import { clearIdleTimer } from './idle.js';
 import type { ProviderHostEntry } from './pool.js';

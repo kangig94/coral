@@ -1,4 +1,4 @@
-import type { ProviderServerSpec } from '../../../providers/types.js';
+import type { ProviderServerSpec } from '../../../providers/provider-contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderHostEntry } from './pool.js';

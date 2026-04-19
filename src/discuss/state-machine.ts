@@ -12,7 +12,7 @@ import type {
   Result,
   TranscriptEntry,
   ResolveResult,
-} from './types.js';
+} from './session-types.js';
 
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
-import type { ArtifactCleanupRuntime } from '../types.js';
+import type { ArtifactCleanupRuntime } from '../provider-contracts.js';
 import type { RuntimeDirentLike, EnvPort, StoragePort } from '../../runtime/ports.js';
 import { claudeProvider } from '../claude/adapter.js';
 

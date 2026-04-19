@@ -1,7 +1,7 @@
 import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { LegacyAbortReason, LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
-import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../types.js';
+import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../provider-contracts.js';
 
 export interface AppServerSessionDriver<TState> {
   readonly name: string;

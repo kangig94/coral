@@ -1,7 +1,7 @@
 import { nowIsoString } from '../../shared/utils.js';
 import { serializeNote } from '../frontmatter.js';
 import { loadKbNote } from '../read.js';
-import { noteEntryId, setEntry, type KbUpdateInput } from '../types.js';
+import { noteEntryId, setEntry, type KbUpdateInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from '../mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';

@@ -5,7 +5,7 @@ import {
   renderCommunityDocument,
 } from '../curate/community-detection.js';
 import { extractBody, parseCommunityFrontmatter, parseMembersFromBody, parseSummaryFromBody } from '../frontmatter.js';
-import type { EntityGraph } from '../types.js';
+import type { EntityGraph } from '../entry-types.js';
 
 function createEntityGraph(): EntityGraph {
   return {

@@ -17,7 +17,7 @@ import {
   type KbEntryId,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
-} from '../types.js';
+} from '../entry-types.js';
 import { parseNonNegativeInteger, parsePositiveInteger } from '../validation.js';
 import { backendLog } from '../../shared/backend-log.js';
 

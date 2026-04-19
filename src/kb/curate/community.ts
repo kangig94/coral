@@ -2,7 +2,7 @@ import { nowIsoString } from '../../shared/utils.js';
 import { compareLocale } from '../validation.js';
 import type { KbRuntime } from '../contracts.js';
 import { recordMetadataMutation, writeFileAtomic } from '../mutation-helpers.js';
-import { parseKbEntryId } from '../types.js';
+import { parseKbEntryId } from '../entry-types.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,

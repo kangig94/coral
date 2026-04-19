@@ -1,4 +1,4 @@
-import type { DiscussCreateInput, DiscussState, ResolveReason } from './types.js';
+import type { DiscussCreateInput, DiscussState, ResolveReason } from './session-types.js';
 
 export const controlPhases = ['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize'] as const;
 export type ControlPhase = (typeof controlPhases)[number];

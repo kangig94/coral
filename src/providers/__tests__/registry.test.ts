@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { registerBuiltInProviders } from '../bootstrap.js';
 import { ProviderRegistry } from '../registry.js';
-import type { Provider, ProviderArtifactCleanup } from '../types.js';
+import type { Provider, ProviderArtifactCleanup } from '../provider-contracts.js';
 
 function makeProvider(name: string): Provider {
   return {

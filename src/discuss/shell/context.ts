@@ -1,5 +1,5 @@
 import type { PersistedDiscussAgentRun, PersistedDiscussSnapshot } from '../events.js';
-import type { Result } from '../types.js';
+import type { Result } from '../session-types.js';
 import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';

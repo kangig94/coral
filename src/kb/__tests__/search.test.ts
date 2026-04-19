@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as EmbeddingModule from '../vector/embedding.js';
 import type * as VectorSyncModule from '../vector/sync.js';
-import type { EntityGraph } from '../types.js';
+import type { EntityGraph } from '../entry-types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

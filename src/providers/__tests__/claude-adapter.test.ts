@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../protocol.js';
-import type { ProviderRuntime, ProviderServerLease } from '../types.js';
+import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 
 vi.mock('../cli-detection.js', () => ({
   detectClaudeCli: vi.fn(async () => ({

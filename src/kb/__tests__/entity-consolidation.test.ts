@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { consolidateEntityGraph, resolveCanonicalEntityId } from '../curate/entity-consolidation.js';
 import type { EntityConsolidationDelta } from '../curate/entity-consolidation.js';
-import type { EntityGraph } from '../types.js';
+import type { EntityGraph } from '../entry-types.js';
 
 function emptyGraph(): EntityGraph {
   return {

@@ -6,7 +6,7 @@ import {
   decideSessionCreate,
   decideSpeech,
 } from '../state-machine.js';
-import type { BidResult, DiscussCreateInput, SpeechResult } from '../types.js';
+import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { buildWatchEvents } from '../projections.js';
 import { nowIsoString } from '../util/time.js';
 import type { CallerContext } from '../../shared/request-context.js';

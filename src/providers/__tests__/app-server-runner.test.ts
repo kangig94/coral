@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../protocol.js';
 import type { AppServerSessionDriver, DriverStepOutcome, TurnOutcome } from '../app-server/driver.js';
 import { runAppServerTurn } from '../app-server/runner.js';
-import type { ProviderRuntime, ProviderServerLease } from '../types.js';
+import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

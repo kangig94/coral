@@ -14,7 +14,7 @@ import {
   type KbIndex,
   type NoteEntry,
   type SourceEntry,
-} from './types.js';
+} from './entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;

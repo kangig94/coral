@@ -7,7 +7,7 @@ import type {
   ProviderRecoveryMeta,
   ProviderServerLease,
   ProviderServerSpec,
-} from '../providers/types.js';
+} from '../providers/provider-contracts.js';
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import { getCallerContext, withCallerContext } from './caller-context.js';

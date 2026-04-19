@@ -1,7 +1,7 @@
 import { afterEach, vi } from 'vitest';
 import { createDeferred } from '../../../../shared/test-deferred.js';
 import { createRealRuntime } from '../../../../runtime/real.js';
-import type { ProviderServerSpec } from '../../../../providers/types.js';
+import type { ProviderServerSpec } from '../../../../providers/provider-contracts.js';
 import type { ProviderHostEntry } from '../pool.js';
 import type { ProviderServerHandle } from '../../admission.js';
 

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import type { ProviderRequest } from '../protocol.js';
 import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
-import type { ProviderRuntime, ProviderServerSpec } from '../types.js';
+import type { ProviderRuntime, ProviderServerSpec } from '../provider-contracts.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
 export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>): string {

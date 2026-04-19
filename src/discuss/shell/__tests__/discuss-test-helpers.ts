@@ -8,7 +8,7 @@ import type {
   SessionCreatedAgentExecutionConfig,
 } from '../../events.js';
 import { decideSessionCreate } from '../../state-machine.js';
-import type { DiscussCreateInput } from '../../types.js';
+import type { DiscussCreateInput } from '../../session-types.js';
 import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,

@@ -7,7 +7,7 @@ import {
   type BackendInfo,
 } from '../../coordinator/discovery.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { PreflightRuntime, Provider } from '../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderTurnResult } from '../../providers/protocol.js';

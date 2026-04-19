@@ -25,7 +25,7 @@ import {
   type EntityGraph,
   type EntityMeta,
   type EntityRelationship,
-} from '../types.js';
+} from '../entry-types.js';
 import { fingerprintEntryContent, uniqueTrimmedList } from './shared.js';
 import {
   compareCursor,

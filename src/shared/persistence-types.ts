@@ -1,4 +1,4 @@
-import type { DiscussState } from '../discuss/types.js';
+import type { DiscussState } from '../discuss/session-types.js';
 
 export interface DiscussDiscoverySession {
   sessionId: string;

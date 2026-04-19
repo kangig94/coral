@@ -1,4 +1,4 @@
-import type { ControversyAxis } from '../discuss/schemas.js';
+import type { ControversyAxis } from '../discuss/command-schemas.js';
 
 export type JsonObject = Record<string, unknown>;
 

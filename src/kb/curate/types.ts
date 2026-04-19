@@ -1,5 +1,5 @@
 import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../runtime/ports.js';
-import type { KbIndex, KbEntryId, EntityType, RelationshipType } from '../types.js';
+import type { KbIndex, KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
 import type { CurateCursor, PendingDiscovery } from './state.js';
 
 export type SpawnCliResult = {

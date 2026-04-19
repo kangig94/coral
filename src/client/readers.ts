@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { z } from 'zod';
 
 import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../discuss/events.js';
-import type { DiscussState } from '../discuss/types.js';
+import type { DiscussState } from '../discuss/session-types.js';
 import { listPersistedDiscussSessionsForSourceWithStorage, readDiscussDiscoveryForSourceWithStorage, readDiscussEventLogWithStorage, readDiscussSnapshotWithStorage, readDiscussSourcesWithStorage, readDiscussSummaryIndexForSourceWithStorage, readJsonFileWithStorage, resolveDiscussSessionDirForSourceWithStorage } from '../discuss/shell/discuss-sources-catalog.js';
 import type {
   DiscussDiscoveryData,

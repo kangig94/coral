@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { noteEntryId, type KbIndex } from '../types.js';
+import { noteEntryId, type KbIndex } from '../entry-types.js';
 import type * as NodeOs from 'node:os';
 
 const mockState = vi.hoisted(() => ({

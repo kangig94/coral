@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import { noteEntryId } from '../types.js';
+import { noteEntryId } from '../entry-types.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

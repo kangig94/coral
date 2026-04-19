@@ -50,7 +50,7 @@ import {
   type KbReindexSourceRecord,
   type ReindexResult,
   type SourceEntry,
-} from '../types.js';
+} from '../entry-types.js';
 
 const INDEX_FILE = 'index.json';
 

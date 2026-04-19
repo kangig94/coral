@@ -52,7 +52,7 @@ import {
   type NoteEntry,
   type RelationshipType,
   type SourceEntry,
-} from './types.js';
+} from './entry-types.js';
 import {
   assertCommunitySlug,
   assertNonEmptyText,

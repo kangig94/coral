@@ -5,7 +5,7 @@ import type {
   ProviderArtifactCleanup,
   ProviderArtifactRecovery,
   ProviderExecutor,
-} from './types.js';
+} from './provider-contracts.js';
 
 const RESERVED_TOOL_NAMES = new Set([
   'wait',

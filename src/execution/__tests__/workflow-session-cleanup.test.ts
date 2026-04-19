@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ArtifactCleanupRuntime, Provider, ProviderArtifactCleanup } from '../../providers/types.js';
+import type { ArtifactCleanupRuntime, Provider, ProviderArtifactCleanup } from '../../providers/provider-contracts.js';
 import type { WorkflowSessionHandle } from '../../workflow/command.js';
 import { dispatchWorkflowSessionCleanup, type WorkflowSessionCleanupDeps } from '../../coordinator/api.js';
 

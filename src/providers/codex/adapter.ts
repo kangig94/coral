@@ -10,7 +10,7 @@ import {
   type ProviderRuntime,
   type ProviderServerLease,
   type Provider,
-} from '../types.js';
+} from '../provider-contracts.js';
 import {
   buildCodexProviderServerSpec,
 } from './request-mapping.js';

@@ -1,4 +1,4 @@
-import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/types.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/provider-contracts.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../durable-transport.js';
 import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
 import {

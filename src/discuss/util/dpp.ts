@@ -1,4 +1,4 @@
-import type { ControversyAxis } from '../types.js';
+import type { ControversyAxis } from '../session-types.js';
 import { weightedSample } from './rng.js';
 
 export const MAX_POOL_SIZE = 256;

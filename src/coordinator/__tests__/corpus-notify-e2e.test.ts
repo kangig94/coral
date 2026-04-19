@@ -12,7 +12,7 @@ import { readCurateState } from '../../kb/curate/state.js';
 import { applyNoteUpdateLocked, update } from '../../kb/ops/update.js';
 import { reindex } from '../../kb/ops/reindex.js';
 import { createKbRuntime } from '../../kb/runtime.js';
-import { noteEntryId } from '../../kb/types.js';
+import { noteEntryId } from '../../kb/entry-types.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../store/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '../consumer-driver.js';

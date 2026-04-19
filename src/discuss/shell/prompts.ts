@@ -1,4 +1,4 @@
-import type { AgentState, DiscussState } from '../types.js';
+import type { AgentState, DiscussState } from '../session-types.js';
 
 export type PromptContext = {
   selfName: string;

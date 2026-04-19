@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 
 import type { BackendClient } from '../../client/http-client.js';
-import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/schemas.js';
+import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 import {
   emitError,
   makeClient,

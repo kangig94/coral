@@ -14,7 +14,7 @@ import type {
   KbSourceImportResponse,
   KbUpdateResponse,
 } from '../client/http-client.js';
-import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/types.js';
+import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {
   KbMemoDeleteResult,
@@ -26,7 +26,7 @@ import type {
   KbSearchResponse,
   KbSourceListResult,
   ReindexResult,
-} from '../kb/types.js';
+} from '../kb/entry-types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';

@@ -1,6 +1,6 @@
 import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
-import { deleteEntry, noteEntryId, type KbDeleteInput } from '../types.js';
+import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
 import { assertNoteSlug } from '../validation.js';

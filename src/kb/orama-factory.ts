@@ -7,7 +7,7 @@ import {
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
-} from './types.js';
+} from './entry-types.js';
 
 const ORAMA_LANGUAGE = 'english';
 

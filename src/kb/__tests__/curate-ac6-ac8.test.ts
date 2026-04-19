@@ -10,7 +10,7 @@ import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } fro
 import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
 import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
-import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../types.js';
+import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../entry-types.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
 vi.mock('../curate/usage-budget.js', () => ({

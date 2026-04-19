@@ -27,7 +27,7 @@ import {
 } from '../../../infra/paths.js';
 import { replayDiscussEvents } from '../../reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../state-machine.js';
-import type { DiscussCreateInput, Result } from '../../types.js';
+import type { DiscussCreateInput, Result } from '../../session-types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '../../shell/session-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 

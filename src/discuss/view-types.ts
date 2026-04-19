@@ -2,7 +2,7 @@
  * Discuss view DTO types shared between views.ts (canonical definitions)
  * and projections.ts (builders). Extracted to break the views ↔ projections cycle.
  */
-import type { TranscriptEntry } from './types.js';
+import type { TranscriptEntry } from './session-types.js';
 
 type DiscussBidTranscriptEntry = Extract<TranscriptEntry, { type: 'bids' }>;
 type DiscussNonBidTranscriptEntry = Exclude<TranscriptEntry, { type: 'bids' }>;

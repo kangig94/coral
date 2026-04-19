@@ -11,7 +11,7 @@ import {
   type DriverStepOutcome,
   type TurnOutcome,
 } from '../app-server/driver.js';
-import type { ProviderServerLease } from '../types.js';
+import type { ProviderServerLease } from '../provider-contracts.js';
 import {
   buildClaudeContinuity,
   buildClaudeEnvHash,

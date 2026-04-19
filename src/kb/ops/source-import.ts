@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { nowIsoString } from '../../shared/utils.js'
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../frontmatter.js'
 import { kbRuntimeDir, sourceImportStageDir } from '../paths.js'
-import type { KbSourceFrontmatter } from '../types.js'
+import type { KbSourceFrontmatter } from '../entry-types.js'
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js'
 
 const execFileP = promisify(execFile)

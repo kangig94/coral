@@ -26,7 +26,7 @@ import {
   type KbSearchResponse,
   type KbSearchScope,
   type RelationshipType,
-} from '../types.js';
+} from '../entry-types.js';
 import { createEmbeddingProvider } from '../vector/embedding.js';
 import { ensureVectorIndex } from '../vector/sync.js';
 

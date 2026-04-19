@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '../../shared/backend-log.js';
 import { createKbRuntime } from '../runtime.js';
-import type { EntityGraph } from '../types.js';
+import type { EntityGraph } from '../entry-types.js';
 
 function createGraph(): EntityGraph {
   return {

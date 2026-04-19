@@ -10,7 +10,7 @@ import {
   type KbNoteFrontmatter,
   type KbNoteIdentity,
   type KbSourceFrontmatter,
-} from './types.js';
+} from './entry-types.js';
 import {
   NOTE_SLUG_PATTERN,
   assertNonEmptyText,

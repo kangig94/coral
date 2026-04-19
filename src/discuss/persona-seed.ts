@@ -11,7 +11,7 @@ import type {
   PersonaSeedInput,
   PersonaSeedOutput,
   Result,
-} from './types.js';
+} from './session-types.js';
 import { createSeededRng, drawUInt32, shuffleInPlace, weightedSample } from './util/rng.js';
 import {
   cartesianProduct,

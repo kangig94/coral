@@ -16,7 +16,7 @@ import {
   sourceEntryId,
   type KbSourceDeleteInput,
   type KbSourceListResult,
-} from '../types.js';
+} from '../entry-types.js';
 import { compareLocale, assertSourceSlug } from '../validation.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {

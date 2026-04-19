@@ -15,7 +15,7 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
-import type { AgentState, DiscussState, TranscriptEntry } from './types.js';
+import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
 import { appendEntry, resetBids } from './state-helpers.js';
 import { parseDisplayName } from './util/string.js';
 

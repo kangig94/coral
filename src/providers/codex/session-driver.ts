@@ -8,7 +8,7 @@ import {
   type DriverContext,
   type DriverStepOutcome,
 } from '../app-server/driver.js';
-import { requireConversationRef } from '../types.js';
+import { requireConversationRef } from '../provider-contracts.js';
 import {
   buildCodexProviderServerSpec,
   mapThreadResumeParams,

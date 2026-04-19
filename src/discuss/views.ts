@@ -7,7 +7,7 @@
 
 import { buildAuditView, buildControlView } from './projections.js';
 import type { PersistedDiscussSnapshot } from './events.js';
-import type { DiscussState } from './types.js';
+import type { DiscussState } from './session-types.js';
 export type {
   DiscussControlBidsTranscriptEntryDto,
   DiscussControlTranscriptEntryDto,

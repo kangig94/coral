@@ -1,6 +1,6 @@
 import { buildWatchEvents } from '../projections.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
-import type { Result } from '../types.js';
+import type { Result } from '../session-types.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import {

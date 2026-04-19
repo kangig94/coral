@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderRequest } from '../protocol.js';
-import type { ProviderRuntime, ProviderServerLease } from '../types.js';
+import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 import { codexSessionDriver } from '../codex/session-driver.js';
 import type { Turn } from '../codex/protocol.js';
 

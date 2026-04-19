@@ -5,7 +5,7 @@ import type {
   ProviderRuntime,
   ProviderServerLease,
   ProviderServerSpec,
-} from '../../providers/types.js';
+} from '../../providers/provider-contracts.js';
 import {
   describeLegacyCoralFault,
   legacyWrapperCrashedFault,

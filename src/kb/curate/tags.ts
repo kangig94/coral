@@ -1,5 +1,5 @@
 import { deriveNoteIdentity } from '../frontmatter.js';
-import { getEntry, isNoteEntry, isSourceEntry, noteEntryId, sourceEntryId, type KbIndex } from '../types.js';
+import { getEntry, isNoteEntry, isSourceEntry, noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
 import { compareLocale } from '../validation.js';
 
 const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);

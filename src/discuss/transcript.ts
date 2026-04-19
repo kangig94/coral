@@ -1,4 +1,4 @@
-import type { AgentState, TranscriptEntry } from './types.js';
+import type { AgentState, TranscriptEntry } from './session-types.js';
 import { pad2 } from './util/string.js';
 
 const SOFT_LIMIT = 80;

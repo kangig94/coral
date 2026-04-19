@@ -9,7 +9,7 @@ import {
   writeFileAtomic,
 } from '../mutation-helpers.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
-import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../types.js';
+import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,

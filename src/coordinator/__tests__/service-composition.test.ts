@@ -11,7 +11,7 @@ import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 
-import type { PreflightRuntime, Provider } from '../../providers/types.js';
+import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/parser.js';

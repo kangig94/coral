@@ -28,7 +28,7 @@ import {
   type CuratableEntry,
   type EntityGraph,
   type KbIndex,
-} from '../types.js';
+} from '../entry-types.js';
 
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };

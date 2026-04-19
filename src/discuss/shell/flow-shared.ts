@@ -4,7 +4,7 @@ import { errorMessage } from '../../shared/utils.js';
 import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { reduceDiscussEvent } from '../reducer.js';
 import { resolveAgentName } from '../state-machine.js';
-import type { DiscussState, TranscriptEntry } from '../types.js';
+import type { DiscussState, TranscriptEntry } from '../session-types.js';
 import { renderEntries, renderHeader } from '../transcript.js';
 import { nowIsoString } from '../util/time.js';
 import type { DiscussContext } from './context.js';
