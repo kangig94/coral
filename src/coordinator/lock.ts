@@ -377,6 +377,7 @@ async function inspectIncumbent(
   requestedBundleHash: string,
   snapshot: LockSnapshot,
   runtime: CoordinatorLockRuntime,
+  probeCache: Map<string, number | null>,
 ): Promise<IncumbentState> {
   const record = snapshot.record;
   if (!record) {
@@ -387,11 +388,16 @@ async function inspectIncumbent(
     return 'stale';
   }
 
-  if (
-    record.processStartedAt !== undefined &&
-    record.processStartedAt !== probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform)
-  ) {
-    return 'stale';
+  if (record.processStartedAt !== undefined) {
+    const cacheKey = `${record.pid}:${record.processStartedAt}`;
+    let probed = probeCache.get(cacheKey);
+    if (probed === undefined && !probeCache.has(cacheKey)) {
+      probed = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
+      probeCache.set(cacheKey, probed);
+    }
+    if (record.processStartedAt !== probed) {
+      return 'stale';
+    }
   }
 
   const health = await readHealth(runtime, record);
@@ -430,6 +436,7 @@ async function acquireCoordinatorLock(
   let observedKey: string | null = null;
   let observedAt = runtime.time.now();
   const contenderStartedAt = runtime.time.now();
+  const probeCache = new Map<string, number | null>();
 
   while (true) {
     if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
@@ -444,6 +451,7 @@ async function acquireCoordinatorLock(
 
     const snapshot = readLockSnapshot(flavor, runtime.storage);
     if (!snapshot) {
+      probeCache.clear();
       observedKey = null;
       observedAt = runtime.time.now();
       continue;
@@ -451,12 +459,13 @@ async function acquireCoordinatorLock(
 
     const currentKey = snapshotKey(snapshot);
     if (currentKey !== observedKey) {
+      probeCache.clear();
       observedKey = currentKey;
       observedAt = runtime.time.now();
     }
 
     const deadlineExpired = runtime.time.now() - observedAt >= STARTUP_DEADLINE;
-    const incumbent = await inspectIncumbent(bundleHash, snapshot, runtime);
+    const incumbent = await inspectIncumbent(bundleHash, snapshot, runtime, probeCache);
     if (incumbent === 'healthy_same') {
       throw new BackendAlreadyRunningError();
     }
