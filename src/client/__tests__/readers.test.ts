@@ -377,7 +377,6 @@ describe('readProgressLog', () => {
         jobId: testJobId,
         sessionId: 's1',
         seq: 2,
-        perJobIndex: 1,
         eventId: 1,
         type: 'terminal',
         ts: NOW,

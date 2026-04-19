@@ -1,4 +1,3 @@
-import { readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type BetterSqlite3 from 'better-sqlite3';
@@ -14,7 +13,7 @@ const BUNDLED_MIGRATIONS_DIR =
 const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
 
 type MigrationStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
-type MigrationSeedStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
+type MigrationSeedStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync' | 'readdirSync' | 'readFileSync'>;
 
 export interface ApplyMigrationsOptions {
   readonly db: BetterSqlite3.Database;
@@ -50,7 +49,7 @@ export function ensureStoreMigrationsDir(
   }
 
   storage.mkdirSync(seededDir, { recursive: true });
-  for (const entry of readNodeDirSync(migrationsDir, { withFileTypes: true })) {
+  for (const entry of storage.readdirSync(migrationsDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.sql')) {
       continue;
     }
@@ -61,7 +60,7 @@ export function ensureStoreMigrationsDir(
       continue;
     }
 
-    storage.writeFileSync(targetPath, readNodeFileSync(sourcePath, 'utf-8'));
+    storage.writeFileSync(targetPath, storage.readFileSync(sourcePath, 'utf-8'));
   }
 
   return seededDir;
@@ -88,5 +87,5 @@ export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMig
       db.exec(sql);
     }
   });
-  applyTxn();
+  applyTxn.immediate();
 }

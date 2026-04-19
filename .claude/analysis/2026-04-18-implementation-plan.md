@@ -160,7 +160,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/store/migrations.ts` — idempotent runner described in Phase 0.
 - `src/coordinator/consumer-driver.ts` — `ConsumerDriver` with `notify(authority, version)`, single-in-flight drain, condition-var `waitFreshUntil`, cursor persistence in `equipment_cursors`.
 - `src/simulation/runtime.ts` — `SimulationRuntime` implementing all 6 `Runtime` ports. **Substrate decision**: `:memory:` SQLite instance for journal, virtual filesystem for Corpus. `SimulationRuntime` is the reference deterministic implementation for all subsequent phase tests.
-- `src/store/index.ts` — public barrel: `CoralStore` (query-only handle), `CoralWriter` (append handle).
+- `src/store/index.ts` — public barrel: `CoralStore` (query-only handle). Write-side uses the `appendEvents` primitive in `src/store/append.ts`; there is no separate `CoralWriter` class.
 
 **Acceptance criteria**:
 

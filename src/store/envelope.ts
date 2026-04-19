@@ -55,6 +55,7 @@ export const journalEventInputSchema = journalEventEnvelopeSchema
   .strict();
 
 type JournalEventEnvelopeShape = z.infer<typeof journalEventEnvelopeSchema>;
+type StreamKind = JournalEventEnvelopeShape['stream']['kind'];
 
 export interface CoralEvent<T = unknown> extends Omit<JournalEventEnvelopeShape, 'body'> {
   body: T;
@@ -65,6 +66,21 @@ export interface CoralEventInput<T = unknown> extends Omit<CoralEvent<T>, 'seq' 
 }
 
 export type JournalEventEnvelope<T = unknown> = CoralEvent<T>;
+
+export const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
+
+export function assertStreamKind(value: string): StreamKind {
+  if (!STREAM_KINDS.has(value as StreamKind)) {
+    throw new CoralSetupError({
+      code: 'event_stream_kind_invalid',
+      userMessage: `Unknown stream.kind in events row: '${value}'`,
+      remediation: 'A migration likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
+      context: { streamKind: value },
+    });
+  }
+
+  return value as StreamKind;
+}
 
 type Upcaster = (body: unknown) => unknown;
 

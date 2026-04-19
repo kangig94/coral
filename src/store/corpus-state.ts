@@ -1,16 +1,10 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../kb/contracts.js';
+import type { CorpusStateRow } from './schema.js';
 
 type Database = BetterSqlite3.Database;
 export type CorpusStateSnapshot = KbCorpusSnapshot;
-
-export interface CorpusStateRow {
-  id: number;
-  content_seq: number;
-  metadata_seq: number;
-  last_mutation: string;
-}
 
 export interface PersistCorpusStateOptions {
   now?: () => Date;

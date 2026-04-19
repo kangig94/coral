@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import { CoralSetupError } from '../../runtime/errors.js';
 import { appendEvents } from '../append.js';
 import { createEmptyRegistry } from '../envelope.js';
 import { applyMigrations } from '../migrations.js';
@@ -78,6 +79,45 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
 
       const kbCount = db.prepare('SELECT COUNT(*) AS n FROM projection_kb').get() as { n: number };
       expect(kbCount.n).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+
+      db.prepare(
+        `INSERT INTO events (
+           seq,
+           ts,
+           type,
+           stream_kind,
+           stream_id,
+           body_version,
+           body
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', 1, Buffer.from('{}'));
+
+      const reducers = composeReducers();
+      const upcasters = createEmptyRegistry();
+
+      let thrown: unknown;
+      try {
+        rebuildProjections({
+          db,
+          cutoffSeq: 1,
+          reducers,
+          upcasters,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(CoralSetupError);
+      expect((thrown as CoralSetupError).code).toBe('event_stream_kind_invalid');
     } finally {
       db.close();
     }

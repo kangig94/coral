@@ -121,6 +121,31 @@ describe('UpcasterRegistry', () => {
     });
   });
 
+  it('throws CoralSetupError(upcaster_cycle) when registered upcasters loop back', () => {
+    const registry = createEmptyRegistry();
+    registry.registerUpcaster('test.looped', 1, 2, (body) => body);
+    registry.registerUpcaster('test.looped', 2, 1, (body) => body);
+
+    let thrown: unknown;
+    try {
+      registry.parseBody(
+        'test.looped',
+        1,
+        { ok: true },
+        z
+          .object({
+            ok: z.boolean(),
+          })
+          .strict(),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CoralSetupError);
+    expect((thrown as CoralSetupError).code).toBe('upcaster_cycle');
+  });
+
   it('validates directly against the current schema when bodyVersion is already current', () => {
     const registry = createEmptyRegistry();
     const parsed = registry.parseBody(

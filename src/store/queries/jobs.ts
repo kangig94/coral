@@ -77,7 +77,6 @@ export type JobProgressRow = {
   jobId: string;
   sessionId: string;
   seq: number;
-  perJobIndex: number;
   eventId: number;
   type: 'progress' | 'terminal';
   ts: string;
@@ -205,14 +204,6 @@ function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null 
   };
 }
 
-function decodeRuntime(row: EventRow | null): JobRuntimeRow {
-  if (!row) {
-    return null;
-  }
-
-  return jobRuntimeBodyFromEvent(row);
-}
-
 function jobRuntimeBodyFromEvent(row: EventRow): JobRuntimeRow {
   const parsed = jobRuntimeStartedBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf-8')) as unknown);
   if (parsed.transport === 'app-server') {
@@ -282,6 +273,27 @@ function decodeTerminalRecord(row: EventRow | null): JobTerminalRecord | null {
   };
 }
 
+function readLaunchSessionId(
+  db: BetterSqlite3.Database,
+  jobId: string,
+): string {
+  const row = db
+    .prepare(
+      `SELECT body
+         FROM events
+        WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'
+        ORDER BY seq ASC
+        LIMIT 1`,
+    )
+    .get(jobId) as Pick<EventRow, 'body'> | undefined;
+
+  if (!row) {
+    return '';
+  }
+
+  return jobLaunchRequestBodySchema.parse(decodeJson(row)).sessionId;
+}
+
 export function loadJobProjectionDetail(
   db: BetterSqlite3.Database,
   jobId: string,
@@ -316,7 +328,7 @@ export function loadJobProjectionDetail(
   return {
     status,
     launch,
-    runtime: decodeRuntime(runtime),
+    runtime: runtime ? jobRuntimeBodyFromEvent(runtime) : null,
     exit,
   };
 }
@@ -364,8 +376,7 @@ export function readJobProgress(
       body: Uint8Array | Buffer;
     }>;
 
-  const detail = loadJobProjectionDetail(db, jobId);
-  const sessionId = detail.launch?.sessionId ?? detail.status?.sessionId ?? '';
+  const sessionId = readLaunchSessionId(db, jobId);
 
   return rows.flatMap<JobProgressRow>((row) => {
     if (row.type === 'job.progress.emitted') {
@@ -378,7 +389,6 @@ export function readJobProgress(
         jobId,
         sessionId,
         seq: row.seq,
-        perJobIndex: row.per_job_index,
         eventId: row.per_job_index,
         type: 'progress' as const,
         ts: row.ts,
@@ -390,14 +400,13 @@ export function readJobProgress(
       jobId,
       sessionId,
       seq: row.seq,
-      perJobIndex: row.per_job_index,
       eventId: row.per_job_index,
       type: 'terminal' as const,
+      ts: row.ts,
+      result: decodeTerminalRecord({
+        seq: row.seq,
         ts: row.ts,
-        result: decodeTerminalRecord({
-          seq: row.seq,
-          ts: row.ts,
-          body: row.body,
+        body: row.body,
       }) ?? { content: '', outcome: { kind: 'completed' } },
     }];
   });
