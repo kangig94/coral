@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import type { CoralEvent } from '../store/envelope.js';
+import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import { makeEmptySnapshot, reduceDiscussEvent } from './reducer.js';
 import type {
@@ -86,13 +87,15 @@ export const reduceDiscussProjection: Reducer<DiscussProjectionBody> = (db, even
   const seed = previous ?? makeEmptySnapshot(event.stream.id, event.project ?? '');
   const next = reduceDiscussEvent(seed, toLegacyEvent(event, previous));
 
-  db.prepare(
-    `INSERT INTO projection_discuss (discuss_id, state, last_seq)
-     VALUES (?, ?, ?)
-     ON CONFLICT(discuss_id) DO UPDATE SET
-       state = excluded.state,
-       last_seq = excluded.last_seq`,
-  ).run(event.stream.id, JSON.stringify(next), event.seq);
+  upsertProjection(db, {
+    table: 'projection_discuss',
+    pkColumn: 'discuss_id',
+    pkValue: event.stream.id,
+    columns: {
+      state: JSON.stringify(next),
+    },
+    lastSeq: event.seq,
+  });
 };
 
 function cloneTranscriptEntry(entry: TranscriptEntry): TranscriptEntry {

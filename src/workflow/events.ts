@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
+import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
 import { causeRefSchema } from '../jobs/outcome.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
@@ -52,13 +53,15 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
   const previous = readProjectionWorkflow(db, event.stream.id);
   const nextPlan = plan ?? previous?.plan ?? { workflowId: event.stream.id, slots: [] };
 
-  db.prepare(
-    `INSERT INTO projection_workflows (workflow_id, plan, last_seq)
-     VALUES (?, ?, ?)
-     ON CONFLICT(workflow_id) DO UPDATE SET
-       plan = excluded.plan,
-       last_seq = excluded.last_seq`,
-  ).run(event.stream.id, JSON.stringify(nextPlan), event.seq);
+  upsertProjection(db, {
+    table: 'projection_workflows',
+    pkColumn: 'workflow_id',
+    pkValue: event.stream.id,
+    columns: {
+      plan: JSON.stringify(nextPlan),
+    },
+    lastSeq: event.seq,
+  });
 }
 
 export const workflowRegistry: DomainEventRegistry = {

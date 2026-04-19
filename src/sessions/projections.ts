@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
+import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import { DEFAULT_SESSION_CONTROLLER } from './entry.js';
 import type { ContinuitySnapshot } from './continuity.js';
@@ -82,23 +83,18 @@ function upsertProjectionSession(
     conversationRef: hasConversationRefPatch(patch) ? patch.conversationRef : (previous?.conversationRef ?? null),
   };
 
-  db.prepare(
-    `INSERT INTO projection_sessions (session_id, controller, provider, resumable, conversation_ref, last_seq)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(session_id) DO UPDATE SET
-       controller = excluded.controller,
-       provider = excluded.provider,
-       resumable = excluded.resumable,
-       conversation_ref = excluded.conversation_ref,
-       last_seq = excluded.last_seq`,
-  ).run(
-    event.stream.id,
-    next.controller,
-    next.provider,
-    next.resumable ? 1 : 0,
-    next.conversationRef,
-    event.seq,
-  );
+  upsertProjection(db, {
+    table: 'projection_sessions',
+    pkColumn: 'session_id',
+    pkValue: event.stream.id,
+    columns: {
+      controller: next.controller,
+      provider: next.provider,
+      resumable: next.resumable ? 1 : 0,
+      conversation_ref: next.conversationRef,
+    },
+    lastSeq: event.seq,
+  });
 }
 
 export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {

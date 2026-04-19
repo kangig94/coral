@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { MAX_BUFFER } from '../shared/process-constants.js';
 import type { CoralEvent } from '../store/envelope.js';
+import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
 import { jobLaunchRequestBodySchema, type JobLaunchRequestBody } from './launch.js';
 import { type JobPhase } from './phase.js';
@@ -182,43 +183,26 @@ function upsertProjectionJob(
     createdAt: patch.createdAt ?? previous?.createdAt ?? event.ts,
   };
 
-  db.prepare(
-    `INSERT INTO projection_jobs (
-       job_id, phase, terminal, diagnostics,
-       session_id, provider, project_root, backend_namespace, bundle_hash,
-       job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-     )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(job_id) DO UPDATE SET
-       phase = excluded.phase,
-       terminal = excluded.terminal,
-       diagnostics = excluded.diagnostics,
-       session_id = excluded.session_id,
-       provider = excluded.provider,
-       project_root = excluded.project_root,
-       backend_namespace = excluded.backend_namespace,
-       bundle_hash = excluded.bundle_hash,
-       job_kind = excluded.job_kind,
-       parent_workflow_job_id = excluded.parent_workflow_job_id,
-       workflow_slot = excluded.workflow_slot,
-       created_at = excluded.created_at,
-       last_seq = excluded.last_seq`,
-  ).run(
-    event.stream.id,
-    next.phase,
-    next.terminal === null ? null : JSON.stringify(next.terminal),
-    JSON.stringify(next.diagnostics),
-    next.sessionId,
-    next.provider,
-    next.projectRoot,
-    next.backendNamespace,
-    next.bundleHash,
-    next.jobKind,
-    next.parentWorkflowJobId,
-    next.workflowSlot,
-    next.createdAt,
-    event.seq,
-  );
+  upsertProjection(db, {
+    table: 'projection_jobs',
+    pkColumn: 'job_id',
+    pkValue: event.stream.id,
+    columns: {
+      phase: next.phase,
+      terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
+      diagnostics: JSON.stringify(next.diagnostics),
+      session_id: next.sessionId,
+      provider: next.provider,
+      project_root: next.projectRoot,
+      backend_namespace: next.backendNamespace,
+      bundle_hash: next.bundleHash,
+      job_kind: next.jobKind,
+      parent_workflow_job_id: next.parentWorkflowJobId,
+      workflow_slot: next.workflowSlot,
+      created_at: next.createdAt,
+    },
+    lastSeq: event.seq,
+  });
 }
 
 function reducerForRequested(): Reducer<JobLaunchRequestBody> {
