@@ -1,10 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
 
 import { composeChildEnv } from '../shared/env-sanitize.js';
 import { MAX_BUFFER } from '../shared/process-constants.js';
 import type { Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
-import { resolveDefaultMigrationsDir } from '../store/migrations.js';
+import { copyMigrationAssets, resolveDefaultMigrationsDir } from '../store/migrations.js';
 import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';
 import { MockProcessSpawner } from './core/mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './core/runtime-doubles.js';
@@ -12,21 +11,19 @@ import { DEFAULT_EPOCH_MS, VirtualTime } from './core/virtual-time.js';
 import { buildExecPromise } from '../runtime/exec-builder.js';
 
 const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
+const nodeFsMigrationStorage = {
+  existsSync,
+  readFileSync: (path: string, encoding: 'utf-8') => readFileSync(path, encoding),
+  readdirSync: (path: string, options: { withFileTypes: true }) => readdirSync(path, options),
+};
 
 function seedStoreMigrations(storage: InMemoryStorage): void {
   const migrationsDir = resolveDefaultMigrationsDir();
-  if (storage.existsSync(migrationsDir) || !existsSync(migrationsDir)) {
+  if (storage.existsSync(migrationsDir)) {
     return;
   }
 
-  storage.mkdirSync(migrationsDir, { recursive: true });
-  for (const entry of readdirSync(migrationsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.sql')) {
-      continue;
-    }
-
-    storage.writeFileSync(join(migrationsDir, entry.name), readFileSync(join(migrationsDir, entry.name), 'utf-8'));
-  }
+  copyMigrationAssets(nodeFsMigrationStorage, storage, migrationsDir, migrationsDir);
 }
 
 export interface SimulationRuntimeOptions {
@@ -57,7 +54,7 @@ export class SimulationRuntime implements Runtime {
     const inheritedEnv = this.env.fullSnapshot();
     this.spawner = new MockProcessSpawner(this.time, this.storage, {
       buildDurableEnv: (envAdditions) =>
-        composeChildEnv({ ...inheritedEnv }, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
+        composeChildEnv(inheritedEnv, envAdditions ?? {}, SIMULATION_ENV_BUDGET_BYTES, new Set<string>()),
     });
     const simulationProcess = {} as ProcessPort;
     simulationProcess.spawn = (spawnOptions) => {

@@ -8,8 +8,6 @@ export interface DurableCliRuntimeRecord {
   tailWatermark?: number;
 }
 
-export type DurableCliRuntime = DurableCliRuntimeRecord;
-
 export function isDurableCliRuntime(
   record: { transport?: string } | null | undefined,
 ): record is DurableCliRuntimeRecord {

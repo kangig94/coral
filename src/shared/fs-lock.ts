@@ -18,7 +18,7 @@ function isDirectoryLockDeps(value: DirectoryLockDeps | number | undefined): val
   return typeof value === 'object' && value !== null && 'storage' in value && 'time' in value;
 }
 
-function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
+export function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'EEXIST';
 }
 

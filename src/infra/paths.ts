@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { hashToken } from '../shared/hash.js';
 
 export function jobsDir(): string {
   return join(tmpdir(), 'coral-jobs');
@@ -46,8 +46,8 @@ function parseRemoteUrlPath(remote: string): string | null {
   }
 }
 
-export function coralRoot(): string {
-  return join(homedir(), '.coral');
+export function coralRoot(baseDir?: string): string {
+  return baseDir ?? join(homedir(), '.coral');
 }
 
 export function setBuildFlavor(flavor: 'prod' | 'dev'): void {
@@ -73,10 +73,14 @@ export function getSettledBuildFlavor(): 'prod' | 'dev' | null {
  * Returns the KB markdown root. The directory may not exist — callers are
  * responsible for creation.
  */
-export function kbRoot(): string {
+export function kbRoot(flavor: 'prod' | 'dev' = currentBuildFlavor(), baseDir?: string): string {
+  if (baseDir !== undefined) {
+    return join(coralRoot(baseDir), flavor === 'dev' ? 'kb-dev' : 'kb');
+  }
+
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
-  return join(coralRoot(), currentBuildFlavor() === 'dev' ? 'kb-dev' : 'kb');
+  return join(coralRoot(), flavor === 'dev' ? 'kb-dev' : 'kb');
 }
 
 export function kbDir(): string {
@@ -119,7 +123,7 @@ export function pluginRootNamespace(pluginRoot: string): string {
   const cached = namespaceCache.get(pluginRoot);
   if (cached) return cached;
   const canonical = realpathSync(pluginRoot);
-  const ns = createHash('sha256').update(canonical).digest('hex').slice(0, 12);
+  const ns = hashToken(canonical, 12);
   namespaceCache.set(pluginRoot, ns);
   return ns;
 }

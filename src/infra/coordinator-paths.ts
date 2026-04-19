@@ -1,8 +1,9 @@
-import { createHash } from 'node:crypto';
-import { homedir, platform, tmpdir } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
+import { hashToken } from '../shared/hash.js';
+import { coralRoot } from './paths.js';
 
 export interface CoordinatorPaths {
   runDir: string;
@@ -22,24 +23,20 @@ function socketPathLimit(): number {
   return platform() === 'darwin' ? SOCKET_LIMIT_DARWIN : SOCKET_LIMIT_LINUX;
 }
 
-function shortHash(input: string): string {
-  return createHash('sha256').update(input).digest('hex').slice(0, 8);
-}
-
 export function coordinatorPaths(
   flavor: BuildFlavor,
   env: NodeJS.ProcessEnv = process.env,
   opts?: CoordinatorPathOptions,
 ): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(opts?.baseDir ?? join(homedir(), '.coral'), base);
+  const runDir = join(coralRoot(opts?.baseDir), base);
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathLimit();
   let socketPath = candidateSocket;
 
   if (Buffer.byteLength(candidateSocket, 'utf8') >= limit) {
     const tmp = env.TMPDIR ?? tmpdir();
-    const hash = shortHash(candidateSocket);
+    const hash = hashToken(candidateSocket, 8);
     socketPath = join(tmp, `coral-${flavor}-${hash}.sock`);
   }
 

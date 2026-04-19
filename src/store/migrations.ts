@@ -13,7 +13,9 @@ const BUNDLED_MIGRATIONS_DIR =
 const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
 
 type MigrationStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
-type MigrationSeedStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync' | 'readdirSync' | 'readFileSync'>;
+type MigrationReadStorage = Pick<StoragePort, 'existsSync' | 'readdirSync' | 'readFileSync'>;
+type MigrationWriteStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
+type MigrationSeedStorage = MigrationReadStorage & MigrationWriteStorage;
 
 export interface ApplyMigrationsOptions {
   readonly db: BetterSqlite3.Database;
@@ -39,6 +41,34 @@ export function resolveDefaultMigrationsDir(): string {
   return BUNDLED_MIGRATIONS_DIR ?? SOURCE_MIGRATIONS_DIR;
 }
 
+export function copyMigrationAssets(
+  sourceStorage: MigrationReadStorage,
+  targetStorage: MigrationWriteStorage,
+  sourceDir: string,
+  targetDir: string,
+): boolean {
+  if (!sourceStorage.existsSync(sourceDir)) {
+    return false;
+  }
+
+  targetStorage.mkdirSync(targetDir, { recursive: true });
+  for (const entry of sourceStorage.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.sql')) {
+      continue;
+    }
+
+    const sourcePath = join(sourceDir, entry.name);
+    const targetPath = join(targetDir, entry.name);
+    if (targetStorage.existsSync(targetPath)) {
+      continue;
+    }
+
+    targetStorage.writeFileSync(targetPath, sourceStorage.readFileSync(sourcePath, 'utf-8'));
+  }
+
+  return true;
+}
+
 export function ensureStoreMigrationsDir(
   storage: MigrationSeedStorage,
   seededDir: string = SEEDED_MIGRATIONS_DIR,
@@ -48,22 +78,11 @@ export function ensureStoreMigrationsDir(
     return migrationsDir;
   }
 
-  storage.mkdirSync(seededDir, { recursive: true });
-  for (const entry of storage.readdirSync(migrationsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith('.sql')) {
-      continue;
-    }
-
-    const sourcePath = join(migrationsDir, entry.name);
-    const targetPath = join(seededDir, entry.name);
-    if (storage.existsSync(targetPath)) {
-      continue;
-    }
-
-    storage.writeFileSync(targetPath, storage.readFileSync(sourcePath, 'utf-8'));
+  if (copyMigrationAssets(storage, storage, migrationsDir, seededDir)) {
+    return seededDir;
   }
 
-  return seededDir;
+  return migrationsDir;
 }
 
 export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMigrationsDir() }: ApplyMigrationsOptions): void {
@@ -80,9 +99,6 @@ export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMig
 
   const applyTxn = db.transaction(() => {
     for (const entry of files) {
-      if (entry.version <= readCurrentVersion(db)) {
-        continue;
-      }
       const sql = storage.readFileSync(join(migrationsDir, entry.name), 'utf-8');
       db.exec(sql);
     }

@@ -58,6 +58,20 @@ function childName(path: string): string {
   return parent === '/' ? normalized.slice(1) : normalized.slice(parent.length + 1);
 }
 
+function childPath(parent: string, name: string): string {
+  return parent === '/' ? `/${name}` : `${parent}/${name}`;
+}
+
+function replacePathPrefix(path: string, from: string, to: string): string | null {
+  if (path === from) {
+    return to;
+  }
+  if (!path.startsWith(`${from}/`)) {
+    return null;
+  }
+  return `${to}${path.slice(from.length)}`;
+}
+
 function cloneFileNode(node: FileNode): FileNode {
   return {
     kind: 'file',
@@ -201,54 +215,52 @@ export class InMemoryStorage implements StoragePort {
     if (!this.directories.has(from)) {
       throw createErrnoError('ENOENT', from);
     }
+    if (to.startsWith(`${from}/`)) {
+      throw createErrnoError('EINVAL', to);
+    }
 
     const targetParent = parentPath(to);
     this.requireDirectory(targetParent);
     if (this.files.has(to)) {
       this.files.delete(to);
-      this.unregisterChildIfUnreferenced(to);
+      this.unregisterChild(to);
     }
     if (this.directories.has(to)) {
       this.rmSync(to, { recursive: true, force: true });
     }
 
-    const movedDirectories = [...this.directories.entries()].filter(
-      ([path]) => path === from || path.startsWith(`${from}/`),
-    );
-    const movedFiles = [...this.files.entries()].filter(([path]) => path.startsWith(`${from}/`));
+    const subtree = this.collectSubtree(from);
+    const movedDirectories = subtree.directories.map((path) => [path, this.requireDirectoryNode(path)] as const);
+    const movedFiles = subtree.files.map((path) => [path, this.requireFileNode(path)] as const);
 
-    for (const [path] of movedDirectories) {
-      this.directories.delete(path);
-    }
-    for (const [path] of movedFiles) {
-      this.files.delete(path);
-    }
+    this.deleteSubtree(subtree.directories, subtree.files);
 
     for (const [path, node] of movedDirectories) {
-      const suffix = path.slice(from.length);
-      this.directories.set(`${to}${suffix}`, {
+      const nextPath = replacePathPrefix(path, from, to) ?? to;
+      this.directories.set(nextPath, {
         kind: 'dir',
         mode: node.mode,
         mtimeMs: this.nextStamp(),
       });
+      this.registerDirectory(nextPath);
     }
     for (const [path, node] of movedFiles) {
-      const suffix = path.slice(from.length);
-      const nextPath = `${to}${suffix}`;
+      const nextPath = replacePathPrefix(path, from, to) ?? to;
       this.files.set(nextPath, {
         kind: 'file',
         content: Buffer.from(node.content),
         mode: node.mode,
         mtimeMs: this.nextStamp(),
       });
-      for (const open of this.openFiles.values()) {
-        if (open.path === path || open.path.startsWith(`${path}/`)) {
-          open.path = nextPath;
-        }
-      }
+      this.registerChild(nextPath);
     }
 
-    this.rebuildChildIndex();
+    for (const open of this.openFiles.values()) {
+      const nextPath = replacePathPrefix(open.path, from, to);
+      if (nextPath !== null) {
+        open.path = nextPath;
+      }
+    }
     this.touchAncestors(parentPath(from));
     this.touchAncestors(targetParent);
   }
@@ -309,31 +321,20 @@ export class InMemoryStorage implements StoragePort {
 
     if (isFile) {
       this.files.delete(normalized);
-      this.unregisterChildIfUnreferenced(normalized);
+      this.unregisterChild(normalized);
       this.touchAncestors(parentPath(normalized));
       return;
     }
 
-    const childPaths = [...this.directories.keys(), ...this.files.keys()].filter(
-      (candidate) => candidate !== normalized && candidate.startsWith(`${normalized}/`),
-    );
-    if (childPaths.length > 0 && !options?.recursive) {
+    const subtree = this.collectSubtree(normalized);
+    const hasDescendants = subtree.files.length > 0 || subtree.directories.length > 1;
+    if (hasDescendants && !options?.recursive) {
       throw createErrnoError('ENOTEMPTY', normalized);
     }
 
-    for (const candidate of [...this.files.keys()]) {
-      if (candidate.startsWith(`${normalized}/`)) {
-        this.files.delete(candidate);
-        this.unregisterChildIfUnreferenced(candidate);
-      }
-    }
-    for (const candidate of [...this.directories.keys()]) {
-      if (candidate !== '/' && (candidate === normalized || candidate.startsWith(`${normalized}/`))) {
-        this.directories.delete(candidate);
-        this.unregisterDirectory(candidate);
-      }
-    }
-    this.touchAncestors(parentPath(normalized));
+    const directoriesToDelete = normalized === '/' ? subtree.directories.slice(1) : subtree.directories;
+    this.deleteSubtree(directoriesToDelete, subtree.files);
+    this.touchAncestors(normalized === '/' ? '/' : parentPath(normalized));
   }
 
   readdirSync(path: string, options: { withFileTypes: true }): RuntimeDirentLike[] {
@@ -346,11 +347,11 @@ export class InMemoryStorage implements StoragePort {
     return [...(this.childIndex.get(normalized) ?? [])]
       .sort((left, right) => left.localeCompare(right))
       .map((name) => {
-        const childPath = normalized === '/' ? `/${name}` : `${normalized}/${name}`;
+        const childPathValue = childPath(normalized, name);
         return {
           name,
-          isDirectory: () => this.directories.has(childPath),
-          isFile: () => this.files.has(childPath),
+          isDirectory: () => this.directories.has(childPathValue),
+          isFile: () => this.files.has(childPathValue),
         };
       });
   }
@@ -556,6 +557,24 @@ export class InMemoryStorage implements StoragePort {
     throw createErrnoError('ENOENT', normalized);
   }
 
+  private requireFileNode(path: string): FileNode {
+    const normalized = normalizePathForStorage(path);
+    const file = this.files.get(normalized);
+    if (!file) {
+      throw createErrnoError('ENOENT', normalized);
+    }
+    return file;
+  }
+
+  private requireDirectoryNode(path: string): DirectoryNode {
+    const normalized = normalizePathForStorage(path);
+    const directory = this.directories.get(normalized);
+    if (!directory) {
+      throw createErrnoError('ENOENT', normalized);
+    }
+    return directory;
+  }
+
   private registerDirectory(path: string): void {
     const normalized = normalizePathForStorage(path);
     this.ensureChildSet(normalized);
@@ -601,6 +620,46 @@ export class InMemoryStorage implements StoragePort {
     const children = new Set<string>();
     this.childIndex.set(normalized, children);
     return children;
+  }
+
+  private collectSubtree(root: string): { directories: string[]; files: string[] } {
+    const normalized = normalizePathForStorage(root);
+    const directories = [normalized];
+    const files: string[] = [];
+
+    for (let index = 0; index < directories.length; index += 1) {
+      const directoryPath = directories[index];
+      if (directoryPath === undefined) {
+        break;
+      }
+      for (const name of this.childIndex.get(directoryPath) ?? []) {
+        const candidate = childPath(directoryPath, name);
+        if (this.files.has(candidate)) {
+          files.push(candidate);
+          continue;
+        }
+        if (this.directories.has(candidate)) {
+          directories.push(candidate);
+        }
+      }
+    }
+
+    return { directories, files };
+  }
+
+  private deleteSubtree(directories: string[], files: string[]): void {
+    for (const path of files) {
+      this.files.delete(path);
+      this.unregisterChild(path);
+    }
+    for (let index = directories.length - 1; index >= 0; index -= 1) {
+      const path = directories[index];
+      if (path === undefined) {
+        continue;
+      }
+      this.directories.delete(path);
+      this.unregisterDirectory(path);
+    }
   }
 
   private rebuildChildIndex(): void {

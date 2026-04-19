@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
 import type {
   Disposable,
@@ -12,11 +11,13 @@ import type {
 import { coordinatorPaths } from '../../coordinator/paths.js';
 import type { CoralPaths } from '../../infra/coral-paths.js';
 import { equipmentPaths } from '../../infra/equipment-paths.js';
+import { sourceToSlug } from '../../infra/paths.js';
 import { exportsPaths } from '../../jobs/exports/paths.js';
 import { corpusPaths } from '../../kb/corpus/paths.js';
 import type { BuildFlavor } from '../../runtime/flavor.js';
 import { storePaths } from '../../store/paths.js';
 import { cloneSpawnEvent } from '../../runtime/spawn.js';
+import { hashToken } from '../../shared/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
@@ -30,10 +31,6 @@ export type InMemoryPathsSnapshot = {
   namespaceCache: Array<[string, string]>;
   projectSourceCache: Array<[string, string]>;
 };
-
-function hashToken(input: string, length: number): string {
-  return createHash('sha256').update(input).digest('hex').slice(0, length);
-}
 
 function buildInMemoryCoralPaths(roots: InMemoryRoots, flavor: BuildFlavor = 'prod'): CoralPaths {
   const coralRoot = roots.coralRoot ?? DEFAULT_CORAL_ROOT;
@@ -189,7 +186,7 @@ export class InMemoryPaths implements RuntimePaths {
   }
 
   private projectDataDirForSource(source: string): string {
-    return join(this.coralRoot(), 'projects', source.replace(/\//g, '-'));
+    return join(this.coralRoot(), 'projects', sourceToSlug(source));
   }
 }
 
