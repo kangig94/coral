@@ -17,17 +17,37 @@ cd "$REPO_ROOT"
 echo "[verify-native-binding] npm run build"
 npm run build
 
+BRIDGE_BUNDLE="$REPO_ROOT/bridge/coral-backend.cjs"
+BRIDGE_MANIFEST="$REPO_ROOT/bridge/manifest.json"
+BRIDGE_BUNDLE_PREEXISTING=0
+BRIDGE_MANIFEST_PREEXISTING=0
+if git -C "$REPO_ROOT" ls-files --error-unmatch bridge/coral-backend.cjs >/dev/null 2>&1; then BRIDGE_BUNDLE_PREEXISTING=1; fi
+if git -C "$REPO_ROOT" ls-files --error-unmatch bridge/manifest.json >/dev/null 2>&1; then BRIDGE_MANIFEST_PREEXISTING=1; fi
+
 mkdir -p "$REPO_ROOT/bridge"
-cp "$REPO_ROOT/build/coral-backend.cjs" "$REPO_ROOT/bridge/coral-backend.cjs"
-cp "$REPO_ROOT/build/manifest.json" "$REPO_ROOT/bridge/manifest.json"
+cp "$REPO_ROOT/build/coral-backend.cjs" "$BRIDGE_BUNDLE"
+cp "$REPO_ROOT/build/manifest.json" "$BRIDGE_MANIFEST"
 
 TMPDIR_BASE="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_BASE"' EXIT
+cleanup() {
+  rm -rf "$TMPDIR_BASE"
+  if [[ $BRIDGE_BUNDLE_PREEXISTING -eq 1 ]]; then
+    git -C "$REPO_ROOT" checkout -- bridge/coral-backend.cjs 2>/dev/null || true
+  else
+    rm -f "$BRIDGE_BUNDLE"
+  fi
+  if [[ $BRIDGE_MANIFEST_PREEXISTING -eq 1 ]]; then
+    git -C "$REPO_ROOT" checkout -- bridge/manifest.json 2>/dev/null || true
+  else
+    rm -f "$BRIDGE_MANIFEST"
+  fi
+}
+trap cleanup EXIT
 
 echo "[verify-native-binding] spawn smoke in scratch cwd"
 cd "$TMPDIR_BASE"
 
-OUT="$(node "$REPO_ROOT/bridge/coral-backend.cjs" --smoke-open-store --path "$TMPDIR_BASE/s.db")"
+OUT="$(node "$BRIDGE_BUNDLE" --smoke-open-store --path "$TMPDIR_BASE/s.db")"
 echo "[verify-native-binding] output: $OUT"
 
 if [[ "$OUT" != "ok" ]]; then
