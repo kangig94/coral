@@ -219,7 +219,7 @@ export function createRealRuntime(): Runtime {
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
-    return composeChildEnv({ ...capturedEnv.fullEnv }, envAdditions ?? {}, envBudgetBytes, envPassthrough);
+    return composeChildEnv(capturedEnv.fullEnv, envAdditions ?? {}, envBudgetBytes, envPassthrough);
   };
 
   const resolveExecEnv = (options: RuntimeExecOptions = {}): Record<string, string> => {

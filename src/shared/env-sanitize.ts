@@ -128,7 +128,7 @@ export function shedIfOverBudget(
 }
 
 /** Remove all keys starting with `CORAL_` from an env record. */
-export function stripInternalCoralKeys(env: Record<string, string>): Record<string, string> {
+export function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<string, string> {
   const stripped: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith('CORAL_')) continue;
@@ -147,7 +147,7 @@ export function stripInternalCoralKeys(env: Record<string, string>): Record<stri
  * 4. Mark the child boundary with CORAL_CHILD=1
  */
 export function composeChildEnv(
-  baseEnv: Record<string, string>,
+  baseEnv: Readonly<Record<string, string>>,
   envAdditions: Record<string, string>,
   budgetBytes: number,
   passthrough: Set<string>,
