@@ -115,13 +115,16 @@ export async function runShutdownSequence({
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
 
+  const drainDeadline = runtime.time.now() + drainTimeout;
+  const remainingDrain = (): number => Math.max(0, drainDeadline - runtime.time.now());
+
   const serverClosed = closeServerFn(server);
-  await waitForInflightDrain(idleTimer, drainTimeout, runtime.time);
+  await waitForInflightDrain(idleTimer, remainingDrain(), runtime.time);
   server.closeAllConnections?.();
   for (const stream of streamResponses) {
     stream.end();
   }
-  await Promise.race([serverClosed, runtime.time.sleep(drainTimeout)]);
+  await Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]);
   teardownRecoveryCoordinator();
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;
