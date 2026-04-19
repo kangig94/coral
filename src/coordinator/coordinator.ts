@@ -20,7 +20,7 @@ import { ExecutionService } from './api.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
-import { createEmptyRegistry } from '../store/envelope.js';
+import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
@@ -98,7 +98,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const flavor = options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? runtime.env.cwd());
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-  const upcasters = createEmptyRegistry();
+  const upcasters = createDefaultUpcasterRegistry();
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
