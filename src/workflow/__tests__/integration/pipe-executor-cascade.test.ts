@@ -4,7 +4,7 @@ import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseAgentRef, resolveAgent } from '../../../jobs/shell/agent-resolution.js';
 import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
-import { TypedEventBus } from '../../../execution/backend-contracts.js';
+import { TypedEventBus } from '../../../coordinator/control.js';
 import { createProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../../execution/progress-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';

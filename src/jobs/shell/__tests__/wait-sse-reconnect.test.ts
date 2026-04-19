@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
-import { TypedEventBus } from '../../../execution/backend-contracts.js';
+import { TypedEventBus } from '../../../coordinator/control.js';
 import { ProgressStore } from '../../../execution/progress-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import type { StoragePort } from '../../../runtime/ports.js';

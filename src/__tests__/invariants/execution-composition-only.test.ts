@@ -82,23 +82,10 @@ const COORDINATOR_ALLOWED = [
   'src/store/**',
   'src/infra/**',
   'src/coordinator/**',
-];
-const TRANSPORT_ALLOWED = [...COORDINATOR_ALLOWED, 'src/client/**', 'src/kb/**'];
-const SIMULATION_ALLOWED = [
-  ...NODE_AND_VENDOR,
-  'src/shared/**',
-  'src/runtime/**',
-  'src/providers/**',
-  'src/execution/**',
-  'src/jobs/**',
-  'src/sessions/**',
-  'src/discuss/**',
-  'src/workflow/**',
-  'src/store/**',
-  'src/infra/**',
-  'src/simulation/**',
-  'src/coordinator/**',
-  'src/kb/**',
+  'src/kb/subsystem.ts',
+  'src/transport/http/contracts.ts',
+  'src/transport/http/handler.ts',
+  'src/transport/http/kb-tools.ts',
 ];
 const SESSION_ALLOWED = [
   ...NODE_AND_VENDOR,
@@ -109,7 +96,6 @@ const SESSION_ALLOWED = [
   'src/store/**',
   'src/infra/**',
 ];
-const KB_ALLOWED = [...TRANSPORT_ALLOWED, 'src/kb/**'];
 
 const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
   ...entries(
@@ -127,17 +113,6 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
       'src/execution/composition/runtime-state.ts',
     ],
     contract('src/coordinator/**', 'N/A (permanent composition shell)', COORDINATOR_ALLOWED, {
-      forbiddenDiscriminants: ['coral_fault'],
-    }),
-  ),
-  ...entries(
-    [
-      'src/execution/http-handler.ts',
-      'src/execution/query-coerce.ts',
-      'src/execution/tool-response.ts',
-      'src/execution/backend-contracts.ts',
-    ],
-    contract('src/transport/**', 'Phase 4 transport cutover', TRANSPORT_ALLOWED, {
       forbiddenDiscriminants: ['coral_fault'],
     }),
   ),
@@ -184,32 +159,6 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
       forbiddenIdentifiers: ['Workflow' + 'Checkpoint'],
       forbiddenDiscriminants: ['coral_fault'],
     },
-  ),
-  'src/execution/kb-tools.ts': contract(
-    'src/kb/**',
-    'Phase 5 KB migration',
-    KB_ALLOWED,
-  ),
-  ...entries(
-    [
-      'src/execution/simulation/index.ts',
-      'src/execution/simulation/no-real-io.ts',
-      'src/execution/simulation/normalize.ts',
-      'src/execution/simulation/recording.ts',
-      'src/execution/simulation/runner.ts',
-      'src/execution/simulation/scenario-http.ts',
-      'src/execution/simulation/schema.ts',
-      'src/execution/simulation/world.ts',
-      'src/execution/simulation/core/constants.ts',
-      'src/execution/simulation/core/index.ts',
-      'src/execution/simulation/core/memory-storage.ts',
-      'src/execution/simulation/core/mock-app-server.ts',
-      'src/execution/simulation/core/mock-app.ts',
-      'src/execution/simulation/core/mock-process.ts',
-      'src/execution/simulation/core/runtime-doubles.ts',
-      'src/execution/simulation/core/virtual-time.ts',
-    ],
-    contract('src/simulation/**', 'Phase 7 simulation-scenario migration', SIMULATION_ALLOWED),
   ),
 };
 

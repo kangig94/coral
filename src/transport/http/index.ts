@@ -1,2 +1,5 @@
-// Placeholder Phase 0 barrel. Content added as canonical owners land in later phases.
-export {};
+export * from './contracts.js';
+export * from './handler.js';
+export * from './kb-tools.js';
+export * from './query-coerce.js';
+export * from './tool-response.js';

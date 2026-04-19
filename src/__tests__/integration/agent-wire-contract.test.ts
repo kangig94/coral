@@ -5,22 +5,23 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { BackendClient, BackendToolHttpError } from '../../client/http-client.js';
 import * as AgentResolution from '../../jobs/shell/agent-resolution.js';
-import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { MutableRuntimeState } from '../../coordinator/control.js';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
-import { TypedEventBus } from '../../execution/backend-contracts.js';
-import { createHttpHandler } from '../../execution/http-handler.js';
+import { TypedEventBus } from '../../coordinator/control.js';
+import type { HttpHandlerPorts } from '../../transport/http/contracts.js';
+import { createHttpHandler } from '../../transport/http/handler.js';
 import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../execution/progress-store.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { ExecutionService } from '../../coordinator/api.js';
-import { pluginRootNamespace, resolveProjectSource } from '../../infra/paths.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
 import type { ProviderInstruction, ProviderRequest } from '../../shared/types.js';
-import type { LifecycleState } from '../../execution/server-types.js';
+import type { LifecycleState } from '../../coordinator/control.js';
 
 function assertNotMocked(name: string, value: unknown): void {
   if (vi.isMockFunction(value)) {
@@ -57,7 +58,7 @@ function writeFile(rootDir: string, relativePath: string, content: string): stri
   return filePath;
 }
 
-function createRuntimeState(): MutableBackendRuntimeState {
+function createRuntimeState(): MutableRuntimeState {
   let lifecycle: LifecycleState = 'running';
   let startedAt = Date.now();
   let launchFenceActive = false;
@@ -105,7 +106,7 @@ function createIdleTimer() {
 }
 
 async function startHttpHandlerServer(
-  deps: HttpHandlerDeps,
+  deps: HttpHandlerPorts,
 ): Promise<{ server: Server; host: string; port: number; token: string }> {
   const handler = createHttpHandler(deps);
   const server = createServer((req, res) => {
@@ -256,7 +257,7 @@ describe('agent wire contract', () => {
       return created;
     };
 
-    const deps: HttpHandlerDeps = {
+    const deps: HttpHandlerPorts = {
       identity: {
         pluginRoot: coralPluginRoot,
         namespace: pluginRootNamespace(coralPluginRoot),
@@ -268,27 +269,92 @@ describe('agent wire contract', () => {
         now: () => Date.now(),
         log: () => {},
       },
-      runtime,
-      runtimeState,
-      idleTimer: idleTimer as never,
-      progressStore,
-      activeLaunchCount: () => launchCoordinator.active,
-      queueDepth: () => launchCoordinator.queueDepth(),
-      streamResponses: new Set(),
       coralEnvSnapshot: {},
-      resolveProjectSource: resolveProjectSource,
-      isDrainRequested: () => false,
-      requestDrain: () => {},
-      getExecutionService,
-      getDiscussContext: () => ({}) as never,
-      providerRegistry,
-      abortJobs: () => ({ aborted: [], notFound: [] }),
-      scopeCheckJobs: () => ({ valid: [], missing: [], mismatch: [] }),
-      subscribeBackendEvents: () => {},
-      unsubscribeBackendEvents: () => {},
-      liveDiscussCount: () => 0,
-      listDiscussSessions: () => [],
-      loadDiscussDetail: () => null,
+      admin: {
+        isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
+        isDrainRequested: () => false,
+        isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+        beginRequest: () => {
+          idleTimer.beginRequest();
+        },
+        endRequest: () => {
+          idleTimer.endRequest();
+        },
+        requestDrain: () => {},
+      },
+      health: {
+        read: () => ({
+          status: 'ok',
+          version: '0.0.0-test',
+          bundleHash: 'agent-wire-contract-bundle',
+          flavor: 'prod',
+          namespace: pluginRootNamespace(coralPluginRoot),
+          instanceId: 'agent-wire-contract-instance',
+          uptimeMs: Date.now() - runtimeState.getStartedAt(),
+          active: launchCoordinator.active,
+          activeJobs: 0,
+          liveDiscuss: 0,
+          queueDepth: launchCoordinator.queueDepth(),
+          inflightRequests: idleTimer.inflightRequests,
+          env: {},
+          subsystems: {
+            kb: 'unavailable',
+            discuss: 'ok',
+          },
+        }),
+      },
+      events: {
+        addResponse: () => {},
+        removeResponse: () => {},
+        createStreamId: () => 'stream-id',
+        nowIsoString: () => new Date().toISOString(),
+        subscribe: () => {},
+        unsubscribe: () => {},
+      },
+      sessions: {
+        start: (providerName, input, ctx) => getExecutionService(ctx).start(providerName, input, ctx),
+        resumeBySessionId: (input, ctx) => getExecutionService(ctx).resumeBySessionId(input, ctx),
+        forkBySessionId: (input, ctx) => getExecutionService(ctx).forkBySessionId(input, ctx),
+      },
+      jobs: {
+        scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }),
+        abort: () => ({ aborted: [], notFound: [] }),
+        waitStream: async function* () {},
+        list: () => [],
+        detail: () => null,
+      },
+      workflows: {
+        execute: async () => ({ kind: 'invalid_request', message: 'not implemented' }),
+      },
+      kb: {
+        readSearch: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        readNote: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        readSource: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        readCommunity: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        readMemo: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        readPrinciple: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        listSources: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        listMemos: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        listPrinciples: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        createNote: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        updateNote: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        deleteNote: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        createSource: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        deleteSource: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        createMemo: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        deleteMemos: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        reindex: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+      },
+      discuss: {
+        seed: () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+        start: async () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+        listSessions: () => [],
+        loadDetail: () => null,
+        watch: () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+        bid: async () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+        speech: async () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+        abort: async () => ({ ok: false, code: 'invalid_request', message: 'not implemented' }),
+      },
     };
 
     const started = await startHttpHandlerServer(deps);

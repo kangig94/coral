@@ -1,12 +1,40 @@
 import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
-import { formatError } from '../../shared/utils.js';
-import type { EventStreamHandlers, HttpHandlerDeps } from '../backend-contracts.js';
+import { ZodError } from 'zod';
+import { formatError, nowIsoString } from '../../shared/utils.js';
+import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
 import { discussQueries } from '../../discuss/api.js';
 import { knownDiscussSources } from '../../discuss/shell/read-helpers.js';
 import { listAttachedSessions } from '../../discuss/shell/live-registry.js';
-import { createHttpHandler, sendJson } from '../http-handler.js';
+import {
+  handleDiscussAbort,
+  handleDiscussBid,
+  handleDiscussSeed,
+  handleDiscussSpeech,
+  handleDiscussStart,
+  handleDiscussWatch,
+} from '../../discuss/shell/tools.js';
+import {
+  handleKbCommunityRead,
+  handleKbMemo,
+  handleKbMemoDeleteConsolidated,
+  handleKbMemoList,
+  handleKbMemoRead,
+  handleKbNoteRead,
+  handleKbPrincipleRead,
+  handleKbPrinciples,
+  handleKbPromote,
+  handleKbReindex,
+  handleKbSearch,
+  handleKbSourceDelete,
+  handleKbSourceImport,
+  handleKbSourceList,
+  handleKbSourceRead,
+  handleKbUpdate,
+  handleKbDelete,
+} from '../../transport/http/kb-tools.js';
+import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import {
   createLifecycle,
   type LifecycleController,
@@ -16,13 +44,15 @@ import type { BackendCoreOptions, BackendCoreResult } from '../backend-core-type
 import { openStoreDatabase } from '../../store/db.js';
 import { storePaths } from '../../store/paths.js';
 import { jobsReconcile } from '../../jobs/api.js';
-import { workflowRecover } from '../../workflow/api.js';
+import { isWorkflowInputFailure, workflowCommands, workflowCompiler, workflowRecover } from '../../workflow/api.js';
 import { createBackendControl } from './backend-control.js';
 import { resolveBackendDefaults } from './backend-defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-build.js';
 import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
+import { createReplayCursor } from '../progress-store.js';
+import { belongsToNamespace, isLivePhase } from '../../shared/types.js';
 
 export type {
   BackendBootSnapshot,
@@ -146,41 +176,206 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     progressStore: world.progressStore,
   });
 
-  const httpHandlerDeps: HttpHandlerDeps = {
+  const readOnlyCallerContext = {
+    projectRoot: '',
+    pluginRoot: identity.pluginRoot,
+    coralEnv: { ...world.coralEnvSnapshot },
+  };
+  const kbUnavailableResult = {
+    ok: false as const,
+    code: 'kb_unavailable',
+    message: 'Knowledge base is not available. Check backend health for details.',
+  };
+  const withKb = <T>(run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => T): T | typeof kbUnavailableResult => {
+    const kbSubsystem = runtimeState.getKbSubsystem();
+    if (!kbSubsystem) {
+      return kbUnavailableResult;
+    }
+    return run(kbSubsystem);
+  };
+  const withKbAsync = async <T>(
+    run: (kbSubsystem: NonNullable<ReturnType<typeof runtimeState.getKbSubsystem>>) => Promise<T>,
+  ): Promise<T | typeof kbUnavailableResult> => {
+    const kbSubsystem = runtimeState.getKbSubsystem();
+    if (!kbSubsystem) {
+      return kbUnavailableResult;
+    }
+    return run(kbSubsystem);
+  };
+
+  const httpHandlerDeps: HttpHandlerPorts = {
     identity,
-    runtime,
-    runtimeState,
-    idleTimer: world.idleTimer,
-    progressStore: world.progressStore,
-    activeLaunchCount: () => world.launchCoordinator.active,
-    queueDepth: () => world.launchCoordinator.queueDepth(),
-    streamResponses,
     coralEnvSnapshot: world.coralEnvSnapshot,
-    resolveProjectSource: world.resolveProjectSource,
-    isDrainRequested: control.isDrainRequested,
-    requestDrain: control.requestDrain,
-    getExecutionService: services.getExecutionService,
-    getDiscussContext: discuss.getDiscussContext,
-    providerRegistry: world.providerRegistry,
-    abortJobs: control.abortJobs,
-    scopeCheckJobs: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),
-    subscribeBackendEvents: (handlers: EventStreamHandlers) => {
-      world.eventBus.on('job:created', handlers.onJobCreated);
-      world.eventBus.on('job:phase_changed', handlers.onPhaseChanged);
-      world.eventBus.on('job:progress', handlers.onProgress);
-      world.eventBus.on('job:completed', handlers.onCompleted);
-      world.eventBus.on('discuss:updated', handlers.onDiscussUpdated);
+    admin: {
+      isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
+      isDrainRequested: control.isDrainRequested,
+      isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+      beginRequest: () => {
+        world.idleTimer.beginRequest();
+      },
+      endRequest: () => {
+        world.idleTimer.endRequest();
+      },
+      requestDrain: control.requestDrain,
     },
-    unsubscribeBackendEvents: (handlers: EventStreamHandlers) => {
-      world.eventBus.off('job:created', handlers.onJobCreated);
-      world.eventBus.off('job:phase_changed', handlers.onPhaseChanged);
-      world.eventBus.off('job:progress', handlers.onProgress);
-      world.eventBus.off('job:completed', handlers.onCompleted);
-      world.eventBus.off('discuss:updated', handlers.onDiscussUpdated);
+    health: {
+      read: () => {
+        const env = { ...world.coralEnvSnapshot };
+        const lifecycleState = runtimeState.getLifecycle();
+        let status: string = lifecycleState;
+        if (world.idleTimer.isDraining) {
+          status = 'draining';
+        } else if (lifecycleState === 'running') {
+          status = 'ok';
+        }
+
+        const kbInitError = runtimeState.getKbInitError();
+        return {
+          status,
+          version: identity.version,
+          bundleHash: identity.bundleHash,
+          flavor: identity.flavor,
+          namespace: identity.namespace,
+          instanceId: identity.instanceId,
+          uptimeMs: identity.now() - runtimeState.getStartedAt(),
+          active: world.launchCoordinator.active,
+          activeJobs: world.progressStore.liveJobCountByNamespace(identity.namespace),
+          liveDiscuss: listAttachedSessions(world.discussRegistry).length,
+          queueDepth: world.launchCoordinator.queueDepth(),
+          inflightRequests: world.idleTimer.inflightRequests,
+          subsystems: {
+            kb: kbInitError === null ? 'ok' : 'unavailable',
+            ...(kbInitError === null ? {} : { kbError: kbInitError }),
+            discuss: 'ok' as const,
+          },
+          env,
+        };
+      },
     },
-    liveDiscussCount: () => listAttachedSessions(world.discussRegistry).length,
-    listDiscussSessions: () => discussQueries.list(discuss.readHelpersDeps),
-    loadDiscussDetail: (source, sessionId, view) => discussQueries.get(discuss.readHelpersDeps, source, sessionId, view),
+    events: {
+      addResponse: (res) => {
+        streamResponses.add(res);
+      },
+      removeResponse: (res) => {
+        streamResponses.delete(res);
+      },
+      createStreamId: () => runtime.ids.uuid(),
+      nowIsoString: () => nowIsoString(runtime.time),
+      subscribe: (handlers: EventStreamHandlers) => {
+        world.eventBus.on('job:created', handlers.onJobCreated);
+        world.eventBus.on('job:phase_changed', handlers.onPhaseChanged);
+        world.eventBus.on('job:progress', handlers.onProgress);
+        world.eventBus.on('job:completed', handlers.onCompleted);
+        world.eventBus.on('discuss:updated', handlers.onDiscussUpdated);
+      },
+      unsubscribe: (handlers: EventStreamHandlers) => {
+        world.eventBus.off('job:created', handlers.onJobCreated);
+        world.eventBus.off('job:phase_changed', handlers.onPhaseChanged);
+        world.eventBus.off('job:progress', handlers.onProgress);
+        world.eventBus.off('job:completed', handlers.onCompleted);
+        world.eventBus.off('discuss:updated', handlers.onDiscussUpdated);
+      },
+    },
+    sessions: {
+      start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
+      resumeBySessionId: (input, ctx) => services.getExecutionService(ctx).resumeBySessionId(input, ctx),
+      forkBySessionId: (input, ctx) => services.getExecutionService(ctx).forkBySessionId(input, ctx),
+    },
+    jobs: {
+      scopeCheck: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),
+      abort: control.abortJobs,
+      waitStream: (request) =>
+        services
+          .getExecutionService({
+            ...readOnlyCallerContext,
+            projectRoot: request.projectRoot ?? readOnlyCallerContext.projectRoot,
+          })
+          .waitStream(request),
+      list: (filters) => {
+        let jobs = world.progressStore
+          .listJobIds()
+          .map((jobId) => ({ jobId, status: world.progressStore.readStatus(jobId) }))
+          .filter((entry): entry is { jobId: string; status: NonNullable<typeof entry.status> } => entry.status !== null)
+          .filter((entry) => belongsToNamespace(entry.status, world.namespace));
+
+        if (filters.all !== true) {
+          jobs = jobs.filter((entry) => isLivePhase(entry.status.phase));
+        }
+        if (filters.projectRoot !== undefined) {
+          jobs = jobs.filter((entry) => entry.status.projectRoot === filters.projectRoot);
+        }
+        if (filters.phase !== undefined) {
+          jobs = jobs.filter((entry) => entry.status.phase === filters.phase);
+        }
+        if (filters.provider !== undefined) {
+          jobs = jobs.filter((entry) => entry.status.provider === filters.provider);
+        }
+
+        return jobs;
+      },
+      detail: (jobId) => {
+        const status = world.progressStore.readStatus(jobId);
+        if (!status || !belongsToNamespace(status, world.namespace)) {
+          return null;
+        }
+        const cursor = createReplayCursor();
+        const events = world.progressStore.replayFrom(jobId, 0, cursor);
+        return { status, events };
+      },
+    },
+    workflows: {
+      execute: async (request, ctx) => {
+        try {
+          const compiled = workflowCompiler.compile(request, world.providerRegistry);
+          const decision =
+            'status' in compiled
+              ? compiled
+              : await workflowCommands.execute(services.getExecutionService(ctx), compiled, ctx);
+          return { kind: 'decision' as const, decision };
+        } catch (error: unknown) {
+          if (isWorkflowInputFailure(error)) {
+            if (error instanceof ZodError) {
+              const first = error.issues[0];
+              const path = first?.path.join('.') ?? '';
+              const message = first ? (path.length > 0 ? `${path}: ${first.message}` : first.message) : error.message;
+              return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
+            }
+            return { kind: 'invalid_request' as const, message: error.message };
+          }
+          throw error;
+        }
+      },
+    },
+    kb: {
+      readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
+      readNote: (slug) => withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyCallerContext, runtime, kbSubsystem)),
+      readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
+      readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
+      readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
+      readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),
+      listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
+      listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx)),
+      listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
+      createNote: (args, ctx) => withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx)),
+      updateNote: (args) => withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem)),
+      deleteNote: (slug) => withKbAsync((kbSubsystem) => handleKbDelete({ note: slug }, kbSubsystem)),
+      createSource: (args) => withKbAsync((kbSubsystem) => handleKbSourceImport(args, kbSubsystem)),
+      deleteSource: (slug) => withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
+      createMemo: (args, ctx) => withKb(() => handleKbMemo(args, ctx)),
+      deleteMemos: (args, ctx) => withKb(() => handleKbMemoDeleteConsolidated(args, ctx)),
+      reindex: () => withKbAsync((kbSubsystem) => handleKbReindex({}, kbSubsystem)),
+    },
+    discuss: {
+      seed: handleDiscussSeed,
+      start: (args, ctx) => handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+      listSessions: () => discussQueries.list(discuss.readHelpersDeps),
+      loadDetail: (projectRoot, sessionId, view) =>
+        discussQueries.get(discuss.readHelpersDeps, world.resolveProjectSource(projectRoot), sessionId, view),
+      watch: (args, ctx) => handleDiscussWatch(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+      bid: (args, ctx) => handleDiscussBid(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+      speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+      abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
+    },
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);

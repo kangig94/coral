@@ -7,9 +7,9 @@ import type {
   JobStatusRecord,
   JobTerminalRecord,
 } from '../../shared/types.js';
-import { TypedEventBus } from '../backend-contracts.js';
+import { TypedEventBus } from '../../coordinator/control.js';
 import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
-import { SimulationRuntime } from '../simulation/core/index.js';
+import { SimulationRuntime } from '../../simulation/core/index.js';
 
 const projectRoot = '/tmp/project';
 const TEST_BACKEND_NAMESPACE = 'test-namespace';

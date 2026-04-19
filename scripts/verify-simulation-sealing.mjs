@@ -8,7 +8,7 @@ const SCRIPT_DIR = dirname(__filename);
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 const MANIFEST_PATH = resolve(REPO_ROOT, 'sealed-inventory.json');
-const SIMULATION_CORE_ROOT = 'src/execution/simulation/core/index.ts';
+const SIMULATION_CORE_ROOT = 'src/simulation/core/index.ts';
 const SERVER_ROOT = 'src/execution/server.ts';
 
 function toPosixPath(filePath) {

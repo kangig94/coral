@@ -6,7 +6,7 @@ import {
   buildRecordingFilePath,
   recordSpawn,
   saveRecording,
-} from '../../execution/simulation/recording.js';
+} from '../../simulation/recording.js';
 
 export type EmittingRuntimeObserver = RuntimeObserver & {
   emit(event: SpawnEvent): void;

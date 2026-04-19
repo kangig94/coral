@@ -1,6 +1,6 @@
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
-import type { KnowledgeBaseRuntime } from '../kb-tools.js';
-import type { LifecycleState } from '../server-types.js';
+import type { MutableRuntimeState as MutableBackendRuntimeState, LifecycleState } from '../../coordinator/control.js';
+import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+
 
 export function createRuntimeState(startedAt: number): MutableBackendRuntimeState {
   let lifecycle: LifecycleState = 'starting';

@@ -79,7 +79,7 @@ async function main() {
   assertBuilt(resolve(DIST_ROOT, 'execution/__tests__/discuss-test-helpers.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/operations.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/persistence.js'));
-  assertBuilt(resolve(DIST_ROOT, 'execution/simulation/core/index.js'));
+  assertBuilt(resolve(DIST_ROOT, 'simulation/core/index.js'));
 
   const [
     helpers,
@@ -90,7 +90,7 @@ async function main() {
     import(pathToFileURL(resolve(DIST_ROOT, 'execution/__tests__/discuss-test-helpers.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/operations.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/persistence.js')).href),
-    import(pathToFileURL(resolve(DIST_ROOT, 'execution/simulation/core/index.js')).href),
+    import(pathToFileURL(resolve(DIST_ROOT, 'simulation/core/index.js')).href),
   ]);
 
   const { createDiscussHarness, advanceDiscussRuntime, cleanupDiscussHarnesses } = helpers;

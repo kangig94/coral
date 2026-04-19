@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { SimulationRuntime } from '../../execution/simulation/core/index.js';
+import { SimulationRuntime } from '../../simulation/core/index.js';
 import { applyMigrations } from '../migrations.js';
 
 describe('applyMigrations with Runtime.storage', () => {

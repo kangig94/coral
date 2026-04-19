@@ -30,7 +30,7 @@ import {
 } from '../../jobs/shell/agent-resolution.js';
 import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../../coordinator/live/admission.js';
 import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { TypedEventBus } from '../backend-contracts.js';
+import { TypedEventBus } from '../../coordinator/control.js';
 import { ProgressStore } from '../progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../runtime/real.js';

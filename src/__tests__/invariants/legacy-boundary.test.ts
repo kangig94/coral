@@ -22,7 +22,7 @@ const ALLOWLIST = [
   /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
   /^src\/jobs\/shell\/legacy-ingest\.ts$/,
   /^src\/providers\//,
-  /^src\/execution\/simulation\/(schema|core\/index|normalize)\.ts$/,
+  /^src\/simulation\/(schema|core\/index|normalize)\.ts$/,
 ];
 
 function walk(dir: string, out: string[] = []): string[] {

@@ -11,10 +11,9 @@ const LEGACY_IDENTIFIER_RE = /^Legacy[A-Za-z0-9_]*$/;
 const ALLOWLIST = [
   /^src\/providers\//,
   /^src\/runtime\//,
-  /^src\/execution\/kb-tools\.ts$/,
   /^src\/jobs\/shell\/legacy-ingest\.ts$/,
-  /^src\/execution\/simulation\/schema\.ts$/,
-  /^src\/execution\/simulation\/core\/index\.ts$/,
+  /^src\/simulation\/schema\.ts$/,
+  /^src\/simulation\/core\/index\.ts$/,
   /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
 ];
 

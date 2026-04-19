@@ -7,11 +7,11 @@ import type { JobLaunchRecord, JobProgressRecord, JobTerminalRecord, WaitStreamE
 import type * as ProgressStoreModule from '../progress-store.js'
 import type * as SessionManagerModule from '../session-manager.js'
 import type * as LifecycleModule from '../lifecycle.js'
-import type * as HttpHandlerModule from '../http-handler.js'
+import type * as HttpHandlerModule from '../../transport/http/handler.js'
 import type * as ServiceModule from '../service.js'
 import type * as ServerModule from '../server.js'
 import type * as EngineModule from '../../coordinator/live/admission.js'
-import type * as EventBusModule from '../backend-contracts.js'
+import type * as EventBusModule from '../../coordinator/control.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../../discuss/shell/operations.js'
@@ -71,11 +71,11 @@ async function loadModules(): Promise<LoadedModules> {
     import('../progress-store.js'),
     import('../session-manager.js'),
     import('../lifecycle.js'),
-    import('../http-handler.js'),
+    import('../../transport/http/handler.js'),
     import('../service.js'),
     import('../server.js'),
     import('../../coordinator/live/admission.js'),
-    import('../backend-contracts.js'),
+    import('../../coordinator/control.js'),
     import('../../infra/paths.js'),
     import('../../providers/registry.js'),
     import('../../discuss/shell/operations.js'),
@@ -1572,7 +1572,7 @@ describe.skip('lifecycle recovery characterization', () => {
         liveDiscussCount: () => 0,
         listDiscussSessions: () => [],
         loadDiscussDetail: () => null,
-      })(req, res)
+      } as never)(req, res)
     })
 
     try {

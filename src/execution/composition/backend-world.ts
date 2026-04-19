@@ -6,13 +6,14 @@ import { setBuildFlavor } from '../../infra/paths.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../shared/utils.js';
-import type { BackendIdentity } from '../backend-contracts.js';
+import { TypedEventBus } from '../../coordinator/control.js';
+import type { BackendIdentity } from '../../coordinator/control.js';
 import type { BackendCoreOptions } from '../backend-core-types.js';
 import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
 } from '../../discuss/shell/live-registry.js';
-import { TypedEventBus } from '../backend-contracts.js';
+
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import type { IdleTimer } from '../../coordinator/live/idle.js';

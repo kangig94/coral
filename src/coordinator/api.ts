@@ -36,7 +36,7 @@ import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
-import type { KnowledgeBaseRuntime } from '../execution/kb-tools.js';
+import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import {
   WorkflowExecutionError,

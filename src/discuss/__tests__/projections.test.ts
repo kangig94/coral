@@ -7,7 +7,7 @@ import {
   createDiscussHarness,
   defaultAgents,
   persistSession,
-} from '../../execution/__tests__/discuss-test-helpers.js';
+} from '../shell/__tests__/discuss-test-helpers.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();

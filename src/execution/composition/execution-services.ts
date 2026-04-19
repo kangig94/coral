@@ -1,6 +1,6 @@
 import type { CallerContext } from '../../shared/request-context.js';
 import { noopAppendEvents } from '../../store/append.js';
-import type { ExecutionServiceLike } from '../backend-contracts.js';
+import type { ExecutionServiceLike } from '../../coordinator/api.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../../coordinator/api.js';
 import type { BackendWorld } from './backend-world.js';

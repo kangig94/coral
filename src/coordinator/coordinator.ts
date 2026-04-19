@@ -14,7 +14,7 @@ import {
   type BackendCoreOptions,
   type BackendCoreResult,
 } from '../execution/backend-core.js';
-import { createKbSubsystem } from '../execution/kb-tools.js';
+import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './api.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';

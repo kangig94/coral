@@ -1,10 +1,10 @@
 import { composeChildEnv } from '../shared/env-sanitize.js';
 import { MAX_BUFFER } from '../shared/process-constants.js';
 import type { Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
-import { InMemoryStorage, type InMemoryRoots } from '../execution/simulation/core/memory-storage.js';
-import { MockProcessSpawner } from '../execution/simulation/core/mock-process.js';
-import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from '../execution/simulation/core/runtime-doubles.js';
-import { DEFAULT_EPOCH_MS, VirtualTime } from '../execution/simulation/core/virtual-time.js';
+import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';
+import { MockProcessSpawner } from './core/mock-process.js';
+import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './core/runtime-doubles.js';
+import { DEFAULT_EPOCH_MS, VirtualTime } from './core/virtual-time.js';
 import { buildExecPromise } from '../runtime/exec-builder.js';
 
 const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;

@@ -7,7 +7,7 @@ import type { CallerContext } from '../../shared/request-context.js';
 import { acquireLock, removeLockIfOwner, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../backend-lock.js';
 import type { LaunchCoordinator } from '../../coordinator/live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../../coordinator/live/idle.js';
-import { createKbSubsystem as defaultCreateKbSubsystem } from '../kb-tools.js';
+import { createKbSubsystem as defaultCreateKbSubsystem } from '../../kb/subsystem.js';
 import {
   cleanupStaleJobs,
   closeServer as defaultCloseServer,

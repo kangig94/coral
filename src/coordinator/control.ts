@@ -14,7 +14,7 @@ import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import { isTerminalPhase, type JobPhase, type JobTerminalRecord } from '../shared/types.js';
-import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../execution/kb-tools.js';
+import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';

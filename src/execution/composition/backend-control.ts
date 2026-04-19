@@ -1,7 +1,7 @@
 // Bundles abort/scope job-control (lifecycleController-bound) with the drain admission gate (idleTimer-bound) as one control-plane helper. The two halves share zero state; if drain logic grows beyond the current 4 lines, split into job-control.ts + drain-gate.ts rather than packing more concerns here.
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import { belongsToNamespace } from '../../shared/types.js';
-import type { ExecutionServiceLike, ScopeCheckResult } from '../backend-contracts.js';
+import type { ExecutionServiceLike, ScopeCheckResult } from '../../coordinator/api.js';
 import type { LifecycleController } from '../lifecycle.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { BackendWorld } from './backend-world.js';
