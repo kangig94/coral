@@ -1,7 +1,6 @@
 import { describeLegacyCoralFault, type RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
-import { readBackendNamespace } from '../records.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
@@ -21,7 +20,10 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
     const status = progressStore.readStatus(jobId);
     if (!status || !isLivePhase(status.phase)) continue;
 
-    const backendNamespace = readBackendNamespace(status);
+    const backendNamespace =
+      typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
+        ? status.backendNamespace
+        : null;
     if (backendNamespace === null) {
       const rewritten = withBackendNamespace(status, namespace);
       progressStore.writeStatus(jobId, rewritten);

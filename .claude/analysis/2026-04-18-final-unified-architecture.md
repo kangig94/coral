@@ -1157,7 +1157,7 @@ src/
       wait.ts                        — wait stream helper
 
   sessions/                          ← domain: session events + projections
-    types.ts                         — SessionEntry + controller profiles
+    entry.ts                         — SessionEntry + controller profiles
     events.ts                        — session event body schemas
     continuity.ts                    — continuity snapshot type
     projections.ts                   — SessionView reducer
@@ -1166,7 +1166,7 @@ src/
       resolve.ts                     — session resolution by id/ref
 
   discuss/                           ← unchanged domain core; template
-    state-machine.ts, reducer.ts, events.ts, projections.ts, schemas.ts
+    state-machine.ts, reducer.ts, events.ts, projections.ts, command-schemas.ts
     shell/                           — imperative shell (moved from execution/discuss/)
 
   kb/                                ← Corpus-authority domain (markdown is truth)
@@ -1914,4 +1914,7 @@ Tracked deviations from the original design adopted during implementation. Each 
 - **`coordinator/api.ts` is explicit coordinator glue** (Phase 3 follow-up review fixes). The original layering prose treated only `coordinator.ts`/`bootstrap.ts` as broad-import seams, but the implemented request-scoped orchestration in `api.ts` still legitimately composes jobs/session/workflow shells. Invariants and docs now state that explicitly instead of implying a narrower seam than the code actually has.
 - **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
 - **Amendment #5**: Phase 0 schema deliverable split into `src/store/schema.sql` (canonical DDL reference only) + `src/store/migrations/001_initial.sql` (first applied migration). Applied via `applyMigrations` through Runtime.storage.
+- **Amendment #6**: `sessions/types.ts` → `sessions/entry.ts` (Phase 2). Same intent-revealing rule as `coordinator/discovery.ts` — generic `types.ts` at a domain root is banned by invariant #31.
+- **Amendment #7**: `discuss/schemas.ts` → `discuss/command-schemas.ts` (Phase 2). Same rule as Amendment #6: generic `schemas.ts` at a domain root is banned by invariant #31.
+- **Amendment #8**: `src/jobs/records.ts` `Job*Record` family is the canonical domain read-model surface (Phase 2 AC7 replacement for banned `Persisted*Record`). `src/store/queries/jobs.ts` `Job*Row` family is the internal SQLite projection-row shape. Record = domain-facing; Row = store-internal. Do not conflate.
 - **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.

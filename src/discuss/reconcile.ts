@@ -37,4 +37,5 @@ export const runStartup: DiscussRunStartup = async (deps) => {
   return recoveredDiscussResumes;
 };
 
+// TODO(phase-X): retire recoverPersistedDiscuss alias — callers should use discussReconcile.runStartup() directly.
 export const recoverPersistedDiscuss = runStartup;

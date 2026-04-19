@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
 import * as discussLoop from '../../shell/loop.js';
-import * as discussSubflows from '../../shell/subflows.js';
+import * as discussBidFlow from '../../shell/bid-flow.js';
 import { recoverPersistedSessionsFromStore } from '../../shell/operations.js';
 import { getSession } from '../../shell/registry.js';
+import * as discussSpeechFlow from '../../shell/speech-flow.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,
@@ -84,7 +85,7 @@ describe('Discuss faults and retry recovery', () => {
       ],
     });
 
-    await discussSubflows.collectSpeech(harness.context, 'discuss-1', 'alpha', harness.ctx);
+    await discussSpeechFlow.collectSpeech(harness.context, 'discuss-1', 'alpha', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.status).toBe('bidding');
@@ -115,7 +116,7 @@ describe('Discuss faults and retry recovery', () => {
       ],
     });
 
-    await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
+    await discussBidFlow.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(snapshot?.state.current_bids).toEqual({ alpha: 88, beta: 0 });
@@ -168,7 +169,7 @@ describe('Discuss faults and retry recovery', () => {
       ],
     });
 
-    await discussSubflows.collectBids(harness.context, 'discuss-1', harness.ctx);
+    await discussBidFlow.collectBids(harness.context, 'discuss-1', harness.ctx);
 
     const snapshot = harness.store.load('discuss-1');
     expect(resume).toHaveBeenCalledWith(

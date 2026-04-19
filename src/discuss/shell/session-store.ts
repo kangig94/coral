@@ -11,6 +11,7 @@ import type {
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../reducer.js';
 import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
 import type { DiscussPathResolver, StoragePort, TimePort, RuntimeTimerHandle } from '../../runtime/ports.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 
 type DiscussSessionStoreOptions = {
   storage: StoragePort;
@@ -34,6 +35,15 @@ export class DiscussStaleWriteError extends Error {
     this.expectedSeq = expectedSeq;
     this.actualSeq = actualSeq;
   }
+}
+
+function durableWriteFailed(path: string): CoralSetupError {
+  return new CoralSetupError({
+    code: 'durable_write_failed',
+    userMessage: `Durable write failed for ${path}`,
+    remediation: 'Check disk space and filesystem permissions, then retry the discuss session operation.',
+    context: { path },
+  });
 }
 
 async function withFilesystemLock<T>(
@@ -226,7 +236,7 @@ export class DiscussSessionStore {
   private writeAtomicJson(filePath: string, value: unknown): void {
     this.storage.mkdirSync(dirname(filePath), { recursive: true });
     if (!this.storage.writeAtomicDurableSync(filePath, JSON.stringify(value, null, 2))) {
-      return;
+      throw durableWriteFailed(filePath);
     }
   }
 
@@ -236,7 +246,7 @@ export class DiscussSessionStore {
     }
     this.storage.mkdirSync(dirname(logPath), { recursive: true });
     if (!this.storage.appendFileDurableSync(logPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n')) {
-      return;
+      throw durableWriteFailed(logPath);
     }
   }
 

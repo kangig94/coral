@@ -193,9 +193,9 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/sessions/` — `types.ts`, `events.ts`, `continuity.ts`, `fault.ts`, `projections.ts`, `shell/{store,resolve}.ts`.
 - `src/discuss/shell/` — decomposed per §10.1a of architecture: `bid-flow.ts`, `speech-flow.ts`, `followup-flow.ts`, `synthesis-flow.ts`, `session-store.ts`, `live-registry.ts`, `runtime-build.ts`, `persistence.ts`, `read-helpers.ts`.
 - `src/workflow/` — `parser.ts`, `ast.ts`, `normalize.ts`, `plan.ts`, `command.ts`, `events.ts`, `projections.ts`, `executor.ts`, `launch.ts`, `wait.ts`, `recover.ts` (from pipe-executor.ts decomposition; `launch` and `retry` stay together per architecture §10.1a).
-- `src/coral-fault.ts` **removed** — replaced by per-domain types.
+- `src/shared/coral-fault.ts` **removed** — replaced by per-domain types.
 - **Test migration map** (commit to `src/__tests__/MIGRATION.md` alongside this phase's work):
-  - `execution/__tests__/recovery-core.test.ts` → deleted; replaced by `jobs/__tests__/reconcile-plan.test.ts`.
+  - `execution/__tests__/recovery-core.test.ts` → deleted; replaced by `src/jobs/reconcile/__tests__/plan.test.ts`.
   - `execution/__tests__/progress-store.test.ts` → deleted; replaced by `jobs/__tests__/projection-rebuild.test.ts`.
   - `execution/__tests__/lifecycle-recovery.test.ts` → deferred to Phase 3 (depends on coordinator shape).
   - `execution/__tests__/service.test.ts` → split across per-handler tests in `jobs/shell/__tests__/*`, `sessions/shell/__tests__/*`; mechanical per-function migration.
@@ -667,7 +667,7 @@ Each phase introduces specific codes; Phase 0 seeds the generic shape. Every thr
 
 - **`waitFreshUntil` timeout**: mandatory `timeoutMs` parameter, default 30000 ms, throws `FreshnessTimeout` on expiry.
 - **Microtask queue backpressure**: `ConsumerDriver` coalesces pending notifications to "latest version only"; idempotent `apply()` tolerates.
-- **Circular causeRef detection**: `describeCauseRef` walks with a `Set<string>` of visited `(stream.kind, stream.id, seq)`; cycle aborts with `CircularCauseRefDiagnostic` event.
+- **Circular causeRef detection**: `describeCauseRef` walks with a `Set<string>` of visited `(stream.kind, stream.id, seq)`; cycle returns `CircularCauseRefDiagnostic` metadata to a caller-owned persistence path.
 - **Events-table growth**: unbounded; future operational work may add archival. Document in `docs/operations.md` during Cleanup.
 
 ---
@@ -710,3 +710,6 @@ Tracked deviations from the original plan adopted during implementation. Each en
 - **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
 - **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.
 - **Phase 0 schema deliverable split** (Phase 0 implementation correction). The canonical reference lives at `src/store/schema.sql`; the first applied migration lives at `src/store/migrations/001_initial.sql`. Acceptance criteria require `sqlite3 :memory: < src/store/schema.sql` and `sqlite3 :memory: < src/store/migrations/001_initial.sql` to both exit 0.
+- **Amendment #6**: `sessions/types.ts` → `sessions/entry.ts` (Phase 2). Same intent-revealing rule as `coordinator/discovery.ts` — generic `types.ts` at a domain root is banned by invariant #31.
+- **Amendment #7**: `discuss/schemas.ts` → `discuss/command-schemas.ts` (Phase 2). Same rule as Amendment #6: generic `schemas.ts` at a domain root is banned by invariant #31.
+- **Amendment #8**: `src/jobs/records.ts` `Job*Record` family is the canonical domain read-model surface (Phase 2 AC7 replacement for banned `Persisted*Record`). `src/store/queries/jobs.ts` `Job*Row` family is the internal SQLite projection-row shape. Record = domain-facing; Row = store-internal. Do not conflate.

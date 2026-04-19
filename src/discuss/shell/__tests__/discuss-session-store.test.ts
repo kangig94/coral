@@ -29,6 +29,7 @@ import { replayDiscussEvents } from '../../reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../state-machine.js';
 import type { DiscussCreateInput, Result } from '../../session-types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '../../shell/session-store.js';
+import { CoralSetupError } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 
 const SESSION_ID = 'session-1';
@@ -41,10 +42,16 @@ let source = '';
 const originalHome = process.env.HOME;
 const activeStores: DiscussSessionStore[] = [];
 
-function createStore(src: string): DiscussSessionStore {
+function createStore(
+  src: string,
+  storageOverrides: Partial<ReturnType<typeof createRealRuntime>['storage']> = {},
+): DiscussSessionStore {
   const runtime = createRealRuntime();
   const store = new DiscussSessionStore(src, {
-    storage: runtime.storage,
+    storage: {
+      ...runtime.storage,
+      ...storageOverrides,
+    },
     time: runtime.time,
     paths: runtime.paths,
   });
@@ -319,6 +326,50 @@ describe('DiscussSessionStore', () => {
     await expect(store.append(SESSION_ID, 1, bidEvents)).rejects.toMatchObject({
       expectedSeq: 1,
       actualSeq: created.lastAppliedSeq,
+    });
+  });
+
+  it('throws CoralSetupError when durable event-log append fails', async () => {
+    const store = createStore(source, {
+      appendFileDurableSync: () => false,
+    });
+
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+
+    const append = store.append(SESSION_ID, 0, createEvents);
+
+    await expect(append).rejects.toBeInstanceOf(CoralSetupError);
+    await expect(append).rejects.toMatchObject({
+      code: 'durable_write_failed',
+    });
+  });
+
+  it('throws CoralSetupError when durable JSON state writes fail', async () => {
+    const store = createStore(source, {
+      writeAtomicDurableSync: () => false,
+    });
+
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+
+    const append = store.append(SESSION_ID, 0, createEvents);
+
+    await expect(append).rejects.toBeInstanceOf(CoralSetupError);
+    await expect(append).rejects.toMatchObject({
+      code: 'durable_write_failed',
     });
   });
 

@@ -21,10 +21,8 @@ import {
   InvalidAgentRefError,
   isAppServerRuntime,
   isTerminalPhase,
-  materializeLegacyTerminalOutcome,
   parseAgentMeta,
   parseAgentRef,
-  planLegacyTerminalOutcome,
   resolveAgent,
   stripAgentMetadata,
   type AgentResolutionContext,
@@ -43,6 +41,7 @@ import {
   type TerminalOutcome,
   writeWorkflowResult,
 } from '../jobs/api.js';
+import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../jobs/shell/legacy-ingest.js';
 import type { ProviderInstruction, ProviderRequest, ProviderTurnResult } from '../providers/protocol.js';
 import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
 import type { SessionEntry } from '../sessions/api.js';

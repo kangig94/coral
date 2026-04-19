@@ -11,14 +11,12 @@ import {
 import { type TerminalOutcome, terminalOutcomeSchema } from './outcome.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
 
-export function readBackendNamespace(status: JobStatusRecord): string | null {
-  return typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
-    ? status.backendNamespace
-    : null;
-}
-
 export function belongsToNamespace(status: JobStatusRecord, namespace: string): boolean {
-  return readBackendNamespace(status) === namespace;
+  return (
+    typeof status.backendNamespace === 'string'
+    && status.backendNamespace.length > 0
+    && status.backendNamespace === namespace
+  );
 }
 
 export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';

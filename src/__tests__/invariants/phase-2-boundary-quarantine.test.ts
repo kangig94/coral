@@ -8,7 +8,16 @@ import { listProductionSourceFiles, toCanonicalSrcPath } from '../__helpers__/ts
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const LEGACY_IDENTIFIER_RE = /^Legacy[A-Za-z0-9_]*$/;
+const LEGACY_HELPERS = new Set([
+  'describeLegacyCoralFault',
+  'materializeLegacyTerminalOutcome',
+  'planLegacyTerminalOutcome',
+  'RecoveryFaultCompat',
+]);
 const ALLOWLIST = [
+  /^src\/coordinator\/api\.ts$/,
+  /^src\/jobs\/reconcile\//,
+  /^src\/jobs\/shell\/launch\.ts$/,
   /^src\/providers\//,
   /^src\/runtime\//,
   /^src\/jobs\/shell\/legacy-ingest\.ts$/,
@@ -23,7 +32,10 @@ function scanForbiddenBoundaryIdentifiers(filePath: string): string[] {
   const matches = new Set<string>();
 
   function visit(node: ts.Node): void {
-    if (ts.isIdentifier(node) && (LEGACY_IDENTIFIER_RE.test(node.text) || node.text === 'KbSubsystem')) {
+    if (
+      ts.isIdentifier(node)
+      && (LEGACY_IDENTIFIER_RE.test(node.text) || LEGACY_HELPERS.has(node.text) || node.text === 'KbSubsystem')
+    ) {
       matches.add(node.text);
     }
     ts.forEachChild(node, visit);

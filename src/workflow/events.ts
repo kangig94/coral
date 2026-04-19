@@ -61,18 +61,6 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
   ).run(event.stream.id, JSON.stringify(nextPlan), event.seq);
 }
 
-function reducerForPlan(): Reducer<WorkflowPlan> {
-  return (db, event) => {
-    upsertProjectionWorkflow(db, event, workflowPlanSchema.parse(event.body));
-  };
-}
-
-function reducerForStateOnly(): Reducer<WorkflowCompletedBody | WorkflowDrainEnteredBody> {
-  return (db, event) => {
-    upsertProjectionWorkflow(db, event);
-  };
-}
-
 export const workflowRegistry: DomainEventRegistry = {
   types: [
     'workflow.plan.declared',
@@ -81,10 +69,18 @@ export const workflowRegistry: DomainEventRegistry = {
     'workflow.completed',
   ],
   reducers: {
-    'workflow.plan.declared': reducerForPlan() as Reducer<unknown>,
-    'workflow.plan.revised': reducerForPlan() as Reducer<unknown>,
-    'workflow.drain.entered': reducerForStateOnly() as Reducer<unknown>,
-    'workflow.completed': reducerForStateOnly() as Reducer<unknown>,
+    'workflow.plan.declared': ((db, event) => {
+      upsertProjectionWorkflow(db, event, workflowPlanSchema.parse(event.body));
+    }) as Reducer<unknown>,
+    'workflow.plan.revised': ((db, event) => {
+      upsertProjectionWorkflow(db, event, workflowPlanSchema.parse(event.body));
+    }) as Reducer<unknown>,
+    'workflow.drain.entered': ((db, event) => {
+      upsertProjectionWorkflow(db, event);
+    }) as Reducer<unknown>,
+    'workflow.completed': ((db, event) => {
+      upsertProjectionWorkflow(db, event);
+    }) as Reducer<unknown>,
   },
   schemas: {
     'workflow.plan.declared': workflowPlanSchema,

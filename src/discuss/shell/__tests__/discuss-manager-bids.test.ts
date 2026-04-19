@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { collectBids } from '../../shell/subflows.js';
+import { collectBids } from '../../shell/bid-flow.js';
 import { startDiscussSession, submitManualBid } from '../../shell/operations.js';
 import {
   DEFAULT_TOPIC,

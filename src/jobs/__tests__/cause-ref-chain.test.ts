@@ -166,4 +166,43 @@ describe('describeCauseRef (AC8)', () => {
       db.close();
     }
   });
+
+  it('renders the missing marker when a non-root causeRef link cannot be loaded', () => {
+    const { db, store } = createStore();
+    try {
+      insertEvent(db, {
+        seq: 1,
+        type: 'workflow.completed',
+        stream: { kind: 'workflow', id: 'workflow-root' },
+        body: { outcome: 'failed' },
+      });
+      insertEvent(db, {
+        seq: 3,
+        type: 'job.terminal.recorded',
+        stream: { kind: 'job', id: 'job-missing-link' },
+        body: {
+          outcome: {
+            kind: 'failed',
+            causeRef: {
+              stream: { kind: 'session', id: 'session-missing-link' },
+              seq: 2,
+            },
+          },
+          durationMs: 10,
+        },
+      });
+
+      const description = describeCauseRef(
+        {
+          stream: { kind: 'job', id: 'job-missing-link' },
+          seq: 3,
+        },
+        store,
+      );
+
+      expect(description).toContain('<missing session/session-missing-link/2>');
+    } finally {
+      db.close();
+    }
+  });
 });

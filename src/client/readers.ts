@@ -26,8 +26,8 @@ import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 
-export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../shared/session-entry.js';
-export type { LenientSessionEntry, ProvenanceState } from '../shared/session-entry.js';
+export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '../sessions/shell/session-read.js';
+export type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
 export type {
   DiscussDiscoveryData,
   DiscussDiscoverySession,

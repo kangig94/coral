@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
 import * as discussLoop from '../../shell/loop.js';
-import * as discussSubflows from '../../shell/subflows.js';
+import * as discussSpeechFlow from '../../shell/speech-flow.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
@@ -308,7 +308,7 @@ describe('Discuss executor and operations', () => {
 
   it('recovered observer_wait sessions restart the full bid delay from startup time', async () => {
     const harness = createDiscussHarness();
-    vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
+    vi.spyOn(discussSpeechFlow, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
       sessionId: 'discuss-observer-wait',
       recover: false,
@@ -350,7 +350,7 @@ describe('Discuss executor and operations', () => {
 
   it('recovered bidding sessions with no pending auto work still resume into round-close', async () => {
     const harness = createDiscussHarness();
-    vi.spyOn(discussSubflows, 'collectSpeech').mockResolvedValue({ shouldResume: false });
+    vi.spyOn(discussSpeechFlow, 'collectSpeech').mockResolvedValue({ shouldResume: false });
     await persistSession(harness, {
       sessionId: 'discuss-round-close',
       recover: false,

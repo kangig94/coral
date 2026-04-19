@@ -36,13 +36,20 @@ export function composeReducers(...registries: DomainEventRegistry[]): ComposedR
         });
       }
 
+      if (!registry.schemas[type]) {
+        throw new CoralSetupError({
+          code: 'schema_missing_for_event_type',
+          userMessage: `Schema for type '${type}' is missing`,
+          remediation: 'Each event type declared in registry.types must register a matching schema before startup.',
+          context: { type },
+        });
+      }
+
       if (registry.reducers[type]) {
         reducers.set(type, registry.reducers[type]);
       }
 
-      if (registry.schemas[type]) {
-        schemas.set(type, registry.schemas[type]);
-      }
+      schemas.set(type, registry.schemas[type]);
 
       types.push(type);
     }

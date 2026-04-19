@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { CoralEventInput } from '../store/envelope.js';
-import type { DomainEventRegistry as StoreDomainEventRegistry } from '../store/reducers.js';
+import type { Reducer } from '../store/reducers.js';
 import { reduceDiscussProjection } from './projections.js';
 import {
   discussEventKinds,
@@ -14,6 +14,12 @@ export type DiscussJournalBody<K extends DiscussEventKind = DiscussEventKind> =
   DiscussEventEnvelope<K, unknown>['payload'] & {
     legacySeq: number;
   };
+
+type StoreRegistry = {
+  readonly types: readonly string[];
+  readonly reducers: Record<string, Reducer<unknown>>;
+  readonly schemas: Record<string, z.ZodType>;
+};
 
 const discussJournalBodySchema = z
   .object({
@@ -58,10 +64,8 @@ export function toJournalInput(
 
 const types = discussEventKinds.map((kind) => eventType(kind)) as readonly string[];
 
-export const DomainEventRegistry: StoreDomainEventRegistry = {
+export const discussRegistry: StoreRegistry = {
   types,
-  reducers: Object.fromEntries(types.map((type) => [type, reduceDiscussProjection])) as StoreDomainEventRegistry['reducers'],
-  schemas: Object.fromEntries(types.map((type) => [type, discussJournalBodySchema])) as StoreDomainEventRegistry['schemas'],
+  reducers: Object.fromEntries(types.map((type) => [type, reduceDiscussProjection])) as StoreRegistry['reducers'],
+  schemas: Object.fromEntries(types.map((type) => [type, discussJournalBodySchema])) as StoreRegistry['schemas'],
 };
-
-export const discussRegistry = DomainEventRegistry;

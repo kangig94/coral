@@ -20,6 +20,11 @@ import type { IdleTimer } from '../live/idle.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
+import { composeReducers } from '../../store/reducers.js';
+import { jobsRegistry } from '../../jobs/events.js';
+import { sessionsRegistry } from '../../sessions/events.js';
+import { discussRegistry as discussStoreRegistry } from '../../discuss/store-registry.js';
+import { workflowRegistry } from '../../workflow/events.js';
 
 export interface BackendWorld {
   readonly identity: BackendIdentity;
@@ -81,7 +86,16 @@ export function createBackendWorld(
     homeDir: runtime.env.get('HOME') ?? runtime.env.get('USERPROFILE') ?? undefined,
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
-  const progressStore = options.progressStore ?? new ProgressStore(namespace, runtime, eventBus);
+  const progressStore =
+    options.progressStore ??
+    new ProgressStore(
+      namespace,
+      runtime,
+      eventBus,
+      undefined,
+      undefined,
+      composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    );
   const providerHostManager =
     options.providerHostManager ??
     createProviderHostManager({

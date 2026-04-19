@@ -1,6 +1,5 @@
 export {
   jobsRegistry,
-  projectionPhaseForTerminal,
   type JobAbortedBody,
   type JobProgressBody,
   type JobQueueAdmittedBody,
@@ -8,3 +7,4 @@ export {
   type JobRuntimeStartedBody,
   type JobTerminalRecordedBody,
 } from './events.js';
+export { phaseForOutcome } from './outcome.js';

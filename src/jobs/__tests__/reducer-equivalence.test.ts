@@ -141,4 +141,165 @@ describe('jobs reducer equivalence (AC1)', () => {
       db.close();
     }
   });
+
+  it('job.launch.rejected byte-identical after rebuild', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      const reducers = composeReducers(jobsRegistry);
+      const upcasters = createEmptyRegistry();
+
+      const appended = appendEvents(
+        db,
+        [
+          {
+            type: 'job.launch.requested',
+            stream: { kind: 'job', id: 'job-rejected' },
+            refs: { sessionId: 'session-rejected' },
+            bodyVersion: 1,
+            body: {
+              sessionId: 'session-rejected',
+              provider: 'codex',
+              providerAction: 'exec',
+              projectRoot: '/workspace/coral',
+              backendNamespace: 'namespace-1',
+              pool: 'default',
+              enqueueSequence: 1,
+              request: {
+                prompt: 'hello',
+                cwd: '/workspace/coral',
+                bypassPermissions: false,
+                coralEnv: {},
+              },
+              createdAt: NOW.toISOString(),
+            },
+          },
+          {
+            type: 'job.launch.rejected',
+            stream: { kind: 'job', id: 'job-rejected' },
+            refs: { sessionId: 'session-rejected' },
+            bodyVersion: 1,
+            body: {
+              reason: 'busy',
+              message: 'Provider queue is full.',
+              provider: 'codex',
+              globalActive: 7,
+              globalLimit: 10,
+            },
+          },
+        ],
+        { now: () => NOW, reducers, upcasters },
+      );
+
+      const before = db.prepare(
+        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+           FROM projection_jobs
+          WHERE job_id = ?
+          LIMIT 1`,
+      ).get('job-rejected') as { phase: string } | undefined;
+
+      expect(before?.phase).toBe('error');
+
+      rebuildProjections({
+        db,
+        cutoffSeq: appended.at(-1)?.seq ?? 0,
+        reducers,
+        upcasters,
+      });
+
+      const after = db.prepare(
+        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+           FROM projection_jobs
+          WHERE job_id = ?
+          LIMIT 1`,
+      ).get('job-rejected');
+
+      expect(after).toStrictEqual(before);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('job.aborted byte-identical after rebuild', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
+      const reducers = composeReducers(jobsRegistry);
+      const upcasters = createEmptyRegistry();
+
+      const appended = appendEvents(
+        db,
+        [
+          {
+            type: 'job.launch.requested',
+            stream: { kind: 'job', id: 'job-aborted' },
+            refs: { sessionId: 'session-aborted' },
+            bodyVersion: 1,
+            body: {
+              sessionId: 'session-aborted',
+              provider: 'codex',
+              providerAction: 'exec',
+              projectRoot: '/workspace/coral',
+              backendNamespace: 'namespace-1',
+              pool: 'default',
+              enqueueSequence: 2,
+              request: {
+                prompt: 'hello',
+                cwd: '/workspace/coral',
+                bypassPermissions: false,
+                coralEnv: {},
+              },
+              createdAt: NOW.toISOString(),
+            },
+          },
+          {
+            type: 'job.runtime.started',
+            stream: { kind: 'job', id: 'job-aborted' },
+            refs: { sessionId: 'session-aborted' },
+            bodyVersion: 1,
+            body: {
+              transport: 'durable-cli',
+              pid: 4242,
+              startedAt: NOW.toISOString(),
+            },
+          },
+          {
+            type: 'job.aborted',
+            stream: { kind: 'job', id: 'job-aborted' },
+            refs: { sessionId: 'session-aborted' },
+            bodyVersion: 1,
+            body: { reason: 'user_abort' },
+          },
+        ],
+        { now: () => NOW, reducers, upcasters },
+      );
+
+      const before = db.prepare(
+        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+           FROM projection_jobs
+          WHERE job_id = ?
+          LIMIT 1`,
+      ).get('job-aborted') as { phase: string } | undefined;
+
+      expect(before?.phase).toBe('aborted');
+
+      rebuildProjections({
+        db,
+        cutoffSeq: appended.at(-1)?.seq ?? 0,
+        reducers,
+        upcasters,
+      });
+
+      const after = db.prepare(
+        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+           FROM projection_jobs
+          WHERE job_id = ?
+          LIMIT 1`,
+      ).get('job-aborted');
+
+      expect(after).toStrictEqual(before);
+    } finally {
+      db.close();
+    }
+  });
 });

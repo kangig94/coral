@@ -7,19 +7,15 @@ import { openStoreDatabase } from '../store/db.js';
 import { createEmptyRegistry } from '../store/envelope.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
-import { composeReducers } from '../store/reducers.js';
+import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { JobExitRecord } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { nowIsoString } from '../shared/utils.js';
-import { discussRegistry } from '../discuss/store-registry.js';
-import { sessionsRegistry } from '../sessions/events.js';
-import { workflowRegistry } from '../workflow/events.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
-import { readBackendNamespace } from './records.js';
 import type {
   JobKind,
   JobLaunchRecord,
@@ -96,6 +92,7 @@ export class JobStore {
     eventBus: TypedEventBus = new TypedEventBus(),
     db?: Database,
     appendEvents?: AppendEventsFn,
+    reducers: ComposedReducers = composeReducers(jobsRegistry),
   ) {
     this.eventBus = eventBus;
     this.db = db ?? openStoreDatabase({
@@ -108,7 +105,7 @@ export class JobStore {
       ((inputs) => {
         appendJournalEvents(this.db, inputs, {
           now: () => new Date(this.runtime.time.now()),
-          reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+          reducers,
           upcasters: createEmptyRegistry(),
         });
       });
@@ -556,7 +553,12 @@ export class JobStore {
 
   liveJobCountByNamespace(namespace: string): number {
     return this.listJobProjections().filter(({ status }) => {
-      return isLivePhase(status.phase) && readBackendNamespace(status) === namespace;
+      return (
+        isLivePhase(status.phase)
+        && typeof status.backendNamespace === 'string'
+        && status.backendNamespace.length > 0
+        && status.backendNamespace === namespace
+      );
     }).length;
   }
 

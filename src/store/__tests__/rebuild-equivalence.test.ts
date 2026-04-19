@@ -9,7 +9,7 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import { appendEvents } from '../append.js';
 import { createEmptyRegistry } from '../envelope.js';
 import { applyMigrations } from '../migrations.js';
-import { composeReducers } from '../reducers.js';
+import { composeReducers, type DomainEventRegistry, type Reducer } from '../reducers.js';
 import { rebuildProjections } from '../rebuild.js';
 import { applyTestCounterMigration, testCounterRegistry } from './fixtures/test-counter-registry.js';
 
@@ -82,6 +82,26 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('throws CoralSetupError(schema_missing_for_event_type) when registry.types lacks a matching schema', () => {
+    const missingSchemaRegistry: DomainEventRegistry = {
+      types: ['test.counter.ticked'],
+      reducers: {
+        'test.counter.ticked': (() => {}) as Reducer<unknown>,
+      },
+      schemas: {} as Record<string, never>,
+    };
+
+    let thrown: unknown;
+    try {
+      composeReducers(missingSchemaRegistry);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CoralSetupError);
+    expect((thrown as CoralSetupError).code).toBe('schema_missing_for_event_type');
   });
 
   it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {

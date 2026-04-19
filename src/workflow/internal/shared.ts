@@ -1,3 +1,5 @@
+// Invariant #31 bans generic filenames at domain roots. `internal/shared.ts` is
+// permitted because the enclosing `internal/` scope already supplies workflow ownership.
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { LaunchState } from '../../jobs/records.js';

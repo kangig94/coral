@@ -11,6 +11,7 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (3
   - `src/jobs/__tests__/reducer-equivalence.test.ts`
   - `src/jobs/__tests__/outcome-contract-purity.test.ts`
   - `src/jobs/__tests__/cause-ref-chain.test.ts`
+  - `CircularCauseRefDiagnostic` persistence remains caller-owned: the renderer returns structured `result.cycle` metadata and does not append an event itself.
 
 ## Sessions slice (commit `02301ae2` — `phase-2/sessions`)
 

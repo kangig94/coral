@@ -14,7 +14,6 @@ import {
   terminalOutcomeSchema,
   type JobLaunchRejected,
   type JobProgressFault,
-  type TerminalOutcome,
 } from './outcome.js';
 import { usageSummarySchema } from '../providers/protocol.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
@@ -276,11 +275,3 @@ export const jobsRegistry: DomainEventRegistry = {
     'job.aborted': jobAbortedBodySchema,
   },
 };
-
-export function projectionPhaseForTerminal(outcome: TerminalOutcome): JobPhase {
-  return phaseForOutcome(outcome);
-}
-
-export function isJobProgressFault(body: JobProgressBody): body is JobProgressFault {
-  return body.kind !== 'message';
-}

@@ -1,6 +1,5 @@
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
-import { readBackendNamespace } from '../records.js';
 import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
 import type { JobExitRecord } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
@@ -30,7 +29,11 @@ export function buildRecoverySnapshot(
 
   for (const jobId of jobIds) {
     let status = progressStore.readStatus(jobId);
-    if (status && isLivePhase(status.phase) && readBackendNamespace(status) === null) {
+    if (
+      status
+      && isLivePhase(status.phase)
+      && (typeof status.backendNamespace !== 'string' || status.backendNamespace.length === 0)
+    ) {
       status = withBackendNamespace(status, namespace);
       progressStore.writeStatus(jobId, status);
     }
