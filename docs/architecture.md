@@ -128,7 +128,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
 | Client | Backend startup, HTTP requests, wait/admin helpers. |
-| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, provider-host coordination, and cross-domain assembly. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, provider-host coordination, and cross-domain assembly. `src/coordinator/api.ts` plus `src/coordinator/composition/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | HTTP + SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
@@ -150,14 +150,13 @@ CLI layer
 
 Transport HTTP surface
   -> Coordinator API + control ports
-  -> Domain facades (workflow / discuss / KB / jobs / sessions)
+  -> Domain facades/contracts (workflow / discuss / KB / jobs / sessions)
 
-Coordinator API
-  -> Jobs domain facade
-  -> Sessions domain facade
-  -> Provider adapters
-  -> Live launch / host management
-  -> Provider host manager
+Coordinator glue (`api.ts` + `bootstrap.ts` + `composition/**`)
+  -> Jobs shells / queries / recovery
+  -> Sessions shell / continuity lookup
+  -> Workflow / discuss / KB facades
+  -> Provider adapters + live host management
 
 Coordinator startup
   -> Open Journal
@@ -185,11 +184,13 @@ Shared / compat layer
 
 | Path | Purpose |
 | --- | --- |
-| `~/.claude/coral/backend.json` | Active backend connection info |
-| `~/.claude/coral/backend.lock` | Singleton backend lock |
-| `~/.claude/coral/sessions/<project-hash>/*.json` | Persisted provider sessions |
-| `<os-tmpdir>/coral-jobs/<jobId>/` | Job status, progress log, result artifact |
+| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record |
+| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
+| `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db` | Journal authority and projection tables |
+| `~/.claude/coral/execution/sessions/<working-dir-hash>/*.json` | Persisted provider sessions / continuation profiles |
+| `<os-tmpdir>/coral-jobs/<jobId>/` | Job runtime scratch dir; `result.md` remains the durable wait/follow artifact |
 | `~/.coral/projects/<source-slug>/discuss/` | Discuss event log, snapshots, indexes |
+| `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/.env` | User-local embedding configuration |
 | `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` | KB text/vector state and imported sources |
 

@@ -90,6 +90,7 @@ describe('coordinator cold-start integration', () => {
     }
 
     await waitForCondition(() => isProcessAlive(discovery.pid), 1_000);
+    expect(isProcessAlive(discovery.pid)).toBe(true);
     expect(discovery.bundleHash).toBe(fixture.bundleHash);
     expect(discovery.flavor).toBe('prod');
     expect(discovery.port).toBeGreaterThan(0);

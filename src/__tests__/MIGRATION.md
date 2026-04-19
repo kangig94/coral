@@ -130,13 +130,13 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - `src/execution/job-lifecycle-contracts.ts` → **MOVED** to `src/jobs/shell/contracts.ts`.
 - `src/execution/job-lifecycle.ts` → **DELETED**; importers now target `src/jobs/shell/{launch,wait}.ts` directly.
 - `src/execution/lifecycle.ts` → **DELETED**; lifecycle/control imports now target `src/coordinator/control.ts`.
-- `src/execution/progress-store.ts` → **MOVED** to `src/store/progress-store.ts`.
+- `src/execution/progress-store.ts` → **MOVED** to `src/jobs/job-store.ts` (the interim store-layer stopover has since been retired).
 - `src/execution/recovery-registry.ts` → **MOVED** to `src/coordinator/composition/recovery-registry.ts`.
 - `src/execution/server.ts` → **DELETED**; callers now use `src/coordinator/coordinator.ts` plus `src/coordinator/bootstrap.ts`.
 - `src/execution/server-types.ts` → **DELETED**; lifecycle/server types now come from `src/coordinator/{control,coordinator}.ts`.
 - `src/execution/service.ts` → **DELETED**; callers now use `src/coordinator/api.ts`.
 - `src/execution/session-manager.ts` → **DELETED**; callers now use `src/sessions/shell/{store,resolve}.ts`.
-- `src/execution/smoke-open-store.ts` → **MOVED** to `src/coordinator/smoke-open-store.ts`.
+- `src/execution/smoke-open-store.ts` → **ABSORBED** into `src/coordinator/bootstrap.ts` under the `--smoke-open-store` entrypoint.
 - `src/execution/composition/backend-control.ts` → **MOVED** to `src/coordinator/composition/backend-control.ts`.
 - `src/execution/composition/backend-defaults.ts` → **MOVED** to `src/coordinator/composition/backend-defaults.ts`.
 - `src/execution/composition/backend-world.ts` → **MOVED** to `src/coordinator/composition/backend-world.ts`.

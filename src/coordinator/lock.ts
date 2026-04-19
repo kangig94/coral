@@ -59,6 +59,7 @@ type CompatBackendLockPaths = {
 type CompatBackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'paths' | 'time'> & {
   verifyOwnership: VerifyBackendOwnershipFn;
 };
+type LockFileStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
 
 function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
   if (typeof time.setTimeout !== 'function') {
@@ -121,12 +122,12 @@ function snapshotKey(snapshot: LockSnapshot): string {
   ].join(':');
 }
 
-function readLockSnapshot(
-  flavor: BuildFlavor,
-  storage: Pick<RuntimeStoragePort, 'readFileSync'>,
+function readLockSnapshotAt(
+  lockPath: string,
+  storage: Pick<LockFileStorage, 'readFileSync'>,
 ): LockSnapshot | null {
   try {
-    const raw = storage.readFileSync(lockFilePath(flavor), 'utf-8');
+    const raw = storage.readFileSync(lockPath, 'utf-8');
     return { raw, record: parseLockRecord(raw) };
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
@@ -136,23 +137,37 @@ function readLockSnapshot(
   }
 }
 
-function writeLockFile(
+function readLockSnapshot(
   flavor: BuildFlavor,
+  storage: Pick<RuntimeStoragePort, 'readFileSync'>,
+): LockSnapshot | null {
+  return readLockSnapshotAt(lockFilePath(flavor), storage);
+}
+
+function writeLockFileAt(
+  lockPath: string,
   record: LockRecord,
-  storage: Pick<RuntimeStoragePort, 'tryExclusiveWriteSync'>,
+  storage: Pick<LockFileStorage, 'tryExclusiveWriteSync'>,
 ): boolean {
-  return storage.tryExclusiveWriteSync(lockFilePath(flavor), JSON.stringify(record), {
+  return storage.tryExclusiveWriteSync(lockPath, JSON.stringify(record), {
     encoding: 'utf-8',
     mode: 0o600,
   });
 }
 
-function removeLockIfSnapshotMatches(
+function writeLockFile(
   flavor: BuildFlavor,
-  snapshot: LockSnapshot,
-  storage: Pick<RuntimeStoragePort, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  record: LockRecord,
+  storage: Pick<RuntimeStoragePort, 'tryExclusiveWriteSync'>,
 ): boolean {
-  const lockPath = lockFilePath(flavor);
+  return writeLockFileAt(lockFilePath(flavor), record, storage);
+}
+
+function removeLockIfSnapshotMatchesAt(
+  lockPath: string,
+  snapshot: LockSnapshot,
+  storage: Pick<LockFileStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+): boolean {
   const stagePath = `${lockPath}.removing`;
 
   try {
@@ -190,25 +205,20 @@ function removeLockIfSnapshotMatches(
   }
 }
 
-type CompatLockSnapshot = {
-  raw: string;
-  record: LockRecord | null;
-};
+function removeLockIfSnapshotMatches(
+  flavor: BuildFlavor,
+  snapshot: LockSnapshot,
+  storage: Pick<RuntimeStoragePort, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+): boolean {
+  return removeLockIfSnapshotMatchesAt(lockFilePath(flavor), snapshot, storage);
+}
 
 function readCompatLockSnapshot(
   pluginRoot: string,
   storage: Pick<CompatBackendLockStorage, 'readFileSync'>,
   paths: CompatBackendLockPaths,
-): CompatLockSnapshot | null {
-  try {
-    const raw = storage.readFileSync(paths.backendLockPath(pluginRoot), 'utf-8');
-    return { raw, record: parseLockRecord(raw) };
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return null;
-    }
-    throw error;
-  }
+): LockSnapshot | null {
+  return readLockSnapshotAt(paths.backendLockPath(pluginRoot), storage);
 }
 
 function writeCompatLockFile(
@@ -217,54 +227,16 @@ function writeCompatLockFile(
   storage: Pick<CompatBackendLockStorage, 'tryExclusiveWriteSync'>,
   paths: CompatBackendLockPaths,
 ): boolean {
-  return storage.tryExclusiveWriteSync(paths.backendLockPath(pluginRoot), JSON.stringify(record), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+  return writeLockFileAt(paths.backendLockPath(pluginRoot), record, storage);
 }
 
 function removeCompatLockIfSnapshotMatches(
   pluginRoot: string,
-  snapshot: CompatLockSnapshot,
+  snapshot: LockSnapshot,
   storage: Pick<CompatBackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
   paths: CompatBackendLockPaths,
 ): boolean {
-  const lockPath = paths.backendLockPath(pluginRoot);
-  const stagePath = `${lockPath}.removing`;
-
-  try {
-    storage.renameSync(lockPath, stagePath);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return true;
-    }
-    throw error;
-  }
-
-  try {
-    const staged = storage.readFileSync(stagePath, 'utf-8');
-    if (staged !== snapshot.raw) {
-      try {
-        storage.renameSync(stagePath, lockPath);
-      } catch {
-        // Best-effort restore.
-      }
-      return false;
-    }
-
-    storage.unlinkSync(stagePath);
-    return true;
-  } catch (error: unknown) {
-    try {
-      storage.unlinkSync(stagePath);
-    } catch {
-      // Best-effort cleanup.
-    }
-    if (isNoEntryError(error)) {
-      return true;
-    }
-    throw error;
-  }
+  return removeLockIfSnapshotMatchesAt(paths.backendLockPath(pluginRoot), snapshot, storage);
 }
 
 async function acquireCompatLock(
@@ -307,18 +279,7 @@ async function acquireCompatLock(
       continue;
     }
 
-    const currentKey =
-      snapshot.record === null
-        ? `invalid:${snapshot.raw}`
-        : [
-            snapshot.record.instanceId,
-            snapshot.record.pid,
-            snapshot.record.version,
-            snapshot.record.bundleHash,
-            snapshot.record.flavor,
-            snapshot.record.startedAt,
-            snapshot.record.processStartedAt ?? 'na',
-          ].join(':');
+    const currentKey = snapshotKey(snapshot);
     if (currentKey !== observedKey) {
       observedKey = currentKey;
       observedAt = runtime.time.now();

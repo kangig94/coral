@@ -107,13 +107,13 @@ type ResumeIntent = LaunchIntentBase & { sessionId: string; provider?: string; a
 type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & { sessionId: string; provider?: string; prompt?: string };
 type CoralIntent = Omit<LaunchIntentBase, 'effort'> & { sessionId?: string; effort?: EffortLevel };
 
-export interface SessionRequestPort {
+export interface CoordinatorSessionOps {
   start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision>;
   resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision>;
   forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision>;
 }
 
-export interface JobsRequestPort {
+export interface CoordinatorJobOps {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }>;
@@ -121,7 +121,7 @@ export interface JobsRequestPort {
   list(providerName: string): ListResult;
 }
 
-export interface WorkflowRequestPort {
+export interface CoordinatorWorkflowOps {
   executeWorkflow(
     providerName: string,
     ast: PipelineAST,
@@ -131,20 +131,20 @@ export interface WorkflowRequestPort {
   ): Promise<LaunchDecision>;
 }
 
-export interface KbRequestPort {
+export interface CoordinatorKbOps {
   getSubsystem(): KnowledgeBaseRuntime | null;
 }
 
-export interface DiscussRequestPort {
+export interface CoordinatorDiscussOps {
   getContext(ctx: CallerContext): DiscussContext;
 }
 
-export interface AdminControlPort {
+export interface CoordinatorAdminOps {
   isDrainRequested(): boolean;
   requestDrain(reason: string): void;
 }
 
-export type ProjectRequestPort = SessionRequestPort & JobsRequestPort & WorkflowRequestPort;
+export type ProjectRequestPort = CoordinatorSessionOps & CoordinatorJobOps & CoordinatorWorkflowOps;
 export type ExecutionServiceLike = ProjectRequestPort;
 
 export type ScopeCheckResult = {
@@ -1494,7 +1494,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
-    // TODO(AC2-AC10): branch on runtime transport during startup recovery instead of assuming a durable PID.
+    // Startup recovery only re-adopts durable CLI runtimes here; app-server recovery uses the
+    // interrupted-runtime path above because it does not have a stable PID lease to restore.
     if (!isDurableCliRuntime(runtimeRecord)) {
       throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
     }

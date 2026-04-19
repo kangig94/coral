@@ -19,7 +19,7 @@
 | Journal substrate | L0 | SQLite-backed event log with append / rebuild / envelope / upcaster / projection-dispatch primitives. The read surface is publicly exported; write primitives stay internal. |
 | Runtime | L0 | A single Runtime world with six I/O subports (time / storage / paths / process / ids / env). The backend swaps the entire world once at composition; everything routes I/O through it. |
 | Simulation | L0 | Deterministic doubles used by tests — virtual time, sequential ids, in-memory storage. |
-| Coordinator | L0 | Process lifecycle, startup reconcile sequencing, Journal consumer driving, corpus notify publication, provider-host coordination, and cross-domain assembly. `src/execution/` no longer exists; coordinator owns the former backend composition residue. |
+| Coordinator | L0 | Process lifecycle, startup reconcile sequencing, Journal consumer driving, corpus notify publication, provider-host coordination, and cross-domain assembly. Coordinator glue modules (`src/coordinator/api.ts`, `src/coordinator/bootstrap.ts`, `src/coordinator/composition/**`) may assemble domain shells/contracts; non-glue coordinator files stay on coordinator/store/runtime/infra/api seams. `src/execution/` no longer exists. |
 | Transport | L0 | HTTP + SSE parsing, validation, and wire formatting. Transport depends on domain/coordinator contracts, not on domain shells. |
 | KB | L0 | Knowledge base search, indexing, and mutation. |
 | Shared / infra / client | L0 | Cross-cutting helpers, path resolution, and the public client barrel. Renamed compat bridges live in the shared layer with explicit retirement phases. |
@@ -41,4 +41,4 @@ The backend follows a **single Runtime world** pattern (FoundationDB-style): one
 
 Each **domain** follows a **Functional Core / Imperative Shell** pattern: the core is pure state transitions with zero I/O; the shell carries persistence, loop control, and external effects. Recovery pipelines follow the same pattern — a pure plan-producer feeds an imperative applier at the backend composition layer.
 
-Facade boundaries are explicit. Each domain exposes a single coordinator-facing surface — typically a commands / queries / reconcile trio — and the backend composition is the only caller allowed to cross the domain boundary. Renamed `Legacy*` compat types bridge the provider seam until the matching phase retires them.
+Facade boundaries are explicit. Each domain exposes a single coordinator-facing surface — typically a commands / queries / reconcile trio — and coordinator glue (`src/coordinator/api.ts` plus `src/coordinator/composition/**`) is the only caller allowed to cross the domain boundary. Renamed `Legacy*` compat types bridge the provider seam until the matching phase retires them.

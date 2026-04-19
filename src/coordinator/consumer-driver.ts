@@ -2,6 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import { CoralSetupError } from '../runtime/errors.js';
 import type { KbCorpusSnapshot } from '../kb/api.js';
+import { backendLog } from '../shared/backend-log.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number, timeoutMs: number) {
@@ -312,8 +313,7 @@ export class ConsumerDriver {
       this.resolveWaiters(state, upToSeq);
       return true;
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('ConsumerDriver apply failed', { consumerId: state.reg.id, err });
+      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
       return false;
     }
   }

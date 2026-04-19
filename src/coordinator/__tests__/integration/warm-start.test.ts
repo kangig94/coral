@@ -19,6 +19,7 @@ import {
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
+const EXPECTED_HANDOFF_MAX_MS = 30_000;
 
 afterEach(async () => {
   while (coordinators.length > 0) {
@@ -79,7 +80,8 @@ describe('coordinator warm-start integration', () => {
     const elapsedMs = Date.now() - handoffStartedAt;
     const firstExit = await waitForProcessExit(first, 10_000);
 
-    expect(elapsedMs).toBeLessThan(CONTENDER_BUDGET);
+    // CONTENDER_BUDGET is the lock-loop safety ceiling, not the expected steady-state handoff time.
+    expect(elapsedMs).toBeLessThan(EXPECTED_HANDOFF_MAX_MS);
     expect(replacement.bundleHash).toBe('bundle-b');
     expect(replacement.pid).not.toBe(initial.pid);
     expect(firstExit.code).toBe(0);

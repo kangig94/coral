@@ -1036,8 +1036,10 @@ With events in a database, joining child jobs onto a parent is a single indexed 
 ```
 src/
   coordinator/                       ← single-writer daemon; owns live state
+    bootstrap.ts                     — bundle entrypoint; argv parsing + `--smoke-open-store` bootstrap
     coordinator.ts                   — composition root (factory + world + state + lifecycle)
-    api.ts                           — public coordinator RPC surface
+    api.ts                           — request-scoped coordinator glue; explicit broad-import exemption for
+                                       domain shells/contracts used in launch/resume/fork/workflow assembly
     control.ts                       — control-plane commands (shutdown, drain)
     lock.ts                          — coordinator singleton lock. Implements warm-start handoff between
                                        plugin-install versions: STARTUP_DEADLINE (30s), CONTENDER_BUDGET (90s),
@@ -1051,6 +1053,11 @@ src/
     caller-context.ts                — per-request caller identity scope
     consumer-driver.ts               — projection consumer driver: push-triggered,
                                        single-in-flight drain, condition-var waitFreshUntil
+    composition/                     — coordinator assembly helpers split out of the former execution root
+      backend-control.ts, backend-core-types.ts, backend-defaults.ts,
+      backend-world.ts, create-backend-core.ts, execution-services.ts,
+      recovery-registry.ts, runtime-state.ts
+    corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver
     shutdown/
       mode.ts                        — graceful / drain / immediate
       network.ts                     — socket/HTTP teardown
@@ -1060,6 +1067,7 @@ src/
       provider-hosts/                — app-server host pool (lease, idle, drain, recovery; 16K file decomposed here)
         pool.ts, lease.ts, idle.ts, drain.ts, recovery.ts
       idle.ts                        — idle-daemon eviction policy
+      worker-limits.ts               — per-provider launch concurrency clamps
       curate-scheduler.ts            — periodic Corpus curation (discovery, community detection, repair retry).
                                        Coordinator-owned: curate is a background scheduler, not a Corpus domain leaf,
                                        because single-writer discipline requires it run inside the coordinator process.
@@ -1075,13 +1083,10 @@ src/
       001_initial.sql
     append.ts                        — transactional append primitive (single-writer gate)
     reducers.ts                      — per-domain event-to-projection reducers
+    projection-consumer.ts           — shared journal consumer registration factory
     index.ts                         — public barrel
     queries/
-      jobs.ts                        — JobView + child job queries
-      sessions.ts                    — SessionView queries
-      discuss.ts                     — DiscussView queries
-      kb.ts                          — KbIndex queries
-      workflows.ts                   — WorkflowView queries (plan + slot outcomes)
+      jobs.ts                        — JobView queries + progress/event lookup
       events.ts                      — raw event lookup by (stream, seq) for causeRef deref
 
   transport/                         ← carriage only; imports only contracts
@@ -1116,12 +1121,16 @@ src/
     time.ts                          — clock abstraction (real impl)
 
   jobs/                              ← domain: jobs events + projections + shell
+    api.ts                           — coordinator/transport-facing jobs facade
+    consumer.ts                      — Journal projection consumer registration for jobs
+    job-store.ts                     — journal query/read-through seam with draft fallback for recovery
     events.ts                        — jobs event body schemas
     outcome.ts                       — TerminalOutcome + JobLifecycleFault + CauseRef + describers
     phase.ts                         — JobPhase + phaseForOutcome
     launch.ts                        — LaunchDecision + launch body types
     result.ts                        — JobTerminal + JobDiagnostics
     wait.ts                          — WaitCursor + wait body types
+    records.ts                       — job record DTOs shared across readers and shells
     projections.ts                   — JobView reducer (SQL reducers for projection_jobs)
     exports/
       result-markdown.ts             — materialize result.md from terminal events
@@ -1132,7 +1141,6 @@ src/
       actions.ts                     — reconciliation actions (append recovery events)
       coordinator.ts                 — orchestrate reconciliation phases
       cross-namespace-adoption.ts    — cross-ns orphan adoption
-      claim-protocol.ts              — adoption claim handshake
       ownership-checker.ts           — ownership verification
       job-helpers.ts                 — shared helpers
       errors.ts                      — reconciliation-local error types
@@ -1142,6 +1150,8 @@ src/
       instruction.ts                 — instruction parsing
       launch.ts                      — launch job helper
       abort.ts                       — abort job helper
+      event-subscription.ts          — journal-backed wait/reconnect event streaming
+      result-artifact.ts             — atomic durable `result.md` writes
       wait.ts                        — wait stream helper
 
   sessions/                          ← domain: session events + projections
@@ -1898,3 +1908,5 @@ Tracked deviations from the original design adopted during implementation. Each 
 
 - **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). The original §10 topology named this module `info.ts` with the comment "coordinator discovery record I/O". Phase 3 implementation renamed it to `discovery.ts` so the filename matches the responsibility, satisfying invariant #31 (no generic filenames at any domain root) and the §10.3 type-ownership / intent-revealing principle. Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over the implementation-plan's `types.ts`. Responsibility is unchanged: read/write `~/.coral/run{,-dev}/coordinator.json` plus the process-identity probe.
 - **`coordinator/bootstrap.ts` introduced as the main-process entry sibling of `coordinator.ts`** (Phase 3). The original §10 topology folded main-process startup, argv parsing, and `--smoke-open-store` into `coordinator.ts`. Phase 3 split these into a separate `bootstrap.ts` so `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh`.
+- **`coordinator/smoke-open-store.ts` absorbed into `coordinator/bootstrap.ts`** (Phase 3 follow-up review fixes). The original Phase 3 implementation kept the smoke path in a separate helper file. The follow-up collapsed it into `bootstrap.ts` because the behavior is strictly entrypoint-local and does not belong in the durable coordinator module set.
+- **`coordinator/api.ts` is explicit coordinator glue** (Phase 3 follow-up review fixes). The original layering prose treated only `coordinator.ts`/`bootstrap.ts` as broad-import seams, but the implemented request-scoped orchestration in `api.ts` still legitimately composes jobs/session/workflow shells. Invariants and docs now state that explicitly instead of implying a narrower seam than the code actually has.

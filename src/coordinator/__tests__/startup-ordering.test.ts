@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '../../runtime/real.js';
 import { appendEvents } from '../../store/append.js';
@@ -14,15 +14,9 @@ import { jobsRegistry } from '../../jobs/events.js';
 import { createCoordinatorServer } from '../coordinator.js';
 
 const tempRoots: string[] = [];
-let previousHome: string | undefined;
 
 afterEach(() => {
-  if (previousHome === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = previousHome;
-  }
-  previousHome = undefined;
+  vi.unstubAllEnvs();
 
   for (const root of tempRoots.splice(0).reverse()) {
     rmSync(root, { recursive: true, force: true });
@@ -43,8 +37,7 @@ describe('coordinator startup ordering', () => {
       'utf-8',
     );
 
-    previousHome = process.env.HOME;
-    process.env.HOME = home;
+    vi.stubEnv('HOME', home);
 
     const runtime = createRealRuntime();
     const namespace = runtime.paths.pluginRootNamespace(pluginRoot);

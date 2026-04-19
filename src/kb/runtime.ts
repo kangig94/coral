@@ -1277,6 +1277,8 @@ class KbRuntimeImpl implements KbRuntime {
         if (this.publishDrain === drain) {
           this.publishDrain = null;
         }
+        // A publish can enqueue another mutation while we are notifying consumers. Restart once after the
+        // current drain unwinds so the queue keeps forward progress without recursive in-drain reentry.
         const shouldRestart = this.publishQueue.length > 0 && this.publishDrainRequested;
         this.publishDrainRequested = false;
         if (shouldRestart) {

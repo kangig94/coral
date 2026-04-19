@@ -51,7 +51,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/shutdown/mode.ts',
   'src/coordinator/shutdown/network.ts',
   'src/coordinator/shutdown/sequence.ts',
-  'src/coordinator/smoke-open-store.ts',
 ]);
 
 const DOMAIN_API_TARGETS = new Set([
@@ -67,7 +66,7 @@ const CONTRACT_TARGETS = new Set([
   'src/simulation/recording.ts',
 ]);
 
-const BROAD_IMPORT_SOURCES = new Set([
+const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
@@ -88,7 +87,7 @@ function startsWithAny(value: string, prefixes: readonly string[]): boolean {
 }
 
 function isBroadImportSource(source: string): boolean {
-  return BROAD_IMPORT_SOURCES.has(source) || startsWithAny(source, BROAD_IMPORT_PREFIXES);
+  return COORDINATOR_GLUE_SOURCES.has(source) || startsWithAny(source, BROAD_IMPORT_PREFIXES);
 }
 
 describe('coordinator topology invariants', () => {
