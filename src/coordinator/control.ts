@@ -342,7 +342,7 @@ export type LifecycleDeps = {
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
-  readonly runStartupRecoveryFn?: RunStartupRecoveryFn;
+  readonly runStartupRecoveryFn: RunStartupRecoveryFn;
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
@@ -442,23 +442,22 @@ async function runLifecycleStartup({
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
-    const recoveredDiscussResumes =
-      (await runStartupRecoveryFn?.({
-        identity,
-        runtime,
-        progressStore,
-        providerRegistry,
-        getExecutionService: deps.getExecutionService,
-        getRecoveryService,
-        knownDiscussSources,
-        getDiscussStoreForSource,
-        getDiscussContext,
-        createCallerContext,
-        recoveryCoordinator,
-        assertStartupStillActive,
-        cleanupStaleJobs: cleanupStaleJobsFn,
-        recoverPersistedDiscussFn,
-      })) ?? [];
+    const recoveredDiscussResumes = await runStartupRecoveryFn({
+      identity,
+      runtime,
+      progressStore,
+      providerRegistry,
+      getExecutionService: deps.getExecutionService,
+      getRecoveryService,
+      knownDiscussSources,
+      getDiscussStoreForSource,
+      getDiscussContext,
+      createCallerContext,
+      recoveryCoordinator,
+      assertStartupStillActive,
+      cleanupStaleJobs: cleanupStaleJobsFn,
+      recoverPersistedDiscussFn,
+    });
 
     assertStartupStillActive();
     const startedAt = runtimeState.getStartedAt();

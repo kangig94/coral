@@ -1,8 +1,11 @@
 import BetterSqlite3 from 'better-sqlite3';
+import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { StoragePort } from '../runtime/ports.js';
-import { applyMigrations } from './migrations.js';
+import type { BuildFlavor } from '../runtime/flavor.js';
+import type { Runtime, StoragePort } from '../runtime/ports.js';
+import { applyMigrations, ensureStoreMigrationsDir } from './migrations.js';
+import { storePaths } from './paths.js';
 
 type ReadonlyStoreOptions = {
   readonly path: string;
@@ -47,6 +50,35 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
   }
 
   return db;
+}
+
+type OpenBackendStoreOptions = {
+  readonly path?: string;
+};
+
+export function openBackendStoreDb(
+  runtime: Pick<Runtime, 'paths' | 'storage'>,
+  flavor: BuildFlavor,
+  options: OpenBackendStoreOptions = {},
+): BetterSqlite3.Database {
+  let storeDbPath = options.path ?? storePaths(flavor).dbFile;
+  if (options.path === undefined) {
+    try {
+      storeDbPath = runtime.paths.coral.store.dbFile;
+    } catch {
+      // Some tests intentionally bypass flavor-settled bootstrap.
+    }
+  }
+
+  if (storeDbPath !== ':memory:') {
+    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
+  }
+
+  return openStoreDatabase({
+    path: storeDbPath === ':memory:' ? ':memory:' : existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
+    storage: runtime.storage,
+    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+  });
 }
 
 export type Database = BetterSqlite3.Database;

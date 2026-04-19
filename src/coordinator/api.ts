@@ -8,6 +8,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../providers/provider-contracts.js';
+import type { ServerResponse } from 'node:http';
 import { backendLog } from '../shared/backend-log.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import { getCallerContext, withCallerContext } from './caller-context.js';
@@ -82,8 +83,10 @@ import type { Runtime } from '../runtime/ports.js';
 import { noopAppendEvents, type AppendEventsFn } from '../store/append.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import type { JobProjectionDetail, JobProgressRow } from '../store/queries/jobs.js';
-import type { BackendIdentity, EventBusEvents, ReadonlyRuntimeState } from './control.js';
+import type { EventStreamHandlers, ScopeCheckResult } from '../transport/http/contracts.js';
+import type { BackendIdentity, ReadonlyRuntimeState } from './control.js';
 import type { IdleTimer } from './live/idle.js';
+export type { EventStreamHandlers, ScopeCheckResult } from '../transport/http/contracts.js';
 
 interface LaunchIntentBase {
   prompt: string;
@@ -144,26 +147,13 @@ export interface CoordinatorAdminOps {
 }
 
 export type ProjectRequestPort = CoordinatorSessionOps & CoordinatorJobOps & CoordinatorWorkflowOps;
-export type ExecutionServiceLike = ProjectRequestPort;
 
-export type ScopeCheckResult = {
-  valid: string[];
-  missing: string[];
-  mismatch: string[];
-};
-
+// API-local: session enumeration is used by coordinator services and is not part of transport/http/contracts.ts.
 export interface ListResult {
   sessions: SessionEntry[];
 }
 
-export interface EventStreamHandlers {
-  onJobCreated: (payload: EventBusEvents['job:created']) => void;
-  onPhaseChanged: (payload: EventBusEvents['job:phase_changed']) => void;
-  onProgress: (payload: EventBusEvents['job:progress']) => void;
-  onCompleted: (payload: EventBusEvents['job:completed']) => void;
-  onDiscussUpdated: (payload: EventBusEvents['discuss:updated']) => void;
-}
-
+// API-local: this coordinator wiring surface predates HttpHandlerPorts and remains scoped to coordinator composition.
 export interface HttpHandlerDeps {
   readonly identity: BackendIdentity;
   readonly runtime: Pick<Runtime, 'ids' | 'time' | 'storage'>;
@@ -1801,4 +1791,3 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     }
   }
 }
-import type { ServerResponse } from 'node:http';

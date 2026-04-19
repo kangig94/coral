@@ -24,8 +24,9 @@ import { createBackendCore } from '../../coordinator/composition/create-backend-
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/api.js';
-import { openStoreDatabase } from '../../store/db.js';
-import { ensureStoreMigrationsDir } from '../../store/migrations.js';
+import { jobsReconcile } from '../../jobs/api.js';
+import { openBackendStoreDb } from '../../store/db.js';
+import { workflowRecover } from '../../workflow/api.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -334,15 +335,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
+  const storeDb = openBackendStoreDb(runtime, 'dev', { path: ':memory:' });
   const progressStore = new ProgressStore(
     namespace,
     runtime,
     eventBus,
-    openStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
-    }),
+    storeDb,
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
@@ -444,6 +442,55 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         return defaultRecoverPersistedDiscuss(deps);
       }
       return [];
+    },
+    runStartupRecoveryFn: async ({
+      identity,
+      progressStore,
+      providerRegistry,
+      getExecutionService,
+      getRecoveryService,
+      knownDiscussSources,
+      getDiscussStoreForSource,
+      getDiscussContext,
+      createCallerContext,
+      recoveryCoordinator,
+      assertStartupStillActive,
+      cleanupStaleJobs,
+      recoverPersistedDiscussFn,
+    }) => {
+      await jobsReconcile.runStartup({
+        recoveryCoordinator,
+        namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createCallerContext,
+        assertStartupStillActive,
+        log: identity.log,
+        cleanupStaleJobs,
+      });
+      assertStartupStillActive();
+
+      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createCallerContext,
+        assertStartupStillActive,
+      });
+      assertStartupStillActive();
+
+      await workflowRecover.resumeAll({
+        db: storeDb,
+        progressStore,
+        getExecutionService: (ctx) => getExecutionService(ctx) as never,
+        createCallerContext,
+      });
+      assertStartupStillActive();
+
+      return recoveredDiscussResumes;
     },
   });
 

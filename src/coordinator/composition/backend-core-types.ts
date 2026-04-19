@@ -3,7 +3,7 @@ import type { BackendInfo } from '../discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../control.js';
-import type { ExecutionServiceLike } from '../api.js';
+import type { ProjectRequestPort } from '../api.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/context.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
@@ -52,7 +52,7 @@ export type BackendCoreOptions = {
   fetchFn?: FetchFn;
   listenFn?: (server: Server) => Promise<{ port: number; host: string }>;
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ExecutionServiceLike;
+  createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
   acquireLockFn?: (
     pluginRoot: string,
@@ -71,7 +71,7 @@ export type BackendCoreOptions = {
   createKbSubsystemFn?: CreateKbSubsystemFn;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
-  runStartupRecoveryFn?: RunStartupRecoveryFn;
+  runStartupRecoveryFn: RunStartupRecoveryFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
@@ -94,9 +94,9 @@ export type BackendCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
-  getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+  getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  listExecutionServices: () => ExecutionServiceLike[];
+  listExecutionServices: () => ProjectRequestPort[];
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   getDiscussContext: (ctx: CallerContext) => DiscussContext;
   resolveProjectSource: (projectRoot: string) => string;

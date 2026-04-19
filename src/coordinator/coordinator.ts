@@ -1,5 +1,3 @@
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
@@ -21,12 +19,10 @@ import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './api.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
-import { openStoreDatabase } from '../store/db.js';
+import { openBackendStoreDb } from '../store/db.js';
 import { createEmptyRegistry } from '../store/envelope.js';
-import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
 import { composeReducers } from '../store/reducers.js';
-import { storePaths } from '../store/paths.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/api.js';
 import { jobsRegistry } from '../jobs/events.js';
@@ -52,7 +48,7 @@ export type {
   FetchFn,
 } from './composition/backend-core-types.js';
 
-export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime'> & {
+export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
 };
@@ -90,7 +86,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const runtime = providedRuntime ?? createRealRuntime();
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
-  const storeMigrationsDir = ensureStoreMigrationsDir(runtime.storage);
 
   const recordingDir = resolveSpawnRecordingDir(runtime.env.get('CORAL_SIMULATE_RECORD'), runtime.env.cwd());
   if (recordingDir) {
@@ -104,7 +99,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const flavor = options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? runtime.env.cwd());
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const upcasters = createEmptyRegistry();
-  let storeDb: ReturnType<typeof openStoreDatabase> | null = null;
+  let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
@@ -118,19 +113,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       return storeDb;
     }
 
-    let storeDbPath = storePaths(flavor).dbFile;
-    try {
-      storeDbPath = runtime.paths.coral.store.dbFile;
-    } catch {
-      // Some direct coordinator tests intentionally bypass flavor-settled bootstrap.
-    }
-
-    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
-    storeDb = openStoreDatabase({
-      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
-      storage: runtime.storage,
-      migrationsDir: storeMigrationsDir,
-    });
+    storeDb = openBackendStoreDb(runtime, flavor);
     return storeDb;
   };
   const getQueryDb = () => options.progressStore?.getDb() ?? getStoreDb();
@@ -232,9 +215,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       const currentMaxSeq = getCurrentJournalSeq();
       driver.notify('journal', currentMaxSeq);
-      for (const consumerId of ['jobs', 'sessions', 'discuss', 'workflow']) {
-        await driver.waitFreshUntil(currentMaxSeq, consumerId, bootFreshnessTimeoutMs);
-      }
+      await Promise.all([
+        driver.waitFreshUntil(currentMaxSeq, 'jobs', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil(currentMaxSeq, 'sessions', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil(currentMaxSeq, 'discuss', bootFreshnessTimeoutMs),
+        driver.waitFreshUntil(currentMaxSeq, 'workflow', bootFreshnessTimeoutMs),
+      ]);
       assertStartupStillActive();
 
       await jobsReconcile.runStartup({

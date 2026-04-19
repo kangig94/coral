@@ -4319,6 +4319,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        runStartupRecoveryFn: async () => [],
         hooks: {
           onShutdown: async () => {},
           onIdleCheck: () => false,
@@ -4587,6 +4588,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        runStartupRecoveryFn: async () => [],
         hooks: {
           onShutdown: async () => {},
           onIdleCheck: () => false,
@@ -4704,6 +4706,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        runStartupRecoveryFn: async () => [],
         hooks: {
           onShutdown: async () => {},
           onIdleCheck: () => false,
@@ -4857,6 +4860,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        runStartupRecoveryFn: async () => [],
         hooks: {
           onShutdown: async () => {},
           onIdleCheck: () => false,
@@ -4991,6 +4995,7 @@ describe('execution backend server', () => {
         createKbSubsystemFn: async () => createMockKbSubsystem(),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
+        runStartupRecoveryFn: async () => [],
         hooks: {
           onShutdown: async () => {},
           onIdleCheck: () => false,

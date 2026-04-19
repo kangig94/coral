@@ -1,6 +1,6 @@
 import type { CallerContext } from '../../shared/request-context.js';
 import { noopAppendEvents } from '../../store/append.js';
-import type { ExecutionServiceLike } from '../../coordinator/api.js';
+import type { ProjectRequestPort } from '../../coordinator/api.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../../coordinator/api.js';
 import type { BackendWorld } from './backend-world.js';
@@ -10,12 +10,12 @@ type CreateExecutionServicesDeps = {
   runtime: Runtime;
   bundleHash: string;
   backendNamespace: string;
-  createExecutionService: (ctx: CallerContext, deps: ExecutionServiceDeps) => ExecutionServiceLike;
+  createExecutionService: (ctx: CallerContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
 export function listInstantiatedExecutionServices(
-  services: ReadonlyMap<string, ExecutionServiceLike>,
-): ExecutionServiceLike[] {
+  services: ReadonlyMap<string, ProjectRequestPort>,
+): ProjectRequestPort[] {
   return [...services.values()];
 }
 
@@ -26,13 +26,13 @@ export function createExecutionServices({
   backendNamespace,
   createExecutionService,
 }: CreateExecutionServicesDeps): {
-  getExecutionService: (ctx: CallerContext) => ExecutionServiceLike;
+  getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  listExecutionServices: () => ExecutionServiceLike[];
+  listExecutionServices: () => ProjectRequestPort[];
 } {
-  const services = new Map<string, ExecutionServiceLike>();
+  const services = new Map<string, ProjectRequestPort>();
 
-  function getExecutionService(ctx: CallerContext): ExecutionServiceLike {
+  function getExecutionService(ctx: CallerContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
     if (existing) return existing;
@@ -56,7 +56,7 @@ export function createExecutionServices({
     return getExecutionService(ctx) as unknown as RecoveryCapableService;
   }
 
-  function listExecutionServices(): ExecutionServiceLike[] {
+  function listExecutionServices(): ProjectRequestPort[] {
     return listInstantiatedExecutionServices(services);
   }
 

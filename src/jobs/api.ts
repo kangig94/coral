@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ExecutionServiceLike, RecoveryCapableService } from '../coordinator/api.js';
+import type { ProjectRequestPort, RecoveryCapableService } from '../coordinator/api.js';
 import type { ProgressStore } from './job-store.js';
 import type { RecoveryRegistry } from '../coordinator/composition/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -73,29 +73,29 @@ function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow
 
 export const jobsCommands = {
   start(
-    service: Pick<ExecutionServiceLike, 'start'>,
+    service: Pick<ProjectRequestPort, 'start'>,
     providerName: string,
     request: JobLaunchRequest,
     ctx: CallerContext,
-  ): ReturnType<ExecutionServiceLike['start']> {
+  ): ReturnType<ProjectRequestPort['start']> {
     return service.start(providerName, request, ctx);
   },
   resume(
-    service: Pick<ExecutionServiceLike, 'resumeBySessionId'>,
+    service: Pick<ProjectRequestPort, 'resumeBySessionId'>,
     request: JobResumeRequest,
     ctx: CallerContext,
-  ): ReturnType<ExecutionServiceLike['resumeBySessionId']> {
+  ): ReturnType<ProjectRequestPort['resumeBySessionId']> {
     return service.resumeBySessionId(request, ctx);
   },
   fork(
-    service: Pick<ExecutionServiceLike, 'forkBySessionId'>,
+    service: Pick<ProjectRequestPort, 'forkBySessionId'>,
     request: JobForkRequest,
     ctx: CallerContext,
-  ): ReturnType<ExecutionServiceLike['forkBySessionId']> {
+  ): ReturnType<ProjectRequestPort['forkBySessionId']> {
     return service.forkBySessionId(request, ctx);
   },
   abort(
-    service: Pick<ExecutionServiceLike, 'abort'>,
+    service: Pick<ProjectRequestPort, 'abort'>,
     jobIds: string[],
   ): AbortResult {
     return service.abort(jobIds);
@@ -133,13 +133,13 @@ export const jobsQueries = {
     }
     return status.projectRoot === projectRoot && status.backendNamespace === namespace;
   },
-  awaitLaunch(service: Pick<ExecutionServiceLike, 'waitStream'>, jobId: string): AsyncGenerator<WaitStreamEvent> {
+  awaitLaunch(service: Pick<ProjectRequestPort, 'waitStream'>, jobId: string): AsyncGenerator<WaitStreamEvent> {
     return service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 });
   },
   waitForTerminal(
-    service: Pick<ExecutionServiceLike, 'waitStream'>,
+    service: Pick<ProjectRequestPort, 'waitStream'>,
     request: WaitStreamRequest,
-  ): ReturnType<ExecutionServiceLike['waitStream']> {
+  ): ReturnType<ProjectRequestPort['waitStream']> {
     return service.waitStream(request);
   },
   progress(source: JobQuerySource, jobId: string): JobProgressRow[] {

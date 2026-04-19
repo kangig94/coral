@@ -1,6 +1,4 @@
-import { existsSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
-import { dirname } from 'node:path';
 import { ZodError } from 'zod';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
@@ -41,11 +39,7 @@ import {
   type LifecycleDeps,
 } from '../control.js';
 import type { BackendCoreOptions, BackendCoreResult } from './backend-core-types.js';
-import { openStoreDatabase } from '../../store/db.js';
-import { ensureStoreMigrationsDir } from '../../store/migrations.js';
-import { storePaths } from '../../store/paths.js';
-import { jobsReconcile } from '../../jobs/api.js';
-import { isWorkflowInputFailure, workflowCommands, workflowCompiler, workflowRecover } from '../../workflow/api.js';
+import { isWorkflowInputFailure, workflowCommands, workflowCompiler } from '../../workflow/api.js';
 import { createBackendControl } from './backend-control.js';
 import { resolveBackendDefaults } from './backend-defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-build.js';
@@ -63,84 +57,8 @@ export type {
   FetchFn,
 } from './backend-core-types.js';
 
-function createLegacyStartupRecoveryFn(
-  runtime: BackendCoreOptions['runtime'],
-): NonNullable<BackendCoreOptions['runStartupRecoveryFn']> {
-  const storeMigrationsDir = ensureStoreMigrationsDir(runtime.storage);
-
-  return async ({
-    identity,
-    progressStore,
-    providerRegistry,
-    getExecutionService,
-    getRecoveryService,
-    knownDiscussSources,
-    getDiscussStoreForSource,
-    getDiscussContext,
-    createCallerContext,
-    recoveryCoordinator,
-    assertStartupStillActive,
-    cleanupStaleJobs,
-    recoverPersistedDiscussFn,
-  }) => {
-    let storeDbPath = storePaths(identity.flavor).dbFile;
-    try {
-      storeDbPath = runtime.paths.coral.store.dbFile;
-    } catch {
-      // Some direct backend-core tests intentionally bypass flavor-settled bootstrap.
-    }
-
-    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
-    const storeDb = openStoreDatabase({
-      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
-      storage: runtime.storage,
-      migrationsDir: storeMigrationsDir,
-    });
-
-    try {
-      await jobsReconcile.runStartup({
-        recoveryCoordinator,
-        namespace: identity.namespace,
-        bundleHash: identity.bundleHash,
-        runtime,
-        progressStore,
-        providerRegistry,
-        getRecoveryService,
-        createCallerContext,
-        assertStartupStillActive,
-        log: identity.log,
-        cleanupStaleJobs,
-      });
-      assertStartupStillActive();
-
-      const recoveredDiscussResumes = await recoverPersistedDiscussFn({
-        knownDiscussSources,
-        getDiscussStoreForSource,
-        getDiscussContext,
-        createCallerContext,
-        assertStartupStillActive,
-      });
-      assertStartupStillActive();
-
-      await workflowRecover.resumeAll({
-        db: storeDb,
-        progressStore,
-        getExecutionService: (ctx) => getExecutionService(ctx) as never,
-        createCallerContext,
-      });
-      assertStartupStillActive();
-
-      return recoveredDiscussResumes;
-    } finally {
-      storeDb.close();
-    }
-  };
-}
-
 export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
   const runtime = options.runtime;
-  const bootSnapshot = options.bootSnapshot ?? {};
-  void bootSnapshot;
 
   const defaultsPlan = resolveBackendDefaults(options, runtime);
   const world = createBackendWorld(options, runtime, defaultsPlan);
@@ -418,7 +336,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     createKbSubsystemFn: defaults.createKbSubsystemFn,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
-    runStartupRecoveryFn: options.runStartupRecoveryFn ?? createLegacyStartupRecoveryFn(runtime),
+    runStartupRecoveryFn: options.runStartupRecoveryFn,
     hooks: discuss.hooks,
     closeServerFn: defaults.closeServerFn,
     listenFn: defaults.listenFn,
