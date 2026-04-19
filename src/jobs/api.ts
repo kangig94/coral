@@ -316,3 +316,48 @@ export const jobsReconcile = {
     return fn();
   },
 } as const;
+
+export { isLivePhase, isTerminalPhase, jobPhaseSchema } from './phase.js';
+export {
+  belongsToNamespace,
+  isAppServerRuntime,
+  readBackendNamespace,
+} from './records.js';
+export { AbortRegistry } from './shell/abort-registry.js';
+export type { JobEvent } from './shell/event-subscription.js';
+export {
+  materializeLegacyTerminalOutcome,
+  planLegacyTerminalOutcome,
+} from './shell/legacy-ingest.js';
+export { buildCoralInstruction } from './shell/instruction.js';
+export { writeWorkflowResult } from './shell/result-artifact.js';
+export {
+  parseAgentMeta,
+  parseAgentRef,
+  resolveAgent,
+  stripAgentMetadata,
+  AgentNotFoundError,
+  AgentNamespaceNotFoundError,
+  InvalidAgentRefError,
+} from './shell/agent-resolution.js';
+export { createRecoveryCoordinator } from './reconcile/coordinator.js';
+export type { RecoveryCoordinator } from './reconcile/coordinator.js';
+export { createReplacementBackendOwnershipChecker } from './reconcile/ownership-checker.js';
+export { listLiveJobs, markJobAsError } from './reconcile/job-helpers.js';
+export { adoptOrphanedCrossNamespaceJobs } from './reconcile/cross-namespace-adoption.js';
+export { StartupInterruptedError } from './reconcile/errors.js';
+export type { AgentResolutionContext } from './shell/agent-resolution.js';
+export type { JobLaunchRequest, JobResumeRequest, JobForkRequest, LaunchDecision } from './launch.js';
+export type { JobPhase } from './phase.js';
+export type {
+  AppServerRuntimeRecord,
+  JobLaunchRecord,
+  JobProgressRecord,
+  JobRuntimeRecord,
+  JobStatusRecord,
+  JobTerminalRecord,
+  LaunchState,
+  WorkflowResultMeta,
+} from './records.js';
+export type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
+export type { AbortReason, TerminalOutcome } from './outcome.js';

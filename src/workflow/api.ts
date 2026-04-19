@@ -87,3 +87,13 @@ export const workflowRecover = {
 } as const;
 
 export { WorkflowInputError };
+export { WorkflowExecutionError } from './command.js';
+export { createWorkflowJournal, readWorkflowProjection } from './projections.js';
+export type { LaunchDecision } from '../jobs/api.js';
+export type { PipelineAST } from './ast.js';
+export type {
+  PipelineResult,
+  StepDetail,
+  WorkflowSessionHandle,
+} from './command.js';
+export type { WorkflowCommand } from '../shared/schemas.js';

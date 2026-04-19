@@ -27,7 +27,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
   type KnowledgeBaseRuntime,
-} from '../kb-tools.js';
+} from '../../../kb/api.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 
 const mockState = vi.hoisted(() => ({

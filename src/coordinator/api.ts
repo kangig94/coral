@@ -13,40 +13,59 @@ import type { AbortResult } from '../shared/execution-contracts.js';
 import { getCallerContext, withCallerContext } from './caller-context.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { resolveEffort, type EffortLevel, type WorkflowCommand } from '../shared/schemas.js';
-import type { LaunchDecision } from '../jobs/launch.js';
-import { isTerminalPhase } from '../jobs/phase.js';
-import type { JobPhase } from '../jobs/phase.js';
-import { isAppServerRuntime } from '../jobs/records.js';
-import type { AppServerRuntimeRecord, LaunchState, JobLaunchRecord, JobRuntimeRecord, JobTerminalRecord, WorkflowResultMeta } from '../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import {
+  AgentNotFoundError,
+  AgentNamespaceNotFoundError,
+  AbortRegistry,
+  buildCoralInstruction,
+  InvalidAgentRefError,
+  isAppServerRuntime,
+  isTerminalPhase,
+  materializeLegacyTerminalOutcome,
+  parseAgentMeta,
+  parseAgentRef,
+  planLegacyTerminalOutcome,
+  resolveAgent,
+  stripAgentMetadata,
+  type AgentResolutionContext,
+  type AppServerRuntimeRecord,
+  type JobEvent,
+  type JobLaunchRecord,
+  type JobPhase,
+  type JobRuntimeRecord,
+  type JobTerminalRecord,
+  type LaunchDecision,
+  type LaunchState,
+  type WaitStreamEvent,
+  type WaitStreamRequest,
+  type WorkflowResultMeta,
+  type AbortReason,
+  type TerminalOutcome,
+  writeWorkflowResult,
+} from '../jobs/api.js';
 import type { ProviderInstruction, ProviderRequest, ProviderTurnResult } from '../providers/protocol.js';
 import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
-import type { SessionEntry } from '../sessions/entry.js';
+import type { SessionEntry } from '../sessions/api.js';
 import { errorMessage, nowIsoString } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import type { DiscussContext } from '../discuss/shell/context.js';
-import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
-import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import type { PipelineAST } from '../workflow/ast.js';
+import type { DiscussContext, DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/api.js';
+import type { KnowledgeBaseRuntime } from '../kb/api.js';
 import {
+  createWorkflowJournal,
+  executePipeline,
   WorkflowExecutionError,
   type PipelineResult,
+  type PipelineAST,
   type StepDetail,
   type WorkflowSessionHandle,
-} from '../workflow/command.js';
-import { executePipeline } from '../workflow/executor.js';
-import { createWorkflowJournal } from '../workflow/projections.js';
+} from '../workflow/api.js';
 import {
   describeLegacyCoralFault,
   type RecoveryFaultCompat,
 } from '../shared/legacy-terminal-outcome-compat.js';
-import { type AbortReason, type TerminalOutcome } from '../jobs/outcome.js';
-import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../jobs/shell/legacy-ingest.js';
-import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import type { TypedEventBus } from './control.js';
 import type { LaunchCoordinator, LaunchPool } from './live/admission.js';
 import { type ProviderHostManager, type ProviderServerAttachment } from './live/provider-hosts/pool.js';
-import { buildCoralInstruction } from '../jobs/shell/instruction.js';
 import { LaunchOrchestrator, WaitCoordinator } from '../execution/job-lifecycle.js';
 import {
   SessionClaimError,
@@ -57,23 +76,11 @@ import {
   type ClaimJobOptions,
 } from '../execution/job-lifecycle-contracts.js';
 import type { ProgressStore } from '../execution/progress-store.js';
-import {
-  parseAgentRef,
-  resolveAgent,
-  stripAgentMetadata,
-  parseAgentMeta,
-  InvalidAgentRefError,
-  AgentNotFoundError,
-  AgentNamespaceNotFoundError,
-  type AgentResolutionContext,
-} from '../jobs/shell/agent-resolution.js';
 import { SessionManager, getSessionById, type SessionAllocateOptions } from '../execution/session-manager.js';
 import type { Runtime } from '../runtime/ports.js';
 import { noopAppendEvents, type AppendEventsFn } from '../store/append.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import type { JobProjectionDetail, JobProgressRow } from '../store/queries/jobs.js';
-import type { JobEvent } from '../jobs/shell/event-subscription.js';
-import { writeWorkflowResult } from '../jobs/shell/result-artifact.js';
 import type { BackendIdentity, EventBusEvents, ReadonlyRuntimeState } from './control.js';
 import type { IdleTimer } from './live/idle.js';
 

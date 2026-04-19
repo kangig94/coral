@@ -40,9 +40,9 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (3
   - `src/workflow/__tests__/pipe-executor-cascade-equivalence.test.ts`
   - `src/workflow/__tests__/recover-branches.test.ts`
 
-## Execution residue (commit `b8852b4b` — `phase-2/execution-composition-only`)
+## Execution layering handoff (Phase 2 residue retired in CG7)
 
-All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFERRED** with explicit later-phase owners. The residue map lives at `src/__tests__/invariants/execution-composition-only.test.ts` + `src/__tests__/__helpers__/execution-residue-ast.ts`; every file below is also pinned there with its allowed imports, forbidden identifiers, and retirement trigger.
+All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFERRED** with explicit later-phase owners. CG7 retired the file-by-file residue harness in favor of `src/__tests__/invariants/architecture-layering.test.ts`, which now guards the layering seams that remain while `src/execution/` is still present ahead of CG8.
 
 ### Coordinator handoff (Phase 3, `nextHome = src/coordinator/**`)
 
@@ -96,9 +96,9 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 ## New invariants + proofs (Phase 2 totals)
 
 - `src/__tests__/invariants/exec-no-duplication.test.ts` (AC11).
-- `src/__tests__/invariants/execution-composition-only.test.ts` (AC5).
+- `src/__tests__/invariants/architecture-layering.test.ts` (AC11, CG7 replacement for the Phase 2 residue harness).
 - `src/__tests__/invariants/legacy-boundary.test.ts` (AC7).
-- `src/__tests__/__helpers__/execution-residue-ast.ts` — AST helper extending `ts-import-scanner.ts` with named-import, facade-member-access, identifier, literal, callee, and object-construction capture.
+- `src/__tests__/__helpers__/ts-import-scanner.ts` — shared AST import-graph scanner used by the layering invariants.
 
 ## Phase 3 carry-over debt cleanup (CG6 — `phase-3/shared-ownership-cleanup`)
 

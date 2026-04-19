@@ -26,3 +26,8 @@ export const discussQueries = {
 };
 
 export const discussReconcile = { runStartup };
+
+export type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from './views.js';
+export type { DiscussContext } from './shell/context.js';
+export type { RecoveredDiscussResume } from './shell/operations.js';
+export { DiscussSessionStore } from './shell/session-store.js';

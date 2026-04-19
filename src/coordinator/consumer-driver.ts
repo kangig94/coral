@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import { CoralSetupError } from '../runtime/errors.js';
-import type { KbCorpusSnapshot } from '../kb/contracts.js';
+import type { KbCorpusSnapshot } from '../kb/api.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number, timeoutMs: number) {

@@ -49,3 +49,6 @@ export const sessionsQueries = {
     return resolveSession(ref, runtime) ?? undefined;
   },
 } as const;
+
+export type { SessionEntry } from './entry.js';
+export type { SessionAllocateOptions, SessionManager } from './shell/store.js';

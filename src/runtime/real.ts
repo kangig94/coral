@@ -21,7 +21,7 @@ import {
 } from 'node:fs';
 import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
-import { composeCoralPaths } from '../coordinator/paths.js';
+import { composeCoralPaths } from '../infra/coral-paths.js';
 import {
   backendInfoPath,
   backendLockPath,

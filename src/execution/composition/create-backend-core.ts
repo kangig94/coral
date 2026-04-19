@@ -33,7 +33,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
   handleKbDelete,
-} from '../../transport/http/kb-tools.js';
+} from '../../kb/api.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import {
   createLifecycle,

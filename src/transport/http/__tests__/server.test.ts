@@ -55,7 +55,7 @@ import {
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
-} from '../kb-tools.js';
+} from '../../../kb/api.js';
 import {
   LaunchCoordinator,
   TypedEventBus,
@@ -1075,7 +1075,7 @@ describe('execution backend server', () => {
   });
 
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
-    const { handleKbPrinciples } = await import('../kb-tools.js');
+    const { handleKbPrinciples } = await import('../../../kb/api.js');
 
     const response = await handleKbPrinciples({ query: 'contract', verbose: true, top_k: 5 }, {
       kb: {

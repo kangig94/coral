@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { z } from 'zod';
-import { deleteFn as kbDeleteFn } from '../../kb/ops/delete.js';
+import { deleteFn as kbDeleteFn } from './ops/delete.js';
 import {
   extractBody,
   extractPrincipleStatement,
@@ -10,40 +10,49 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from '../../kb/frontmatter.js';
-import { deleteMemos, listMemos, purgeMemos, writeMemo } from '../../kb/ops/memo.js';
+} from './frontmatter.js';
+import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
 import {
   memoDir,
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
   communityPathFromName,
-} from '../../kb/paths.js';
-import { promote as kbPromote } from '../../kb/ops/promote.js';
-import { reindex as kbReindex } from '../../kb/ops/reindex.js';
-import { searchKb } from '../../kb/ops/search.js';
-import { deleteSource, listSources, persistPreparedSource } from '../../kb/ops/source-store.js';
-import { isNoteEntry } from '../../kb/entry-types.js';
-import { update as kbUpdate } from '../../kb/ops/update.js';
-import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from '../../kb/validation.js';
+} from './paths.js';
+import { promote as kbPromote } from './ops/promote.js';
+import { reindex as kbReindex } from './ops/reindex.js';
+import { searchKb } from './ops/search.js';
+import { deleteSource, listSources, persistPreparedSource } from './ops/source-store.js';
+import { isNoteEntry } from './entry-types.js';
+import { update as kbUpdate } from './ops/update.js';
+import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
 import {
   expandKbReadSelector,
   parseKbSelector,
   type KbReadKind,
   type KbResolvedReadSelector,
-} from '../../shared/kb-read-contract.js';
-import type { CallerContext } from '../../shared/request-context.js';
-import { assertOwnerId } from '../../shared/utils.js';
-import type { KbToolRuntime, KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+} from '../shared/kb-read-contract.js';
+import type { CallerContext } from '../shared/request-context.js';
 import {
   deriveErrorMessage,
   domainError,
   domainSuccess,
   toolValidationError,
   type ToolDomainResult,
-} from './tool-response.js';
+} from '../shared/tool-domain-result.js';
+import { assertOwnerId } from '../shared/utils.js';
+import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 
-export type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+export { createKbSubsystem } from './subsystem.js';
+export type { CreateKbSubsystemOptions, KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
+export type { CurateHandle } from './curate/types.js';
+export type {
+  KbCorpusPublishCallbacks,
+  KbCorpusPublication,
+  KbCorpusPublishFailure,
+  KbCorpusSnapshot,
+} from './contracts.js';
+export type { ToolDomainResult } from '../shared/tool-domain-result.js';
 
 type KbArgs = Record<string, unknown>;
 

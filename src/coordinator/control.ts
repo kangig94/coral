@@ -8,28 +8,29 @@ import type { RecoveryRegistry } from '../execution/recovery-registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { ProgressStore } from '../execution/progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { DiscussContext } from '../discuss/shell/context.js';
-import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
+import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
-import { isTerminalPhase } from '../jobs/phase.js';
-import type { JobPhase } from '../jobs/phase.js';
-import type { JobTerminalRecord } from '../jobs/records.js';
-import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
+import {
+  createRecoveryCoordinator,
+  createReplacementBackendOwnershipChecker,
+  isTerminalPhase,
+  listLiveJobs,
+  markJobAsError,
+  StartupInterruptedError,
+  type JobPhase,
+  type JobTerminalRecord,
+  type RecoveryCoordinator,
+} from '../jobs/api.js';
+import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/api.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
-import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
 import { resolveClientHost } from './shutdown/network.js';
-import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
-import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './shutdown/sequence.js';
-import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './api.js';
 
-export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
-export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
+export { adoptOrphanedCrossNamespaceJobs, StartupInterruptedError } from '../jobs/api.js';
 export {
   HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
