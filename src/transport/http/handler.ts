@@ -1527,10 +1527,6 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
   const { identity } = deps;
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -1543,6 +1539,10 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
       sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
       return;
     }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 
     if (req.method === 'GET' && req.url === '/health') {
       sendJson(res, 200, deps.health.read());
