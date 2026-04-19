@@ -16,7 +16,7 @@ import { getCallerContext } from '../../coordinator/caller-context.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord, LaunchState } from '../records.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal, LaunchState } from '../views.js';
 import type { ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
@@ -45,7 +45,7 @@ function bindProviderRunner(
   signal: AbortSignal,
   pool: LaunchPool,
   jobDir: string,
-  onRuntimeRecord?: (record: JobRuntimeRecord) => void,
+  onRuntimeRecord?: (record: JobRuntime) => void,
 ): ProviderCliRunner {
   return (request) =>
     launchCoordinator.spawnDurableJob({
@@ -64,7 +64,7 @@ function bindProviderRunner(
     });
 }
 
-function canAdvanceLaunchState(status: JobStatusRecord | null): status is JobStatusRecord {
+function canAdvanceLaunchState(status: JobStatus | null): status is JobStatus {
   return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
 }
 
@@ -337,7 +337,7 @@ export class LaunchOrchestrator {
 
   runRecoveredQueuedJob(
     provider: ProviderExecutor,
-    launchRecord: JobLaunchRecord,
+    launchRecord: JobLaunch,
     admission: QueuedHandle,
     pool: LaunchPool,
   ): void {
@@ -383,7 +383,7 @@ export class LaunchOrchestrator {
     if (fault.kind === 'launch_rejected') {
       this.appendJobEvent(jobId, sessionId, 'job.launch.rejected', fault);
     }
-    this.writeJobTerminalRecord(jobId, sessionId, { content: '', outcome }, 'error');
+    this.writeJobTerminal(jobId, sessionId, { content: '', outcome }, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -397,7 +397,7 @@ export class LaunchOrchestrator {
     this.deps.progressStore.updatePhase(jobId, 'running');
   }
 
-  writeJobTerminalRecord(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): void {
+  writeJobTerminal(jobId: string, sessionId: string, result: JobTerminal, phase: JobPhase): void {
     const { progressStore } = this.deps;
     try {
       progressStore.appendTerminal(jobId, sessionId, result, phase);
@@ -449,7 +449,7 @@ export class LaunchOrchestrator {
 
     const outcome = this.normalizeLegacyOutcome(jobId, sessionId, result.outcome);
     const phase = phaseForOutcome(outcome);
-    const terminalResult: JobTerminalRecord = {
+    const terminalResult: JobTerminal = {
       content: result.content,
       durationMs: result.durationMs,
       nonResumable: result.nonResumable,
@@ -464,7 +464,7 @@ export class LaunchOrchestrator {
       return;
     }
 
-    this.writeJobTerminalRecord(jobId, sessionId, terminalResult, phase);
+    this.writeJobTerminal(jobId, sessionId, terminalResult, phase);
     progressStore.writeResultMd(jobId, result.content);
     writeWorkflowResult(this.deps.runtime.storage, jobId, result.content);
     abortRegistry.remove(jobId);
@@ -600,7 +600,7 @@ export class LaunchOrchestrator {
     const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
     void progressStore;
     this.appendJobEvent(jobId, sessionId, 'job.aborted', { reason });
-    this.writeJobTerminalRecord(
+    this.writeJobTerminal(
       jobId,
       sessionId,
       { content: '', outcome: { kind: 'aborted', reason } },

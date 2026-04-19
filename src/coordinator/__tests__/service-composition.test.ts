@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
 import { createDeferred } from '../../shared/test-deferred.js';
-import type { AppServerRuntimeRecord, JobLaunchRecord, JobStatusRecord } from '../../jobs/records.js';
+import type { AppServerRuntimeRecord, JobLaunch, JobStatus } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
@@ -243,8 +243,8 @@ type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
   outcome?: ProviderTurnResult['outcome'];
 };
 
-type _TestJobTerminalRecord = Omit<NonNullable<JobStatusRecord['result']>, 'outcome'> & {
-  outcome?: NonNullable<JobStatusRecord['result']>['outcome'];
+type _TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
+  outcome?: NonNullable<JobStatus['result']>['outcome'];
 };
 
 function completedOutcome() {
@@ -1677,8 +1677,8 @@ describe('ExecutionService', () => {
 
   describe('recovery adoption APIs', () => {
     function makeLaunchRecord(
-      overrides: Partial<JobLaunchRecord> & { jobId: string; sessionId: string },
-    ): JobLaunchRecord {
+      overrides: Partial<JobLaunch> & { jobId: string; sessionId: string },
+    ): JobLaunch {
       return {
         provider: 'codex',
         projectRoot: '/tmp/project',

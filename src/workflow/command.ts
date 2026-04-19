@@ -1,5 +1,5 @@
 import type { CoralStore } from '../store/index.js';
-import type { JobTerminalRecord } from '../jobs/records.js';
+import type { JobTerminal } from '../jobs/views.js';
 import { describeTerminalOutcome } from '../jobs/outcome.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import { assertNever } from '../shared/utils.js';
@@ -22,7 +22,7 @@ export {
 } from './internal/shared.js';
 
 export function describeTerminalFailure(
-  result: JobTerminalRecord,
+  result: JobTerminal,
   options: { store?: CoralStore } = {},
 ): string {
   switch (result.outcome.kind) {

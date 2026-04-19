@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminalRecord } from '../../jobs/records.js';
+import type { JobTerminal } from '../../jobs/views.js';
 import type { WaitRequest, WaitStreamEvent } from '../../jobs/wait.js';
 import { parseExpression } from '../parser.js';
 import { BOOTSTRAP_TIMEOUT_MS, launchAtomWithRetry } from '../launch.js';
@@ -27,11 +27,11 @@ function running(job: string, session: string) {
 function terminal(
   jobId: string,
   _sessionId: string,
-  result: Omit<JobTerminalRecord, 'outcome'> & { outcome?: JobTerminalRecord['outcome'] },
+  result: Omit<JobTerminal, 'outcome'> & { outcome?: JobTerminal['outcome'] },
 ): WaitStreamEvent {
-  const terminalResult: JobTerminalRecord =
+  const terminalResult: JobTerminal =
     result.outcome !== undefined
-      ? ({ ...result, outcome: result.outcome } as JobTerminalRecord)
+      ? ({ ...result, outcome: result.outcome } as JobTerminal)
       : { ...result, outcome: { kind: 'completed' } };
   return {
     type: 'terminal',

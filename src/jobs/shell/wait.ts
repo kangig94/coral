@@ -1,5 +1,5 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobStatusRecord } from '../records.js';
+import type { JobStatus } from '../views.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamRequest } from '../wait.js';
 import type { TypedEventBus } from '../../coordinator/control.js';
 import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
@@ -7,7 +7,8 @@ import { createReplayCursor, type ProgressStore } from '../job-store.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS } from './contracts.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
-import type { JobProjectionDetail, JobProgressRow } from '../../store/queries/jobs.js';
+import type { JobProjectionDetail } from '../read-contracts.js';
+import type { JobProgress } from '../views.js';
 import type { JobEvent } from './event-subscription.js';
 import { resultPathFor } from './result-artifact.js';
 
@@ -21,7 +22,7 @@ export interface WaitCoordinatorDeps {
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;
   loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
-  readJobProgress?: (jobId: string) => JobProgressRow[];
+  readJobProgress?: (jobId: string) => JobProgress[];
   subscribeJobEvents?: (options: {
     afterSeq: number;
     jobIds: readonly string[];
@@ -33,7 +34,7 @@ export interface WaitCoordinatorDeps {
 export class WaitCoordinator {
   constructor(private readonly deps: WaitCoordinatorDeps) {}
 
-  private readQueryStatus(jobId: string): JobStatusRecord | null {
+  private readQueryStatus(jobId: string): JobStatus | null {
     return this.deps.loadJobProjectionDetail?.(jobId).status ?? this.deps.progressStore.readStatus(jobId);
   }
 
@@ -403,7 +404,7 @@ export class WaitCoordinator {
     throw new Error(`Job ${jobId} ended without a terminal result`);
   }
 
-  private readStatusOrThrow(jobId: string): JobStatusRecord {
+  private readStatusOrThrow(jobId: string): JobStatus {
     const status = this.deps.progressStore.readStatus(jobId);
     if (!status) {
       throw new Error(`Job not found: ${jobId}`);
@@ -415,7 +416,7 @@ export class WaitCoordinator {
     jobId: string,
     providerName: string,
     sessionId: string,
-    status: JobStatusRecord,
+    status: JobStatus,
   ): boolean {
     if (!isTerminalPhase(status.phase)) {
       return false;

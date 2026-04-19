@@ -28,7 +28,7 @@ import type {
   ReindexResult,
 } from '../kb/entry-types.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { JobStatusRecord, JobTerminalRecord } from '../jobs/records.js';
+import type { JobStatus, JobTerminal } from '../jobs/views.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import type { CliErrorEnvelope } from './errors.js';
 
@@ -42,7 +42,7 @@ type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
 type WaitWaitingEvent = Extract<WaitStreamEvent, { type: 'waiting' }>;
 type KbReadDisplayResult = KbReadResult & { age?: string };
-export type JobsListDisplayRow = {
+export type JobsListItem = {
   jobId: string;
   phase: string;
   provider: string;
@@ -182,7 +182,7 @@ function truncatePreview(text: string): string {
   return `${text.slice(0, Math.max(0, MAX_INLINE - 3))}...`;
 }
 
-function pickTerminalPreviewSource(result: JobTerminalRecord, describeCauseRef?: CauseRefDescriber): string {
+function pickTerminalPreviewSource(result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
   const content = result.content.trimEnd();
   if (content.length > 0) {
     return content;
@@ -231,7 +231,7 @@ function formatRelativeAge(updatedAt: string, now = Date.now()): string {
   return `${days}d ago`;
 }
 
-function readJobCwd(status: JobStatusRecord): string {
+function readJobCwd(status: JobStatus): string {
   return status.projectRoot;
 }
 
@@ -264,7 +264,7 @@ export function formatAbortResult(result: AbortResult): string {
   ]);
 }
 
-export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListDisplayRow[] {
+export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsListItem[] {
   return data.jobs.map(({ jobId, status }) => ({
     jobId,
     phase: status.phase,
@@ -274,7 +274,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
   }));
 }
 
-export function renderJobsList(rows: JobsListDisplayRow[], filters: JobsListDisplayFilters = {}): string {
+export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFilters = {}): string {
   if (rows.length === 0) {
     return `No jobs match ${describeJobsMatch(filters)}`;
   }
@@ -544,7 +544,7 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return label === undefined ? body : `${label} - ${body}`;
 }
 
-function terminalOutcomeHeader(jobId: string, result: JobTerminalRecord, describeCauseRef?: CauseRefDescriber): string {
+function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
   switch (result.outcome.kind) {
     case 'completed':
       return `Job ${jobId} completed`;

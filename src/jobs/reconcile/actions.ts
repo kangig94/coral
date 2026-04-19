@@ -1,8 +1,8 @@
 import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isTerminalPhase } from '../phase.js';
-import { isAppServerRuntime } from '../records.js';
-import type { JobLaunchRecord, JobRuntimeRecord, JobTerminalRecord } from '../records.js';
+import { isAppServerRuntime } from '../views.js';
+import type { JobLaunch, JobRuntime, JobTerminal } from '../views.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/provider-contracts.js';
@@ -17,11 +17,11 @@ import type { RecoveryCapableService } from '../../coordinator/api.js';
 import { markJobAsError } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 
-export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunchRecord };
+export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
   jobId: string;
-  launchRecord: JobLaunchRecord;
-  runtimeRecord: JobRuntimeRecord;
+  launchRecord: JobLaunch;
+  runtimeRecord: JobRuntime;
 };
 type ProviderLike = ProviderArtifactRecovery | undefined;
 type RecoveryActionContext = {
@@ -125,7 +125,7 @@ export function logRecoveryActionFailure(action: RecoveryAction, error: unknown,
 
 type FinalizeDeadAdoptedJobContext = {
   jobId: string;
-  launchRecord: JobLaunchRecord;
+  launchRecord: JobLaunch;
   runtimeRecord: DurableCliRuntimeRecord;
   service: RecoveryCapableService;
   provider: ProviderLike;
@@ -218,7 +218,7 @@ export function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalPayload(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      const payload: JobTerminalRecord = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
+      const payload: JobTerminal = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
       service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, { nonResumable: persistedPayload.nonResumable === true });
       return;
     }

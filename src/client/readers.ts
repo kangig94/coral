@@ -21,7 +21,7 @@ import {
   currentBuildFlavor,
   resolveProjectSource,
 } from '../infra/paths.js';
-import type { JobProgressRecord, JobStatusRecord } from '../jobs/records.js';
+import type { JobProgress, JobStatus } from '../jobs/views.js';
 import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
@@ -120,14 +120,14 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
 /**
  * Reads and parses a persisted job status record.
  */
-export function readStatusRecord(jobId: string): JobStatusRecord | null {
+export function readStatusRecord(jobId: string): JobStatus | null {
   return withReadonlyStore((db) => loadJobProjectionDetail(db, jobId, readCtx()).status, null);
 }
 
 /**
  * Reads and parses all persisted progress records for a job.
  */
-export function readProgressLog(jobId: string): JobProgressRecord[] {
+export function readProgressLog(jobId: string): JobProgress[] {
   return withReadonlyStore((db) => readJobProgress(db, jobId, readCtx()), []);
 }
 

@@ -1,11 +1,11 @@
-import type { JobLaunchRecord, JobRuntimeRecord } from '../../jobs/records.js';
+import type { JobLaunch, JobRuntime } from '../../jobs/views.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
 import type { RuntimeProcessPort } from '../../runtime/ports.js';
 
 export interface RecoveryEntry {
-  launchRecord: JobLaunchRecord;
-  runtimeRecord?: JobRuntimeRecord;
+  launchRecord: JobLaunch;
+  runtimeRecord?: JobRuntime;
 }
 
 /**
@@ -21,8 +21,8 @@ export class RecoveryRegistry {
 
   register(
     jobId: string,
-    launchRecord: JobLaunchRecord,
-    runtimeRecord?: JobRuntimeRecord,
+    launchRecord: JobLaunch,
+    runtimeRecord?: JobRuntime,
     abortHandler?: () => void,
   ): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });

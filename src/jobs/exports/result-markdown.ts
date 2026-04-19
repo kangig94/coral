@@ -5,14 +5,14 @@ import { decodeEventBody } from '../../store/body-codec.js';
 import type { EventsRow } from '../../store/schema.js';
 import { describeTerminalOutcome } from '../outcome.js';
 
-type JobProjectionRow = {
+type JobProjectionEntry = {
   terminal: string | null;
 };
 
 export function buildResultMarkdown(db: Database, jobId: string): string {
   const projection = db
     .prepare(`SELECT terminal FROM projection_jobs WHERE job_id = ?`)
-    .get(jobId) as JobProjectionRow | undefined;
+    .get(jobId) as JobProjectionEntry | undefined;
   const terminal = projection?.terminal ? (JSON.parse(projection.terminal) as { outcome: Parameters<typeof describeTerminalOutcome>[0] }) : null;
   const event = db
     .prepare(`SELECT body FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1`)

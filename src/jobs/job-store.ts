@@ -10,7 +10,7 @@ import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { JobExitRecord } from '../runtime/durable-runtime.js';
+import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { nowIsoString } from '../shared/utils.js';
 import { jobsRegistry } from './events.js';
@@ -18,13 +18,13 @@ import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
 import type {
   JobKind,
-  JobLaunchRecord,
-  JobProgressRecord,
-  JobRuntimeRecord,
-  JobStatusRecord,
-  JobTerminalRecord,
+  JobLaunch,
+  JobProgress,
+  JobRuntime,
+  JobStatus,
+  JobTerminal,
   LaunchState,
-} from './records.js';
+} from './views.js';
 
 export type ReplayCursor = {
   lastEventId: number;
@@ -50,7 +50,7 @@ function formatProgressMessage(startedAt: number | undefined, nowMs: number, mes
   return `[${formatElapsed(elapsed)}] ${message}`;
 }
 
-function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): JobTerminalRecord | null {
+function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): JobTerminal | null {
   const exit = detail.exit;
   if (!exit) {
     return null;
@@ -78,7 +78,7 @@ export class JobStore {
   private readonly eventBus: TypedEventBus;
   private readonly db: Database;
   private readonly appendEvents: AppendEventsFn;
-  private readonly drafts = new Map<string, JobStatusRecord>();
+  private readonly drafts = new Map<string, JobStatus>();
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private readonly progressEventCounters = new Map<string, number>();
   private readonly jobStartedAt = new Map<string, number>();
@@ -178,7 +178,7 @@ export class JobStore {
     }
   }
 
-  private notifyPhaseChange(previous: JobStatusRecord | null, next: JobStatusRecord | null): void {
+  private notifyPhaseChange(previous: JobStatus | null, next: JobStatus | null): void {
     if (!previous || !next || previous.phase === next.phase) {
       return;
     }
@@ -193,7 +193,7 @@ export class JobStore {
     return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this), jobId);
   }
 
-  private cloneStatusRecord(status: JobStatusRecord): JobStatusRecord {
+  private cloneStatusRecord(status: JobStatus): JobStatus {
     return {
       ...status,
       launch: { ...status.launch },
@@ -216,7 +216,7 @@ export class JobStore {
     };
   }
 
-  private applyNamespaceOverrideToStatus(jobId: string, status: JobStatusRecord): JobStatusRecord {
+  private applyNamespaceOverrideToStatus(jobId: string, status: JobStatus): JobStatus {
     const override = this.namespaceOverrides.get(jobId);
     if (!override) {
       return status;
@@ -283,7 +283,7 @@ export class JobStore {
   }
 
   listJobProjections() {
-    const projections = new Map<string, JobStatusRecord>();
+    const projections = new Map<string, JobStatus>();
 
     for (const { jobId, status } of listJobProjections(this.db, this)) {
       projections.set(jobId, this.applyNamespaceOverrideToStatus(jobId, status));
@@ -340,7 +340,7 @@ export class JobStore {
     const dir = this.jobDir(opts.jobId);
     this.runtime.storage.mkdirSync(dir, { recursive: true });
     const phase = opts.initialPhase ?? 'launching';
-    const draft: JobStatusRecord = {
+    const draft: JobStatus = {
       jobId: opts.jobId,
       sessionId: opts.sessionId,
       provider: opts.provider,
@@ -378,7 +378,7 @@ export class JobStore {
     this.jobStartedAt.delete(jobId);
   }
 
-  readStatus(jobId: string): JobStatusRecord | null {
+  readStatus(jobId: string): JobStatus | null {
     const detail = this.detail(jobId);
     if (detail.status) {
       this.drafts.delete(jobId);
@@ -387,7 +387,7 @@ export class JobStore {
     return this.drafts.get(jobId) ?? null;
   }
 
-  writeStatus(jobId: string, record: JobStatusRecord): void {
+  writeStatus(jobId: string, record: JobStatus): void {
     this.drafts.set(jobId, { ...record });
     this.notifyWaiters();
   }
@@ -437,7 +437,7 @@ export class JobStore {
     }
   }
 
-  writeLaunchRecord(jobId: string, record: JobLaunchRecord): void {
+  writeLaunchRecord(jobId: string, record: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
     this.appendEvent({
       type: 'job.launch.requested',
@@ -470,11 +470,11 @@ export class JobStore {
     });
   }
 
-  readLaunchRecord(jobId: string): JobLaunchRecord | null {
-    return this.detail(jobId).launch as JobLaunchRecord | null;
+  readLaunchRecord(jobId: string): JobLaunch | null {
+    return this.detail(jobId).launch;
   }
 
-  writeRuntimeRecord(jobId: string, record: JobRuntimeRecord): void {
+  writeRuntimeRecord(jobId: string, record: JobRuntime): void {
     const detail = this.detail(jobId);
     const status = detail.status ?? this.drafts.get(jobId);
     this.appendEvent({
@@ -506,11 +506,11 @@ export class JobStore {
     });
   }
 
-  readRuntimeRecord(jobId: string): JobRuntimeRecord | null {
-    return this.detail(jobId).runtime as JobRuntimeRecord | null;
+  readRuntimeRecord(jobId: string): JobRuntime | null {
+    return this.detail(jobId).runtime;
   }
 
-  readExitRecord(jobId: string): JobExitRecord | null {
+  readExitRecord(jobId: string): DurableProcessExit | null {
     const exit = this.detail(jobId).exit;
     if (!exit) {
       return null;
@@ -522,7 +522,7 @@ export class JobStore {
     };
   }
 
-  readTerminalPayload(jobId: string): JobTerminalRecord | null {
+  readTerminalPayload(jobId: string): JobTerminal | null {
     return toTerminalPayload(this.detail(jobId));
   }
 
@@ -613,7 +613,7 @@ export class JobStore {
     return this.readProgressTail(jobId);
   }
 
-  appendTerminal(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): number {
+  appendTerminal(jobId: string, sessionId: string, result: JobTerminal, phase: JobPhase): number {
     const detail = this.detail(jobId);
     const hasLaunchProjection = detail.launch !== null;
     const status = detail.status ?? this.drafts.get(jobId);
@@ -676,17 +676,17 @@ export class JobStore {
     return this.readProgressTail(jobId);
   }
 
-  markTerminalStatus(jobId: string, result: JobTerminalRecord, phase: JobPhase): void {
+  markTerminalStatus(jobId: string, result: JobTerminal, phase: JobPhase): void {
     this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase);
   }
 
-  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgressRecord[] {
+  replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgress[] {
     const floor = Math.max(fromEventId, cursor.lastEventId);
     const events = this.readJobProgress(jobId).filter((event) => event.eventId > floor);
     if (events.length > 0) {
       cursor.lastEventId = events[events.length - 1].eventId;
     }
-    return events as JobProgressRecord[];
+    return events;
   }
 
   private readProgressTail(jobId: string): number {
@@ -702,7 +702,7 @@ export class JobStore {
     return eventId;
   }
 
-  private countLiveDraftJobs(predicate: (status: JobStatusRecord) => boolean): number {
+  private countLiveDraftJobs(predicate: (status: JobStatus) => boolean): number {
     let count = 0;
 
     for (const draft of this.drafts.values()) {
@@ -714,7 +714,7 @@ export class JobStore {
     return count;
   }
 
-  private countLiveOverrideJobs(predicate: (status: JobStatusRecord) => boolean): number {
+  private countLiveOverrideJobs(predicate: (status: JobStatus) => boolean): number {
     let count = 0;
 
     for (const jobId of this.namespaceOverrides.keys()) {

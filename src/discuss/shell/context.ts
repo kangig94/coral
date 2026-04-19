@@ -3,7 +3,7 @@ import type { Result } from '../session-types.js';
 import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
-import type { JobStatusRecord } from '../../jobs/records.js';
+import type { JobStatus } from '../../jobs/views.js';
 
 export type { WatchEvent, WatchState } from '../watch.js';
 
@@ -40,7 +40,7 @@ export type LiveDiscussSession = {
 export type AgentRun = PersistedDiscussAgentRun;
 
 export type DiscussJobStatusReader = {
-  read(jobId: string): JobStatusRecord | null;
+  read(jobId: string): JobStatus | null;
 };
 
 export type DiscussRuntimePorts = {

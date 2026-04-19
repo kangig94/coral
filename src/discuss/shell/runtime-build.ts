@@ -8,7 +8,7 @@ import { readDiscussSourcesWithStorage } from './discuss-sources-catalog.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { nowIsoString } from '../util/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import type { JobStatusRecord } from '../../jobs/records.js';
+import type { JobStatus } from '../../jobs/views.js';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
@@ -514,7 +514,7 @@ type CreateDiscussRuntimeDeps = {
       contexts: Map<string, DiscussContext>;
     };
     progressStore: {
-      readStatus(jobId: string): JobStatusRecord | null;
+      readStatus(jobId: string): JobStatus | null;
     };
     resolveProjectSource: (projectRoot: string) => string;
     eventBus: {

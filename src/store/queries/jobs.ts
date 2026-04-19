@@ -4,12 +4,13 @@ import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecorded
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import type { JobPhase } from '../../jobs/phase.js';
-import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
+import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
+import type { JobProgress, JobStatus, JobTerminal } from '../../jobs/views.js';
 import { decodeBody, type StoreReadContext } from '../body-codec.js';
 import { readLatestEvent } from './events.js';
 import type { EventsRow } from '../schema.js';
 
-export type JobLaunchRow = {
+type JobLaunchProjection = {
   jobId: string;
   sessionId: string;
   provider: string;
@@ -39,7 +40,7 @@ export type JobLaunchRow = {
   createdAt: string;
 };
 
-export type JobCliRuntimeRow = {
+type JobCliRuntimeProjection = {
   transport?: 'durable-cli';
   pid: number;
   stdoutPath: string;
@@ -49,7 +50,7 @@ export type JobCliRuntimeRow = {
   tailWatermark?: number;
 };
 
-export type JobAppServerRuntimeRow = {
+type JobAppServerRuntimeProjection = {
   transport: 'app-server';
   startTime: string;
   providerMeta: {
@@ -61,10 +62,10 @@ export type JobAppServerRuntimeRow = {
   };
 };
 
-export type JobRuntimeRow = JobCliRuntimeRow | JobAppServerRuntimeRow | null;
+type JobRuntimeProjection = JobCliRuntimeProjection | JobAppServerRuntimeProjection | null;
 
-export type JobExitRow = {
-  outcome: JobTerminalRecord['outcome'];
+type JobExitProjection = {
+  outcome: JobTerminal['outcome'];
   content: string;
   durationMs?: number;
   exitCode?: number | null;
@@ -72,11 +73,11 @@ export type JobExitRow = {
   endTime: string;
   nonResumable?: boolean;
   warnings?: string[];
-  usage?: JobTerminalRecord['usage'];
-  workflow?: JobTerminalRecord['workflow'];
+  usage?: JobTerminal['usage'];
+  workflow?: JobTerminal['workflow'];
 };
 
-export type JobProgressRow = {
+type JobProgressProjection = {
   jobId: string;
   sessionId: string;
   seq: number;
@@ -84,14 +85,7 @@ export type JobProgressRow = {
   type: 'progress' | 'terminal';
   ts: string;
   message?: string;
-  result?: JobTerminalRecord;
-};
-
-export type JobProjectionDetail = {
-  status: JobStatusRecord | null;
-  launch: JobLaunchRow | null;
-  runtime: JobRuntimeRow;
-  exit: JobExitRow | null;
+  result?: JobTerminal;
 };
 
 type ProjectionRow = {
@@ -102,9 +96,9 @@ type ProjectionRow = {
 };
 
 type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'>;
-type LatestJobEventRow = EventRow & { stream_id: string };
+type LatestJobEventProjection = EventRow & { stream_id: string };
 type DecodedTerminalRow = {
-  record: JobTerminalRecord;
+  record: JobTerminal;
   signal?: string | null;
 };
 
@@ -173,7 +167,7 @@ function readLatestEventsForJobs(
           AND stream_id IN (${sqlPlaceholders(jobIds.length)})
         ORDER BY stream_id ASC, seq DESC`,
     )
-    .all(type, ...jobIds) as LatestJobEventRow[];
+    .all(type, ...jobIds) as LatestJobEventProjection[];
 
   const eventsByJob = new Map<string, EventRow>();
   for (const row of rows) {
@@ -199,7 +193,7 @@ function deriveLaunchState(
   runtime: EventRow | null,
   terminal: EventRow | null,
   ctx: StoreReadContext,
-): { state: JobStatusRecord['launch']['state']; message?: string } {
+): { state: JobStatus['launch']['state']; message?: string } {
   if (rejected) {
     const body = decodeBody(rejected, jobLaunchRejectedSchema, ctx);
     return {
@@ -223,7 +217,7 @@ function deriveLaunchState(
   return { state: 'ready' };
 }
 
-function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext): JobLaunchRow | null {
+function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext): JobLaunchProjection | null {
   if (!row) {
     return null;
   }
@@ -257,7 +251,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
   };
 }
 
-function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRuntimeRow {
+function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRuntimeProjection {
   const parsed = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
   if (parsed.transport === 'app-server') {
     const providerMeta = parsed.providerMeta;
@@ -309,7 +303,7 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
   };
 }
 
-function toJobExitRow(row: EventRow, terminal: DecodedTerminalRow): JobExitRow {
+function toJobExitProjection(row: EventRow, terminal: DecodedTerminalRow): JobExitProjection {
   return {
     ...terminal.record,
     signal: terminal.signal,
@@ -328,7 +322,7 @@ function hydrateJobProjectionDetail(
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;
+  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord) : null;
 
   const status =
     projection && launch
@@ -434,7 +428,7 @@ export function loadJobProjectionDetails(
 export function listJobProjections(
   db: BetterSqlite3.Database,
   ctx: StoreReadContext,
-): Array<{ jobId: string; status: JobStatusRecord }> {
+): Array<{ jobId: string; status: JobStatus }> {
   const rows = db
     .prepare(
       `SELECT job_id
@@ -453,7 +447,7 @@ export function readJobProgress(
   db: BetterSqlite3.Database,
   jobId: string,
   ctx: StoreReadContext,
-): JobProgressRow[] {
+): JobProgress[] {
   const rows = db
     .prepare(
       `SELECT
@@ -480,7 +474,7 @@ export function readJobProgress(
 
   const sessionId = readLaunchSessionId(db, jobId, ctx);
 
-  return rows.flatMap<JobProgressRow>((row) => {
+  return rows.flatMap<JobProgressProjection>((row) => {
     if (row.type === 'job.progress.emitted') {
       const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {

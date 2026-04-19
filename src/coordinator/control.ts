@@ -19,7 +19,7 @@ import {
   StartupInterruptedError,
   type ProgressStore,
   type JobPhase,
-  type JobTerminalRecord,
+  type JobTerminal,
   type RecoveryCoordinator,
 } from '../jobs/api.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/api.js';
@@ -86,7 +86,7 @@ export type EventBusEvents = {
   'job:progress': { jobId: string; eventId: number; message: string };
   'job:completed': {
     jobId: string;
-    result: JobTerminalRecord;
+    result: JobTerminal;
     costUsd?: number;
     tokenUsage?: {
       inputTokens?: number;

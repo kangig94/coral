@@ -18,7 +18,7 @@ import {
 } from './outcome.js';
 import { usageSummarySchema } from '../providers/protocol.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
-import { workflowResultMetaSchema } from './records.js';
+import { workflowResultMetaSchema } from './views.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -77,7 +77,7 @@ export type JobQueueQueuedBody = z.infer<typeof jobQueueQueuedBodySchema>;
 export type JobQueueAdmittedBody = z.infer<typeof jobQueueAdmittedBodySchema>;
 export type JobRuntimeStartedBody = z.infer<typeof jobRuntimeStartedBodySchema>;
 export type JobProgressBody = z.infer<typeof jobProgressBodySchema>;
-export type JobTerminalRecordedBody = z.infer<typeof jobTerminalRecordedBodySchema>;
+export type JobTerminaledBody = z.infer<typeof jobTerminalRecordedBodySchema>;
 export type JobAbortedBody = z.infer<typeof jobAbortedBodySchema>;
 
 export type JobEventBody =
@@ -87,10 +87,10 @@ export type JobEventBody =
   | JobQueueAdmittedBody
   | JobRuntimeStartedBody
   | JobProgressBody
-  | JobTerminalRecordedBody
+  | JobTerminaledBody
   | JobAbortedBody;
 
-type ProjectionJobRow = {
+type ProjectedJobState = {
   phase: JobPhase;
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics;
@@ -109,7 +109,7 @@ function emptyDiagnostics(): JobDiagnostics {
   return { progressFaults: [] };
 }
 
-function readProjectionJob(db: Database, jobId: string): ProjectionJobRow | null {
+function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
   const row = db
     .prepare(
       `SELECT phase, terminal, diagnostics,
@@ -158,7 +158,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectionJobRow | null
 function upsertProjectionJob(
   db: Database,
   event: CoralEvent,
-  patch: Partial<ProjectionJobRow>,
+  patch: Partial<ProjectedJobState>,
 ): void {
   const previous = readProjectionJob(db, event.stream.id);
   // Identity fields are populated by reducerForRequested. If a non-launch event
@@ -166,7 +166,7 @@ function upsertProjectionJob(
   // runtime/terminal events directly), we fall back to empty strings — the
   // projection row still writes but identity filters won't match until a real
   // launch event arrives.
-  const next: ProjectionJobRow = {
+  const next: ProjectedJobState = {
     phase: patch.phase ?? previous?.phase ?? ('launching' as JobPhase),
     terminal: patch.terminal ?? previous?.terminal ?? null,
     diagnostics: patch.diagnostics ?? previous?.diagnostics ?? emptyDiagnostics(),
@@ -262,7 +262,7 @@ function reducerForProgress(): Reducer<JobProgressBody> {
   };
 }
 
-function reducerForTerminal(): Reducer<JobTerminalRecordedBody> {
+function reducerForTerminal(): Reducer<JobTerminaledBody> {
   return (db, event) => {
     const terminal: JobTerminal = {
       outcome: event.body.outcome,

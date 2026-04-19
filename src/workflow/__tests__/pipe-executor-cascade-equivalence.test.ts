@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminalRecord } from '../../jobs/records.js';
+import type { JobTerminal } from '../../jobs/views.js';
 import type { WaitRequest, WaitStreamEvent } from '../../jobs/wait.js';
 import { executePipeline } from '../executor.js';
 import { parseExpression } from '../parser.js';
@@ -29,7 +29,7 @@ function running(job: string, session: string) {
 
 function terminal(
   jobId: string,
-  result: Omit<JobTerminalRecord, 'outcome'> & { outcome?: JobTerminalRecord['outcome'] },
+  result: Omit<JobTerminal, 'outcome'> & { outcome?: JobTerminal['outcome'] },
 ): WaitStreamEvent {
   return {
     type: 'terminal',
@@ -39,7 +39,7 @@ function terminal(
     result:
       result.outcome === undefined
         ? { ...result, outcome: { kind: 'completed' } }
-        : ({ ...result, outcome: result.outcome } as JobTerminalRecord),
+        : ({ ...result, outcome: result.outcome } as JobTerminal),
   };
 }
 

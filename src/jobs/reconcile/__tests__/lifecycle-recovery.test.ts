@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
-import type { JobLaunchRecord } from '../../records.js';
+import type { JobLaunch } from '../../views.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 
 const runtime = createRealRuntime();
@@ -174,7 +174,7 @@ function stubLaunchRecord(
     jobKind?: 'provider' | 'workflow';
   },
 ): void {
-  const record: JobLaunchRecord = {
+  const record: JobLaunch = {
     jobId: overrides.jobId,
     sessionId: overrides.sessionId,
     provider: overrides.provider,

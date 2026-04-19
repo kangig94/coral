@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProgressStore } from '../../jobs/job-store.js';
 import { SimulationRuntime } from '../../simulation/core/index.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminalRecord } from '../../jobs/records.js';
+import type { JobTerminal } from '../../jobs/views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { parseExpression } from '../parser.js';
@@ -40,7 +40,7 @@ function running(job: string, session: string) {
 }
 
 function terminal(jobId: string, content: string): WaitStreamEvent {
-  const result: JobTerminalRecord = { content, outcome: { kind: 'completed' } };
+  const result: JobTerminal = { content, outcome: { kind: 'completed' } };
   return {
     type: 'terminal',
     jobId,

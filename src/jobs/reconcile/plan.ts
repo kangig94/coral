@@ -1,7 +1,7 @@
 import { isLivePhase, isTerminalPhase } from '../phase.js';
-import { belongsToNamespace } from '../records.js';
-import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
-import type { JobExitRecord } from '../../runtime/durable-runtime.js';
+import { belongsToNamespace } from '../views.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
+import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 
@@ -24,24 +24,24 @@ export interface JobStoreSnapshot {
   hasLaunch(jobId: string): boolean;
   hasRuntime(jobId: string): boolean;
   hasExit(jobId: string): boolean;
-  readStatus(jobId: string): JobStatusRecord | null;
-  readLaunch(jobId: string): JobLaunchRecord | null;
-  readRuntime(jobId: string): JobRuntimeRecord | null;
-  readExit(jobId: string): JobExitRecord | null;
-  readTerminalPayload(jobId: string): JobTerminalRecord | null;
+  readStatus(jobId: string): JobStatus | null;
+  readLaunch(jobId: string): JobLaunch | null;
+  readRuntime(jobId: string): JobRuntime | null;
+  readExit(jobId: string): DurableProcessExit | null;
+  readTerminalPayload(jobId: string): JobTerminal | null;
   listSessionRefs(): Array<{ shardDir: string; sessionId: string; provider: string }>;
   readSession(shardDir: string, provider: string, sessionId: string): SessionEntry | null;
 }
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; fault: RecoveryFaultCompat; status: JobStatusRecord }
-  | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunchRecord }
+  | { type: 'markError'; jobId: string; fault: RecoveryFaultCompat; status: JobStatus }
+  | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunch }
   | {
       type: 'registerRunning';
       jobId: string;
-      launchRecord: JobLaunchRecord;
-      runtimeRecord: JobRuntimeRecord;
+      launchRecord: JobLaunch;
+      runtimeRecord: JobRuntime;
     }
   | { type: 'releaseSessionClaim'; shardDir: string; sessionId: string; jobId: string };
 
@@ -53,21 +53,21 @@ export type RecoveryPlan = {
   cleanup: CleanupAction[];
 };
 
-type RecoveryJobRow = {
+type RecoveryJobSnapshot = {
   jobId: string;
   hasLaunch: boolean;
   hasRuntime: boolean;
   hasExit: boolean;
-  status: JobStatusRecord | null;
-  launchRecord: JobLaunchRecord | null;
-  runtimeRecord: JobRuntimeRecord | null;
-  exitRecord: JobExitRecord | null;
-  terminalPayload: JobTerminalRecord | null;
+  status: JobStatus | null;
+  launchRecord: JobLaunch | null;
+  runtimeRecord: JobRuntime | null;
+  exitRecord: DurableProcessExit | null;
+  terminalPayload: JobTerminal | null;
 };
 
 const CLASSIFIER_TABLE: ReadonlyArray<{
-  match: (snap: RecoveryJobRow, snapshot: JobStoreSnapshot) => boolean;
-  action: (snap: RecoveryJobRow) => RecoveryAction | null;
+  match: (snap: RecoveryJobSnapshot, snapshot: JobStoreSnapshot) => boolean;
+  action: (snap: RecoveryJobSnapshot) => RecoveryAction | null;
   description: string;
 }> = [
   {
@@ -187,8 +187,8 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
     const markStaleRunning: CleanupAction[] = [];
 
     for (const jobId of jobIds) {
-      const row = buildJobRow(snapshot, jobId);
-      const classified = classifyJobRow(row, snapshot);
+      const row = buildRecoveryJob(snapshot, jobId);
+      const classified = classifyRecoveryJob(row, snapshot);
       if (classified.action === null) continue;
 
       switch (classified.description) {
@@ -224,12 +224,12 @@ export function planRecovery(snapshot: JobStoreSnapshot): RecoveryPlan {
   }
 }
 
-function belongsToCurrentNamespace(status: JobStatusRecord, snapshot: JobStoreSnapshot): boolean {
+function belongsToCurrentNamespace(status: JobStatus, snapshot: JobStoreSnapshot): boolean {
   return belongsToNamespace(status, snapshot.currentNamespace);
 }
 
-function classifyJobRow(
-  row: RecoveryJobRow,
+function classifyRecoveryJob(
+  row: RecoveryJobSnapshot,
   snapshot: JobStoreSnapshot,
 ): { description: string; action: RecoveryAction | null } {
   for (const classifier of CLASSIFIER_TABLE) {
@@ -244,7 +244,7 @@ function classifyJobRow(
   return { description: 'null', action: null };
 }
 
-function buildJobRow(snapshot: JobStoreSnapshot, jobId: string): RecoveryJobRow {
+function buildRecoveryJob(snapshot: JobStoreSnapshot, jobId: string): RecoveryJobSnapshot {
   return {
     jobId,
     hasLaunch: safeCall(() => snapshot.hasLaunch(jobId), false),

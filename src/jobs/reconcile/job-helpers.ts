@@ -1,19 +1,19 @@
 import { describeLegacyCoralFault, type RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
-import type { JobStatusRecord, JobTerminalRecord } from '../records.js';
+import type { JobStatus, JobTerminal } from '../views.js';
 import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 
-export function withBackendNamespace(status: JobStatusRecord, namespace: string): JobStatusRecord {
+export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
   return {
     ...status,
     backendNamespace: namespace,
-  } as JobStatusRecord;
+  } as JobStatus;
 }
 
-export function listLiveJobs(progressStore: ProgressStore, namespace: string): JobStatusRecord[] {
-  const results: JobStatusRecord[] = [];
+export function listLiveJobs(progressStore: ProgressStore, namespace: string): JobStatus[] {
+  const results: JobStatus[] = [];
 
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
@@ -40,7 +40,7 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 
 export function markJobAsError(
   progressStore: ProgressStore,
-  status: JobStatusRecord,
+  status: JobStatus,
   fault: RecoveryFaultCompat,
   log: (message: string) => void,
 ): void {
@@ -49,7 +49,7 @@ export function markJobAsError(
     [{ seq: 1, stream: { kind: 'job', id: status.jobId } }],
   );
   const message = describeLegacyCoralFault(fault);
-  const terminalResult: JobTerminalRecord =
+  const terminalResult: JobTerminal =
     status.jobKind === 'workflow'
       ? { content: '', workflow: { steps: [] }, outcome }
       : { content: '', outcome };

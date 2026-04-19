@@ -1,13 +1,14 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CallerContext } from '../shared/request-context.js';
-import type { JobTerminalRecord } from '../jobs/records.js';
+import type { JobTerminal } from '../jobs/views.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../jobs/job-store.js';
+import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
-import { loadJobProjectionDetails, type JobProjectionDetail } from '../store/queries/jobs.js';
+import { loadJobProjectionDetails } from '../store/queries/jobs.js';
 import {
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
@@ -161,7 +162,7 @@ function firstTerminalFailure(
     return null;
   }
 
-  const result: JobTerminalRecord = {
+  const result: JobTerminal = {
     content: terminal.content,
     outcome: terminal.outcome,
     ...(terminal.durationMs === undefined ? {} : { durationMs: terminal.durationMs }),

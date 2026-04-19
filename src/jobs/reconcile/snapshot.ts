@@ -1,18 +1,18 @@
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
-import type { JobExitRecord } from '../../runtime/durable-runtime.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
+import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../job-store.js';
 import { readSessionRefs, listSessionShards } from '../../sessions/shell/resolve.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { JobProjectionDetail } from '../../store/queries/jobs.js';
+import type { JobProjectionDetail } from '../read-contracts.js';
 import type { JobStoreSnapshot } from './plan.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { withBackendNamespace } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 
-function toExitRecord(detail: JobProjectionDetail): JobExitRecord | null {
+function toExitRecord(detail: JobProjectionDetail): DurableProcessExit | null {
   if (!detail.exit) {
     return null;
   }
@@ -24,7 +24,7 @@ function toExitRecord(detail: JobProjectionDetail): JobExitRecord | null {
   };
 }
 
-function toTerminalPayload(detail: JobProjectionDetail): JobTerminalRecord | null {
+function toTerminalPayload(detail: JobProjectionDetail): JobTerminal | null {
   const exit = detail.exit;
   if (!exit) {
     return null;
@@ -58,11 +58,11 @@ export function buildRecoverySnapshot(
   const hasLaunchByJob = new Map<string, boolean>();
   const hasRuntimeByJob = new Map<string, boolean>();
   const hasExitByJob = new Map<string, boolean>();
-  const statusesByJob = new Map<string, JobStatusRecord | null>();
-  const launchesByJob = new Map<string, JobLaunchRecord | null>();
-  const runtimesByJob = new Map<string, JobRuntimeRecord | null>();
-  const exitsByJob = new Map<string, JobExitRecord | null>();
-  const terminalPayloadsByJob = new Map<string, JobTerminalRecord | null>();
+  const statusesByJob = new Map<string, JobStatus | null>();
+  const launchesByJob = new Map<string, JobLaunch | null>();
+  const runtimesByJob = new Map<string, JobRuntime | null>();
+  const exitsByJob = new Map<string, DurableProcessExit | null>();
+  const terminalPayloadsByJob = new Map<string, JobTerminal | null>();
 
   for (const jobId of jobIds) {
     const detail = progressStore.loadJobProjectionDetail(jobId);
@@ -80,8 +80,8 @@ export function buildRecoverySnapshot(
     hasRuntimeByJob.set(jobId, detail.runtime !== null);
     hasExitByJob.set(jobId, detail.exit !== null);
     statusesByJob.set(jobId, status);
-    launchesByJob.set(jobId, detail.launch as JobLaunchRecord | null);
-    runtimesByJob.set(jobId, detail.runtime as JobRuntimeRecord | null);
+    launchesByJob.set(jobId, detail.launch);
+    runtimesByJob.set(jobId, detail.runtime);
     exitsByJob.set(jobId, toExitRecord(detail));
     terminalPayloadsByJob.set(jobId, toTerminalPayload(detail));
   }
@@ -116,11 +116,11 @@ export function buildRecoverySnapshot(
     hasLaunch: (jobId: string): boolean => hasLaunchByJob.get(jobId) === true,
     hasRuntime: (jobId: string): boolean => hasRuntimeByJob.get(jobId) === true,
     hasExit: (jobId: string): boolean => hasExitByJob.get(jobId) === true,
-    readStatus: (jobId: string): JobStatusRecord | null => statusesByJob.get(jobId) ?? null,
-    readLaunch: (jobId: string): JobLaunchRecord | null => launchesByJob.get(jobId) ?? null,
-    readRuntime: (jobId: string): JobRuntimeRecord | null => runtimesByJob.get(jobId) ?? null,
-    readExit: (jobId: string): JobExitRecord | null => exitsByJob.get(jobId) ?? null,
-    readTerminalPayload: (jobId: string): JobTerminalRecord | null => terminalPayloadsByJob.get(jobId) ?? null,
+    readStatus: (jobId: string): JobStatus | null => statusesByJob.get(jobId) ?? null,
+    readLaunch: (jobId: string): JobLaunch | null => launchesByJob.get(jobId) ?? null,
+    readRuntime: (jobId: string): JobRuntime | null => runtimesByJob.get(jobId) ?? null,
+    readExit: (jobId: string): DurableProcessExit | null => exitsByJob.get(jobId) ?? null,
+    readTerminalPayload: (jobId: string): JobTerminal | null => terminalPayloadsByJob.get(jobId) ?? null,
     listSessionRefs: (): Array<{ shardDir: string; sessionId: string; provider: string }> => [...sessionRefs],
     readSession: (shardDir: string, provider: string, sessionId: string): SessionEntry | null =>
       sessionsByRef.get(sessionKey(shardDir, provider, sessionId)) ?? null,

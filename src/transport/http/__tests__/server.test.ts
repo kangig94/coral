@@ -34,7 +34,7 @@ import {
 } from '../../../infra/paths.js';
 import type { BackendServerController } from '../../../coordinator/coordinator.js';
 import type { LifecycleState } from '../../../coordinator/control.js';
-import type { JobLaunchRecord } from '../../../jobs/records.js';
+import type { JobLaunch } from '../../../jobs/views.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
 import {
@@ -65,7 +65,7 @@ import {
 import { createRealRuntime } from '../../../runtime/real.js';
 import { SimulationRuntime, flushMicrotasks } from '../../../simulation/core/index.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
-import { parseJobStatusRecord } from '../../../jobs/records.js';
+import { parseJobStatus } from '../../../jobs/views.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,
@@ -84,7 +84,7 @@ function readStatusRecordForRuntime(
   jobId: string,
 ) {
   try {
-    return parseJobStatusRecord(
+    return parseJobStatus(
       JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
     );
   } catch {
@@ -366,7 +366,7 @@ function stubLaunchRecord(
     pool?: string;
   },
 ): void {
-  const record: JobLaunchRecord = {
+  const record: JobLaunch = {
     jobId: overrides.jobId,
     sessionId: overrides.sessionId,
     provider: overrides.provider,

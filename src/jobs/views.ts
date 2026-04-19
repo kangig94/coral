@@ -11,7 +11,7 @@ import {
 import { type TerminalOutcome, terminalOutcomeSchema } from './outcome.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
 
-export function belongsToNamespace(status: JobStatusRecord, namespace: string): boolean {
+export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
   return (
     typeof status.backendNamespace === 'string'
     && status.backendNamespace.length > 0
@@ -55,7 +55,7 @@ export const workflowResultMetaSchema = z
 
 export type JobKind = 'provider' | 'workflow';
 
-export interface JobTerminalRecord {
+export interface JobTerminal {
   content: string;
   durationMs?: number;
   nonResumable?: boolean;
@@ -66,7 +66,7 @@ export interface JobTerminalRecord {
   outcome: TerminalOutcome;
 }
 
-export const terminalResultSchema = z
+export const jobTerminalSchema = z
   .object({
     content: z.string(),
     durationMs: z.number().optional(),
@@ -79,7 +79,12 @@ export const terminalResultSchema = z
   })
   .strict();
 
-export interface JobStatusRecord {
+export interface JobExit extends JobTerminal {
+  signal?: string | null;
+  endTime: string;
+}
+
+export interface JobStatus {
   jobId: string;
   sessionId: string;
   provider: string;
@@ -93,10 +98,10 @@ export interface JobStatusRecord {
     message?: string;
     updatedAt: string;
   };
-  result?: JobTerminalRecord;
+  result?: JobTerminal;
 }
 
-export const jobStatusRecordSchema = z
+export const jobStatusSchema = z
   .object({
     jobId: z.string(),
     sessionId: z.string(),
@@ -113,20 +118,20 @@ export const jobStatusRecordSchema = z
         updatedAt: z.string(),
       })
       .passthrough(),
-    result: terminalResultSchema.optional(),
+    result: jobTerminalSchema.optional(),
   })
   .passthrough();
 
-export function parseJobStatusRecord(value: unknown): JobStatusRecord | null {
-  const parsed = jobStatusRecordSchema.safeParse(value);
-  return parsed.success ? (parsed.data as JobStatusRecord) : null;
+export function parseJobStatus(value: unknown): JobStatus | null {
+  const parsed = jobStatusSchema.safeParse(value);
+  return parsed.success ? (parsed.data as JobStatus) : null;
 }
 
-export function safeParseJobStatusRecord(value: unknown) {
-  return jobStatusRecordSchema.safeParse(value);
+export function safeParseJobStatus(value: unknown) {
+  return jobStatusSchema.safeParse(value);
 }
 
-export interface JobLaunchRecord {
+export interface JobLaunch {
   jobId: string;
   sessionId: string;
   provider: string;
@@ -165,20 +170,21 @@ export interface AppServerRuntimeRecord {
   };
 }
 
-export type JobRuntimeRecord = DurableCliRuntimeRecord | AppServerRuntimeRecord;
+export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntimeRecord;
 
 export function isAppServerRuntime(
-  record: JobRuntimeRecord | null | undefined,
+  record: JobRuntime | null | undefined,
 ): record is AppServerRuntimeRecord {
   return record?.transport === 'app-server';
 }
 
-export interface JobProgressRecord {
+export interface JobProgress {
   jobId: string;
   sessionId: string;
+  seq: number;
   eventId: number;
   type: 'progress' | 'terminal';
   ts: string;
   message?: string;
-  result?: JobTerminalRecord;
+  result?: JobTerminal;
 }

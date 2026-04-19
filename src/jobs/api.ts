@@ -5,18 +5,17 @@ import type { ProjectRequestPort, RecoveryCapableService } from '../coordinator/
 import type { ProgressStore } from './job-store.js';
 import type { RecoveryRegistry } from '../coordinator/composition/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { JobStatusRecord } from './records.js';
+import type { JobProgress, JobStatus } from './views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from './wait.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
+import type { JobProjectionDetail } from './read-contracts.js';
 import {
   listJobProjections as listJobProjectionsQuery,
   loadJobProjectionDetail as loadJobProjectionDetailQuery,
   readJobProgress as readJobProgressQuery,
-  type JobProjectionDetail,
-  type JobProgressRow,
 } from '../store/queries/jobs.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
@@ -39,8 +38,8 @@ type JobQuerySource =
   | Database
   | {
       loadJobProjectionDetail(jobId: string): JobProjectionDetail;
-      readJobProgress(jobId: string): JobProgressRow[];
-      listJobProjections?(): Array<{ jobId: string; status: JobStatusRecord }>;
+      readJobProgress(jobId: string): JobProgress[];
+      listJobProjections?(): Array<{ jobId: string; status: JobStatus }>;
     };
 
 function isDatabase(value: JobQuerySource): value is Database {
@@ -66,7 +65,7 @@ function queryJobDetail(
   return loadJobProjectionDetailQuery(source, jobId, defaultCtx());
 }
 
-function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow[] {
+function queryJobProgress(source: JobQuerySource, jobId: string): JobProgress[] {
   if (hasJournalQuerySurface(source)) {
     return source.readJobProgress(jobId);
   }
@@ -111,7 +110,7 @@ export const jobsCommands = {
 } as const;
 
 export const jobsQueries = {
-  list(source: JobQuerySource): Array<{ jobId: string; status: JobStatusRecord }> {
+  list(source: JobQuerySource): Array<{ jobId: string; status: JobStatus }> {
     if (hasJournalQuerySurface(source) && typeof source.listJobProjections === 'function') {
       return source.listJobProjections();
     }
@@ -121,7 +120,7 @@ export const jobsQueries = {
     return [];
   },
   detail(source: JobQuerySource, jobId: string): {
-    status: JobStatusRecord | null;
+    status: JobStatus | null;
     launch: JobProjectionDetail['launch'];
     runtime: JobProjectionDetail['runtime'];
     exit: JobProjectionDetail['exit'];
@@ -141,7 +140,7 @@ export const jobsQueries = {
     }
     return status.projectRoot === projectRoot && status.backendNamespace === namespace;
   },
-  awaitLaunch(service: Pick<ProjectRequestPort, 'waitStream'>, jobId: string): AsyncGenerator<WaitStreamEvent> {
+  openJobStream(service: Pick<ProjectRequestPort, 'waitStream'>, jobId: string): AsyncGenerator<WaitStreamEvent> {
     return service.waitStream({ jobIds: [jobId], timeoutSeconds: 1 });
   },
   waitForTerminal(
@@ -150,7 +149,7 @@ export const jobsQueries = {
   ): ReturnType<ProjectRequestPort['waitStream']> {
     return service.waitStream(request);
   },
-  progress(source: JobQuerySource, jobId: string): JobProgressRow[] {
+  progress(source: JobQuerySource, jobId: string): JobProgress[] {
     return queryJobProgress(source, jobId);
   },
 } as const;
@@ -165,7 +164,7 @@ export const jobsReconcile = {
 } as const;
 
 export { isLivePhase, isTerminalPhase, jobPhaseSchema } from './phase.js';
-export { belongsToNamespace, isAppServerRuntime } from './records.js';
+export { belongsToNamespace, isAppServerRuntime } from './views.js';
 export type { ProgressStore } from './job-store.js';
 export { AbortRegistry } from './shell/abort-registry.js';
 export type { JobEvent } from './shell/event-subscription.js';
@@ -187,18 +186,19 @@ export { listLiveJobs, markJobAsError } from './reconcile/job-helpers.js';
 export { adoptOrphanedCrossNamespaceJobs } from './reconcile/cross-namespace-adoption.js';
 export { StartupInterruptedError } from './reconcile/errors.js';
 export type { AgentResolutionContext } from './shell/agent-resolution.js';
-export type { JobProjectionDetail, JobProgressRow } from '../store/queries/jobs.js';
+export type { JobProjectionDetail } from './read-contracts.js';
 export type { JobLaunchRequest, JobResumeRequest, JobForkRequest, LaunchDecision } from './launch.js';
 export type { JobPhase } from './phase.js';
 export type {
   AppServerRuntimeRecord,
-  JobLaunchRecord,
-  JobProgressRecord,
-  JobRuntimeRecord,
-  JobStatusRecord,
-  JobTerminalRecord,
+  JobExit,
+  JobLaunch,
+  JobProgress,
+  JobRuntime,
+  JobStatus,
+  JobTerminal,
   LaunchState,
   WorkflowResultMeta,
-} from './records.js';
+} from './views.js';
 export type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
 export type { AbortReason, TerminalOutcome } from './outcome.js';

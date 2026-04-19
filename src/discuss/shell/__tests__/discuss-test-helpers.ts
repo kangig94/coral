@@ -23,7 +23,7 @@ import type { CallerContext } from '../../../shared/request-context.js';
 import type { ExecutionService } from '../../../coordinator/api.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/index.js';
-import { parseJobStatusRecord } from '../../../jobs/records.js';
+import { parseJobStatus } from '../../../jobs/views.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -106,7 +106,7 @@ function readStatusRecordForRuntime(
   jobId: string,
 ) {
   try {
-    return parseJobStatusRecord(
+    return parseJobStatus(
       JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
     );
   } catch {

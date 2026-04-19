@@ -9,7 +9,7 @@ import { renderEntries } from '../../transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import { parseJobStatusRecord, type JobStatusRecord } from '../../../jobs/records.js';
+import { parseJobStatus, type JobStatus } from '../../../jobs/views.js';
 import { nowIsoString } from '../../util/time.js';
 import {
   createDiscussContextRegistry,
@@ -95,9 +95,9 @@ function createExecutionServiceStub(overrides: Partial<ExecutionService> = {}): 
 function readStatusRecordForRuntime(
   runtime: Pick<SimulationRuntime, 'storage' | 'paths'>,
   jobId: string,
-): JobStatusRecord | null {
+): JobStatus | null {
   try {
-    return parseJobStatusRecord(
+    return parseJobStatus(
       JSON.parse(runtime.storage.readFileSync(resolve(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
     );
   } catch {
@@ -404,7 +404,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       ),
     ];
     await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
-    const status: JobStatusRecord = {
+    const status: JobStatus = {
       jobId,
       sessionId: 'execution-session-1',
       provider: 'codex',

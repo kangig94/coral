@@ -5,6 +5,6 @@ export {
   type JobQueueAdmittedBody,
   type JobQueueQueuedBody,
   type JobRuntimeStartedBody,
-  type JobTerminalRecordedBody,
+  type JobTerminaledBody,
 } from './events.js';
 export { phaseForOutcome } from './outcome.js';

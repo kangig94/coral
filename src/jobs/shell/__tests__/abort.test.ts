@@ -16,10 +16,10 @@ import { createDeferred as _createDeferred } from '../../../shared/test-deferred
 import type { JobPhase } from '../../phase.js';
 import type {
   AppServerRuntimeRecord as _AppServerRuntimeRecord,
-  JobLaunchRecord as _JobLaunchRecord,
-  JobProgressRecord,
-  JobStatusRecord,
-} from '../../records.js';
+  JobLaunch as _JobLaunch,
+  JobProgress,
+  JobStatus,
+} from '../../views.js';
 import type { WaitStreamEvent } from '../../wait.js';
 import type { ProviderRequest as _ProviderRequest, ProviderTurnResult } from '../../../providers/protocol.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -261,8 +261,8 @@ type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
   outcome?: ProviderTurnResult['outcome'];
 };
 
-type TestJobTerminalRecord = Omit<NonNullable<JobStatusRecord['result']>, 'outcome'> & {
-  outcome?: NonNullable<JobStatusRecord['result']>['outcome'];
+type TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
+  outcome?: NonNullable<JobStatus['result']>['outcome'];
 };
 
 function completedOutcome() {
@@ -498,9 +498,9 @@ function _makeStatusRecord(
   phase: JobPhase,
   options: {
     sessionId?: string;
-    result?: TestJobTerminalRecord;
+    result?: TestJobTerminal;
   } = {},
-): JobStatusRecord {
+): JobStatus {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
@@ -519,15 +519,17 @@ function _makeStatusRecord(
 function _makeTerminalReplay(
   jobId: string,
   options: {
+    seq?: number;
     eventId?: number;
     sessionId?: string;
     ts?: string;
-    result?: TestJobTerminalRecord;
+    result?: TestJobTerminal;
   } = {},
-): JobProgressRecord {
+): JobProgress {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
+    seq: options.seq ?? options.eventId ?? 1,
     eventId: options.eventId ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',

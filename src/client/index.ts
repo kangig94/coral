@@ -59,13 +59,13 @@ export type {
 
 // Domain types
 export type {
-  JobStatusRecord,
-  JobProgressRecord,
-  JobTerminalRecord,
+  JobStatus,
+  JobProgress,
+  JobTerminal,
   JobKind,
   WorkflowResultMeta,
   WorkflowStepMeta,
-} from '../jobs/records.js';
+} from '../jobs/views.js';
 export type { WaitStreamEvent, WaitCursor } from '../jobs/wait.js';
 export type { JobPhase } from '../jobs/phase.js';
 export type { SessionEntry, SessionState } from '../sessions/entry.js';

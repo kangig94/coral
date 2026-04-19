@@ -16,10 +16,10 @@ import { createDeferred as _createDeferred } from '../../../shared/test-deferred
 import type { JobPhase } from '../../phase.js';
 import type {
   AppServerRuntimeRecord as _AppServerRuntimeRecord,
-  JobLaunchRecord as _JobLaunchRecord,
-  JobProgressRecord,
-  JobStatusRecord,
-} from '../../records.js';
+  JobLaunch as _JobLaunch,
+  JobProgress,
+  JobStatus,
+} from '../../views.js';
 import type { WaitStreamEvent } from '../../wait.js';
 import type { ProviderRequest as _ProviderRequest, ProviderTurnResult } from '../../../providers/protocol.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -261,8 +261,8 @@ type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
   outcome?: ProviderTurnResult['outcome'];
 };
 
-type TestJobTerminalRecord = Omit<NonNullable<JobStatusRecord['result']>, 'outcome'> & {
-  outcome?: NonNullable<JobStatusRecord['result']>['outcome'];
+type TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
+  outcome?: NonNullable<JobStatus['result']>['outcome'];
 };
 
 function completedOutcome() {
@@ -498,9 +498,9 @@ function makeStatusRecord(
   phase: JobPhase,
   options: {
     sessionId?: string;
-    result?: TestJobTerminalRecord;
+    result?: TestJobTerminal;
   } = {},
-): JobStatusRecord {
+): JobStatus {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
@@ -519,15 +519,17 @@ function makeStatusRecord(
 function makeTerminalReplay(
   jobId: string,
   options: {
+    seq?: number;
     eventId?: number;
     sessionId?: string;
     ts?: string;
-    result?: TestJobTerminalRecord;
+    result?: TestJobTerminal;
   } = {},
-): JobProgressRecord {
+): JobProgress {
   return {
     jobId,
     sessionId: options.sessionId ?? `${jobId}-session`,
+    seq: options.seq ?? options.eventId ?? 1,
     eventId: options.eventId ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
@@ -705,7 +707,7 @@ describe('ExecutionService wait', () => {
   it('waitStream yields progress and terminal events in order', async () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const status: JobStatusRecord = {
+    const status: JobStatus = {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -717,10 +719,11 @@ describe('ExecutionService wait', () => {
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
     };
-    const replay: JobProgressRecord[] = [
+    const replay: JobProgress[] = [
       {
         jobId: 'job-1',
         sessionId: 'session-1',
+        seq: 1,
         eventId: 1,
         type: 'progress',
         ts: '2026-03-06T00:00:01.000Z',
@@ -729,6 +732,7 @@ describe('ExecutionService wait', () => {
       {
         jobId: 'job-1',
         sessionId: 'session-1',
+        seq: 2,
         eventId: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
@@ -798,7 +802,7 @@ describe('ExecutionService wait', () => {
   it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
-    const runningStatus: JobStatusRecord = {
+    const runningStatus: JobStatus = {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -810,7 +814,7 @@ describe('ExecutionService wait', () => {
         updatedAt: '2026-03-06T00:00:00.000Z',
       },
     };
-    const terminalStatus: JobStatusRecord = {
+    const terminalStatus: JobStatus = {
       ...runningStatus,
       phase: 'completed',
       result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1145,10 +1149,11 @@ describe('ExecutionService wait', () => {
     const missingTsTerminal = {
       jobId: 'job-1',
       sessionId: 'job-1-session',
+      seq: 1,
       eventId: 1,
       type: 'terminal',
       result: { content: 'done' },
-    } as JobProgressRecord;
+    } as JobProgress;
 
     vi.spyOn(lateStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
     vi.spyOn(lateStore, 'replayFrom').mockImplementation(() => {
@@ -1425,11 +1430,12 @@ describe('ExecutionService wait', () => {
         const [jid, fromEventId] = args as [string, number];
         void jid;
         const all = [
-          { jobId, sessionId: 'session-1', eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
-          { jobId, sessionId: 'session-1', eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
+          { jobId, sessionId: 'session-1', seq: 1, eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
+          { jobId, sessionId: 'session-1', seq: 2, eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
           {
             jobId,
             sessionId: 'session-1',
+            seq: 3,
             eventId: 3,
             type: 'terminal' as const,
             ts: '',

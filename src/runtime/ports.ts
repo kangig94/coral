@@ -1,5 +1,5 @@
 import type { CoralPaths } from '../infra/coral-paths.js';
-import type { DurableCliRuntimeRecord, JobExitRecord } from './durable-runtime.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 
 export interface RuntimeTimerHandle {
   unref?(): void;
@@ -142,7 +142,7 @@ export type DurableLaunchResult = {
 
 export interface DurableExecutionTransport {
   launch(options: DurableLaunchOptions): Promise<DurableLaunchResult>;
-  waitForExit(handle: DurableLaunchResult): Promise<JobExitRecord>;
+  waitForExit(handle: DurableLaunchResult): Promise<DurableProcessExit>;
 }
 
 export type RuntimeExecOptions = {

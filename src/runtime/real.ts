@@ -59,7 +59,7 @@ import { CoralSetupError } from './errors.js';
 import { MAX_BUFFER } from '../shared/process-constants.js';
 import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../shared/env-sanitize.js';
 import { isDurableCliRuntime } from './durable-runtime.js';
-import type { DurableCliRuntimeRecord, JobExitRecord } from './durable-runtime.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';
 
 const DURABLE_POLL_INTERVAL_MS = 100;
@@ -129,7 +129,7 @@ type DurableControlMessage =
     }
   | {
       type: 'exit';
-      exitRecord: JobExitRecord;
+      exitRecord: DurableProcessExit;
     };
 
 export function createRealRuntime(): Runtime {
@@ -245,7 +245,7 @@ export function createRealRuntime(): Runtime {
     return buildSpawnEnv(options.env);
   };
 
-  const durableExitPromises = new Map<number, Promise<JobExitRecord>>();
+  const durableExitPromises = new Map<number, Promise<DurableProcessExit>>();
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
@@ -521,7 +521,7 @@ function trimStderr(stderr: string): string {
   return trimmed.length > 0 ? `: ${trimmed}` : '';
 }
 
-function isExitRecord(value: unknown): value is JobExitRecord {
+function isExitRecord(value: unknown): value is DurableProcessExit {
   return (
     value !== null &&
     typeof value === 'object' &&
@@ -534,7 +534,7 @@ function isExitRecord(value: unknown): value is JobExitRecord {
 function waitForDurableRuntime(options: {
   time: TimePort;
   wrapper: ReturnType<typeof spawnChild>;
-}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; exitPromise: Promise<JobExitRecord> }> {
+}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; exitPromise: Promise<DurableProcessExit> }> {
   const stdout = options.wrapper.stdout;
   const stderr = options.wrapper.stderr;
   if (!stdout || !stderr) {
@@ -545,7 +545,7 @@ function waitForDurableRuntime(options: {
   stderr.setEncoding('utf8');
 
   const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
-  const exitDeferred = createDeferred<JobExitRecord>();
+  const exitDeferred = createDeferred<DurableProcessExit>();
   let runtimeRecord: DurableCliRuntimeRecord | null = null;
   let stderrBuffer = '';
   let lineBuffer = '';

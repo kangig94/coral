@@ -48,7 +48,7 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import { belongsToNamespace } from '../../jobs/records.js';
+import { belongsToNamespace } from '../../jobs/views.js';
 
 export type {
   BackendBootSnapshot,

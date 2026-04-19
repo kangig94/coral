@@ -8,7 +8,7 @@ import { ensureBackend } from '../../cli/backend-lifecycle.js';
 import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
-import type { JobStatusRecord } from '../../jobs/records.js';
+import type { JobStatus } from '../../jobs/views.js';
 import { appendEvents } from '../../store/append.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { createEmptyRegistry } from '../../store/envelope.js';
@@ -277,11 +277,11 @@ describe('flavor coexistence integration', () => {
     expect(prodHealth.instanceId).toBe(prodInfo.instanceId);
     expect(devHealth.instanceId).toBe(devInfo.instanceId);
 
-    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(
+    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatus }> }>(
       prodInfo,
       `/jobs?all=1&projectRoot=${encodeURIComponent(prodProjectRoot)}`,
     );
-    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(
+    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatus }> }>(
       devInfo,
       `/jobs?all=1&projectRoot=${encodeURIComponent(devProjectRoot)}`,
     );
@@ -291,8 +291,8 @@ describe('flavor coexistence integration', () => {
     expect(prodJobs.jobs[0]?.status.backendNamespace).toBe(prodNamespace);
     expect(devJobs.jobs[0]?.status.backendNamespace).toBe(devNamespace);
 
-    await fetchJson<{ status: JobStatusRecord; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
-    await fetchJson<{ status: JobStatusRecord; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
+    await fetchJson<{ status: JobStatus; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
+    await fetchJson<{ status: JobStatus; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
 
     const prodForeignLookup = await fetchJson<{ code: string; message: string }>(
       prodInfo,

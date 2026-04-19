@@ -14,7 +14,7 @@ export function isDurableCliRuntime(
   return record !== null && record !== undefined && record.transport !== 'app-server';
 }
 
-export interface JobExitRecord {
+export interface DurableProcessExit {
   exitCode: number | null;
   signal: string | null;
   endTime: string;

@@ -1,7 +1,7 @@
 import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isTerminalPhase } from '../phase.js';
-import { isAppServerRuntime } from '../records.js';
+import { isAppServerRuntime } from '../views.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { MutableRuntimeState } from '../../coordinator/control.js';

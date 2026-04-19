@@ -1,6 +1,6 @@
 import type { LaunchDecision } from '../launch.js';
 import type { JobPhase } from '../phase.js';
-import type { JobKind, JobLaunchRecord } from '../records.js';
+import type { JobKind, JobLaunch } from '../views.js';
 import type { ProviderRequest } from '../../providers/protocol.js';
 import { resolveEffort } from '../../shared/schemas.js';
 import type { AdmissionResult } from '../../coordinator/live/admission.js';
@@ -31,7 +31,7 @@ export function rejectLaunch(code: string, message: string): LaunchDecision {
   };
 }
 
-export function toProviderRequest(launchRecord: JobLaunchRecord): ProviderRequest {
+export function toProviderRequest(launchRecord: JobLaunch): ProviderRequest {
   const { providerAction, request, sessionId, projectRoot } = launchRecord;
   return {
     action: providerAction,

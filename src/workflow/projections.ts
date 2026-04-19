@@ -15,7 +15,7 @@ export type WorkflowProjectionRow = {
   lastSeq: number;
 };
 
-export type ProjectionJobRow = {
+export type ProjectedJobState = {
   phase: string;
   lastSeq: number;
 };
@@ -72,7 +72,7 @@ export function listWorkflowProjections(db: BetterSqlite3.Database): WorkflowPro
   }));
 }
 
-export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): ProjectionJobRow | null {
+export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): ProjectedJobState | null {
   const row = db
     .prepare(
       `SELECT phase, last_seq

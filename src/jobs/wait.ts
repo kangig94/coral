@@ -1,4 +1,4 @@
-import type { JobTerminalRecord } from './records.js';
+import type { JobTerminal } from './views.js';
 
 export type WaitCursor = {
   jobs: Record<string, number>;
@@ -28,6 +28,6 @@ export type WaitStreamEvent =
       jobId: string;
       remainingJobIds: string[];
       resultPath: string;
-      result: JobTerminalRecord;
+      result: JobTerminal;
     }
   | { type: 'waiting'; waitingJobIds: string[] };

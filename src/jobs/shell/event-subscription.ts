@@ -1,10 +1,9 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { AppendedEvent } from '../../store/append.js';
-import type { JobProgressRow } from '../../store/queries/jobs.js';
-import type { JobTerminalRecord } from '../records.js';
+import type { JobProgress, JobTerminal } from '../views.js';
 
-export type JobEvent = JobProgressRow;
+export type JobEvent = JobProgress;
 
 type JobSubscriber = {
   afterSeq: number;
@@ -78,7 +77,7 @@ function toJobEvent(
     warnings?: string[];
     usage?: Record<string, unknown>;
     workflow?: { steps: Array<Record<string, unknown>> };
-    outcome: JobTerminalRecord['outcome'];
+    outcome: JobTerminal['outcome'];
   };
 
   return {
@@ -94,8 +93,8 @@ function toJobEvent(
         exitCode: body.exitCode,
         nonResumable: body.nonResumable,
         warnings: body.warnings,
-        usage: body.usage as JobTerminalRecord['usage'],
-        workflow: body.workflow as JobTerminalRecord['workflow'],
+        usage: body.usage as JobTerminal['usage'],
+        workflow: body.workflow as JobTerminal['workflow'],
         outcome: body.outcome,
       },
     };

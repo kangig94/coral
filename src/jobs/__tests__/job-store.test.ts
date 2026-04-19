@@ -9,7 +9,7 @@ import { SimulationRuntime } from '../../simulation/runtime.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { isLivePhase } from '../phase.js';
 import { JobStore } from '../job-store.js';
-import type { JobLaunchRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
@@ -65,7 +65,7 @@ function createStore(db: InstanceType<typeof Database> = createDb()): {
   };
 }
 
-function launchRecord(jobId: string, sessionId: string, backendNamespace: string, bundleHash?: string): JobLaunchRecord {
+function launchRecord(jobId: string, sessionId: string, backendNamespace: string, bundleHash?: string): JobLaunch {
   return {
     jobId,
     sessionId,
@@ -86,11 +86,11 @@ function launchRecord(jobId: string, sessionId: string, backendNamespace: string
   };
 }
 
-function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatusRecord }>, bundleHash?: string): number {
+function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatus }>, bundleHash?: string): number {
   return statuses.filter(({ status }) => isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash)).length;
 }
 
-function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: JobStatusRecord }>, namespace: string): number {
+function referenceLiveCountByNamespace(statuses: Array<{ jobId: string; status: JobStatus }>, namespace: string): number {
   if (!namespace) {
     return 0;
   }
@@ -135,7 +135,7 @@ describe('JobStore', () => {
       },
     });
 
-    const terminalResult: JobTerminalRecord = {
+    const terminalResult: JobTerminal = {
       content: 'done',
       outcome: { kind: 'completed' },
     };

@@ -2,8 +2,8 @@ import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../../shared/backend-log.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../../shared/utils.js';
-import type { JobRuntimeRecord } from '../../jobs/api.js';
-import type { JobExitRecord } from '../../runtime/durable-runtime.js';
+import type { JobRuntime } from '../../jobs/api.js';
+import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';
 import type { LaunchPool } from './admission.js';
 
@@ -94,7 +94,7 @@ export type SpawnCliOptions = {
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
-  onRuntimeRecord?: (record: JobRuntimeRecord) => void;
+  onRuntimeRecord?: (record: JobRuntime) => void;
 };
 
 export type SpawnProviderServerOptions = {
@@ -437,7 +437,7 @@ export async function spawnDurableJobTransport(params: {
     let runtimeRecord = durable.runtimeRecord;
     let tailOffset = runtimeRecord.tailWatermark ?? 0;
     options.onRuntimeRecord?.(runtimeRecord);
-    const durableState: { exitRecord: JobExitRecord | null; exitError: unknown } = {
+    const durableState: { exitRecord: DurableProcessExit | null; exitError: unknown } = {
       exitRecord: null,
       exitError: null,
     };

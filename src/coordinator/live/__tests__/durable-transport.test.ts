@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '../../../runtime/real.js';
-import type { JobRuntimeRecord } from '../../../jobs/api.js';
+import type { JobRuntime } from '../../../jobs/api.js';
 import { LaunchCoordinator } from '../admission.js';
 
 function createProviderServerScript(): string {
@@ -61,7 +61,7 @@ describe('durable transport', () => {
     const jobDir = join(tmpRoot, 'job-1');
     mkdirSync(jobDir, { recursive: true });
     const onEvent = vi.fn();
-    const runtimeRecords: JobRuntimeRecord[] = [];
+    const runtimeRecords: JobRuntime[] = [];
 
     const result = await coordinator.spawnDurableJob({
       provider: 'codex',

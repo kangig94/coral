@@ -16,9 +16,9 @@ import {
   isLivePhase,
   jobPhaseSchema,
   type JobPhase,
-  type JobProgressRecord,
-  type JobStatusRecord,
-  type JobTerminalRecord,
+  type JobProgress,
+  type JobStatus,
+  type JobTerminal,
   type LaunchDecision,
   type WaitCursor,
   type WaitStreamEvent,
@@ -118,8 +118,8 @@ export type JobListFilters = {
 };
 
 export type JobDetail = {
-  status: JobStatusRecord;
-  events: JobProgressRecord[];
+  status: JobStatus;
+  events: JobProgress[];
 };
 
 export interface SessionRequestPort {
@@ -132,7 +132,7 @@ export interface JobsRequestPort {
   scopeCheck(jobIds: string[], projectRoot: string): ScopeCheckResult;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  list(filters: JobListFilters): Array<{ jobId: string; status: JobStatusRecord }>;
+  list(filters: JobListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetail | null;
 }
 
@@ -211,7 +211,7 @@ export interface EventStreamHandlers {
   onProgress: (payload: { jobId: string; eventId: number; message: string }) => void;
   onCompleted: (payload: {
     jobId: string;
-    result: JobTerminalRecord;
+    result: JobTerminal;
     costUsd?: number;
     tokenUsage?: {
       inputTokens?: number;
@@ -262,9 +262,9 @@ export type {
   DiscussSummaryDto,
   DiscussView,
   JobPhase,
-  JobProgressRecord,
-  JobStatusRecord,
-  JobTerminalRecord,
+  JobProgress,
+  JobStatus,
+  JobTerminal,
   LaunchDecision,
   WaitCursor,
   WaitStreamEvent,
