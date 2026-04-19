@@ -11,11 +11,11 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { type LaunchCoordinator } from './engine.js';
+import { type LaunchCoordinator } from '../coordinator/live/admission.js';
 import { type writeBackendInfo, type removeBackendInfoIfOwner } from '../coordinator/discovery.js';
 import type { RecoveryRegistry } from './recovery-registry.js';
-import type { TypedEventBus } from './event-bus.js';
-import type { IdleTimer } from './idle-timer.js';
+import type { TypedEventBus } from './backend-contracts.js';
+import type { IdleTimer } from '../coordinator/live/idle.js';
 import type { ProgressStore } from './progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
@@ -26,7 +26,7 @@ import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-com
 import { isTerminalPhase } from '../shared/types.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from './kb-tools.js';
 import type { BackendIdentity, ExecutionServiceLike, MutableBackendRuntimeState } from './backend-contracts.js';
-import type { ProviderHostManager } from './host-manager.js';
+import type { ProviderHostManager } from '../coordinator/live/provider-hosts/pool.js';
 import type { BackendServerInfo } from './server-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
@@ -349,14 +349,18 @@ async function runLifecycleStartup({
     state.started = true;
 
     idleTimer.startWatching(
-      () =>
-        runtimeState.getLifecycle() === 'running' &&
-        launchCoordinator.active === 0 &&
-        !recoveryCoordinator.isIdleBlocked() &&
-        progressStore.liveJobCountByNamespace(namespace) === 0 &&
-        idleTimer.inflightRequests === 0 &&
-        !hooks.onIdleCheck() &&
-        !(runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false),
+      () => {
+        const curateRunning = runtimeState.getKbSubsystem()?.curateScheduler.isRunning() ?? false;
+        return (
+          runtimeState.getLifecycle() === 'running' &&
+          launchCoordinator.active === 0 &&
+          !recoveryCoordinator.isIdleBlocked() &&
+          progressStore.liveJobCountByNamespace(namespace) === 0 &&
+          idleTimer.inflightRequests === 0 &&
+          !hooks.onIdleCheck() &&
+          (idleTimer.isDraining || !curateRunning)
+        );
+      },
       (reason) => {
         void shutdown(reason).catch(() => {});
       },

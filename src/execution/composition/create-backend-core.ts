@@ -19,7 +19,7 @@ import { jobsReconcile } from '../../jobs/api.js';
 import { workflowRecover } from '../../workflow/api.js';
 import { createBackendControl } from './backend-control.js';
 import { resolveBackendDefaults } from './backend-defaults.js';
-import { createDiscussRuntime } from './discuss-runtime.js';
+import { createDiscussRuntime } from '../../discuss/shell/runtime-build.js';
 import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';

@@ -8,7 +8,7 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
-} from '../execution/recording-observer.js';
+} from './recording/observer.js';
 import {
   createBackendCore,
   type BackendCoreOptions,
@@ -37,7 +37,7 @@ import { registerWorkflowConsumer } from '../workflow/consumer.js';
 import { workflowRecover } from '../workflow/api.js';
 import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
-import { createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
+import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime'> & {
@@ -144,8 +144,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const core = createBackendCore({
     ...coreOptions,
     runtime,
-    createKbSubsystemFn: async (ctx) =>
-      createKbSubsystem({
+    createKbSubsystemFn: async (ctx) => {
+      const kbSubsystem = await createKbSubsystem({
         ...ctx,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
@@ -158,7 +158,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         onCorpusPublishSuccess: () => {
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
-      }),
+      });
+      kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
+        scheduler: kbSubsystem.curateScheduler,
+        db: getStoreDb(),
+        runtime,
+      });
+      await kbSubsystem.curateScheduler.start();
+      return kbSubsystem;
+    },
     createExecutionService: (ctx, deps) =>
       new ExecutionService(ctx, {
         ...deps,

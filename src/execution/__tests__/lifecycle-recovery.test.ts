@@ -10,8 +10,8 @@ import type * as LifecycleModule from '../lifecycle.js'
 import type * as HttpHandlerModule from '../http-handler.js'
 import type * as ServiceModule from '../service.js'
 import type * as ServerModule from '../server.js'
-import type * as EngineModule from '../engine.js'
-import type * as EventBusModule from '../event-bus.js'
+import type * as EngineModule from '../../coordinator/live/admission.js'
+import type * as EventBusModule from '../backend-contracts.js'
 import type * as PathsModule from '../../infra/paths.js'
 import type * as ProviderRegistryModule from '../../providers/registry.js'
 import type * as DiscussOperationsModule from '../../discuss/shell/operations.js'
@@ -74,8 +74,8 @@ async function loadModules(): Promise<LoadedModules> {
     import('../http-handler.js'),
     import('../service.js'),
     import('../server.js'),
-    import('../engine.js'),
-    import('../event-bus.js'),
+    import('../../coordinator/live/admission.js'),
+    import('../backend-contracts.js'),
     import('../../infra/paths.js'),
     import('../../providers/registry.js'),
     import('../../discuss/shell/operations.js'),

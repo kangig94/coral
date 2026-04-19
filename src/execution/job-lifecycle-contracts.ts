@@ -1,6 +1,6 @@
 import type { JobKind, JobPhase, LaunchDecision, JobLaunchRecord, ProviderRequest } from '../shared/types.js';
 import { resolveEffort } from '../shared/schemas.js';
-import type { AdmissionResult } from './engine.js';
+import type { AdmissionResult } from '../coordinator/live/admission.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 

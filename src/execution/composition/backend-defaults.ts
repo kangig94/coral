@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../coordinator/discovery.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { acquireLock, removeLockIfOwner, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../backend-lock.js';
-import type { LaunchCoordinator } from '../engine.js';
-import { IdleTimer, resolveIdleTimeoutMs } from '../idle-timer.js';
+import type { LaunchCoordinator } from '../../coordinator/live/admission.js';
+import { IdleTimer, resolveIdleTimeoutMs } from '../../coordinator/live/idle.js';
 import { createKbSubsystem as defaultCreateKbSubsystem } from '../kb-tools.js';
 import {
   cleanupStaleJobs,

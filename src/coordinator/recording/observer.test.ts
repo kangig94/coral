@@ -2,15 +2,11 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  EventEmitterObserver,
-  attachRecordingObserver,
-  observeRuntimeSpawns,
-} from '../recording-observer.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { ChildProcessLike } from '../../runtime/ports.js';
-import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
-import { loadRecording } from '../simulation/recording.js';
+import { SimulationRuntime, flushMicrotasks } from '../../execution/simulation/core/index.js';
+import { loadRecording } from '../../execution/simulation/recording.js';
+import { EventEmitterObserver, attachRecordingObserver, observeRuntimeSpawns } from './observer.js';
 
 const tempDirs: string[] = [];
 

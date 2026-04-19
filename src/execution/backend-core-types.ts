@@ -11,10 +11,10 @@ import type { VerifyBackendOwnershipFn } from './backend-lock.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
 import type { DiscussContextRegistry } from '../discuss/shell/live-registry.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import type { LaunchCoordinator } from './engine.js';
-import type { TypedEventBus } from './event-bus.js';
-import type { ProviderHostManager } from './host-manager.js';
-import type { IdleTimer } from './idle-timer.js';
+import type { TypedEventBus } from './backend-contracts.js';
+import type { LaunchCoordinator } from '../coordinator/live/admission.js';
+import type { ProviderHostManager } from '../coordinator/live/provider-hosts/pool.js';
+import type { IdleTimer } from '../coordinator/live/idle.js';
 import type {
   CreateKbSubsystemFn,
   LifecycleController,

@@ -4,8 +4,8 @@
  * children, discuss sessions, event delivery, or provider registry.
  */
 import { describe, expect, it } from 'vitest';
-import { LaunchCoordinator } from '../engine.js';
-import { TypedEventBus } from '../event-bus.js';
+import { LaunchCoordinator } from '../../coordinator/live/admission.js';
+import { TypedEventBus } from '../backend-contracts.js';
 import { createDiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
@@ -21,8 +21,8 @@ describe('backend isolation', () => {
 
     const admitA = coordA.requestLaunch('job-a1', 'codex');
     const admitB = coordB.requestLaunch('job-b1', 'codex');
-    expect(admitA).toEqual({ type: 'immediate' });
-    expect(admitB).toEqual({ type: 'immediate' });
+    expect(admitA).toMatchObject({ outcome: 'admitted', type: 'immediate' });
+    expect(admitB).toMatchObject({ outcome: 'admitted', type: 'immediate' });
 
     // Coordinator A sees only its own active job
     expect(coordA.getActiveJobIds()).toEqual(['job-a1']);

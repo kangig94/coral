@@ -109,7 +109,6 @@ const SESSION_ALLOWED = [
   'src/store/**',
   'src/infra/**',
 ];
-const ENGINE_ALLOWED = [...NODE_AND_VENDOR, 'src/shared/**', 'src/runtime/**', 'src/execution/**', 'src/providers/**'];
 const KB_ALLOWED = [...TRANSPORT_ALLOWED, 'src/kb/**'];
 
 const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
@@ -119,15 +118,11 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
       'src/execution/backend-core.ts',
       'src/execution/backend-core-types.ts',
       'src/execution/server-types.ts',
-      'src/execution/event-bus.ts',
-      'src/execution/idle-timer.ts',
-      'src/execution/recording-observer.ts',
       'src/execution/smoke-open-store.ts',
       'src/execution/composition/backend-control.ts',
       'src/execution/composition/backend-defaults.ts',
       'src/execution/composition/backend-world.ts',
       'src/execution/composition/create-backend-core.ts',
-      'src/execution/composition/discuss-runtime.ts',
       'src/execution/composition/execution-services.ts',
       'src/execution/composition/runtime-state.ts',
     ],
@@ -154,17 +149,6 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
       forbiddenDiscriminants: ['coral_fault'],
       forbiddenCallees: ['rebuildProjections'],
     },
-  ),
-  ...entries(
-    ['src/execution/engine.ts', 'src/execution/host-manager.ts'],
-    contract('src/coordinator/live/**', 'Phase 3 coordinator/live handoff', ENGINE_ALLOWED, {
-      forbiddenDiscriminants: ['coral_fault', 'legacy_fault'],
-      forbiddenCallees: ['appendEvents', 'appendJobEvents', 'appendWorkflowEvents'],
-      forbiddenConstructionPatterns: [
-        { keys: ['kind', 'causeRef'] },
-        { keys: ['kind', 'fault'] },
-      ],
-    }),
   ),
   ...entries(
     [

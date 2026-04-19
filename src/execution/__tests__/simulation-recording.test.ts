@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LaunchCoordinator } from '../engine.js';
+import { LaunchCoordinator } from '../../coordinator/live/admission.js';
 import type { ChildProcessLike } from '../../runtime/ports.js';
 import {
   SimulationRuntime,

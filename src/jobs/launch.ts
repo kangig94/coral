@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { LaunchPool } from '../execution/engine.js';
+import type { LaunchPool } from '../coordinator/live/admission.js';
 import type { EffortLevel, ProviderAction, ProviderInstruction } from '../shared/types.js';
 
 export type LaunchDecision =

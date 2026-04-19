@@ -15,7 +15,7 @@ import type * as BackendLockMod from '../backend-lock.js';
 import type * as LifecycleMod from '../lifecycle.js';
 import type * as InfraPathsMod from '../../infra/paths.js';
 import type * as HttpHandlerMod from '../http-handler.js';
-import type { ProviderServerHandle } from '../engine.js';
+import type { ProviderServerHandle } from '../../coordinator/live/admission.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 
 import { readDiscussEventLog } from '../../client/readers.js';
@@ -38,9 +38,9 @@ import type { HttpHandlerDeps, MutableBackendRuntimeState } from '../backend-con
 import type { LifecycleState } from '../server-types.js';
 import type { JobLaunchRecord } from '../../shared/types.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
-import { LaunchCoordinator } from '../engine.js';
-import { TypedEventBus } from '../event-bus.js';
-import { createProviderHostManager } from '../host-manager.js';
+import { LaunchCoordinator } from '../../coordinator/live/admission.js';
+import { TypedEventBus } from '../backend-contracts.js';
+import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { SimulationRuntime, flushMicrotasks } from '../simulation/core/index.js';
 import { ProviderRegistry } from '../../providers/registry.js';

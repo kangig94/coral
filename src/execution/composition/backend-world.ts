@@ -12,10 +12,10 @@ import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
 } from '../../discuss/shell/live-registry.js';
-import { LaunchCoordinator } from '../engine.js';
-import { TypedEventBus } from '../event-bus.js';
-import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
-import type { IdleTimer } from '../idle-timer.js';
+import { TypedEventBus } from '../backend-contracts.js';
+import { LaunchCoordinator } from '../../coordinator/live/admission.js';
+import { createProviderHostManager, type ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
+import type { IdleTimer } from '../../coordinator/live/idle.js';
 import { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';

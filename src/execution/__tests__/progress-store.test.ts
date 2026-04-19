@@ -7,7 +7,7 @@ import type {
   JobStatusRecord,
   JobTerminalRecord,
 } from '../../shared/types.js';
-import { TypedEventBus } from '../event-bus.js';
+import { TypedEventBus } from '../backend-contracts.js';
 import { ProgressStore, createReplayCursor, formatElapsed } from '../progress-store.js';
 import { SimulationRuntime } from '../simulation/core/index.js';
 

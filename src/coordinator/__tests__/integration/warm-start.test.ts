@@ -17,11 +17,6 @@ import {
   type SpawnedCoordinator,
 } from './helpers.js';
 
-// CG4: full handoff race is wired when coordinator-rpc-control extracts service.ts + lifecycle.ts
-// composition. CG1 ships the bootable slice (cold-start + lock + discovery + flavor isolation);
-// warm-start handoff against a running incumbent requires the full composition chain to drain
-// cleanly under CONTENDER_BUDGET and is validated in CG4 acceptance.
-
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 
@@ -39,11 +34,7 @@ afterEach(async () => {
 });
 
 describe('coordinator warm-start integration', () => {
-  // CG4 defer — the bootable slice (CG1) does not yet wire the full composition chain required
-  // for a running incumbent to drain cleanly when a contender arrives. Cold-start + lock isolation
-  // already pass; the handoff race requires coordinator-rpc-control (service.ts + lifecycle.ts
-  // extraction) to be complete before the incumbent can respond to CONTENDER_BUDGET signals.
-  it.skip('hands off from bundle A to bundle B within the contender budget and updates discovery to the replacement bundle', async () => {
+  it('hands off from bundle A to bundle B within the contender budget and updates discovery to the replacement bundle', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected build/coral-backend.cjs to exist before running integration tests');
     }

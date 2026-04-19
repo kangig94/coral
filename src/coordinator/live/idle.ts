@@ -1,8 +1,7 @@
-import { parsePositiveInt } from './engine.js';
-import type { RuntimeTimePort } from '../runtime/ports.js';
+import type { RuntimeTimePort } from '../../runtime/ports.js';
+import { parsePositiveInt } from './worker-limits.js';
 
 export const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
-
 const IDLE_CHECK_INTERVAL_MS = 60_000;
 
 export function resolveIdleTimeoutMs(raw: string | undefined): number {
@@ -47,7 +46,6 @@ export class IdleTimer {
     return this.drainReason !== null;
   }
 
-  /** Drain as soon as idle — skip the normal timeout wait. */
   requestDrain(reason: string): void {
     this.drainReason = reason;
     this.tryDrain();
@@ -83,8 +81,8 @@ export class IdleTimer {
   private tryDrain(): void {
     if (this.drainReason === null || this.idleTriggered) return;
     if (this.inflight !== 0) return;
-    if (!this.checkIdle?.()) return;
 
+    // Explicit drain requests should not wait on the passive idle predicate.
     this.idleTriggered = true;
     this.onIdle?.(this.drainReason);
   }

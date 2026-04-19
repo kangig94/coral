@@ -31,6 +31,15 @@ type IncumbentState = 'healthy_same' | 'healthy_replacing' | 'contended' | 'stal
 
 const activeLocks = new Map<string, LockState>();
 
+function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
+  if (typeof time.setTimeout !== 'function') {
+    return time.sleep(ms);
+  }
+  return new Promise((resolve) => {
+    time.setTimeout(resolve, ms);
+  });
+}
+
 function lockFilePath(flavor: BuildFlavor): string {
   return coordinatorPaths(flavor).lockFile;
 }
@@ -305,12 +314,12 @@ export async function acquireLock(
 
     if (incumbent === 'healthy_replacing') {
       await requestHandoff(runtime, flavor);
-      await runtime.time.sleep(RETRY_DELAY_MS);
+      await sleepForRetry(runtime.time, RETRY_DELAY_MS);
       continue;
     }
 
     if (incumbent === 'contended' && !deadlineExpired) {
-      await runtime.time.sleep(RETRY_DELAY_MS);
+      await sleepForRetry(runtime.time, RETRY_DELAY_MS);
       continue;
     }
 
@@ -320,7 +329,7 @@ export async function acquireLock(
       continue;
     }
 
-    await runtime.time.sleep(RETRY_DELAY_MS);
+    await sleepForRetry(runtime.time, RETRY_DELAY_MS);
   }
 }
 

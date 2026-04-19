@@ -15,9 +15,9 @@ import type { LegacyProviderName, LegacyTerminalOutcome } from '../../../shared/
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { SimulationRuntime } from '../../../simulation/runtime.js';
 import { sendJson } from '../../http-handler.js';
-import { LaunchCoordinator } from '../../engine.js';
-import { TypedEventBus } from '../../event-bus.js';
-import { createProviderHostManager } from '../../host-manager.js';
+import { TypedEventBus } from '../../backend-contracts.js';
+import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
+import { createProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, StoragePort } from '../../../runtime/ports.js';
 import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';

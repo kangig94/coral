@@ -28,11 +28,11 @@ import {
   InvalidAgentRefError,
   type AgentRef,
 } from '../../jobs/shell/agent-resolution.js';
-import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../engine.js';
+import { LaunchCoordinator, getMaxWorkers, type ProviderServerHandle, type SpawnProviderServerFn } from '../../coordinator/live/admission.js';
 import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { TypedEventBus } from '../event-bus.js';
+import { TypedEventBus } from '../backend-contracts.js';
 import { ProgressStore } from '../progress-store.js';
-import { createProviderHostManager, type ProviderHostManager } from '../host-manager.js';
+import { createProviderHostManager, type ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { SessionManager } from '../session-manager.js';
 import type { CallerContext } from '../../shared/request-context.js';

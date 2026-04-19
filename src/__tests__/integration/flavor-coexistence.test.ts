@@ -191,8 +191,10 @@ describe('flavor coexistence integration', () => {
 
     const prodJobId = `coexist-prod-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const devJobId = `coexist-dev-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    seedCompletedJob(prodJobId, prodNamespace, join(tempHome, 'project-prod'), prodFixture.bundleHash);
-    seedCompletedJob(devJobId, devNamespace, join(tempHome, 'project-dev'), devFixture.bundleHash);
+    const prodProjectRoot = join(tempHome, 'project-prod');
+    const devProjectRoot = join(tempHome, 'project-dev');
+    seedCompletedJob(prodJobId, prodNamespace, prodProjectRoot, prodFixture.bundleHash);
+    seedCompletedJob(devJobId, devNamespace, devProjectRoot, devFixture.bundleHash);
 
     startedPluginRoots.push(prodFixture.root, devFixture.root);
     await ensureBackend(prodFixture.root);
@@ -221,8 +223,14 @@ describe('flavor coexistence integration', () => {
     expect(prodHealth.instanceId).toBe(prodInfo.instanceId);
     expect(devHealth.instanceId).toBe(devInfo.instanceId);
 
-    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(prodInfo, '/jobs');
-    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(devInfo, '/jobs');
+    const prodJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(
+      prodInfo,
+      `/jobs?all=1&projectRoot=${encodeURIComponent(prodProjectRoot)}`,
+    );
+    const devJobs = await fetchJson<{ jobs: Array<{ jobId: string; status: JobStatusRecord }> }>(
+      devInfo,
+      `/jobs?all=1&projectRoot=${encodeURIComponent(devProjectRoot)}`,
+    );
 
     expect(prodJobs.jobs.map((job) => job.jobId)).toEqual([prodJobId]);
     expect(devJobs.jobs.map((job) => job.jobId)).toEqual([devJobId]);

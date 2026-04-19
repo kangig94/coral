@@ -31,7 +31,7 @@ import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outc
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
-import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../execution/engine.js';
+import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../coordinator/live/admission.js';
 import { type ProgressStore } from '../../execution/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../execution/session-manager.js';

@@ -26,7 +26,7 @@ import {
   attachRecordingObserver,
   observeRuntimeSpawns,
   resolveSpawnRecordingDir,
-} from './recording-observer.js';
+} from '../coordinator/recording/observer.js';
 
 function createLegacyStartupRecoveryFn(
   runtime: Runtime,

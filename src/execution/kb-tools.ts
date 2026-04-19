@@ -40,7 +40,7 @@ import {
 } from '../shared/kb-read-contract.js';
 import { assertOwnerId } from '../shared/utils.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { SpawnCliFn } from './engine.js';
+import type { SpawnCliFn } from '../coordinator/live/admission.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   deriveErrorMessage,

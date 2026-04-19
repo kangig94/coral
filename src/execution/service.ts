@@ -50,9 +50,9 @@ import {
 import { type AbortReason, type TerminalOutcome } from '../jobs/outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../jobs/shell/legacy-ingest.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
-import type { LaunchCoordinator, LaunchPool } from './engine.js';
-import type { TypedEventBus } from './event-bus.js';
-import { type ProviderHostManager, type ProviderServerAttachment } from './host-manager.js';
+import type { TypedEventBus } from './backend-contracts.js';
+import type { LaunchCoordinator, LaunchPool } from '../coordinator/live/admission.js';
+import { type ProviderHostManager, type ProviderServerAttachment } from '../coordinator/live/provider-hosts/pool.js';
 import { buildCoralInstruction } from '../jobs/shell/instruction.js';
 import { LaunchOrchestrator, WaitCoordinator } from './job-lifecycle.js';
 import {

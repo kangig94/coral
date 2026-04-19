@@ -5,11 +5,11 @@ import { isAppServerRuntime } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { MutableBackendRuntimeState } from '../backend-contracts.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
-import type { IdleTimer } from '../idle-timer.js';
+import type { IdleTimer } from '../../coordinator/live/idle.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../service.js';
-import type { ProviderHostManager } from '../host-manager.js';
+import type { ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { listLiveJobs } from '../../jobs/reconcile/job-helpers.js';
 import { shutdownModeFromReason, type ShutdownMode } from './shutdown-mode.js';
 

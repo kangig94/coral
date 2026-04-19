@@ -30,6 +30,15 @@ type BackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'paths' | 'time'> & 
 type BackendLockStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
 type BackendLockPaths = Pick<RuntimePathsPort, 'backendLockPath'>;
 
+function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
+  if (typeof time.setTimeout !== 'function') {
+    return time.sleep(ms);
+  }
+  return new Promise((resolve) => {
+    time.setTimeout(resolve, ms);
+  });
+}
+
 export class BackendAlreadyRunningError extends Error {
   constructor() {
     super('Coral backend already running');
@@ -194,11 +203,11 @@ export async function acquireLock(
         throw new BackendAlreadyRunningError();
       }
       if (ownershipState === 'contended' && !deadlineExpired) {
-        await runtime.time.sleep(RETRY_DELAY_MS);
+        await sleepForRetry(runtime.time, RETRY_DELAY_MS);
         continue;
       }
     } else if (!deadlineExpired) {
-      await runtime.time.sleep(RETRY_DELAY_MS);
+      await sleepForRetry(runtime.time, RETRY_DELAY_MS);
       continue;
     }
 
@@ -208,7 +217,7 @@ export async function acquireLock(
       continue;
     }
 
-    await runtime.time.sleep(RETRY_DELAY_MS);
+    await sleepForRetry(runtime.time, RETRY_DELAY_MS);
   }
 }
 

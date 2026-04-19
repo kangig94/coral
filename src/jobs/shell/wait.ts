@@ -5,8 +5,8 @@ import {
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../shared/types.js';
-import type { LaunchCoordinator, LaunchPool } from '../../execution/engine.js';
-import type { TypedEventBus } from '../../execution/event-bus.js';
+import type { TypedEventBus } from '../../execution/backend-contracts.js';
+import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
 import { createReplayCursor, type ProgressStore } from '../../execution/progress-store.js';
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
