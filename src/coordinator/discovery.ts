@@ -150,8 +150,15 @@ function parseLinuxBootTimeSeconds(): number | null {
   }
 }
 
+const DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND = 100;
+
 function parseLinuxClockTicksPerSecond(): number | null {
   if (linuxClockTicksPerSecondCache !== undefined) {
+    return linuxClockTicksPerSecondCache;
+  }
+
+  if (process.env.CORAL_DISCOVERY_PROBE_CLK_TCK !== '1') {
+    linuxClockTicksPerSecondCache = DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
     return linuxClockTicksPerSecondCache;
   }
 
@@ -161,10 +168,11 @@ function parseLinuxClockTicksPerSecond(): number | null {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     const parsed = Number.parseInt(raw, 10);
-    linuxClockTicksPerSecondCache = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    linuxClockTicksPerSecondCache =
+      Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
     return linuxClockTicksPerSecondCache;
   } catch {
-    linuxClockTicksPerSecondCache = null;
+    linuxClockTicksPerSecondCache = DEFAULT_LINUX_CLOCK_TICKS_PER_SECOND;
     return linuxClockTicksPerSecondCache;
   }
 }
