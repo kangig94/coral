@@ -30,9 +30,7 @@ import type { StoreReadContext } from '../store/body-codec.js';
 
 let cachedReadCtx: StoreReadContext | null = null;
 function readCtx(): StoreReadContext {
-  if (!cachedReadCtx) {
-    cachedReadCtx = { upcasters: createDefaultUpcasterRegistry() };
-  }
+  cachedReadCtx ??= { upcasters: createDefaultUpcasterRegistry() };
   return cachedReadCtx;
 }
 

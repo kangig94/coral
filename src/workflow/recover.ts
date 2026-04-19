@@ -5,7 +5,7 @@ import type { JobTerminalRecord } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../jobs/job-store.js';
-import { decodeBody, decodeEventBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
 import { loadJobProjectionDetail } from '../store/queries/jobs.js';
 import {

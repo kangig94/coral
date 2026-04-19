@@ -75,9 +75,7 @@ function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow
 
 let cachedDefaultCtx: StoreReadContext | null = null;
 function defaultCtx(): StoreReadContext {
-  if (!cachedDefaultCtx) {
-    cachedDefaultCtx = { upcasters: createDefaultUpcasterRegistry() };
-  }
+  cachedDefaultCtx ??= { upcasters: createDefaultUpcasterRegistry() };
   return cachedDefaultCtx;
 }
 

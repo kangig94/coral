@@ -5,7 +5,7 @@ import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
-import { decodeBody, decodeEventBody, type StoreReadContext } from '../body-codec.js';
+import { decodeBody, type StoreReadContext } from '../body-codec.js';
 import { readLatestEvent } from './events.js';
 import type { EventsRow } from '../schema.js';
 
