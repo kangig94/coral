@@ -241,7 +241,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - `src/coordinator/api.ts` — public RPC surface (types used by Phase 4 transport).
 - `src/coordinator/control.ts` — shutdown/drain.
 - `src/coordinator/lock.ts` — singleton lock with warm-start handoff (STARTUP_DEADLINE 30s, CONTENDER_BUDGET 90s, bundleHash + flavor gating).
-- `src/coordinator/info.ts` — `~/.coral/run/coordinator.json` read/write.
+- `src/coordinator/discovery.ts` — `~/.coral/run/coordinator.json` read/write (renamed from `info.ts` in Phase 3 — name now matches its responsibility per architecture §10.3 intent-revealing rule; see Amendments at file end).
 - `src/coordinator/log.ts`, `caller-context.ts`.
 - `src/coordinator/live/`:
   - `admission.ts` (from `engine.ts`), `worker-limits.ts`, `durable-transport.ts`.
@@ -697,3 +697,13 @@ Items previously in "known unknowns" that are now hard-specified above:
 ---
 
 **Status**: Plan is implementation-ready after addressing 25 agent findings. Branch policy mandates `rewrite` branch; bundle regeneration is locked to Cleanup phase; Phase 3 explicitly owns CorpusConsumer notify plumbing; Phase 5 honestly frames the `ensureVectorIndex` inversion; hooks are stubbed through Phase 2–6; test migration mapped; error shape contractualized. Remaining risks are scoped to individual phase budgets.
+
+---
+
+## Amendments
+
+Tracked deviations from the original plan adopted during implementation. Each entry names the change, the phase that adopted it, and the binding rationale. The companion architecture document (`2026-04-18-final-unified-architecture.md`) carries matching entries.
+
+- **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). Renamed so the filename matches the module's responsibility (discovery record I/O) per architecture §10.3 intent-revealing rule + invariant #31 (no generic filenames at domain roots). Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over this plan's `types.ts`.
+- **`coordinator/bootstrap.ts` introduced as a sibling of `coordinator.ts`** (Phase 3). Owns argv parsing, `--smoke-open-store` short-circuit, and main-process exit-code orchestration. `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh` (the Phase 3 plan §AC1 and AC10 references reflect this split).
+- **Phase 2 sessions filename**: `src/sessions/entry.ts` over this plan's `src/sessions/types.ts` (Phase 2, tag `phase-2-complete`). Same intent-revealing rule. The architecture §10.2 ban on generic filenames at domain roots takes precedence over the implementation-plan's `types.ts` placeholder for this slot.

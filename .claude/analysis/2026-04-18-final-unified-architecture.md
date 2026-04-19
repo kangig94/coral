@@ -1046,7 +1046,7 @@ src/
                                        CLI stays usable without manual intervention. This is process-identity
                                        locking (one coordinator per flavor), separate from SQLite's BEGIN
                                        IMMEDIATE (which serializes writes within one coordinator).
-    info.ts                          — coordinator discovery record I/O
+    discovery.ts                     — coordinator discovery record I/O (renamed from info.ts in Phase 3 — name now matches §10.3 intent-revealing rule; see Amendments)
     log.ts                           — coordinator-local structured logging
     caller-context.ts                — per-request caller identity scope
     consumer-driver.ts               — projection consumer driver: push-triggered,
@@ -1889,3 +1889,12 @@ The two-authority model is not an asymmetry to apologize for — it is Coral's *
 Five elegance axes hold (inevitable / self-evident / essential / natural / resonant) with zero cost-axis residue. Adversarial review rounds have converged; the design now resists further sharpening without violating one of the axes.
 
 This document is the sole design reference for any `/coral:plan` session implementing this architecture.
+
+---
+
+## Amendments
+
+Tracked deviations from the original design adopted during implementation. Each entry names the change, the phase that adopted it, and the binding rationale.
+
+- **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). The original §10 topology named this module `info.ts` with the comment "coordinator discovery record I/O". Phase 3 implementation renamed it to `discovery.ts` so the filename matches the responsibility, satisfying invariant #31 (no generic filenames at any domain root) and the §10.3 type-ownership / intent-revealing principle. Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over the implementation-plan's `types.ts`. Responsibility is unchanged: read/write `~/.coral/run{,-dev}/coordinator.json` plus the process-identity probe.
+- **`coordinator/bootstrap.ts` introduced as the main-process entry sibling of `coordinator.ts`** (Phase 3). The original §10 topology folded main-process startup, argv parsing, and `--smoke-open-store` into `coordinator.ts`. Phase 3 split these into a separate `bootstrap.ts` so `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh`.
