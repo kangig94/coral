@@ -42,7 +42,7 @@ import {
 } from '../../../coordinator/live/admission.js';
 import type { AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
-import { ProgressStore } from '../../../store/progress-store.js';
+import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import type { SessionManager } from '../../../sessions/shell/store.js';

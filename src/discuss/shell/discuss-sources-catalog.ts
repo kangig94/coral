@@ -12,7 +12,6 @@ import {
   transcriptResolveTypes,
 } from '../session-types.js';
 import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../../runtime/ports.js';
-import { parseJobStatusRecord, type JobStatusRecord } from '../../jobs/records.js';
 import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../../shared/persistence-types.js';
 import { isNoEntryError } from '../../shared/utils.js';
 
@@ -658,16 +657,6 @@ export function readDirectoryEntriesWithStorage(
     if (isNoEntryError(error)) return [];
     throw error;
   }
-}
-
-export function readStatusRecordWithStorage(
-  storage: Pick<StoragePort, 'readFileSync'>,
-  paths: Pick<DiscussPathResolver, 'jobStatusPath'>,
-  jobId: string,
-): JobStatusRecord | null {
-  const record = readJsonFileWithStorage(storage, paths.jobStatusPath(jobId));
-  if (record === null) return null;
-  return parseJobStatusRecord(record);
 }
 
 export function readDiscussSnapshotWithStorage(

@@ -6,7 +6,6 @@ import { type LaunchCoordinator } from './live/admission.js';
 import { type writeBackendInfo, type removeBackendInfoIfOwner } from './discovery.js';
 import type { RecoveryRegistry } from './composition/recovery-registry.js';
 import type { IdleTimer } from './live/idle.js';
-import type { ProgressStore } from '../store/progress-store.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
@@ -18,6 +17,7 @@ import {
   listLiveJobs,
   markJobAsError,
   StartupInterruptedError,
+  type ProgressStore,
   type JobPhase,
   type JobTerminalRecord,
   type RecoveryCoordinator,

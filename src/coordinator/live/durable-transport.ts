@@ -10,7 +10,6 @@ import type { LaunchPool } from './admission.js';
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
 const DURABLE_RUNTIME_POLL_INTERVAL_MS = 500;
-const RUNTIME_FILE = 'runtime.json';
 
 export type CliExecResult = {
   stdout: string;
@@ -95,6 +94,7 @@ export type SpawnCliOptions = {
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
+  onRuntimeRecord?: (record: JobRuntimeRecord) => void;
 };
 
 export type SpawnProviderServerOptions = {
@@ -436,6 +436,7 @@ export async function spawnDurableJobTransport(params: {
     let abortedBySignal = false;
     let runtimeRecord = durable.runtimeRecord;
     let tailOffset = runtimeRecord.tailWatermark ?? 0;
+    options.onRuntimeRecord?.(runtimeRecord);
     const durableState: { exitRecord: JobExitRecord | null; exitError: unknown } = {
       exitRecord: null,
       exitError: null,
@@ -461,11 +462,7 @@ export async function spawnDurableJobTransport(params: {
       tailOffset = newOffset;
       lastOutputAt = runtime.time.now();
       runtimeRecord = { ...runtimeRecord, tailWatermark: newOffset };
-      try {
-        writeRuntimeRecord(runtime.storage, options.jobDir, runtimeRecord);
-      } catch {
-        /* best effort */
-      }
+      options.onRuntimeRecord?.(runtimeRecord);
 
       for (const line of lines) {
         options.onEvent?.(line);
@@ -772,11 +769,4 @@ function readAppendedLines(storage: StoragePort, path: string, fromOffset: numbe
   } catch {
     return { lines: [], newOffset: fromOffset };
   }
-}
-
-function writeRuntimeRecord(storage: StoragePort, jobDir: string, record: JobRuntimeRecord): void {
-  const runtimePath = `${jobDir}/${RUNTIME_FILE}`;
-  const tmpPath = `${runtimePath}.tmp`;
-  storage.writeFileSync(tmpPath, JSON.stringify(record, null, 2));
-  storage.renameSync(tmpPath, runtimePath);
 }

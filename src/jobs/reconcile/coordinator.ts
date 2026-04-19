@@ -5,7 +5,7 @@ import { isAppServerRuntime } from '../records.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { MutableRuntimeState } from '../../coordinator/control.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
@@ -291,7 +291,7 @@ export function createRecoveryCoordinator({
       const queuedRecoverable: QueuedRecoverableJob[] = [];
       const runningRecoverable: RunningRecoverableJob[] = [];
 
-      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, runtime, log);
+      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, progressStore, log);
       if (adoptedCount > 0) {
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }

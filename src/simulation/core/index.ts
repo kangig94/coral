@@ -18,12 +18,13 @@ import { sendJson } from '../../transport/http/handler.js';
 import { TypedEventBus } from '../../coordinator/control.js';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
 import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
-import { ProgressStore } from '../../store/progress-store.js';
+import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/api.js';
+import { openStoreDatabase } from '../../store/db.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -332,7 +333,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const progressStore = new ProgressStore(namespace, runtime, eventBus);
+  const progressStore = new ProgressStore(
+    namespace,
+    runtime,
+    eventBus,
+    openStoreDatabase({ path: ':memory:', storage: runtime.storage }),
+  );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
   providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));

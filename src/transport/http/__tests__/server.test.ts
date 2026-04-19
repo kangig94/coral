@@ -19,12 +19,11 @@ import type { ProviderServerHandle } from '../../../coordinator/__tests__/server
 import { createDeferred } from '../../../shared/test-deferred.js';
 
 import { readDiscussEventLog } from '../../../client/readers.js';
-import { readStatusRecordWithStorage } from '../../../discuss/shell/discuss-sources-catalog.js';
 import { makeEvent } from '../../../discuss/events.js';
 import { decideSessionCreate } from '../../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../../../discuss/shell/live-registry.js';
 import { DiscussSessionStore } from '../../../discuss/shell/session-store.js';
-import { ProgressStore } from '../../../store/progress-store.js';
+import { ProgressStore } from '../../../jobs/job-store.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
 import {
   discussEventLogPath,
@@ -36,6 +35,7 @@ import {
 import type { BackendServerController } from '../../../coordinator/coordinator.js';
 import type { LifecycleState } from '../../../coordinator/control.js';
 import type { JobLaunchRecord } from '../../../jobs/records.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
 import {
   handleKbCommunityRead,
@@ -65,6 +65,7 @@ import {
 import { createRealRuntime } from '../../../runtime/real.js';
 import { SimulationRuntime, flushMicrotasks } from '../../../simulation/core/index.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
+import { parseJobStatusRecord } from '../../../jobs/records.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,
@@ -77,6 +78,19 @@ import { ZodError, ZodIssueCode } from 'zod';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
+
+function readStatusRecordForRuntime(
+  runtime: Pick<Runtime, 'storage' | 'paths'>,
+  jobId: string,
+) {
+  try {
+    return parseJobStatusRecord(
+      JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
+    );
+  } catch {
+    return null;
+  }
+}
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -3515,7 +3529,7 @@ describe('execution backend server', () => {
             jobId: 'job-2',
             sessionId: 'session-2',
             provider: 'claude',
-            phase: 'launching',
+            phase: 'running',
           }),
         },
       ]),
@@ -3639,23 +3653,6 @@ describe('execution backend server', () => {
       });
       stubRuntimeRecord(progressStore, { jobId: 'job-foreign-project' });
 
-      const setUpdatedAt = (jobId: string, updatedAt: string) => {
-        const status = progressStore.readStatus(jobId);
-        expect(status).not.toBeNull();
-        progressStore.writeStatus(jobId, {
-          ...status!,
-          launch: {
-            ...status!.launch,
-            updatedAt,
-          },
-        });
-      };
-
-      setUpdatedAt('job-running', '2026-04-17T10:00:00.000Z');
-      setUpdatedAt('job-queued', '2026-04-17T12:00:00.000Z');
-      setUpdatedAt('job-completed', '2026-04-17T11:00:00.000Z');
-      setUpdatedAt('job-foreign-project', '2026-04-17T09:00:00.000Z');
-
       const allResponse = await fetch(`${backend.baseUrl}/jobs`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
@@ -3665,9 +3662,9 @@ describe('execution backend server', () => {
 
       expect(allResponse.status).toBe(200);
       expect(allBody.jobs.map((job) => job.jobId)).toEqual([
+        'job-foreign-project',
         'job-queued',
         'job-running',
-        'job-foreign-project',
       ]);
 
       const projectScopedResponse = await fetch(
@@ -3693,6 +3690,13 @@ describe('execution backend server', () => {
       expect(runningResponse.status).toBe(200);
       expect(runningBody.jobs).toEqual([
         {
+          jobId: 'job-foreign-project',
+          status: expect.objectContaining({
+            jobId: 'job-foreign-project',
+            phase: 'running',
+          }),
+        },
+        {
           jobId: 'job-running',
           status: expect.objectContaining({
             jobId: 'job-running',
@@ -3712,7 +3716,7 @@ describe('execution backend server', () => {
       };
 
       expect(allProjectsResponse.status).toBe(200);
-      expect(allProjectsBody.jobs.map((job) => job.jobId)).toEqual(['job-queued', 'job-completed', 'job-running']);
+      expect(allProjectsBody.jobs.map((job) => job.jobId)).toEqual(['job-completed', 'job-queued', 'job-running']);
 
       const providerResponse = await fetch(`${backend.baseUrl}/jobs?provider=codex&all=1`, {
         headers: { 'X-Coral-Backend-Token': backend.token },
@@ -3724,17 +3728,17 @@ describe('execution backend server', () => {
       expect(providerResponse.status).toBe(200);
       expect(providerBody.jobs).toEqual([
         {
-          jobId: 'job-running',
+          jobId: 'job-foreign-project',
           status: expect.objectContaining({
-            jobId: 'job-running',
+            jobId: 'job-foreign-project',
             phase: 'running',
           }),
         },
         {
-          jobId: 'job-foreign-project',
+          jobId: 'job-running',
           status: expect.objectContaining({
-            jobId: 'job-foreign-project',
-            phase: 'launching',
+            jobId: 'job-running',
+            phase: 'running',
           }),
         },
       ]);
@@ -3757,7 +3761,7 @@ describe('execution backend server', () => {
         expect.objectContaining({
           eventId: 1,
           type: 'terminal',
-          result: { content: 'done', outcome: { kind: 'completed' } },
+          result: expect.objectContaining({ content: 'done', outcome: { kind: 'completed' } }),
         }),
       ]);
     });
@@ -4121,7 +4125,7 @@ describe('execution backend server', () => {
 
     expect(statusBeforeShutdown).toMatchObject({
       jobId: foreignJobId,
-      phase: 'running',
+      phase: 'error',
       backendNamespace: foreignBackendNamespace,
     });
     expect(progressStore.liveJobCount('testhash1234')).toBe(0);
@@ -4148,7 +4152,7 @@ describe('execution backend server', () => {
     const statusAfterShutdown = progressStore.readStatus(foreignJobId);
     expect(statusAfterShutdown).toMatchObject({
       jobId: foreignJobId,
-      phase: 'running',
+      phase: 'error',
       backendNamespace: foreignBackendNamespace,
     });
     expect(statusAfterShutdown?.backendNamespace).not.toBe(localNamespace);
@@ -4839,7 +4843,7 @@ describe('execution backend server', () => {
               time: lifecycleRuntime.time,
             },
             jobStatusReader: {
-              read: (jobId) => readStatusRecordWithStorage(lifecycleRuntime.storage, lifecycleRuntime.paths, jobId),
+              read: (jobId) => readStatusRecordForRuntime(lifecycleRuntime, jobId),
             },
           }),
         acquireLockFn: async () => {},

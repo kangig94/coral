@@ -16,7 +16,9 @@ import {
   type JobProgressFault,
   type TerminalOutcome,
 } from './outcome.js';
+import { usageSummarySchema } from '../providers/protocol.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
+import { workflowResultMetaSchema } from './records.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -58,6 +60,10 @@ export const jobTerminalRecordedBodySchema = z
     signal: z.string().nullable().optional(),
     code: z.number().optional(),
     note: z.string().optional(),
+    warnings: z.array(z.string()).optional(),
+    usage: usageSummarySchema.optional(),
+    workflow: workflowResultMetaSchema.optional(),
+    nonResumable: z.boolean().optional(),
   })
   .strict();
 

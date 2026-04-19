@@ -3,7 +3,7 @@ import type { AbortResult } from '../../shared/execution-contracts.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import type { ExecutionServiceLike, ScopeCheckResult } from '../api.js';
 import type { LifecycleController } from '../control.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
 import type { BackendWorld } from './backend-world.js';
 
 type CreateBackendControlDeps = {

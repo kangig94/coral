@@ -20,7 +20,7 @@ import type {
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
 } from '../control.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../api.js';
 

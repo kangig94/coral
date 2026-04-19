@@ -150,7 +150,7 @@ describe('createRealRuntime', () => {
     await expect(waitForClose(child)).resolves.toEqual({ code: 0, signal: null });
   });
 
-  it('launches durable detached jobs and materializes runtime/exit artifacts', async () => {
+  it('launches durable detached jobs without materializing runtime/exit sidecar files', async () => {
     const runtime = createRealRuntime();
     const rootDir = createTempDir('coral-runtime-');
     const jobDir = join(rootDir, 'job-1');
@@ -176,8 +176,8 @@ describe('createRealRuntime', () => {
 
     expect(durable.pid).toBeGreaterThan(0);
     expect(exit).toMatchObject({ exitCode: 0, signal: null });
-    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(true);
-    expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
+    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
+    expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
     expect(runtime.storage.readFileSync(durable.stdoutPath, 'utf-8')).toContain('step-one');
     expect(runtime.storage.readFileSync(durable.stderrPath, 'utf-8')).toContain('warn');
   });

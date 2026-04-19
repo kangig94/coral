@@ -66,6 +66,7 @@ export type JobExitRow = {
   durationMs?: number;
   exitCode?: number | null;
   signal?: string | null;
+  endTime: string;
   nonResumable?: boolean;
   warnings?: string[];
   usage?: JobTerminalRecord['usage'];
@@ -92,6 +93,7 @@ export type JobProjectionDetail = {
 };
 
 type ProjectionRow = {
+  job_id: string;
   phase: string;
   terminal: string | null;
   last_seq: number;
@@ -113,7 +115,7 @@ function readProjectionRow(
 ): ProjectionRow | null {
   const row = db
     .prepare(
-      `SELECT phase, terminal, last_seq
+      `SELECT job_id, phase, terminal, last_seq
          FROM projection_jobs
         WHERE job_id = ?`,
     )
@@ -143,6 +145,8 @@ function readLatestEvent(
 function deriveLaunchState(
   phase: JobPhase,
   rejected: ReturnType<typeof readLatestEvent>,
+  runtime: ReturnType<typeof readLatestEvent>,
+  terminal: ReturnType<typeof readLatestEvent>,
 ): { state: JobStatusRecord['launch']['state']; message?: string } {
   if (rejected) {
     const body = jobLaunchRejectedSchema.parse(decodeJson(rejected));
@@ -158,6 +162,10 @@ function deriveLaunchState(
 
   if (phase === 'launching') {
     return { state: 'pending' };
+  }
+
+  if ((phase === 'error' || phase === 'aborted') && !runtime && terminal) {
+    return { state: 'error' };
   }
 
   return { state: 'ready' };
@@ -176,6 +184,7 @@ function decodeLaunch(jobId: string, row: EventRow | null): JobLaunchRow | null 
     projectRoot: body.projectRoot,
     backendNamespace: body.backendNamespace,
     bundleHash: body.bundleHash,
+    jobKind: body.jobKind,
     pool: body.pool,
     enqueueSequence: body.enqueueSequence,
     providerAction: body.providerAction,
@@ -247,6 +256,11 @@ function decodeExit(row: EventRow | null): JobExitRow | null {
     durationMs: body.durationMs,
     exitCode: body.exitCode,
     signal: body.signal,
+    endTime: row.ts,
+    nonResumable: body.nonResumable,
+    warnings: body.warnings,
+    usage: body.usage,
+    workflow: body.workflow,
   };
 }
 
@@ -260,6 +274,10 @@ function decodeTerminalRecord(row: EventRow | null): JobTerminalRecord | null {
     content: body.content ?? '',
     durationMs: body.durationMs,
     exitCode: body.exitCode,
+    nonResumable: body.nonResumable,
+    warnings: body.warnings,
+    usage: body.usage,
+    workflow: body.workflow,
     outcome: body.outcome,
   };
 }
@@ -288,7 +306,7 @@ export function loadJobProjectionDetail(
           jobKind: launch.jobKind,
           phase: projection.phase as JobPhase,
           launch: {
-            ...deriveLaunchState(projection.phase as JobPhase, rejected),
+            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal),
             updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
           },
           ...(terminal ? { result: decodeTerminalRecord(terminal) ?? undefined } : {}),
@@ -301,6 +319,23 @@ export function loadJobProjectionDetail(
     runtime: decodeRuntime(runtime),
     exit,
   };
+}
+
+export function listJobProjections(
+  db: BetterSqlite3.Database,
+): Array<{ jobId: string; status: JobStatusRecord }> {
+  const rows = db
+    .prepare(
+      `SELECT job_id
+         FROM projection_jobs
+        ORDER BY job_id ASC`,
+    )
+    .all() as Array<{ job_id: string }>;
+
+  return rows.flatMap(({ job_id: jobId }) => {
+    const detail = loadJobProjectionDetail(db, jobId);
+    return detail.status ? [{ jobId, status: detail.status }] : [];
+  });
 }
 
 export function readJobProgress(

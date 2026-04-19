@@ -1,168 +1,81 @@
-import { join } from 'node:path';
-import { formatError, isNoEntryError, isRecord } from '../../shared/utils.js';
-import { isLivePhase } from '../phase.js';
-import { readBackendNamespace } from '../records.js';
-import type { JobStatusRecord } from '../records.js';
-import type { Runtime } from '../../runtime/ports.js';
-import {
-  claimPathForStatus,
-  readAdoptionStatusSnapshot,
-  removeAdoptionClaimIfOwner,
-  restoreVerifiedStagedStatus,
-  stageVerifiedStatusSnapshot,
-  tryAcquireAdoptionClaim,
-  unlinkIfPresent,
-} from './claim-protocol.js';
-
-const FOREIGN_DAEMON_LOCK_STALE_MS = 30_000;
+import { formatError } from '../../shared/utils.js';
+import type { ProgressStore } from '../job-store.js';
 
 /**
- * Adopt orphaned jobs from other namespaces whose daemon has died.
+ * Finalize foreign-namespace live jobs by scanning projections plus the origin
+ * `job.launch.requested` envelope namespace in SQLite.
  *
- * When a plugin updates (e.g. 0.5.0→0.5.1), the plugin root path changes,
- * causing a namespace hash change. Jobs from the old namespace are invisible
- * to the new ProgressStore. This function runs BEFORE hydration to rebind
- * orphaned live jobs to the current namespace on disk.
- *
- * Safety: only adopts if the foreign namespace's daemon is confirmed dead
- * (backend.json missing or PID not alive). Jobs from live daemons (e.g.
- * a dev-flavor daemon during a prod upgrade) are never touched.
+ * Phase 3 no longer rebinds status files or coordinates through claim files.
+ * If a job is still projected as `queued`, `launching`, or `running` but its
+ * launch event belongs to a different namespace than the current coordinator,
+ * we append a terminal `wrapper_lost` event and let the reducer close the job
+ * in the same journal transaction.
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time' | 'ids'>,
+  progressStore: Pick<ProgressStore, 'appendEvent' | 'getDb' | 'loadJobProjectionDetail'>,
   log: (message: string) => void,
 ): number {
+  const db = progressStore.getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+         pj.job_id AS job_id,
+         origin.namespace AS origin_namespace
+       FROM projection_jobs pj
+       JOIN events origin
+         ON origin.seq = (
+           SELECT MIN(seq)
+             FROM events
+            WHERE stream_kind = 'job'
+              AND stream_id = pj.job_id
+              AND type = 'job.launch.requested'
+         )
+      WHERE origin.namespace != ?
+        AND pj.phase IN ('queued', 'launching', 'running')
+      ORDER BY pj.job_id ASC`,
+    )
+    .all(currentNamespace) as Array<{
+    job_id: string;
+    origin_namespace: string;
+  }>;
+
   let adopted = 0;
-  const jobsDir = runtime.paths.jobsDir();
-
-  let entries: Array<{ name: string; isDirectory(): boolean }>;
-  try {
-    entries = runtime.storage.readdirSync(jobsDir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-
-    const statusPath = join(jobsDir, entry.name, 'status.json');
-    const snapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
-    if (snapshot === null) continue;
-
-    const { raw: verifiedStatusRaw, record } = snapshot;
-    const foreignNs = readBackendNamespace(record);
-    if (foreignNs === null || foreignNs === currentNamespace) continue;
-    if (!isLivePhase(record.phase)) continue;
-
-    if (isForeignDaemonAlive(foreignNs, runtime)) continue;
-
-    const claim = tryAcquireAdoptionClaim(statusPath, verifiedStatusRaw, runtime);
-    if (claim === null) continue;
-
+  for (const row of rows) {
     try {
-      const confirmedSnapshot = readAdoptionStatusSnapshot(statusPath, runtime.storage);
-      if (confirmedSnapshot === null || confirmedSnapshot.raw !== verifiedStatusRaw) continue;
-      if (!isLivePhase(confirmedSnapshot.record.phase)) continue;
-
-      const confirmedNamespace = readBackendNamespace(confirmedSnapshot.record);
-      if (confirmedNamespace !== foreignNs) continue;
-
-      if (!stageVerifiedStatusSnapshot(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage)) continue;
-
-      if (isForeignDaemonAlive(foreignNs, runtime)) {
-        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
+      const detail = progressStore.loadJobProjectionDetail(row.job_id);
+      const status = detail.status;
+      const launch = detail.launch;
+      if (!status || !launch) {
         continue;
       }
 
-      const rebound: JobStatusRecord = {
-        ...confirmedSnapshot.record,
-        backendNamespace: currentNamespace,
-      };
-      const published = runtime.storage.tryExclusiveWriteSync(statusPath, JSON.stringify(rebound, null, 2), {
-        encoding: 'utf-8',
-        mode: 0o600,
+      progressStore.appendEvent({
+        type: 'job.terminal.recorded',
+        stream: { kind: 'job', id: row.job_id },
+        namespace: currentNamespace,
+        project: launch.projectRoot,
+        refs: {
+          jobId: row.job_id,
+          sessionId: launch.sessionId,
+          ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+        },
+        bodyVersion: 1,
+        body: {
+          outcome: {
+            kind: 'job_fault',
+            fault: { kind: 'wrapper_lost' },
+          },
+          durationMs: 0,
+          content: '',
+        },
       });
-      if (!published) {
-        restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
-        continue;
-      }
-
-      unlinkIfPresent(claim.stagedPath, runtime.storage);
-      adopted++;
-      log(`Adopted orphaned job ${entry.name} from namespace ${foreignNs}\n`);
+      adopted += 1;
+      log(`Finalized foreign-namespace job ${row.job_id} from ${row.origin_namespace}\n`);
     } catch (error: unknown) {
-      restoreVerifiedStagedStatus(statusPath, claim.stagedPath, verifiedStatusRaw, runtime.storage);
-      log(`Failed to adopt orphaned job ${entry.name}: ${formatError(error)}\n`);
-    } finally {
-      removeAdoptionClaimIfOwner(claimPathForStatus(statusPath), claim.ownerId, runtime.storage);
+      log(`Failed to finalize foreign-namespace job ${row.job_id}: ${formatError(error)}\n`);
     }
   }
 
   return adopted;
-}
-
-function isForeignDaemonAlive(
-  foreignNamespace: string,
-  runtime: Pick<Runtime, 'storage' | 'paths' | 'process' | 'time'>,
-): boolean {
-  const installDir = runtime.paths.installationDirForNamespace(foreignNamespace);
-  const infoPath = join(installDir, 'backend.json');
-  const lockPath = join(installDir, 'backend.lock');
-
-  let backendRecord: { pid: number; instanceId: string } | null = null;
-  try {
-    const raw = runtime.storage.readFileSync(infoPath, 'utf-8');
-    const info: unknown = JSON.parse(raw);
-    if (
-      isRecord(info) &&
-      typeof info.pid === 'number' &&
-      Number.isFinite(info.pid) &&
-      typeof info.instanceId === 'string' &&
-      info.instanceId.length > 0
-    ) {
-      backendRecord = { pid: info.pid, instanceId: info.instanceId };
-    }
-  } catch {
-    backendRecord = null;
-  }
-
-  let lockMissing = false;
-  let lockFresh = false;
-  let lockRecord: { pid: number; instanceId: string } | null = null;
-  try {
-    const raw = runtime.storage.readFileSync(lockPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    const ageMs = runtime.time.now() - runtime.storage.statSync(lockPath).mtimeMs;
-    lockFresh = ageMs <= FOREIGN_DAEMON_LOCK_STALE_MS;
-    if (
-      isRecord(parsed) &&
-      typeof parsed.pid === 'number' &&
-      Number.isFinite(parsed.pid) &&
-      typeof parsed.instanceId === 'string' &&
-      parsed.instanceId.length > 0
-    ) {
-      lockRecord = { pid: parsed.pid, instanceId: parsed.instanceId };
-    }
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      lockMissing = true;
-    } else {
-      return true;
-    }
-  }
-
-  if (backendRecord === null) {
-    return !lockMissing && lockFresh;
-  }
-
-  if (lockMissing || !lockFresh || lockRecord === null) {
-    return false;
-  }
-
-  if (backendRecord.instanceId !== lockRecord.instanceId || backendRecord.pid !== lockRecord.pid) {
-    return false;
-  }
-
-  return runtime.process.isAlive(backendRecord.pid);
 }

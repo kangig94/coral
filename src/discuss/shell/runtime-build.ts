@@ -4,10 +4,11 @@ import {
   type SessionCreatedAgentExecutionConfig,
 } from '../events.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
-import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from './discuss-sources-catalog.js';
+import { readDiscussSourcesWithStorage } from './discuss-sources-catalog.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { nowIsoString } from '../util/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
+import type { JobStatusRecord } from '../../jobs/records.js';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
@@ -512,6 +513,9 @@ type CreateDiscussRuntimeDeps = {
     discussRegistry: {
       contexts: Map<string, DiscussContext>;
     };
+    progressStore: {
+      readStatus(jobId: string): JobStatusRecord | null;
+    };
     resolveProjectSource: (projectRoot: string) => string;
     eventBus: {
       emit(
@@ -573,7 +577,7 @@ export function createDiscussRuntime({
     const store = getDiscussStore(ctx.projectRoot);
     const executionService = getExecutionService(ctx);
     const jobStatusReader = {
-      read: (jobId: string) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+      read: (jobId: string) => world.progressStore.readStatus(jobId),
     };
     const discussService: DiscussService = {
       start: (...args) => executionService.start(...args),

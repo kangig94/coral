@@ -1,12 +1,11 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
-import { isAppServerRuntime, listLiveJobs } from '../../jobs/api.js';
+import { isAppServerRuntime, listLiveJobs, type ProgressStore } from '../../jobs/api.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { MutableRuntimeState } from '../control.js';
 import type { DiscussSessionStore } from '../../discuss/api.js';
 import type { IdleTimer } from '../live/idle.js';
-import type { ProgressStore } from '../../store/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../api.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';

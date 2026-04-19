@@ -76,7 +76,7 @@ import {
   type AcceptedAdmission,
   type ClaimJobOptions,
 } from '../jobs/shell/contracts.js';
-import type { ProgressStore } from '../store/progress-store.js';
+import type { ProgressStore } from '../jobs/job-store.js';
 import { SessionManager, type SessionAllocateOptions } from '../sessions/shell/store.js';
 import { getSessionById } from '../sessions/shell/resolve.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -595,25 +595,15 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     options: { projectRoot?: string } = {},
   ): void {
     const metadata = this.resolveJobEventMetadata(jobId, options.projectRoot);
-    this.appendEvents([
-      {
-        type,
-        stream: { kind: 'job', id: jobId },
-        namespace: metadata.namespace,
-        project: metadata.project,
-        correlationId: metadata.correlationId,
-        refs: { jobId, sessionId },
-        bodyVersion: 1,
-        body,
-      },
-    ]);
-  }
-
-  private appendJobProgressEvent(jobId: string, sessionId: string, message: string): void {
-    this.appendJobEvent(jobId, sessionId, 'job.progress.emitted', {
-      kind: 'message',
-      message,
-      ts: nowIsoString(this.runtime.time),
+    this.progressStore.appendEvent({
+      type,
+      stream: { kind: 'job', id: jobId },
+      namespace: metadata.namespace,
+      project: metadata.project,
+      correlationId: metadata.correlationId,
+      refs: { jobId, sessionId },
+      bodyVersion: 1,
+      body,
     });
   }
 
@@ -937,20 +927,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       },
     };
     this.progressStore.writeRuntimeRecord(jobId, record);
-    const launch = this.progressStore.readLaunchRecord(jobId);
-    if (launch) {
-      this.appendJobEvent(
-        jobId,
-        launch.sessionId,
-        'job.runtime.started',
-        {
-          transport: 'app-server',
-          startedAt: record.startTime,
-          providerMeta: record.providerMeta,
-        },
-        { projectRoot: launch.projectRoot },
-      );
-    }
   }
 
   private resolveSessionByIdForContinuation(
@@ -1669,7 +1645,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
    */
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
     if (this.loadJobProjectionDetail && this.subscribeJobEvents && this.getCurrentJournalSeq) {
-      const current = this.loadJobProjectionDetail(jobId).status;
+      const current = this.loadJobProjectionDetail(jobId).status ?? this.progressStore.readStatus(jobId);
       if (current && current.launch.state !== 'pending') {
         return current.launch.state;
       }
@@ -1684,7 +1660,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       try {
         const start = this.runtime.time.now();
         while (true) {
-          const status = this.loadJobProjectionDetail(jobId).status;
+          const status = this.loadJobProjectionDetail(jobId).status ?? this.progressStore.readStatus(jobId);
           if (status && status.launch.state !== 'pending') {
             return status.launch.state;
           }
@@ -1774,7 +1750,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       signal,
       onProgress: (message) => {
         this.progressStore.appendProgress(jobId, sessionId, message);
-        this.appendJobProgressEvent(jobId, sessionId, message);
       },
       workflowJobId: jobId,
       journal: createWorkflowJournal({ appendEvents: this.appendEvents }),

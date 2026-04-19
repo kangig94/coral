@@ -36,7 +36,6 @@ import {
   discussSummaryIndexPathForSource,
   getSettledBuildFlavor,
   installationDirForNamespace,
-  jobStatusPath,
   jobsDir,
   pluginRootNamespace,
   resolveProjectSource,
@@ -66,12 +65,10 @@ import { buildExecPromise } from './exec-builder.js';
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
-const RUNTIME_RECORD_FILE = 'runtime.json';
-const EXIT_RECORD_FILE = 'exit.json';
 const ENV_RECORD_FILE = 'env.json';
 const WRAPPER_SCRIPT = `
 const { spawn } = require('child_process');
-const { openSync, closeSync, readFileSync, writeFileSync, renameSync } = require('fs');
+const { openSync, closeSync, readFileSync } = require('fs');
 const { join } = require('path');
 
 const jobDir = process.argv[1];
@@ -100,10 +97,7 @@ const runtimeRecord = {
   stderrPath,
   startTime: new Date().toISOString(),
 };
-const runtimeTmp = join(jobDir, 'runtime.json.tmp');
-const runtimeFinal = join(jobDir, 'runtime.json');
-writeFileSync(runtimeTmp, JSON.stringify(runtimeRecord, null, 2));
-renameSync(runtimeTmp, runtimeFinal);
+process.stdout.write(JSON.stringify({ type: 'runtime', runtimeRecord }) + '\\n');
 
 if (prompt) child.stdin.write(prompt);
 child.stdin.end();
@@ -112,10 +106,7 @@ function writeExit(code, signal, exitCode) {
   try { closeSync(stdoutFd); } catch {}
   try { closeSync(stderrFd); } catch {}
   const exitRecord = { exitCode: code, signal: signal || null, endTime: new Date().toISOString() };
-  const exitTmp = join(jobDir, 'exit.json.tmp');
-  const exitFinal = join(jobDir, 'exit.json');
-  writeFileSync(exitTmp, JSON.stringify(exitRecord, null, 2));
-  renameSync(exitTmp, exitFinal);
+  process.stdout.write(JSON.stringify({ type: 'exit', exitRecord }) + '\\n');
   process.exit(exitCode);
 }
 
@@ -130,6 +121,16 @@ type CapturedEnvState = {
   platform: NodeJS.Platform;
   cwd: string;
 };
+
+type DurableControlMessage =
+  | {
+      type: 'runtime';
+      runtimeRecord: DurableCliRuntimeRecord;
+    }
+  | {
+      type: 'exit';
+      exitRecord: JobExitRecord;
+    };
 
 export function createRealRuntime(): Runtime {
   const capturedEnv = captureEnvState();
@@ -184,7 +185,6 @@ export function createRealRuntime(): Runtime {
   let cachedCoralPaths: CoralPaths | undefined;
   const paths: RuntimePaths = {
     jobsDir,
-    jobStatusPath,
     sessionBase,
     installationDirForNamespace,
     backendInfoPath,
@@ -232,9 +232,9 @@ export function createRealRuntime(): Runtime {
     return buildSpawnEnv(options.env);
   };
 
+  const durableExitPromises = new Map<number, Promise<JobExitRecord>>();
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
-      const runtimePath = `${options.jobDir}/${RUNTIME_RECORD_FILE}`;
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
       writeAtomicJson(storage, envPath, buildSpawnEnv(options.envAdditions));
 
@@ -243,19 +243,17 @@ export function createRealRuntime(): Runtime {
         ['-e', WRAPPER_SCRIPT, options.jobDir, options.command, JSON.stringify(options.args), options.cwd ?? '', options.prompt ?? ''],
         {
           detached: true,
-          stdio: ['ignore', 'ignore', 'ignore'],
+          stdio: ['ignore', 'pipe', 'pipe'],
           env: buildSpawnEnv(),
         },
       );
       wrapper.unref();
 
-      const runtimeRecord = await waitForRuntimeRecord({
-        storage,
+      const { runtimeRecord, exitPromise } = await waitForDurableRuntime({
         time,
-        process: { isAlive: processIsAlive },
-        runtimePath,
-        pid: wrapper.pid,
+        wrapper,
       });
+      durableExitPromises.set(runtimeRecord.pid, exitPromise);
 
       return {
         pid: runtimeRecord.pid,
@@ -265,26 +263,32 @@ export function createRealRuntime(): Runtime {
       };
     },
     waitForExit: async (handle) => {
-      const exitPath = `${dirname(handle.runtimeRecord.stdoutPath)}/${EXIT_RECORD_FILE}`;
-      let exitedAt = null as number | null;
-
-      while (true) {
-        const record = readJsonIfPresent<JobExitRecord>(storage, exitPath);
-        if (record) {
-          return record;
-        }
-
-        if (!processIsAlive(handle.pid)) {
-          exitedAt ??= time.now();
-          if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
-            throw new Error(`Durable process ${handle.pid} exited before ${EXIT_RECORD_FILE} was written`);
+      const exitPromise = durableExitPromises.get(handle.pid);
+      if (!exitPromise) {
+        let exitedAt = null as number | null;
+        while (true) {
+          if (!processIsAlive(handle.pid)) {
+            exitedAt ??= time.now();
+            if (time.now() - exitedAt >= DURABLE_EXIT_GRACE_MS) {
+              throw new Error(`Durable process ${handle.pid} exited before the wrapper reported completion`);
+            }
+          } else {
+            exitedAt = null;
           }
-        } else {
-          exitedAt = null;
-        }
 
-        await time.sleep(DURABLE_POLL_INTERVAL_MS);
+          await time.sleep(DURABLE_POLL_INTERVAL_MS);
+          const pending = durableExitPromises.get(handle.pid);
+          if (pending) {
+            return pending.finally(() => {
+              durableExitPromises.delete(handle.pid);
+            });
+          }
+        }
       }
+
+      return exitPromise.finally(() => {
+        durableExitPromises.delete(handle.pid);
+      });
     },
   };
 
@@ -472,39 +476,159 @@ function writeAtomicJson(storage: StoragePort, path: string, value: unknown): vo
   storage.writeAtomicSync(path, JSON.stringify(value));
 }
 
-async function waitForRuntimeRecord(options: {
-  storage: StoragePort;
-  time: TimePort;
-  process: Pick<ProcessPort, 'isAlive'>;
-  runtimePath: string;
-  pid: number | undefined;
-}): Promise<DurableCliRuntimeRecord> {
-  const deadline = options.time.now() + DURABLE_POLL_TIMEOUT_MS;
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: Error) => void;
+} {
+  let settled = false;
+  let resolveFn!: (value: T) => void;
+  let rejectFn!: (error: Error) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveFn = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    rejectFn = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+  });
+  return {
+    promise,
+    resolve: resolveFn,
+    reject: rejectFn,
+  };
+}
 
-  while (options.time.now() < deadline) {
-    const record = readJsonIfPresent<DurableCliRuntimeRecord>(options.storage, options.runtimePath);
-    if (record && isDurableCliRuntime(record)) {
-      return record;
-    }
+function trimStderr(stderr: string): string {
+  const trimmed = stderr.trim();
+  return trimmed.length > 0 ? `: ${trimmed}` : '';
+}
 
-    if (options.pid !== undefined && !options.process.isAlive(options.pid)) {
-      break;
-    }
-
-    await options.time.sleep(DURABLE_POLL_INTERVAL_MS);
-  }
-
-  throw new Error(
-    `Durable wrapper failed to write ${RUNTIME_RECORD_FILE} within ${DURABLE_POLL_TIMEOUT_MS}ms (${options.runtimePath})`,
+function isExitRecord(value: unknown): value is JobExitRecord {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { endTime?: unknown }).endTime === 'string' &&
+    (((value as { exitCode?: unknown }).exitCode === null) || typeof (value as { exitCode?: unknown }).exitCode === 'number') &&
+    (((value as { signal?: unknown }).signal === null) || typeof (value as { signal?: unknown }).signal === 'string')
   );
 }
 
-function readJsonIfPresent<T>(storage: StoragePort, path: string): T | null {
-  try {
-    return JSON.parse(storage.readFileSync(path, 'utf-8')) as T;
-  } catch {
-    return null;
+function waitForDurableRuntime(options: {
+  time: TimePort;
+  wrapper: ReturnType<typeof spawnChild>;
+}): Promise<{ runtimeRecord: DurableCliRuntimeRecord; exitPromise: Promise<JobExitRecord> }> {
+  const stdout = options.wrapper.stdout;
+  const stderr = options.wrapper.stderr;
+  if (!stdout || !stderr) {
+    throw new Error('Durable wrapper control pipes are unavailable');
   }
+
+  stdout.setEncoding('utf8');
+  stderr.setEncoding('utf8');
+
+  const runtimeDeferred = createDeferred<DurableCliRuntimeRecord>();
+  const exitDeferred = createDeferred<JobExitRecord>();
+  let runtimeRecord: DurableCliRuntimeRecord | null = null;
+  let stderrBuffer = '';
+  let lineBuffer = '';
+
+  const buildError = (detail: string): Error => new Error(`${detail}${trimStderr(stderrBuffer)}`);
+
+  const handleControlLine = (line: string): void => {
+    if (line.trim().length === 0) {
+      return;
+    }
+
+    let message: DurableControlMessage;
+    try {
+      message = JSON.parse(line) as DurableControlMessage;
+    } catch (error: unknown) {
+      const wrapped = buildError(
+        `Durable wrapper emitted invalid control JSON (${error instanceof Error ? error.message : String(error)})`,
+      );
+      runtimeDeferred.reject(wrapped);
+      exitDeferred.reject(wrapped);
+      return;
+    }
+
+    if (message.type === 'runtime') {
+      if (!isDurableCliRuntime(message.runtimeRecord)) {
+        const wrapped = buildError('Durable wrapper emitted an invalid runtime record');
+        runtimeDeferred.reject(wrapped);
+        exitDeferred.reject(wrapped);
+        return;
+      }
+      runtimeRecord = message.runtimeRecord;
+      runtimeDeferred.resolve(message.runtimeRecord);
+      return;
+    }
+
+    if (!isExitRecord(message.exitRecord)) {
+      const wrapped = buildError('Durable wrapper emitted an invalid exit record');
+      runtimeDeferred.reject(wrapped);
+      exitDeferred.reject(wrapped);
+      return;
+    }
+
+    exitDeferred.resolve(message.exitRecord);
+  };
+
+  stdout.on('data', (chunk: string | Buffer) => {
+    lineBuffer += chunk.toString();
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      handleControlLine(line);
+    }
+  });
+
+  stderr.on('data', (chunk: string | Buffer) => {
+    stderrBuffer += chunk.toString();
+  });
+
+  options.wrapper.on('error', (error: Error) => {
+    const wrapped = buildError(`Durable wrapper failed: ${error.message}`);
+    runtimeDeferred.reject(wrapped);
+    exitDeferred.reject(wrapped);
+  });
+
+  options.wrapper.on('close', (code, signal) => {
+    if (runtimeRecord === null) {
+      runtimeDeferred.reject(
+        buildError(
+          signal
+            ? `Durable wrapper exited before reporting runtime (signal ${signal})`
+            : `Durable wrapper exited before reporting runtime (exit ${code})`,
+        ),
+      );
+      return;
+    }
+
+    exitDeferred.reject(
+      buildError(
+        signal
+          ? `Durable wrapper exited before reporting completion (signal ${signal})`
+          : `Durable wrapper exited before reporting completion (exit ${code})`,
+      ),
+    );
+  });
+
+  const timeout = options.time.setTimeout(() => {
+    const wrapped = buildError(`Durable wrapper failed to report runtime within ${DURABLE_POLL_TIMEOUT_MS}ms`);
+    runtimeDeferred.reject(wrapped);
+    exitDeferred.reject(wrapped);
+  }, DURABLE_POLL_TIMEOUT_MS);
+  timeout.unref?.();
+
+  return runtimeDeferred.promise.finally(() => options.time.clearTimeout(timeout)).then((record) => ({
+    runtimeRecord: record,
+    exitPromise: exitDeferred.promise,
+  }));
 }
 
 function processIsAlive(pid: number): boolean {

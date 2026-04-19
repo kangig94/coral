@@ -113,7 +113,8 @@ describe('coordinator startup ordering', () => {
         expect(detail.status).toMatchObject({
           jobId,
           sessionId,
-          phase: 'launching',
+          phase: 'error',
+          result: { outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } } },
         });
         expect(
           (db.prepare('SELECT cursor FROM equipment_cursors WHERE consumer_id = ?').get('jobs') as { cursor: number }).cursor,

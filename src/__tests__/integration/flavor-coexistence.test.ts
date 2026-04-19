@@ -9,6 +9,13 @@ import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.j
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
 import type { JobStatusRecord } from '../../jobs/records.js';
+import { appendEvents } from '../../store/append.js';
+import { openStoreDatabase } from '../../store/db.js';
+import { createEmptyRegistry } from '../../store/envelope.js';
+import { storePaths } from '../../store/paths.js';
+import { composeReducers } from '../../store/reducers.js';
+import { jobsRegistry } from '../../jobs/events.js';
+import { createRealRuntime } from '../../runtime/real.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
@@ -90,30 +97,75 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
   return { root, bundleHash: sourceManifest.bundleHash, manifestFlavor: flavor };
 }
 
-function seedCompletedJob(jobId: string, namespace: string, projectRoot: string, bundleHash: string): void {
+function seedCompletedJob(
+  jobId: string,
+  namespace: string,
+  projectRoot: string,
+  bundleHash: string,
+  flavor: 'prod' | 'dev',
+): void {
   createdJobIds.push(jobId);
   mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(join(jobsDir(), jobId), { recursive: true });
+  const runtime = createRealRuntime();
+  const db = openStoreDatabase({
+    path: storePaths(flavor).dbFile,
+    storage: runtime.storage,
+  });
+  const createdAt = new Date().toISOString();
+  const sessionId = `${jobId}-session`;
 
-  const status: JobStatusRecord = {
-    jobId,
-    sessionId: `${jobId}-session`,
-    provider: 'codex',
-    projectRoot,
-    backendNamespace: namespace,
-    bundleHash,
-    phase: 'completed',
-    launch: {
-      state: 'ready',
-      updatedAt: new Date().toISOString(),
-    },
-    result: {
-      content: `${jobId}-done`,
-      outcome: { kind: 'completed' },
-    },
-  };
-
-  writeFileSync(join(jobsDir(), jobId, 'status.json'), JSON.stringify(status, null, 2), 'utf-8');
+  try {
+    appendEvents(
+      db,
+      [
+        {
+          type: 'job.launch.requested',
+          stream: { kind: 'job', id: jobId },
+          namespace,
+          project: projectRoot,
+          refs: { jobId, sessionId },
+          bodyVersion: 1,
+          body: {
+            sessionId,
+            provider: 'codex',
+            projectRoot,
+            backendNamespace: namespace,
+            bundleHash,
+            pool: 'default',
+            enqueueSequence: 0,
+            providerAction: 'exec',
+            request: {
+              prompt: 'seeded completed job',
+              cwd: projectRoot,
+              bypassPermissions: false,
+              coralEnv: {},
+            },
+            createdAt,
+          },
+        },
+        {
+          type: 'job.terminal.recorded',
+          stream: { kind: 'job', id: jobId },
+          namespace,
+          project: projectRoot,
+          refs: { jobId, sessionId },
+          bodyVersion: 1,
+          body: {
+            outcome: { kind: 'completed' },
+            durationMs: 0,
+            content: `${jobId}-done`,
+          },
+        },
+      ],
+      {
+        now: () => new Date(),
+        reducers: composeReducers(jobsRegistry),
+        upcasters: createEmptyRegistry(),
+      },
+    );
+  } finally {
+    db.close();
+  }
 }
 
 async function requireBackendInfo(pluginRoot: string): Promise<BackendInfo> {
@@ -193,8 +245,8 @@ describe('flavor coexistence integration', () => {
     const devJobId = `coexist-dev-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const prodProjectRoot = join(tempHome, 'project-prod');
     const devProjectRoot = join(tempHome, 'project-dev');
-    seedCompletedJob(prodJobId, prodNamespace, prodProjectRoot, prodFixture.bundleHash);
-    seedCompletedJob(devJobId, devNamespace, devProjectRoot, devFixture.bundleHash);
+    seedCompletedJob(prodJobId, prodNamespace, prodProjectRoot, prodFixture.bundleHash, 'prod');
+    seedCompletedJob(devJobId, devNamespace, devProjectRoot, devFixture.bundleHash, 'dev');
 
     startedPluginRoots.push(prodFixture.root, devFixture.root);
     await ensureBackend(prodFixture.root);

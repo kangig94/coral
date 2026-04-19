@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
-import { ProgressStore } from '../../../store/progress-store.js';
+import { ProgressStore } from '../../job-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import type { StoragePort } from '../../../runtime/ports.js';
 import { applyMigrations } from '../../../store/migrations.js';

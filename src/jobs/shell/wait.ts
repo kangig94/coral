@@ -3,7 +3,7 @@ import type { JobStatusRecord } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamRequest } from '../wait.js';
 import type { TypedEventBus } from '../../coordinator/control.js';
 import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
-import { createReplayCursor, type ProgressStore } from '../../store/progress-store.js';
+import { createReplayCursor, type ProgressStore } from '../job-store.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS } from './contracts.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
@@ -32,6 +32,10 @@ export interface WaitCoordinatorDeps {
 
 export class WaitCoordinator {
   constructor(private readonly deps: WaitCoordinatorDeps) {}
+
+  private readQueryStatus(jobId: string): JobStatusRecord | null {
+    return this.deps.loadJobProjectionDetail?.(jobId).status ?? this.deps.progressStore.readStatus(jobId);
+  }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
     const initialStatus = this.readStatusOrThrow(jobId);
@@ -255,8 +259,8 @@ export class WaitCoordinator {
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    const { launchCoordinator, jobPools, loadJobProjectionDetail, readJobProgress, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
-    if (!loadJobProjectionDetail || !readJobProgress || !subscribeJobEvents || !getCurrentJournalSeq) {
+    const { launchCoordinator, jobPools, readJobProgress, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
+    if (!this.deps.loadJobProjectionDetail || !readJobProgress || !subscribeJobEvents || !getCurrentJournalSeq) {
       return;
     }
 
@@ -270,8 +274,7 @@ export class WaitCoordinator {
     const currentMaxSeq = getCurrentJournalSeq();
 
     for (const jobId of [...pending]) {
-      const detail = loadJobProjectionDetail(jobId);
-      const status = detail.status;
+      const status = this.readQueryStatus(jobId);
       if (!status) {
         continue;
       }

@@ -3,13 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { readStatusRecord } from '../../../client/readers.js';
-import { readDiscussSourcesWithStorage, readStatusRecordWithStorage } from '../discuss-sources-catalog.js';
+import { readDiscussSourcesWithStorage } from '../discuss-sources-catalog.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
 import { renderEntries } from '../../transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { JobStatusRecord } from '../../../jobs/records.js';
+import { parseJobStatusRecord, type JobStatusRecord } from '../../../jobs/records.js';
 import { nowIsoString } from '../../util/time.js';
 import {
   createDiscussContextRegistry,
@@ -92,6 +92,19 @@ function createExecutionServiceStub(overrides: Partial<ExecutionService> = {}): 
   } as unknown as ExecutionService;
 }
 
+function readStatusRecordForRuntime(
+  runtime: Pick<SimulationRuntime, 'storage' | 'paths'>,
+  jobId: string,
+): JobStatusRecord | null {
+  try {
+    return parseJobStatusRecord(
+      JSON.parse(runtime.storage.readFileSync(resolve(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
+    );
+  } catch {
+    return null;
+  }
+}
+
 function manualAgents(): AgentConfig[] {
   return [{ name: 'alpha', persona: '# Alpha', participation: 'observer' }];
 }
@@ -126,7 +139,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       time: runtime.time,
     },
     jobStatusReader: {
-      read: (jobId) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+      read: (jobId) => readStatusRecordForRuntime(runtime, jobId),
     },
   });
   const callerCtx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
@@ -405,7 +418,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
         outcome: { kind: 'completed' },
       },
     };
-    writeJson(harness.runtime, harness.runtime.paths.jobStatusPath(jobId), status);
+    writeJson(harness.runtime, resolve(harness.runtime.paths.jobsDir(), jobId, 'status.json'), status);
     expect(readStatusRecord(jobId)).toBeNull();
 
     const result = await runPlainTurn(harness.context, {

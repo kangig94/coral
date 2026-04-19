@@ -24,7 +24,7 @@ import {
 } from '../live/admission.js';
 import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { TypedEventBus } from '../control.js';
-import { ProgressStore } from '../../store/progress-store.js';
+import { ProgressStore } from '../../jobs/job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { SessionManager } from '../../sessions/shell/store.js';
@@ -1258,14 +1258,7 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'failed',
-        causeRef: {
-          stream: {
-            kind: 'session',
-            id: expect.any(String),
-          },
-          seq: 1,
-        },
+        kind: 'job_fault',
       },
       workflow: {
         steps: [
@@ -1282,7 +1275,11 @@ describe('ExecutionService', () => {
     });
     expect(status).toMatchObject({
       phase: 'error',
-      result: terminal.result,
+      result: {
+        content: '',
+        outcome: { kind: 'job_fault' },
+        workflow: terminal.result.workflow,
+      },
     });
     expect(session?.state).toBe('non_resumable');
   });
@@ -1330,8 +1327,7 @@ describe('ExecutionService', () => {
     expect(terminal.result).toMatchObject({
       content: '',
       outcome: {
-        kind: 'aborted',
-        reason: 'signal_abort',
+        kind: 'job_fault',
       },
       workflow: {
         steps: [
@@ -1348,12 +1344,16 @@ describe('ExecutionService', () => {
     });
     expect(status).toMatchObject({
       phase: 'error',
-      result: terminal.result,
+      result: {
+        content: '',
+        outcome: { kind: 'job_fault' },
+        workflow: terminal.result.workflow,
+      },
     });
     expect(session?.state).toBe('non_resumable');
   });
 
-  it('start falls back to status-only terminal persistence when appendTerminal throws', async () => {
+  it('does not synthesize status-only terminal persistence when appendTerminal throws', async () => {
     const { provider } = makeProvider();
     mockState.getNewProvider.mockReturnValue(provider);
 
@@ -1370,7 +1370,10 @@ describe('ExecutionService', () => {
     if (decision.status !== 'running') throw new Error('expected running');
     trackJob(decision.job);
 
-    const terminal = await waitForTerminalEvent(service, decision.job);
+    const deadline = Date.now() + 2_000;
+    while (markTerminalStatus.mock.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     const status = progressStore.readStatus(decision.job);
 
     expect(appendTerminal).toHaveBeenCalled();
@@ -1379,14 +1382,13 @@ describe('ExecutionService', () => {
       expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
       'completed',
     );
-    expect(terminal.result).toMatchObject({ content: 'ok', outcome: { kind: 'completed' } });
     expect(status).toMatchObject({
-      phase: 'completed',
-      result: { content: 'ok', outcome: { kind: 'completed' } },
+      phase: 'launching',
     });
+    expect(status?.result).toBeUndefined();
   });
 
-  it('finishQueuedAbort falls back to status-only terminal persistence when appendTerminal throws', () => {
+  it('does not synthesize status-only terminal persistence for finishQueuedAbort when appendTerminal throws', () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
@@ -1414,10 +1416,10 @@ describe('ExecutionService', () => {
       { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
       'aborted',
     );
-    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
   });
 
-  it('failJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+  it('does not synthesize status-only terminal persistence for failJob when appendTerminal throws', () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
@@ -1468,10 +1470,10 @@ describe('ExecutionService', () => {
       },
       'error',
     );
-    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'error' });
+    expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
   });
 
-  it('finishWorkflowJob falls back to status-only terminal persistence when appendTerminal throws', () => {
+  it('does not synthesize status-only terminal persistence for finishWorkflowJob when appendTerminal throws', () => {
     const service = createService(ctx);
     const { progressStore } = getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
@@ -1503,9 +1505,9 @@ describe('ExecutionService', () => {
 
     expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed');
     expect(progressStore.readStatus(jobId)).toMatchObject({
-      phase: 'completed',
-      result,
+      phase: 'launching',
     });
+    expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# workflow\n');
   });
 
@@ -1605,7 +1607,7 @@ describe('ExecutionService', () => {
     },
   );
 
-  it('finishWorkflowJob writes result.md before status-only terminal fallback and marks the session non_resumable afterward', () => {
+  it('finishWorkflowJob still orders artifact write before best-effort terminal fallback and non_resumable state', () => {
     const service = createService(ctx);
     const { progressStore, sessionManager } = getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
@@ -1650,9 +1652,9 @@ describe('ExecutionService', () => {
     vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
       order.push('non_resumable');
       expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase,
-        result,
+        phase: 'launching',
       });
+      expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
       return originalSetNonResumable(targetSessionId);
     });
 

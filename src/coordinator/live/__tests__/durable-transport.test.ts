@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '../../../runtime/real.js';
+import type { JobRuntimeRecord } from '../../../jobs/api.js';
 import { LaunchCoordinator } from '../admission.js';
 
 function createProviderServerScript(): string {
@@ -56,10 +57,11 @@ describe('durable transport', () => {
     vi.restoreAllMocks();
   });
 
-  it('streams durable-job progress and persists runtime artifacts', async () => {
+  it('streams durable-job progress and reports runtime metadata without sidecar files', async () => {
     const jobDir = join(tmpRoot, 'job-1');
     mkdirSync(jobDir, { recursive: true });
     const onEvent = vi.fn();
+    const runtimeRecords: JobRuntimeRecord[] = [];
 
     const result = await coordinator.spawnDurableJob({
       provider: 'codex',
@@ -75,6 +77,9 @@ describe('durable transport', () => {
       ],
       jobDir,
       onEvent,
+      onRuntimeRecord: (record) => {
+        runtimeRecords.push(record);
+      },
     });
 
     expect(result).toMatchObject({
@@ -86,11 +91,11 @@ describe('durable transport', () => {
     expect(result.stderr).toContain('warn');
     expect(onEvent).toHaveBeenCalledWith('{"step":"one"}');
     expect(onEvent).toHaveBeenCalledWith('{"step":"two"}');
-    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(true);
-    expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
-
-    const runtimeRecord = JSON.parse(readFileSync(join(jobDir, 'runtime.json'), 'utf-8')) as { tailWatermark?: number };
-    expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
+    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
+    expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
+    const lastRuntime = runtimeRecords.at(-1);
+    const tailWatermark = lastRuntime && 'tailWatermark' in lastRuntime ? lastRuntime.tailWatermark : undefined;
+    expect(tailWatermark).toBeGreaterThan(0);
   });
 
   it('spawns a provider server with JSON-RPC transport and stable generation ids', async () => {

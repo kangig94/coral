@@ -1,7 +1,6 @@
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
-import { readStatusRecordWithStorage } from '../discuss-sources-catalog.js';
 import type {
   DiscussDomainEvent,
   PersistedDiscussSnapshot,
@@ -24,6 +23,7 @@ import type { CallerContext } from '../../../shared/request-context.js';
 import type { ExecutionService } from '../../../coordinator/api.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/index.js';
+import { parseJobStatusRecord } from '../../../jobs/records.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';
@@ -101,6 +101,19 @@ export type CreateDiscussHarnessOptions = {
   runtime?: SimulationRuntime;
 };
 
+function readStatusRecordForRuntime(
+  runtime: Pick<Runtime, 'storage' | 'paths'>,
+  jobId: string,
+) {
+  try {
+    return parseJobStatusRecord(
+      JSON.parse(runtime.storage.readFileSync(join(runtime.paths.jobsDir(), jobId, 'status.json'), 'utf-8')),
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function createDiscussContextOptions(
   runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
 ): DiscussContextConstructionOptions {
@@ -111,7 +124,7 @@ export function createDiscussContextOptions(
       time: runtime.time,
     },
     jobStatusReader: {
-      read: (jobId) => readStatusRecordWithStorage(runtime.storage, runtime.paths, jobId),
+      read: (jobId) => readStatusRecordForRuntime(runtime, jobId),
     },
   };
 }

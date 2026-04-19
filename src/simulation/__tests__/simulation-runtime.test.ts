@@ -151,8 +151,8 @@ describe('simulation runtime', () => {
     expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta\ngamma'));
     expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
     expect(paths.sessionBase()).toBe('/tmp/sim/sessions');
-    expect(paths.backendInfoPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.json`);
-    expect(paths.backendLockPath('/tmp/sim/plugin')).toBe(`/tmp/sim/installations/${namespace}/backend.lock`);
+    expect(paths.backendInfoPath('/tmp/sim/plugin')).toBe(join('/tmp/sim/installations', namespace, 'backend.json'));
+    expect(paths.backendLockPath('/tmp/sim/plugin')).toBe(join('/tmp/sim/installations', namespace, 'backend.lock'));
     expect(namespace).toMatch(/^[0-9a-f]{12}$/);
     expect(projectSource).toMatch(/^local\/project-[0-9a-f]{8}$/);
     expect(paths.projectSource('/tmp/sim/project')).toBe(projectSource);

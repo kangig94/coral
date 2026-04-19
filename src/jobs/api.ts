@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ExecutionServiceLike, RecoveryCapableService } from '../coordinator/api.js';
-import { createReplayCursor, type ProgressStore } from '../store/progress-store.js';
+import type { ProgressStore } from './job-store.js';
 import type { RecoveryRegistry } from '../coordinator/composition/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { JobPhase } from './phase.js';
@@ -16,7 +16,11 @@ import type { Runtime } from '../runtime/ports.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { TerminalOutcome } from './outcome.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
-import { loadJobProjectionDetail as loadJobProjectionDetailQuery, readJobProgress as readJobProgressQuery } from '../store/queries/jobs.js';
+import {
+  listJobProjections as listJobProjectionsQuery,
+  loadJobProjectionDetail as loadJobProjectionDetailQuery,
+  readJobProgress as readJobProgressQuery,
+} from '../store/queries/jobs.js';
 
 export type JobStatusRow = {
   jobId: string;
@@ -116,7 +120,6 @@ export type JobsStartupDeps = {
 };
 
 type JobQuerySource =
-  | ProgressStore
   | Database
   | {
       loadJobProjectionDetail(jobId: string): {
@@ -126,6 +129,7 @@ type JobQuerySource =
         exit: JobExitRow | null;
       };
       readJobProgress(jobId: string): JobProgressRow[];
+      listJobProjections?(): Array<{ jobId: string; status: JobStatusRecord }>;
     };
 
 function isDatabase(value: JobQuerySource): value is Database {
@@ -153,80 +157,14 @@ function queryJobDetail(
   if (hasJournalQuerySurface(source)) {
     return source.loadJobProjectionDetail(jobId);
   }
-  if (isDatabase(source)) {
-    return loadJobProjectionDetailQuery(source, jobId);
-  }
-
-  const status = source.readStatus(jobId);
-  const launch = source.readLaunchRecord(jobId);
-  const runtime = source.readRuntimeRecord(jobId);
-  const exit = source.readTerminalPayload(jobId);
-  return {
-    status,
-    launch:
-      launch === null
-        ? null
-        : {
-            ...launch,
-            request: {
-              ...launch.request,
-              coralEnv: { ...launch.request.coralEnv },
-              ...(launch.request.instruction ? { instruction: { ...launch.request.instruction } } : {}),
-            },
-          },
-    runtime:
-      runtime === null
-        ? null
-        : runtime.transport === 'app-server'
-          ? {
-              ...runtime,
-              providerMeta: {
-                ...runtime.providerMeta,
-                ...(runtime.providerMeta.providerContinuity
-                  ? { providerContinuity: { ...runtime.providerMeta.providerContinuity } }
-                  : {}),
-              },
-            }
-          : {
-              ...runtime,
-              ...(runtime.providerMeta ? { providerMeta: { ...runtime.providerMeta } } : {}),
-            },
-    exit:
-      exit === null
-        ? null
-        : {
-            outcome: exit.outcome,
-            content: exit.content,
-            durationMs: exit.durationMs,
-            exitCode: exit.exitCode,
-            nonResumable: exit.nonResumable,
-            warnings: exit.warnings,
-            usage: exit.usage ? { ...exit.usage } : undefined,
-            workflow:
-              exit.workflow === undefined
-                ? undefined
-                : {
-                    steps: exit.workflow.steps.map((step) => ({ ...step })),
-                  },
-          },
-  };
+  return loadJobProjectionDetailQuery(source, jobId);
 }
 
 function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow[] {
   if (hasJournalQuerySurface(source)) {
     return source.readJobProgress(jobId);
   }
-  if (isDatabase(source)) {
-    return readJobProgressQuery(source, jobId);
-  }
-
-  return source
-    .replayFrom(jobId, 0, createReplayCursor())
-    .filter((record): record is JobProgressRow => record.type === 'progress' || record.type === 'terminal')
-    .map((record) => ({
-      ...record,
-      ...(record.result ? { result: { ...record.result } } : {}),
-    }));
+  return readJobProgressQuery(source, jobId);
 }
 
 export const jobsCommands = {
@@ -261,11 +199,14 @@ export const jobsCommands = {
 } as const;
 
 export const jobsQueries = {
-  list(progressStore: ProgressStore): Array<{ jobId: string; status: JobStatusRecord }> {
-    return progressStore.listJobIds().flatMap((jobId) => {
-      const status = progressStore.readStatus(jobId);
-      return status ? [{ jobId, status }] : [];
-    });
+  list(source: JobQuerySource): Array<{ jobId: string; status: JobStatusRecord }> {
+    if (hasJournalQuerySurface(source) && typeof source.listJobProjections === 'function') {
+      return source.listJobProjections();
+    }
+    if (isDatabase(source)) {
+      return listJobProjectionsQuery(source);
+    }
+    return [];
   },
   detail(source: JobQuerySource, jobId: string): {
     status: JobStatusRecord | null;
@@ -323,6 +264,7 @@ export {
   isAppServerRuntime,
   readBackendNamespace,
 } from './records.js';
+export type { ProgressStore } from './job-store.js';
 export { AbortRegistry } from './shell/abort-registry.js';
 export type { JobEvent } from './shell/event-subscription.js';
 export {

@@ -185,7 +185,7 @@ describe('scenario runner', () => {
       },
     });
 
-    expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)?.phase).toBe('launching');
+    expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)?.phase).toBe('running');
     expect(run.world.getJobStatus(SECOND_BOOTED_JOB_ID)?.phase).toBe('queued');
   });
 

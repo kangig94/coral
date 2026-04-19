@@ -234,8 +234,12 @@ export function parseSourceImportEdges(
   });
 }
 
-export function parseProductionImportEdges(repoRoot: string, productionFilePaths: string[]): ParsedImportEdge[] {
-  const productionFiles = createProductionFileIndex(repoRoot, productionFilePaths);
+export function parseProductionImportEdges(
+  repoRoot: string,
+  productionFilePaths: string[],
+  resolutionFilePaths: string[] = productionFilePaths,
+): ParsedImportEdge[] {
+  const productionFiles = createProductionFileIndex(repoRoot, resolutionFilePaths);
   const parsedEdges: ParsedImportEdge[] = [];
 
   for (const sourceFilePath of productionFilePaths) {

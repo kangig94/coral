@@ -52,7 +52,6 @@ export interface DiscussPathResolver {
   discussSessionDirForSource(source: string, sessionId: string): string;
   discussStatePath(sessionDir: string): string;
   discussEventLogPath(sessionDir: string): string;
-  jobStatusPath(jobId: string): string;
 }
 
 export interface RuntimePaths extends DiscussPathResolver {

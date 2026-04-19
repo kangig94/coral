@@ -14,7 +14,7 @@ import {
   listen as defaultListen,
   markJobsAsError,
 } from '../control.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { discussReconcile } from '../../discuss/api.js';
 import { ExecutionService as DefaultExecutionService } from '../api.js';

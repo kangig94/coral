@@ -3,7 +3,7 @@ import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
 import { readBackendNamespace } from '../records.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../records.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 import { writeWorkflowResult } from '../shell/result-artifact.js';
 

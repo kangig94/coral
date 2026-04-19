@@ -106,10 +106,6 @@ export class InMemoryPaths implements RuntimePaths {
     return this.roots.jobsDir ?? DEFAULT_JOBS_DIR;
   }
 
-  jobStatusPath(jobId: string): string {
-    return join(this.jobsDir(), jobId, 'status.json');
-  }
-
   sessionBase(): string {
     return this.roots.sessionBase ?? DEFAULT_SESSION_BASE;
   }

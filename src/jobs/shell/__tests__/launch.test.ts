@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -30,7 +30,7 @@ import {
 } from '../../../coordinator/live/admission.js';
 import { type AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
-import { ProgressStore } from '../../../store/progress-store.js';
+import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
@@ -623,19 +623,18 @@ describe('ExecutionService launch', () => {
     trackJob(decision.job);
 
     const terminal = await waitForTerminalEvent(service, decision.job);
+    const { progressStore } = getInternals(service);
     const jobDir = join(JOBS_DIR, decision.job);
-    const runtimeRecord = JSON.parse(readFileSync(join(jobDir, 'runtime.json'), 'utf-8')) as {
-      pid: number;
-      tailWatermark?: number;
-    };
+    const runtimeRecord = progressStore.readRuntimeRecord(decision.job) as _DurableCliRuntimeRecord | null;
+    const history = progressStore.readJobProgress(decision.job);
 
     expect(terminal.result.content).toContain('final output');
-    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(true);
-    expect(existsSync(join(jobDir, 'exit.json'))).toBe(true);
-    expect(runtimeRecord.pid).toBeGreaterThan(0);
-    expect(runtimeRecord.tailWatermark).toBeGreaterThan(0);
-    expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-1');
-    expect(readFileSync(join(jobDir, 'progress.jsonl'), 'utf-8')).toContain('step-2');
+    expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
+    expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
+    expect(runtimeRecord?.pid).toBeGreaterThan(0);
+    expect(runtimeRecord?.tailWatermark).toBeGreaterThan(0);
+    expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-1'))).toBe(true);
+    expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-2'))).toBe(true);
   });
 
   it('releases the session claim when provider session finalization throws after completion', async () => {

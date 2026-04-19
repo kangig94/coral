@@ -8,7 +8,7 @@ import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/provider-contracts.js';
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../job-store.js';
 import type { RecoveryAction } from './plan.js';
 import type { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
 import type { Runtime } from '../../runtime/ports.js';

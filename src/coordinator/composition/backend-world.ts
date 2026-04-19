@@ -17,7 +17,7 @@ import {
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
 import type { IdleTimer } from '../live/idle.js';
-import { ProgressStore } from '../../store/progress-store.js';
+import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
 

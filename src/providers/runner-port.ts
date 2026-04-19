@@ -1,3 +1,5 @@
+import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
+
 export type ProviderCliRequest = {
   command: string;
   args: string[];
@@ -5,6 +7,7 @@ export type ProviderCliRequest = {
   cwd?: string;
   extraEnv?: Record<string, string>;
   onEvent?: (line: string) => void;
+  onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
 };
 
 export type ProviderCliResult = {

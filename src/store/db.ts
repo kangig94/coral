@@ -1,4 +1,5 @@
 import BetterSqlite3 from 'better-sqlite3';
+import { readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import type { StoragePort } from '../runtime/ports.js';
@@ -29,9 +30,19 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
   db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
 
   if (!readonly) {
+    const migrationStorage =
+      options.migrationsDir === undefined
+        ? {
+            readdirSync: (dirPath: string, dirOptions: { withFileTypes: true }) => readNodeDirSync(dirPath, dirOptions),
+            readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
+          }
+        : {
+            readdirSync: options.storage.readdirSync.bind(options.storage),
+            readFileSync: options.storage.readFileSync.bind(options.storage),
+          };
     applyMigrations({
       db,
-      storage: options.storage,
+      storage: migrationStorage,
       migrationsDir: options.migrationsDir,
     });
   }

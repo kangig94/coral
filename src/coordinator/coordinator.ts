@@ -106,7 +106,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
-  const useJournalQuerySurface = options.progressStore === undefined;
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const providedAcquireLockFn = coreOptions.acquireLockFn;
@@ -136,6 +135,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     return storeDb;
   };
+  const getQueryDb = () => options.progressStore?.getDb() ?? getStoreDb();
 
   const getConsumerDriver = () => {
     if (consumerDriver !== null) {
@@ -150,7 +150,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
 
   const getCurrentJournalSeq = () =>
-    (getStoreDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+    (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
 
   const coordinatorAppendEvents: AppendEventsFn = (inputs) => {
     const db = getStoreDb();
@@ -199,14 +199,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const wiredDeps = {
         ...deps,
         appendEvents: coordinatorAppendEvents,
-        ...(useJournalQuerySurface
-          ? {
-              loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getStoreDb(), jobId),
-              readJobProgress: (jobId: string) => readJobProgress(getStoreDb(), jobId),
-              subscribeJobEvents,
-              getCurrentJournalSeq,
-            }
-          : {}),
+        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId),
+        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId),
+        subscribeJobEvents,
+        getCurrentJournalSeq,
       };
       return providedCreateExecutionService
         ? providedCreateExecutionService(ctx, wiredDeps)

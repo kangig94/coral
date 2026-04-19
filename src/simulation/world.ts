@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { createReplayCursor, type ReplayCursor } from '../store/progress-store.js';
+import { createReplayCursor, type ReplayCursor } from '../jobs/job-store.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import type { BackendServerInfo, LifecycleState } from '../coordinator/control.js';
 import { backendInfoPath } from '../coordinator/discovery.js';

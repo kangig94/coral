@@ -51,7 +51,6 @@ import { createDiscussRuntime } from '../../discuss/shell/runtime-build.js';
 import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
-import { createReplayCursor } from '../../store/progress-store.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 
@@ -294,9 +293,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
           .waitStream(request),
       list: (filters) => {
         let jobs = world.progressStore
-          .listJobIds()
-          .map((jobId) => ({ jobId, status: world.progressStore.readStatus(jobId) }))
-          .filter((entry): entry is { jobId: string; status: NonNullable<typeof entry.status> } => entry.status !== null)
+          .listJobProjections()
           .filter((entry) => belongsToNamespace(entry.status, world.namespace));
 
         if (filters.all !== true) {
@@ -315,12 +312,12 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
         return jobs;
       },
       detail: (jobId) => {
-        const status = world.progressStore.readStatus(jobId);
+        const detail = world.progressStore.loadJobProjectionDetail(jobId);
+        const status = detail.status;
         if (!status || !belongsToNamespace(status, world.namespace)) {
           return null;
         }
-        const cursor = createReplayCursor();
-        const events = world.progressStore.replayFrom(jobId, 0, cursor);
+        const events = world.progressStore.readJobProgress(jobId);
         return { status, events };
       },
     },

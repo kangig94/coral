@@ -77,7 +77,7 @@ export interface ProviderRecoveryContract {
 
   /**
    * Build recovery metadata to persist at launch time.
-   * Called by the executor before spawning; stored in runtime.json.providerMeta.
+   * Called by the executor before spawning; stored in the journal runtime projection.
    */
   buildRecoveryMeta?(request: ProviderRequest): ProviderRecoveryMeta;
 

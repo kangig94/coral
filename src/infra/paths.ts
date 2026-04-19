@@ -8,10 +8,6 @@ export function jobsDir(): string {
   return join(tmpdir(), 'coral-jobs');
 }
 
-export function jobStatusPath(jobId: string): string {
-  return join(jobsDir(), jobId, 'status.json');
-}
-
 function coralHome(): string {
   return join(homedir(), '.claude', 'coral');
 }

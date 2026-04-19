@@ -4,7 +4,7 @@ import { readBackendNamespace } from '../records.js';
 import type { JobLaunchRecord, JobRuntimeRecord, JobStatusRecord, JobTerminalRecord } from '../records.js';
 import type { JobExitRecord } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import type { ProgressStore } from '../../store/progress-store.js';
+import type { ProgressStore } from '../job-store.js';
 import { readSessionRefs, listSessionShards } from '../../sessions/shell/resolve.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobStoreSnapshot } from './plan.js';
