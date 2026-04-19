@@ -93,8 +93,15 @@ type ProjectionJobRow = {
   phase: JobPhase;
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics;
-  parentJobId: string | null;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash: string | null;
+  jobKind: 'provider' | 'workflow';
+  parentWorkflowJobId: string | null;
   workflowSlot: string | null;
+  createdAt: string;
 };
 
 function emptyDiagnostics(): JobDiagnostics {
@@ -104,7 +111,9 @@ function emptyDiagnostics(): JobDiagnostics {
 function readProjectionJob(db: Database, jobId: string): ProjectionJobRow | null {
   const row = db
     .prepare(
-      `SELECT phase, terminal, diagnostics, parent_job_id, workflow_slot
+      `SELECT phase, terminal, diagnostics,
+              session_id, provider, project_root, backend_namespace, bundle_hash,
+              job_kind, parent_workflow_job_id, workflow_slot, created_at
          FROM projection_jobs
         WHERE job_id = ?`,
     )
@@ -113,8 +122,15 @@ function readProjectionJob(db: Database, jobId: string): ProjectionJobRow | null
         phase: string;
         terminal: string | null;
         diagnostics: string | null;
-        parent_job_id: string | null;
+        session_id: string;
+        provider: string;
+        project_root: string;
+        backend_namespace: string;
+        bundle_hash: string | null;
+        job_kind: string;
+        parent_workflow_job_id: string | null;
         workflow_slot: string | null;
+        created_at: string;
       }
     | undefined;
 
@@ -126,8 +142,15 @@ function readProjectionJob(db: Database, jobId: string): ProjectionJobRow | null
     phase: row.phase as JobPhase,
     terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
     diagnostics: row.diagnostics === null ? emptyDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
-    parentJobId: row.parent_job_id,
+    sessionId: row.session_id,
+    provider: row.provider,
+    projectRoot: row.project_root,
+    backendNamespace: row.backend_namespace,
+    bundleHash: row.bundle_hash,
+    jobKind: row.job_kind as 'provider' | 'workflow',
+    parentWorkflowJobId: row.parent_workflow_job_id,
     workflowSlot: row.workflow_slot,
+    createdAt: row.created_at,
   };
 }
 
@@ -136,40 +159,64 @@ function upsertProjectionJob(
   event: CoralEvent,
   patch: Partial<ProjectionJobRow>,
 ): void {
-  const previous =
-    readProjectionJob(db, event.stream.id) ?? {
-      phase: 'launching' as JobPhase,
-      terminal: null,
-      diagnostics: emptyDiagnostics(),
-      parentJobId: event.refs?.parentJobId ?? null,
-      workflowSlot: event.refs?.workflowSlotId ?? null,
-    };
-
+  const previous = readProjectionJob(db, event.stream.id);
+  // Identity fields are populated by reducerForRequested. If a non-launch event
+  // fires before launch.requested (expected only in test fixtures that stage
+  // runtime/terminal events directly), we fall back to empty strings — the
+  // projection row still writes but identity filters won't match until a real
+  // launch event arrives.
   const next: ProjectionJobRow = {
-    phase: patch.phase ?? previous.phase,
-    terminal: patch.terminal ?? previous.terminal,
-    diagnostics: patch.diagnostics ?? previous.diagnostics,
-    parentJobId: patch.parentJobId ?? previous.parentJobId,
-    workflowSlot: patch.workflowSlot ?? previous.workflowSlot,
+    phase: patch.phase ?? previous?.phase ?? ('launching' as JobPhase),
+    terminal: patch.terminal ?? previous?.terminal ?? null,
+    diagnostics: patch.diagnostics ?? previous?.diagnostics ?? emptyDiagnostics(),
+    sessionId: patch.sessionId ?? previous?.sessionId ?? '',
+    provider: patch.provider ?? previous?.provider ?? '',
+    projectRoot: patch.projectRoot ?? previous?.projectRoot ?? '',
+    backendNamespace: patch.backendNamespace ?? previous?.backendNamespace ?? '',
+    bundleHash: patch.bundleHash ?? previous?.bundleHash ?? null,
+    jobKind: patch.jobKind ?? previous?.jobKind ?? 'provider',
+    parentWorkflowJobId:
+      patch.parentWorkflowJobId ?? previous?.parentWorkflowJobId ?? (event.refs?.parentJobId ?? null),
+    workflowSlot:
+      patch.workflowSlot ?? previous?.workflowSlot ?? (event.refs?.workflowSlotId ?? null),
+    createdAt: patch.createdAt ?? previous?.createdAt ?? event.ts,
   };
 
   db.prepare(
-    `INSERT INTO projection_jobs (job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO projection_jobs (
+       job_id, phase, terminal, diagnostics,
+       session_id, provider, project_root, backend_namespace, bundle_hash,
+       job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(job_id) DO UPDATE SET
        phase = excluded.phase,
        terminal = excluded.terminal,
        diagnostics = excluded.diagnostics,
-       parent_job_id = excluded.parent_job_id,
+       session_id = excluded.session_id,
+       provider = excluded.provider,
+       project_root = excluded.project_root,
+       backend_namespace = excluded.backend_namespace,
+       bundle_hash = excluded.bundle_hash,
+       job_kind = excluded.job_kind,
+       parent_workflow_job_id = excluded.parent_workflow_job_id,
        workflow_slot = excluded.workflow_slot,
+       created_at = excluded.created_at,
        last_seq = excluded.last_seq`,
   ).run(
     event.stream.id,
     next.phase,
     next.terminal === null ? null : JSON.stringify(next.terminal),
     JSON.stringify(next.diagnostics),
-    next.parentJobId,
+    next.sessionId,
+    next.provider,
+    next.projectRoot,
+    next.backendNamespace,
+    next.bundleHash,
+    next.jobKind,
+    next.parentWorkflowJobId,
     next.workflowSlot,
+    next.createdAt,
     event.seq,
   );
 }
@@ -178,8 +225,15 @@ function reducerForRequested(): Reducer<JobLaunchRequestBody> {
   return (db, event) => {
     upsertProjectionJob(db, event, {
       phase: 'launching',
-      parentJobId: event.body.parentJobId ?? event.refs?.parentJobId ?? null,
+      sessionId: event.body.sessionId,
+      provider: event.body.provider,
+      projectRoot: event.body.projectRoot,
+      backendNamespace: event.body.backendNamespace,
+      bundleHash: event.body.bundleHash ?? null,
+      jobKind: event.body.jobKind ?? 'provider',
+      parentWorkflowJobId: event.body.parentJobId ?? event.refs?.parentJobId ?? null,
       workflowSlot: event.body.workflowSlot ?? event.refs?.workflowSlotId ?? null,
+      createdAt: event.body.createdAt,
     });
   };
 }

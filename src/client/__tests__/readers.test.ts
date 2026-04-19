@@ -129,6 +129,12 @@ function seedJobProjection(
     phase?: string;
     launchBody?: string | Record<string, unknown> | null;
     events?: Array<{ type: string; body: string | Record<string, unknown>; ts?: string }>;
+    sessionId?: string;
+    provider?: string;
+    projectRoot?: string;
+    backendNamespace?: string;
+    jobKind?: 'provider' | 'workflow';
+    createdAt?: string;
   } = {},
 ): void {
   const jobId = options.jobId ?? testJobId;
@@ -151,11 +157,28 @@ function seedJobProjection(
          phase,
          terminal,
          diagnostics,
-         parent_job_id,
+         session_id,
+         provider,
+         project_root,
+         backend_namespace,
+         bundle_hash,
+         job_kind,
+         parent_workflow_job_id,
          workflow_slot,
+         created_at,
          last_seq
-       ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?)`,
-    ).run(jobId, options.phase ?? 'running', lastSeq);
+       ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+    ).run(
+      jobId,
+      options.phase ?? 'running',
+      options.sessionId ?? 'test-session',
+      options.provider ?? 'codex',
+      options.projectRoot ?? '/tmp',
+      options.backendNamespace ?? 'test',
+      options.jobKind ?? 'provider',
+      options.createdAt ?? '2026-04-20T00:00:00.000Z',
+      lastSeq,
+    );
   });
 }
 

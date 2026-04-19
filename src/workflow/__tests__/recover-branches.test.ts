@@ -102,9 +102,20 @@ function createHarness(options: {
 
   if (options.projectionPhase !== null) {
     db.prepare(
-      `INSERT INTO projection_jobs (job_id, phase, last_seq)
-       VALUES (?, ?, ?)`,
-    ).run(plan.slots[0].jobId, options.projectionPhase, options.projectionLastSeq ?? 7);
+      `INSERT INTO projection_jobs (
+         job_id, phase, session_id, provider, project_root, backend_namespace,
+         job_kind, created_at, last_seq
+       )
+       VALUES (?, ?, ?, ?, ?, ?, 'provider', '2026-04-20T00:00:00.000Z', ?)`,
+    ).run(
+      plan.slots[0].jobId,
+      options.projectionPhase,
+      'session-atom-1',
+      'codex',
+      PROJECT_ROOT,
+      BACKEND_NAMESPACE,
+      options.projectionLastSeq ?? 7,
+    );
   }
 
   const waitRequests: WaitStreamRequest[] = [];

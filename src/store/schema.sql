@@ -18,16 +18,29 @@ CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
 CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
 
 -- Projection tables (read models). Rebuildable from events.
+-- projection_jobs is the materialized read model: identity fields that are
+-- set at launch and immutable over the job lifetime live here so /jobs list
+-- and namespace filters are single-query operations. Events remain
+-- authoritative; projection is derived via reducer + rebuildProjections.
 CREATE TABLE IF NOT EXISTS projection_jobs (
-  job_id         TEXT PRIMARY KEY,
-  phase          TEXT NOT NULL,
-  terminal       TEXT,            -- JSON { outcome, durationMs } or NULL
-  diagnostics    TEXT,
-  parent_job_id  TEXT,
-  workflow_slot  TEXT,            -- slotId on parent's plan
-  last_seq       INTEGER NOT NULL
+  job_id                  TEXT PRIMARY KEY,
+  phase                   TEXT NOT NULL,
+  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
+  diagnostics             TEXT,
+  session_id              TEXT NOT NULL,
+  provider                TEXT NOT NULL,
+  project_root            TEXT NOT NULL,
+  backend_namespace       TEXT NOT NULL,
+  bundle_hash             TEXT,
+  job_kind                TEXT NOT NULL,
+  parent_workflow_job_id  TEXT,             -- workflow-slot parent (jobs launched by a workflow plan)
+  workflow_slot           TEXT,             -- slotId on parent's plan
+  created_at              TEXT NOT NULL,
+  last_seq                INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_job_id);
+CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
+CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
+CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
 
 CREATE TABLE IF NOT EXISTS projection_sessions (
   session_id       TEXT PRIMARY KEY,

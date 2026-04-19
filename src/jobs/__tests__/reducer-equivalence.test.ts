@@ -101,7 +101,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -117,7 +117,7 @@ describe('jobs reducer equivalence (AC1)', () => {
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
         }),
-        parent_job_id: 'job-parent',
+        parent_workflow_job_id: 'job-parent',
         workflow_slot: 'workflow-slot-1',
         last_seq: appended.at(-1)?.seq,
       });
@@ -130,7 +130,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -192,7 +192,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -208,7 +208,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -275,7 +275,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -291,7 +291,7 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,

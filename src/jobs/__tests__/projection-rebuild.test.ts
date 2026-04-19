@@ -125,7 +125,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
       expect(
         db
           .prepare(
-            `SELECT job_id, phase, terminal, diagnostics, parent_job_id, workflow_slot, last_seq
+            `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
                FROM projection_jobs
               WHERE job_id = ?
               LIMIT 1`,
@@ -141,7 +141,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
         }),
-        parent_job_id: 'job-parent',
+        parent_workflow_job_id: 'job-parent',
         workflow_slot: 'workflow-slot-1',
         last_seq: target,
       });
