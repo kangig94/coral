@@ -99,6 +99,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const flavor = options.bootSnapshot?.flavor ?? readBuildFlavor(options.pluginRoot ?? runtime.env.cwd());
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const upcasters = createDefaultUpcasterRegistry();
+  const readCtx = { schemas: reducers.schemas, upcasters };
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
@@ -180,8 +181,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const wiredDeps = {
         ...deps,
         appendEvents: coordinatorAppendEvents,
-        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, { upcasters }),
-        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, { upcasters }),
+        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
+        readJobProgress: (jobId: string) => readJobProgress(getQueryDb(), jobId, readCtx),
         subscribeJobEvents,
         getCurrentJournalSeq,
       };

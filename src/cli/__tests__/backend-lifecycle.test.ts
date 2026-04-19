@@ -976,6 +976,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const backendPromise = ensureBackend(root);
+    backendPromise.catch(() => undefined);
     await vi.advanceTimersByTimeAsync(15_500);
 
     await expect(backendPromise).rejects.toBeInstanceOf(BackendUnreachableError);

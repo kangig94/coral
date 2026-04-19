@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import { decodeStoredBody, type StoreReadContext } from '../body-codec.js';
 import { rowToCoralEvent, type CoralEvent, type StreamKind } from '../envelope.js';
 import type { EventsRow } from '../schema.js';
 
@@ -18,11 +19,12 @@ export function getEvent(
   db: BetterSqlite3.Database,
   stream: { kind: string; id: string },
   seq: number,
+  ctx: StoreReadContext,
 ): CoralEvent | undefined {
   const row = db
     .prepare(`SELECT * FROM events WHERE stream_kind = ? AND stream_id = ? AND seq = ?`)
     .get(stream.kind, stream.id, seq) as EventsRow | undefined;
-  return row ? rowToCoralEvent(row) : undefined;
+  return row ? rowToCoralEvent(row, decodeStoredBody(row, ctx)) : undefined;
 }
 
 export function getEventsSince(
@@ -30,6 +32,7 @@ export function getEventsSince(
   afterSeq: number,
   filter: EventsFilter = {},
   limit = 1000,
+  ctx: StoreReadContext,
 ): EventsPage {
   const clauses: string[] = ['seq > ?'];
   const params: unknown[] = [afterSeq];
@@ -52,7 +55,7 @@ export function getEventsSince(
     .prepare(`SELECT * FROM events WHERE ${clauses.join(' AND ')} ORDER BY seq ASC LIMIT ?`)
     .all(...params) as EventsRow[];
 
-  const events = rows.map((row) => rowToCoralEvent(row));
+  const events = rows.map((row) => rowToCoralEvent(row, decodeStoredBody(row, ctx)));
   const nextCursor = events.length > 0 ? events[events.length - 1].seq : afterSeq;
   return { events, nextCursor };
 }

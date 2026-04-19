@@ -19,7 +19,7 @@ import {
   type JobProgressRow,
 } from '../store/queries/jobs.js';
 import type { StoreReadContext } from '../store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
+import { createDefaultStoreReadContext } from '../store/read-context.js';
 
 export type JobsStartupDeps = {
   recoveryCoordinator: RecoveryCoordinator;
@@ -75,7 +75,7 @@ function queryJobProgress(source: JobQuerySource, jobId: string): JobProgressRow
 
 let cachedDefaultCtx: StoreReadContext | null = null;
 function defaultCtx(): StoreReadContext {
-  cachedDefaultCtx ??= { upcasters: createDefaultUpcasterRegistry() };
+  cachedDefaultCtx ??= createDefaultStoreReadContext();
   return cachedDefaultCtx;
 }
 

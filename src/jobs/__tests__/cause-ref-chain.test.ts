@@ -5,9 +5,10 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
+import type { StoreReadContext } from '../../store/body-codec.js';
+import { createEmptyRegistry } from '../../store/envelope.js';
 import { CoralStore } from '../../store/index.js';
 import { applyMigrations } from '../../store/migrations.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { describeCauseRef, describeCauseRefDetailed } from '../read/cause-ref-render.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../store/migrations');
@@ -16,11 +17,15 @@ const storageAdapter = {
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
 const NOW = new Date('2026-04-19T00:00:00.000Z');
+const RAW_EVENT_READ_CTX: StoreReadContext = {
+  schemas: new Map(),
+  upcasters: createEmptyRegistry(),
+};
 
 function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {
   const db = new Database(':memory:');
   applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
-  return { db, store: new CoralStore(db, createDefaultUpcasterRegistry()) };
+  return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 
 function insertEvent(

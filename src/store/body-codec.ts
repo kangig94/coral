@@ -14,6 +14,7 @@ export function encodeEventBody(body: unknown): Buffer {
 }
 
 export interface StoreReadContext {
+  readonly schemas: ReadonlyMap<string, z.ZodType>;
   readonly upcasters: UpcasterRegistry;
 }
 
@@ -23,4 +24,12 @@ export function decodeBody<T>(
   ctx: StoreReadContext,
 ): T {
   return ctx.upcasters.parseBody(row.type, row.body_version, decodeEventBody(row.body), schema);
+}
+
+export function decodeStoredBody(
+  row: Pick<EventsRow, 'type' | 'body' | 'body_version'>,
+  ctx: StoreReadContext,
+): unknown {
+  const schema = ctx.schemas.get(row.type);
+  return schema ? decodeBody(row, schema, ctx) : decodeEventBody(row.body);
 }

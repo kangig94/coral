@@ -8,6 +8,7 @@ import { applyMigrations } from '../migrations.js';
 import { getEvent, getEventsSince } from '../queries/events.js';
 import { applyTestCounterMigration, testCounterRegistry } from './fixtures/test-counter-registry.js';
 import type { StoragePort } from '../../runtime/ports.js';
+import type { StoreReadContext } from '../body-codec.js';
 import { composeReducers } from '../reducers.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
@@ -18,6 +19,7 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 describe('events queries', () => {
   let db: Database.Database;
   let appended: ReturnType<typeof appendEvents>;
+  let readCtx: StoreReadContext;
 
   beforeEach(() => {
     db = new Database(':memory:');
@@ -86,6 +88,10 @@ describe('events queries', () => {
       reducers: composeReducers(testCounterRegistry),
       upcasters: createEmptyRegistry(),
     });
+    readCtx = {
+      schemas: composeReducers(testCounterRegistry).schemas,
+      upcasters: createEmptyRegistry(),
+    };
   });
 
   afterEach(() => {
@@ -93,7 +99,7 @@ describe('events queries', () => {
   });
 
   it('returns all events in seq order when querying from zero', () => {
-    const page = getEventsSince(db, 0);
+    const page = getEventsSince(db, 0, {}, 1000, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual(appended.map((event) => event.seq));
     expect(page.events).toEqual(appended);
@@ -104,14 +110,14 @@ describe('events queries', () => {
   });
 
   it('returns only events with seq greater than afterSeq', () => {
-    const page = getEventsSince(db, 3);
+    const page = getEventsSince(db, 3, {}, 1000, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual([4, 5, 6]);
     expect(page.nextCursor).toBe(6);
   });
 
   it('filters by stream kind', () => {
-    const page = getEventsSince(db, 0, { streamKind: 'session' });
+    const page = getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual([1, 3, 6]);
     expect(page.events.map((event) => event.stream.kind)).toEqual(['session', 'session', 'session']);
@@ -119,7 +125,7 @@ describe('events queries', () => {
   });
 
   it('filters by type', () => {
-    const page = getEventsSince(db, 0, { type: 'test.counter.ticked' });
+    const page = getEventsSince(db, 0, { type: 'test.counter.ticked' }, 1000, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual([1, 2, 6]);
     expect(page.events.map((event) => event.type)).toEqual([
@@ -131,7 +137,7 @@ describe('events queries', () => {
   });
 
   it('filters by correlationId', () => {
-    const page = getEventsSince(db, 0, { correlationId: 'cor-a' });
+    const page = getEventsSince(db, 0, { correlationId: 'cor-a' }, 1000, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual([1, 3, 5, 6]);
     expect(page.events.map((event) => event.correlationId)).toEqual(['cor-a', 'cor-a', 'cor-a', 'cor-a']);
@@ -139,21 +145,21 @@ describe('events queries', () => {
   });
 
   it('returns afterSeq as nextCursor when the result is empty', () => {
-    const page = getEventsSince(db, appended[appended.length - 1].seq);
+    const page = getEventsSince(db, appended[appended.length - 1].seq, {}, 1000, readCtx);
 
     expect(page.events).toEqual([]);
     expect(page.nextCursor).toBe(appended[appended.length - 1].seq);
   });
 
   it('returns the last returned seq as nextCursor when non-empty', () => {
-    const page = getEventsSince(db, 1, {}, 2);
+    const page = getEventsSince(db, 1, {}, 2, readCtx);
 
     expect(page.events.map((event) => event.seq)).toEqual([2, 3]);
     expect(page.nextCursor).toBe(3);
   });
 
   it('looks up a single event by stream and seq or returns undefined', () => {
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 1)).toEqual(appended[0]);
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 99)).toBeUndefined();
+    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toEqual(appended[0]);
+    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 99, readCtx)).toBeUndefined();
   });
 });

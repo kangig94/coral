@@ -6,9 +6,10 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { describeTerminalOutcome, type TerminalOutcome } from '../../outcome.js';
+import type { StoreReadContext } from '../../../store/body-codec.js';
+import { createEmptyRegistry } from '../../../store/envelope.js';
 import { CoralStore } from '../../../store/index.js';
 import { applyMigrations } from '../../../store/migrations.js';
-import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { describeCauseRef } from '../cause-ref-render.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../store/migrations');
@@ -16,11 +17,15 @@ const storageAdapter = {
   readdirSync: (path: string, opts: { withFileTypes: true }) => fs.readdirSync(path, opts),
   readFileSync: (path: string, enc: 'utf-8') => fs.readFileSync(path, enc),
 };
+const RAW_EVENT_READ_CTX: StoreReadContext = {
+  schemas: new Map(),
+  upcasters: createEmptyRegistry(),
+};
 
 function createStore(): { db: InstanceType<typeof Database>; store: CoralStore } {
   const db = new Database(':memory:');
   applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
-  return { db, store: new CoralStore(db, createDefaultUpcasterRegistry()) };
+  return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 
 describe('describeCauseRef phantom seq fallback', () => {

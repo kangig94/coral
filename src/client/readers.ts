@@ -25,12 +25,12 @@ import type { JobProgressRecord, JobStatusRecord } from '../jobs/records.js';
 import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
-import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import type { StoreReadContext } from '../store/body-codec.js';
+import { createDefaultStoreReadContext } from '../store/read-context.js';
 
 let cachedReadCtx: StoreReadContext | null = null;
 function readCtx(): StoreReadContext {
-  cachedReadCtx ??= { upcasters: createDefaultUpcasterRegistry() };
+  cachedReadCtx ??= createDefaultStoreReadContext();
   return cachedReadCtx;
 }
 

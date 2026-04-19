@@ -86,6 +86,7 @@ export class JobStore {
   private waiters: Array<() => void> = [];
   private enqueueSequence = 0;
 
+  public readonly schemas: ComposedReducers['schemas'];
   public readonly upcasters: UpcasterRegistry;
 
   constructor(
@@ -98,6 +99,7 @@ export class JobStore {
     upcasters: UpcasterRegistry = createDefaultUpcasterRegistry(),
   ) {
     this.eventBus = eventBus;
+    this.schemas = reducers.schemas;
     this.upcasters = upcasters;
     this.db = db ?? openStoreDatabase({
       path: this.resolveDefaultDbPath(),

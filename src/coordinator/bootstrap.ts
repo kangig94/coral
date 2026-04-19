@@ -55,6 +55,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     try {
       const reducers = composeReducers();
       const upcasters = createEmptyRegistry();
+      const readCtx = { schemas: reducers.schemas, upcasters };
       const [event] = appendEvents(
         db,
         [
@@ -73,7 +74,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
         return 1;
       }
 
-      const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq);
+      const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq, readCtx);
       if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
         coordinatorLog.error('smoke read-back failed');
         return 1;
