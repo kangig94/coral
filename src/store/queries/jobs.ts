@@ -102,10 +102,24 @@ type ProjectionRow = {
 };
 
 type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'>;
+type LatestJobEventRow = EventRow & { stream_id: string };
 type DecodedTerminalRow = {
   record: JobTerminalRecord;
   signal?: string | null;
 };
+
+function emptyJobProjectionDetail(): JobProjectionDetail {
+  return {
+    status: null,
+    launch: null,
+    runtime: null,
+    exit: null,
+  };
+}
+
+function sqlPlaceholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(', ');
+}
 
 function readProjectionRow(
   db: BetterSqlite3.Database,
@@ -122,11 +136,68 @@ function readProjectionRow(
   return row ?? null;
 }
 
+function readProjectionRows(
+  db: BetterSqlite3.Database,
+  jobIds: string[],
+): Map<string, ProjectionRow> {
+  if (jobIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT job_id, phase, terminal, last_seq
+         FROM projection_jobs
+        WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
+    )
+    .all(...jobIds) as ProjectionRow[];
+
+  return new Map(rows.map((row) => [row.job_id, row]));
+}
+
+function readLatestEventsForJobs(
+  db: BetterSqlite3.Database,
+  jobIds: string[],
+  type: string,
+): Map<string, EventRow> {
+  if (jobIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT stream_id, seq, ts, type, body_version, body
+         FROM events
+        WHERE stream_kind = 'job'
+          AND type = ?
+          AND stream_id IN (${sqlPlaceholders(jobIds.length)})
+        ORDER BY stream_id ASC, seq DESC`,
+    )
+    .all(type, ...jobIds) as LatestJobEventRow[];
+
+  const eventsByJob = new Map<string, EventRow>();
+  for (const row of rows) {
+    if (eventsByJob.has(row.stream_id)) {
+      continue;
+    }
+
+    eventsByJob.set(row.stream_id, {
+      seq: row.seq,
+      ts: row.ts,
+      type: row.type,
+      body_version: row.body_version,
+      body: row.body,
+    });
+  }
+
+  return eventsByJob;
+}
+
 function deriveLaunchState(
   phase: JobPhase,
-  rejected: ReturnType<typeof readLatestEvent>,
-  runtime: ReturnType<typeof readLatestEvent>,
-  terminal: ReturnType<typeof readLatestEvent>,
+  rejected: EventRow | null,
+  runtime: EventRow | null,
+  terminal: EventRow | null,
   ctx: StoreReadContext,
 ): { state: JobStatusRecord['launch']['state']; message?: string } {
   if (rejected) {
@@ -246,6 +317,46 @@ function toJobExitRow(row: EventRow, terminal: DecodedTerminalRow): JobExitRow {
   };
 }
 
+function hydrateJobProjectionDetail(
+  jobId: string,
+  projection: ProjectionRow | null,
+  requested: EventRow | null,
+  rejected: EventRow | null,
+  runtime: EventRow | null,
+  terminal: EventRow | null,
+  ctx: StoreReadContext,
+): JobProjectionDetail {
+  const launch = decodeLaunch(jobId, requested, ctx);
+  const terminalRecord = decodeTerminalRecord(terminal, ctx);
+  const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;
+
+  const status =
+    projection && launch
+      ? {
+          jobId,
+          sessionId: launch.sessionId,
+          provider: launch.provider,
+          projectRoot: launch.projectRoot,
+          backendNamespace: launch.backendNamespace,
+          bundleHash: launch.bundleHash,
+          jobKind: launch.jobKind,
+          phase: projection.phase as JobPhase,
+          launch: {
+            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
+            updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
+          },
+          ...(terminalRecord ? { result: terminalRecord.record } : {}),
+        }
+      : null;
+
+  return {
+    status,
+    launch,
+    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
+    exit,
+  };
+}
+
 // TODO(rewrite): Replace this replay helper with projection_jobs.session_id once that column exists.
 function readLaunchSessionId(
   db: BetterSqlite3.Database,
@@ -279,35 +390,45 @@ export function loadJobProjectionDetail(
   const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');
   const runtime = readLatestEvent(db, 'job', jobId, 'job.runtime.started');
   const terminal = readLatestEvent(db, 'job', jobId, 'job.terminal.recorded');
-  const launch = decodeLaunch(jobId, requested, ctx);
-  const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;
+  return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx);
+}
 
-  const status =
-    projection && launch
-      ? {
-          jobId,
-          sessionId: launch.sessionId,
-          provider: launch.provider,
-          projectRoot: launch.projectRoot,
-          backendNamespace: launch.backendNamespace,
-          bundleHash: launch.bundleHash,
-          jobKind: launch.jobKind,
-          phase: projection.phase as JobPhase,
-          launch: {
-            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
-            updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
-          },
-          ...(terminalRecord ? { result: terminalRecord.record } : {}),
-        }
-      : null;
+export function loadJobProjectionDetails(
+  db: BetterSqlite3.Database,
+  jobIds: string[],
+  ctx: StoreReadContext,
+): Map<string, JobProjectionDetail> {
+  const uniqueJobIds = [...new Set(jobIds)];
+  const details = new Map<string, JobProjectionDetail>(
+    uniqueJobIds.map((jobId) => [jobId, emptyJobProjectionDetail()]),
+  );
 
-  return {
-    status,
-    launch,
-    runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
-    exit,
-  };
+  if (uniqueJobIds.length === 0) {
+    return details;
+  }
+
+  const projectionsByJob = readProjectionRows(db, uniqueJobIds);
+  const requestedByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.launch.requested');
+  const rejectedByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.launch.rejected');
+  const runtimeByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.runtime.started');
+  const terminalByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.terminal.recorded');
+
+  for (const jobId of uniqueJobIds) {
+    details.set(
+      jobId,
+      hydrateJobProjectionDetail(
+        jobId,
+        projectionsByJob.get(jobId) ?? null,
+        requestedByJob.get(jobId) ?? null,
+        rejectedByJob.get(jobId) ?? null,
+        runtimeByJob.get(jobId) ?? null,
+        terminalByJob.get(jobId) ?? null,
+        ctx,
+      ),
+    );
+  }
+
+  return details;
 }
 
 export function listJobProjections(

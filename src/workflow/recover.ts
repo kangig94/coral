@@ -7,7 +7,7 @@ import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/queries/events.js';
-import { loadJobProjectionDetail } from '../store/queries/jobs.js';
+import { loadJobProjectionDetails, type JobProjectionDetail } from '../store/queries/jobs.js';
 import {
   buildStepDetailsForAtoms,
   createWorkflowExecutionError,
@@ -42,15 +42,26 @@ function slotCoralOp(slot: PlanSlot): string {
   return slotKind(slot) === 'prompt' ? 'workflow-literal' : `coral:${slot.instruction}`;
 }
 
+function detailForJob(
+  detailsByJob: Map<string, JobProjectionDetail>,
+  jobId: string,
+): JobProjectionDetail {
+  return detailsByJob.get(jobId) ?? {
+    status: null,
+    launch: null,
+    runtime: null,
+    exit: null,
+  };
+}
+
 function buildLaunchedAtomsForStep(
   plan: WorkflowPlan,
-  db: BetterSqlite3.Database,
   stepIndex: number,
-  readCtx: StoreReadContext,
+  detailsByJob: Map<string, JobProjectionDetail>,
 ): LaunchedAtom[] {
   const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
   return stepSlots.map((slot, atomIndex) => {
-    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
+    const detail = detailForJob(detailsByJob, slot.jobId);
     return {
       slotId: slot.slotId,
       jobId: slot.jobId,
@@ -67,15 +78,13 @@ function buildLaunchedAtomsForStep(
   });
 }
 
-function completedOutputForSlot(db: BetterSqlite3.Database, slot: PlanSlot, readCtx: StoreReadContext): string | null {
-  const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
-  return detail.exit?.content ?? null;
+function completedOutputForSlot(slot: PlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
+  return detailForJob(detailsByJob, slot.jobId).exit?.content ?? null;
 }
 
 function summarizeCompletedSteps(
   plan: WorkflowPlan,
-  db: BetterSqlite3.Database,
-  readCtx: StoreReadContext,
+  detailsByJob: Map<string, JobProjectionDetail>,
 ): {
   activeStepIndex: number;
   stepPrompt: string;
@@ -89,7 +98,7 @@ function summarizeCompletedSteps(
     const stepSlots = plan.slots.filter((slot) => slot.stepIndex === stepIndex);
     if (stepSlots.length === 0) continue;
 
-    const completed = stepSlots.map((slot) => completedOutputForSlot(db, slot, readCtx));
+    const completed = stepSlots.map((slot) => completedOutputForSlot(slot, detailsByJob));
     if (completed.some((value) => value === null)) {
       return {
         activeStepIndex: stepIndex,
@@ -98,7 +107,7 @@ function summarizeCompletedSteps(
       };
     }
 
-    const launchedAtoms = buildLaunchedAtomsForStep(plan, db, stepIndex, readCtx);
+    const launchedAtoms = buildLaunchedAtomsForStep(plan, stepIndex, detailsByJob);
     const results = new Map<string, string>();
     launchedAtoms.forEach((atom, index) => {
       results.set(atom.atomKey, completed[index] ?? '');
@@ -120,10 +129,9 @@ function summarizeCompletedSteps(
 }
 
 function firstTerminalFailure(
-  db: BetterSqlite3.Database,
   plan: WorkflowPlan,
   drain: { firstFailureSlotId: string; drainDeadline: number } | null,
-  readCtx: StoreReadContext,
+  detailsByJob: Map<string, JobProjectionDetail>,
 ): {
   aborted: boolean;
   message: string;
@@ -138,7 +146,7 @@ function firstTerminalFailure(
   const targetSlot =
     (drain ? plan.slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined)
     ?? plan.slots.find((slot) => {
-      const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
+      const detail = detailForJob(detailsByJob, slot.jobId);
       const outcome = detail.exit?.outcome;
       return outcome && outcome.kind !== 'completed';
     });
@@ -147,7 +155,7 @@ function firstTerminalFailure(
     return null;
   }
 
-  const detail = loadJobProjectionDetail(db, targetSlot.jobId, readCtx);
+  const detail = detailForJob(detailsByJob, targetSlot.jobId);
   const terminal = detail.exit;
   if (!terminal) {
     return null;
@@ -315,7 +323,8 @@ async function resumeWorkflow(
     return null;
   }
 
-  const summary = summarizeCompletedSteps(plan, db, readCtx);
+  const slotDetailsByJob = loadJobProjectionDetails(db, plan.slots.map((slot) => slot.jobId), readCtx);
+  const summary = summarizeCompletedSteps(plan, slotDetailsByJob);
   const maxStepIndex = plan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
   if (summary.activeStepIndex > maxStepIndex) {
     appendWorkflowEvents(db, [workflowCompletedEvent(plan.workflowId, { outcome: 'completed' })]);
@@ -326,10 +335,10 @@ async function resumeWorkflow(
   }
 
   const stepSlots = plan.slots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
-  const activeAtoms = buildLaunchedAtomsForStep(plan, db, summary.activeStepIndex, readCtx);
+  const activeAtoms = buildLaunchedAtomsForStep(plan, summary.activeStepIndex, slotDetailsByJob);
   const missingProjection = stepSlots.some((slot) => {
     const projection = readProjectionJob(db, slot.jobId);
-    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
+    const detail = detailForJob(slotDetailsByJob, slot.jobId);
     return projection === null && detail.status === null;
   });
 
@@ -356,7 +365,7 @@ async function resumeWorkflow(
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, readCtx) : null;
 
   for (const slot of stepSlots) {
-    const detail = loadJobProjectionDetail(db, slot.jobId, readCtx);
+    const detail = detailForJob(slotDetailsByJob, slot.jobId);
     if (detail.exit?.outcome.kind === 'completed') {
       completedOutputs.set(slot.atomKey, detail.exit.content);
       continue;
@@ -368,7 +377,7 @@ async function resumeWorkflow(
     }
   }
 
-  const failure = firstTerminalFailure(db, plan, drain, readCtx);
+  const failure = firstTerminalFailure(plan, drain, slotDetailsByJob);
   const waitState = {
     completedOutputs,
     cursor: { jobs: cursorJobs },
@@ -387,7 +396,7 @@ async function resumeWorkflow(
   };
 
   const pendingPhases = stepSlots.flatMap((slot) => {
-    const phase = loadJobProjectionDetail(db, slot.jobId, readCtx).status?.phase;
+    const phase = detailForJob(slotDetailsByJob, slot.jobId).status?.phase;
     return phase === null || phase === undefined ? [] : [phase];
   });
 
