@@ -1,4 +1,4 @@
-import type { MutableRuntimeState as MutableBackendRuntimeState, LifecycleState } from '../../coordinator/control.js';
+import type { MutableRuntimeState as MutableBackendRuntimeState, LifecycleState } from '../control.js';
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 
 

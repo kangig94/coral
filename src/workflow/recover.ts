@@ -4,7 +4,7 @@ import type { CallerContext } from '../shared/request-context.js';
 import type { JobTerminalRecord } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
-import type { ProgressStore } from '../execution/progress-store.js';
+import type { ProgressStore } from '../store/progress-store.js';
 import { loadJobProjectionDetail } from '../store/queries/jobs.js';
 import {
   buildStepDetailsForAtoms,

@@ -210,7 +210,7 @@ export function createRealRuntime(): Runtime {
           code: 'E_FLAVOR_NOT_SETTLED',
           userMessage: 'Runtime.paths.coral accessed before setBuildFlavor settled',
           remediation:
-            'Ensure setBuildFlavor() is called during composition-root bootstrap before any paths.coral consumer runs. See src/execution/composition/backend-world.ts.',
+            'Ensure setBuildFlavor() is called during composition-root bootstrap before any paths.coral consumer runs. See src/coordinator/composition/backend-world.ts.',
         });
       }
       cachedCoralPaths = Object.freeze(composeCoralPaths(settled));

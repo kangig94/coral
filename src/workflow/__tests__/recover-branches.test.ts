@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ProgressStore } from '../../execution/progress-store.js';
+import { ProgressStore } from '../../store/progress-store.js';
 import { SimulationRuntime } from '../../simulation/core/index.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { JobTerminalRecord } from '../../jobs/records.js';

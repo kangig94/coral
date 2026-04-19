@@ -1,7 +1,7 @@
 /**
  * Public client surface for coral consumers (coral-reef, external tools).
  *
- * IMPORT DISCIPLINE: Backend-side modules (src/execution/server.ts, etc.)
+ * IMPORT DISCIPLINE: Backend-side modules (src/coordinator/bootstrap.ts, etc.)
  * must import from specific modules (infra/paths.js, client/readers.js),
  * NEVER from client/index.js — the barrel re-exports backend-lifecycle.ts and
  * other client-facing helpers, so bundling it into coral-backend.cjs would

@@ -5,12 +5,12 @@ import type * as NodeOs from 'node:os'
 import { dirname, join } from 'node:path'
 import type { JobLaunchRecord, JobProgressRecord, JobTerminalRecord } from '../../records.js';
 import type { WaitStreamEvent } from '../../wait.js';
-import type * as ProgressStoreModule from '../../../execution/progress-store.js'
-import type * as SessionManagerModule from '../../../execution/session-manager.js'
-import type * as LifecycleModule from '../../../execution/lifecycle.js'
+import type * as ProgressStoreModule from '../../../store/progress-store.js'
+import type * as SessionManagerModule from '../../../sessions/shell/store.js'
+import type * as LifecycleModule from '../../../coordinator/control.js'
 import type * as HttpHandlerModule from '../../../transport/http/handler.js'
-import type * as ServiceModule from '../../../execution/service.js'
-import type * as ServerModule from '../../../execution/server.js'
+import type * as ServiceModule from '../../../coordinator/api.js'
+import type * as ServerModule from '../../../coordinator/coordinator.js'
 import type * as EngineModule from '../../../coordinator/live/admission.js'
 import type * as EventBusModule from '../../../coordinator/control.js'
 import type * as PathsModule from '../../../infra/paths.js'
@@ -69,12 +69,12 @@ async function loadModules(): Promise<LoadedModules> {
     providerRegistryModule,
     discussOperationsModule,
   ] = await Promise.all([
-    import('../../../execution/progress-store.js'),
-    import('../../../execution/session-manager.js'),
-    import('../../../execution/lifecycle.js'),
+    import('../../../store/progress-store.js'),
+    import('../../../sessions/shell/store.js'),
+    import('../../../coordinator/control.js'),
     import('../../../transport/http/handler.js'),
-    import('../../../execution/service.js'),
-    import('../../../execution/server.js'),
+    import('../../../coordinator/api.js'),
+    import('../../../coordinator/coordinator.js'),
     import('../../../coordinator/live/admission.js'),
     import('../../../coordinator/control.js'),
     import('../../../infra/paths.js'),

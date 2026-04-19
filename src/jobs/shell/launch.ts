@@ -25,9 +25,9 @@ import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './l
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
 import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../coordinator/live/admission.js';
-import { type ProgressStore } from '../../execution/progress-store.js';
+import { type ProgressStore } from '../../store/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { type SessionManager } from '../../execution/session-manager.js';
+import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import {
@@ -36,7 +36,7 @@ import {
   toProviderRequest,
   type AcceptedAdmission,
   type ClaimJobOptions,
-} from '../../execution/job-lifecycle-contracts.js';
+} from './contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 

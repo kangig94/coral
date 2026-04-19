@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { RecoveryRegistry } from '../../execution/recovery-registry.js';
+import { RecoveryRegistry } from '../composition/recovery-registry.js';
 import type { AppServerRuntimeRecord, JobLaunchRecord } from '../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 

@@ -5,7 +5,7 @@ import {
   removeLockIfOwner,
   type LockRecord,
   type VerifyBackendOwnershipFn,
-} from '../../execution/backend-lock.js';
+} from '../lock.js';
 
 function makeEnoent(path: string): NodeJS.ErrnoException {
   const error = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;

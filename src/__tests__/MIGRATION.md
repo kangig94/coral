@@ -117,3 +117,47 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - `rg "\\bCoralFault\\b" src/ --type ts` → zero.
 - `rg "coral_fault\\s*\\{\\s*fault:" src/ --type ts` → zero.
 - `rg "PersistedStatusRecord|PersistedLaunchRecord|PersistedRuntimeRecord|PersistedExitRecord|PersistedProgressRecord|WorkflowCheckpoint|ProviderResult|ProviderProgressEvent|TerminalResult|SessionContinuityPatch" src/ --type ts` → zero.
+
+## Phase 3 finalization (CG8 — execution deletion complete)
+
+`src/execution/` is now deleted. Phase 3 closes the residue ledger by moving the last live implementations to their owning coordinator, transport, jobs, sessions, and store homes, and by retiring the remaining compat shims outright.
+
+### Production-file disposition ledger (`src/execution/**`)
+
+- `src/execution/backend-lock.ts` → **REWRITTEN** into `src/coordinator/lock.ts`.
+- `src/execution/backend-core.ts` → **DELETED**; the exported backend-core surface now re-exports from `src/coordinator/coordinator.ts`.
+- `src/execution/backend-core-types.ts` → **MOVED** to `src/coordinator/composition/backend-core-types.ts`.
+- `src/execution/job-lifecycle-contracts.ts` → **MOVED** to `src/jobs/shell/contracts.ts`.
+- `src/execution/job-lifecycle.ts` → **DELETED**; importers now target `src/jobs/shell/{launch,wait}.ts` directly.
+- `src/execution/lifecycle.ts` → **DELETED**; lifecycle/control imports now target `src/coordinator/control.ts`.
+- `src/execution/progress-store.ts` → **MOVED** to `src/store/progress-store.ts`.
+- `src/execution/recovery-registry.ts` → **MOVED** to `src/coordinator/composition/recovery-registry.ts`.
+- `src/execution/server.ts` → **DELETED**; callers now use `src/coordinator/coordinator.ts` plus `src/coordinator/bootstrap.ts`.
+- `src/execution/server-types.ts` → **DELETED**; lifecycle/server types now come from `src/coordinator/{control,coordinator}.ts`.
+- `src/execution/service.ts` → **DELETED**; callers now use `src/coordinator/api.ts`.
+- `src/execution/session-manager.ts` → **DELETED**; callers now use `src/sessions/shell/{store,resolve}.ts`.
+- `src/execution/smoke-open-store.ts` → **MOVED** to `src/coordinator/smoke-open-store.ts`.
+- `src/execution/composition/backend-control.ts` → **MOVED** to `src/coordinator/composition/backend-control.ts`.
+- `src/execution/composition/backend-defaults.ts` → **MOVED** to `src/coordinator/composition/backend-defaults.ts`.
+- `src/execution/composition/backend-world.ts` → **MOVED** to `src/coordinator/composition/backend-world.ts`.
+- `src/execution/composition/create-backend-core.ts` → **MOVED** to `src/coordinator/composition/create-backend-core.ts`.
+- `src/execution/composition/execution-services.ts` → **MOVED** to `src/coordinator/composition/execution-services.ts`.
+- `src/execution/composition/runtime-state.ts` → **MOVED** to `src/coordinator/composition/runtime-state.ts`.
+
+### Test/helper disposition ledger (`src/execution/**`)
+
+- `src/execution/__tests__/server-test-deps.ts` → **MOVED** to `src/coordinator/__tests__/server-test-deps.ts`.
+- `src/execution/__tests__/workflow-session-cleanup.test.ts` → **DELETED**; workflow-session cleanup now lives inside `src/coordinator/api.ts`, with coordinator/service and workflow recovery coverage owning the behavior.
+
+### GOD amendments recorded at phase exit
+
+- `info.ts → discovery.ts`: the coordinator-owned daemon-discovery seam now lives at `src/coordinator/discovery.ts`; `src/infra/backend-info.ts` is retired.
+- `bootstrap.ts` is the main-process entry: `scripts/build-server.mjs` and `scripts/verify-native-binding.sh` target `src/coordinator/bootstrap.ts`, and `src/coordinator/coordinator.ts` remains the testable composition root.
+
+### `service.test.ts` split map (94-test execution baseline)
+
+- Launch / queue admission / provider preflight cases → `src/jobs/shell/__tests__/launch.test.ts`.
+- Abort semantics and terminal-state abort edge cases → `src/jobs/shell/__tests__/abort.test.ts`.
+- Wait-stream / wait-once / replay cursor behavior → `src/jobs/shell/__tests__/wait.test.ts` plus `src/transport/http/__tests__/server.test.ts` for wire-level SSE assertions.
+- Startup recovery, orphan adoption, ghost launch, wrapper-loss, and interrupted app-server recovery → `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts`.
+- Cross-domain coordinator residue (resume/fork composition, workflow dispatch, provider-host composition, interrupted app-server finalization) → `src/coordinator/__tests__/service-composition.test.ts`.

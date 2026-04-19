@@ -3,12 +3,10 @@ import type { JobStatusRecord } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamRequest } from '../wait.js';
 import type { TypedEventBus } from '../../coordinator/control.js';
 import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
-import { createReplayCursor, type ProgressStore } from '../../execution/progress-store.js';
-import {
-  WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
-} from '../../execution/job-lifecycle-contracts.js';
+import { createReplayCursor, type ProgressStore } from '../../store/progress-store.js';
+import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS } from './contracts.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
-import type { SessionManager } from '../../execution/session-manager.js';
+import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail, JobProgressRow } from '../../store/queries/jobs.js';
 import type { JobEvent } from './event-subscription.js';
 import { resultPathFor } from './result-artifact.js';

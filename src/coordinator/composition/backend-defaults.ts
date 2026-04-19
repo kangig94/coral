@@ -2,23 +2,23 @@ declare const __PLUGIN_ROOT__: string;
 
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../coordinator/discovery.js';
+import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../discovery.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import { acquireLock, removeLockIfOwner, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../backend-lock.js';
-import type { LaunchCoordinator } from '../../coordinator/live/admission.js';
-import { IdleTimer, resolveIdleTimeoutMs } from '../../coordinator/live/idle.js';
+import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
+import type { LaunchCoordinator } from '../live/admission.js';
+import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
 import { createKbSubsystem as defaultCreateKbSubsystem } from '../../kb/subsystem.js';
 import {
   cleanupStaleJobs,
   closeServer as defaultCloseServer,
   listen as defaultListen,
   markJobsAsError,
-} from '../../coordinator/control.js';
-import type { ProgressStore } from '../progress-store.js';
+} from '../control.js';
+import type { ProgressStore } from '../../store/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { discussReconcile } from '../../discuss/api.js';
-import { ExecutionService as DefaultExecutionService } from '../../coordinator/api.js';
-import type { BackendCoreOptions, CreateServerFn, FetchFn } from '../backend-core-types.js';
+import { ExecutionService as DefaultExecutionService } from '../api.js';
+import type { BackendCoreOptions, CreateServerFn, FetchFn } from './backend-core-types.js';
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;
 
@@ -153,14 +153,13 @@ export function resolveBackendDefaults(
     options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);
   const acquireLockFn =
     options.acquireLockFn ??
-    ((currentPluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) =>
-      acquireLock(currentPluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor, {
-        env: runtime.env,
-        storage: runtime.storage,
-        paths: runtime.paths,
-        time: runtime.time,
-        verifyOwnership: verifyBackendOwnershipFn,
-      }));
+    (async (_currentPluginRoot, instanceId, currentVersion, currentBundleHash, currentFlavor) => {
+      await acquireLock(currentFlavor, currentBundleHash, {
+        instanceId,
+        version: currentVersion,
+        runtime,
+      });
+    });
   const writeBackendInfoFn =
     options.writeBackendInfoFn ?? ((currentPluginRoot, info) => writeBackendInfo(currentPluginRoot, info, runtime));
   const removeBackendInfoIfOwnerFn =
@@ -168,8 +167,7 @@ export function resolveBackendDefaults(
     ((currentPluginRoot, instanceId) => removeBackendInfoIfOwner(currentPluginRoot, instanceId, runtime));
   const removeLockIfOwnerFn =
     options.removeLockIfOwnerFn ??
-    ((currentPluginRoot, instanceId) =>
-      removeLockIfOwner(currentPluginRoot, instanceId, runtime.storage, runtime.paths));
+    ((_currentPluginRoot, instanceId) => releaseLock(instanceId, { storage: runtime.storage }));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
   const createKbSubsystemFn = options.createKbSubsystemFn ?? defaultCreateKbSubsystem;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});

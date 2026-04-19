@@ -6,7 +6,7 @@ import { parseAgentRef, resolveAgent } from '../../../jobs/shell/agent-resolutio
 import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
 import { createProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
-import { ProgressStore } from '../../../execution/progress-store.js';
+import { ProgressStore } from '../../../store/progress-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { ExecutionService } from '../../../coordinator/api.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';

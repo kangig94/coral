@@ -16,7 +16,7 @@ The CLI parses commands, follows detached launches via SSE, and formats output f
 
 ## Backend
 
-The backend is a composition root, not a domain. It resolves identity metadata, sets up the Runtime world, instantiates per-caller execution services, wires the domain facades, applies the startup projection drain and reconcile sequence, and registers HTTP routes. Post-Phase 2 the `src/execution/` tree holds composition, transport, simulation, and KB residue awaiting handoff to `src/coordinator/**` (Phase 3), `src/transport/**` (Phase 4), and `src/simulation/**` (Phase 7). New domain logic does not land in `src/execution/`.
+The backend is a composition root, not a domain. Phase 3 splits that root into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, and cross-domain assembly; transport owns HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
 
 ## Runtime
 
@@ -47,7 +47,7 @@ The KB domain owns text and vector search, note mutation, memo and source lifecy
 
 ## Coordinator
 
-The coordinator layer owns Journal consumer driving (stream-kind authority, cursor management, drain coalescing) and, from Phase 3 onward, the live-coordinator shells extracted from the backend composition.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, provider-host coordination, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
 
 ## Shared and Infrastructure
 
@@ -58,30 +58,30 @@ Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross
 ```text
 CLI
   -> client helpers
-     -> backend HTTP routes
+     -> transport routes
 
-backend HTTP routes
-  -> execution service (dispatcher)
+transport HTTP routes
+  -> coordinator API + control ports
   -> domain facades (workflow / discuss / KB)
 
-execution service
+coordinator API
   -> jobs domain facade
   -> sessions domain facade
   -> provider adapters
-  -> launch engine (pool mechanics only)
+  -> live launch / host management
   -> provider host manager
 
-lifecycle startup
+coordinator startup
   -> Journal open
-  -> projection rebuild (one-shot drain)
+  -> consumer-driver freshness drain
   -> domain reconcile surfaces (in sequence)
 
 discuss shell
   -> discuss pure core
   -> Journal append via the domain's store-registry
 
-KB bridge
-  -> KB domain
+KB runtime
+  -> corpus publication + notify seam
 
 shared / infra
   -> lowest common layer reused everywhere

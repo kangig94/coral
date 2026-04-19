@@ -66,7 +66,8 @@ import {
 import type { TypedEventBus } from './control.js';
 import type { LaunchCoordinator, LaunchPool } from './live/admission.js';
 import { type ProviderHostManager, type ProviderServerAttachment } from './live/provider-hosts/pool.js';
-import { LaunchOrchestrator, WaitCoordinator } from '../execution/job-lifecycle.js';
+import { LaunchOrchestrator } from '../jobs/shell/launch.js';
+import { WaitCoordinator } from '../jobs/shell/wait.js';
 import {
   SessionClaimError,
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
@@ -74,9 +75,10 @@ import {
   toProviderRequest,
   type AcceptedAdmission,
   type ClaimJobOptions,
-} from '../execution/job-lifecycle-contracts.js';
-import type { ProgressStore } from '../execution/progress-store.js';
-import { SessionManager, getSessionById, type SessionAllocateOptions } from '../execution/session-manager.js';
+} from '../jobs/shell/contracts.js';
+import type { ProgressStore } from '../store/progress-store.js';
+import { SessionManager, type SessionAllocateOptions } from '../sessions/shell/store.js';
+import { getSessionById } from '../sessions/shell/resolve.js';
 import type { Runtime } from '../runtime/ports.js';
 import { noopAppendEvents, type AppendEventsFn } from '../store/append.js';
 import type { CoralEventInput } from '../store/envelope.js';

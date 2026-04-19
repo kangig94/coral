@@ -93,21 +93,31 @@ Phase 2 turns the Phase 1 Journal substrate into real domain ownership. Each of 
 
 **Verification**: `npm run build` (prod + dev) clean; `npm run lint` clean; `npm test` green; integration suite green; `rg "\bCoralFault\b" src/ --type ts` → zero; `rg "coral_fault\s*\{\s*fault:" src/ --type ts` → zero; `rg "PersistedStatusRecord|PersistedLaunchRecord|PersistedRuntimeRecord|PersistedExitRecord|PersistedProgressRecord|WorkflowCheckpoint|ProviderResult|ProviderProgressEvent|TerminalResult|SessionContinuityPatch" src/ --type ts` → zero. All 12 Phase 2 acceptance criteria satisfied.
 
-## Phase 3 — Coordinator Consolidation (in progress)
+## Phase 3 — Coordinator Consolidation (complete)
 
-Current carry-over cleanup commit group: `phase-3/shared-ownership-cleanup` (AC7 debt closure + AC9 MINOR remainder).
+Tag: `phase-3-complete` @ rewrite branch.
 
-**Delivered in CG6**:
+Phase 3 finishes the backend split. The daemon now composes a coordinator seam for lifecycle, startup recovery, ConsumerDriver freshness, corpus notify publication, and provider-host orchestration, plus a transport seam for HTTP/SSE parsing and wire formatting. `src/execution/` is deleted outright.
 
-- `src/execution/__tests__/service.test.ts` retired after the mechanical split. Handler-owned coverage now lives at `src/jobs/shell/__tests__/{launch,abort,wait}.test.ts`, lifecycle recovery lives at `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts`, and coordinator-only residue stays at `src/coordinator/__tests__/service-composition.test.ts`. The destination `it(...)` count stays above the original 94-test floor.
-- `src/execution/__tests__/progress-store.test.ts` retired. The live projection rebuild path is now covered by `src/jobs/__tests__/projection-rebuild.test.ts`, which drives the jobs consumer through `ConsumerDriver.notify(...)` + `waitFreshUntil(...)`.
-- `src/shared/types.ts`, `src/shared/persistence-parsers.ts`, and `src/shared/persistence-readers.ts` are deleted. Remaining callers import domain-owned types directly, job status parsing lives under `src/jobs/records.ts`, discuss filesystem reads live under `src/discuss/shell/discuss-sources-catalog.ts`, and `src/client/readers.ts` now reads jobs through the store-backed projection/query path.
-- AC9 MINOR remainder landed: schema rationale comments in `src/sessions/events.ts` and `src/discuss/store-registry.ts`, wait-wire ownership note in `src/jobs/api.ts`, workflow test comments/fixture extraction, hook stub stderr-shape assertions, and migration/changelog consistency updates.
+**Delivered**:
+
+- **CG6 shared-ownership cleanup**: `src/execution/__tests__/service.test.ts` retired into the jobs/coordinator-owned destinations; `src/execution/__tests__/progress-store.test.ts` retired behind the projection rebuild proof; `src/shared/types.ts`, `src/shared/persistence-parsers.ts`, and `src/shared/persistence-readers.ts` were deleted; and the remaining AC9 MINOR rationale/comments landed.
+- **CG8 execution deletion + phase closeout**: the last backend composition residue moved into coordinator ownership, `ProgressStore` moved to the store layer, job lifecycle contracts moved into the jobs shell, and `src/coordinator/bootstrap.ts` became the daemon main entry while `src/coordinator/coordinator.ts` remained the testable composition root.
+- **Compatibility/regression fixes**: the file-level execution shims are gone, with any remaining backend-lock compatibility localized inside `src/coordinator/lock.ts`; the in-process server harness regained real migration coverage with an in-memory fallback when its temp roots do not exist yet; the durable `result.md` artifact path returned to the job directory contract; and the discuss golden-capture / simulation-sealing helpers were rewired to the post-execution homes.
+- **Docs and ledgers**: architecture docs now describe the coordinator/transport split at the seam level, `MIGRATION.md` records the final execution-file disposition, and the design philosophy source-tree policy reflects the no-`src/execution/` end state.
 
 **Retirement ledger progression**:
 
+- ✅ `src/execution/` — DELETED in CG8.
+- ✅ `src/execution/{session-manager,job-lifecycle,recovery-registry,smoke-open-store,backend-lock,backend-core,backend-core-types,server,server-types,service,lifecycle,progress-store,composition/**}` — retired or moved to coordinator/jobs/store homes in CG8.
 - ✅ `src/execution/__tests__/service.test.ts` — DELETED after the CG6 split.
 - ✅ `src/execution/__tests__/progress-store.test.ts` — DELETED in CG6.
+- ✅ `src/infra/backend-info.ts` — DELETED in Phase 3; discovery now lives under coordinator ownership.
+- ✅ `src/client/backend-lifecycle.ts` — DELETED in Phase 3.
 - ✅ `src/shared/types.ts` — DELETED in CG6.
 - ✅ `src/shared/persistence-parsers.ts` — DELETED in CG6.
 - ✅ `src/shared/persistence-readers.ts` — DELETED in CG6.
+- ⏭ `src/shared/legacy-terminal-outcome-compat.ts` — retires in Phase 6 when provider adapters emit domain `TerminalOutcome` directly.
+- ⏭ `src/jobs/shell/legacy-ingest.ts` — retires in Phase 6.
+
+**Verification**: `npm run lint` clean; `npm run build` clean; `npm run build:dev` clean; `npx tsc --noEmit` clean; `npm test` green (`1619 passed | 30 skipped | 3 todo`, `144` files / `1652` tests); `npx vitest run --config vitest.integration.config.ts` green (`18 passed`, `7` files); `node scripts/verify-runtime-cutover.mjs` exits 0; `bash scripts/verify-native-binding.sh` exits 0 with `ok`; `rg "\bCoralFault\b" src/ --type ts` → zero; `rg "coral_fault\s*\{\s*fault:" src/ --type ts` → zero; `rg "PersistedStatusRecord|PersistedLaunchRecord|PersistedRuntimeRecord|PersistedExitRecord|PersistedProgressRecord|WorkflowCheckpoint|ProviderResult|ProviderProgressEvent|TerminalResult|SessionContinuityPatch" src/ --type ts` → zero; `ls src/execution` → ENOENT; `grep -R "from ['\"].*execution/" src/` → zero; `grep -R "from ['\"].*shared/types\\.js\\|shared/persistence-(parsers\\|readers)" src/` → zero; `grep -RE "from.*execution/(session-manager|job-lifecycle|recovery-registry|smoke-open-store|backend-lock)" src/` → zero. All 12 Phase 3 acceptance criteria satisfied.

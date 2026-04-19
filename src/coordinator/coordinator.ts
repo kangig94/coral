@@ -1,3 +1,5 @@
+import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
@@ -13,7 +15,7 @@ import {
   createBackendCore,
   type BackendCoreOptions,
   type BackendCoreResult,
-} from '../execution/backend-core.js';
+} from './composition/create-backend-core.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './api.js';
@@ -39,11 +41,22 @@ import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
+export { createBackendCore } from './composition/create-backend-core.js';
+export { listInstantiatedExecutionServices } from './composition/execution-services.js';
+export type {
+  BackendBootSnapshot,
+  BackendCoreOptions,
+  BackendCoreResult,
+  CreateServerFn,
+  FetchFn,
+} from './composition/backend-core-types.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime'> & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
 };
+
+export type BackendServerOptions = CoordinatorServerOptions;
 
 export type CoordinatorServerController = {
   server: BackendCoreResult['server'];
@@ -53,6 +66,8 @@ export type CoordinatorServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => BackendCoreResult['idleTimer'];
 };
+
+export type BackendServerController = CoordinatorServerController;
 
 function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
   const raw = runtime.env.get('CORAL_BOOT_FRESHNESS_TIMEOUT_MS');
@@ -91,6 +106,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let consumerDriver: ConsumerDriver | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
+  const useJournalQuerySurface = options.progressStore === undefined;
+  const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
+  const providedCreateExecutionService = coreOptions.createExecutionService;
+  const providedAcquireLockFn = coreOptions.acquireLockFn;
+  const providedRemoveLockIfOwnerFn = coreOptions.removeLockIfOwnerFn;
 
   const getStoreDb = () => {
     if (storeDb !== null) {
@@ -104,9 +124,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Some direct coordinator tests intentionally bypass flavor-settled bootstrap.
     }
 
+    const storeDbStorage = {
+      ...runtime.storage,
+      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
+      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
+    };
+    runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
     storeDb = openStoreDatabase({
-      path: storeDbPath,
-      storage: runtime.storage,
+      path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
+      storage: storeDbStorage,
     });
     return storeDb;
   };
@@ -145,7 +171,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     ...coreOptions,
     runtime,
     createKbSubsystemFn: async (ctx) => {
-      const kbSubsystem = await createKbSubsystem({
+      const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
@@ -159,23 +185,33 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
       });
-      kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
-        scheduler: kbSubsystem.curateScheduler,
-        db: getStoreDb(),
-        runtime,
-      });
-      await kbSubsystem.curateScheduler.start();
+      if (kbSubsystem.curateScheduler) {
+        kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
+          scheduler: kbSubsystem.curateScheduler,
+          db: getStoreDb(),
+          runtime,
+        });
+        await kbSubsystem.curateScheduler.start();
+      }
       return kbSubsystem;
     },
-    createExecutionService: (ctx, deps) =>
-      new ExecutionService(ctx, {
+    createExecutionService: (ctx, deps) => {
+      const wiredDeps = {
         ...deps,
         appendEvents: coordinatorAppendEvents,
-        loadJobProjectionDetail: (jobId) => loadJobProjectionDetail(getStoreDb(), jobId),
-        readJobProgress: (jobId) => readJobProgress(getStoreDb(), jobId),
-        subscribeJobEvents,
-        getCurrentJournalSeq,
-      }),
+        ...(useJournalQuerySurface
+          ? {
+              loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getStoreDb(), jobId),
+              readJobProgress: (jobId: string) => readJobProgress(getStoreDb(), jobId),
+              subscribeJobEvents,
+              getCurrentJournalSeq,
+            }
+          : {}),
+      };
+      return providedCreateExecutionService
+        ? providedCreateExecutionService(ctx, wiredDeps)
+        : new ExecutionService(ctx, wiredDeps);
+    },
     runStartupRecoveryFn: async ({
       identity,
       progressStore,
@@ -241,16 +277,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       return recoveredDiscussResumes;
     },
-    acquireLockFn: async (_pluginRoot, instanceId, version, bundleHash, flavor) => {
-      await acquireLock(flavor, bundleHash, {
-        instanceId,
-        version,
-        runtime,
-      });
-    },
-    removeLockIfOwnerFn: (_pluginRoot, instanceId) => {
-      releaseLock(instanceId, runtime);
-    },
+    acquireLockFn:
+      providedAcquireLockFn ??
+      (async (_pluginRoot, instanceId, version, bundleHash, flavor) => {
+        await acquireLock(flavor, bundleHash, {
+          instanceId,
+          version,
+          runtime,
+        });
+      }),
+    removeLockIfOwnerFn:
+      providedRemoveLockIfOwnerFn ??
+      ((_pluginRoot, instanceId) => {
+        releaseLock(instanceId, runtime);
+      }),
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   curateSchedulerHealth.attachRuntimeState(core.runtimeState);
@@ -270,3 +310,5 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getIdleTimer: () => core.idleTimer,
   };
 }
+
+export const createBackendServer = createCoordinatorServer;

@@ -42,10 +42,10 @@ import {
 } from '../../../coordinator/live/admission.js';
 import type { AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
-import { ProgressStore } from '../../../execution/progress-store.js';
+import { ProgressStore } from '../../../store/progress-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import type { SessionManager } from '../../../execution/session-manager.js';
+import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/api.js';
 

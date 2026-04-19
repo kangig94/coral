@@ -76,7 +76,7 @@ function buildNormalizer(rootValues) {
 }
 
 async function main() {
-  assertBuilt(resolve(DIST_ROOT, 'execution/__tests__/discuss-test-helpers.js'));
+  assertBuilt(resolve(DIST_ROOT, 'discuss/shell/__tests__/discuss-test-helpers.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/operations.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/persistence.js'));
   assertBuilt(resolve(DIST_ROOT, 'simulation/core/index.js'));
@@ -87,7 +87,7 @@ async function main() {
     persistence,
     simulation,
   ] = await Promise.all([
-    import(pathToFileURL(resolve(DIST_ROOT, 'execution/__tests__/discuss-test-helpers.js')).href),
+    import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/__tests__/discuss-test-helpers.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/operations.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/persistence.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'simulation/core/index.js')).href),

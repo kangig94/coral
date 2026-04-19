@@ -1,9 +1,9 @@
-import type { LaunchDecision } from '../jobs/launch.js';
-import type { JobPhase } from '../jobs/phase.js';
-import type { JobKind, JobLaunchRecord } from '../jobs/records.js';
-import type { ProviderRequest } from '../providers/protocol.js';
-import { resolveEffort } from '../shared/schemas.js';
-import type { AdmissionResult } from '../coordinator/live/admission.js';
+import type { LaunchDecision } from '../launch.js';
+import type { JobPhase } from '../phase.js';
+import type { JobKind, JobLaunchRecord } from '../records.js';
+import type { ProviderRequest } from '../../providers/protocol.js';
+import { resolveEffort } from '../../shared/schemas.js';
+import type { AdmissionResult } from '../../coordinator/live/admission.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 

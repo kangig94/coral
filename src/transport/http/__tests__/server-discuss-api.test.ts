@@ -11,8 +11,8 @@ import {
 } from '../../../discuss/shell/live-registry.js';
 import { attachSession } from '../../../discuss/shell/registry.js';
 import { submitManualSpeech } from '../../../discuss/shell/operations.js';
-import type { BackendServerController } from '../../../execution/server.js';
-import { createBackendServer } from '../../../execution/server.js';
+import type { BackendServerController } from '../../../coordinator/coordinator.js';
+import { createBackendServer } from '../../../coordinator/coordinator.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import {
   appendPersistedEvents,

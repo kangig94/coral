@@ -39,8 +39,8 @@ import {
   createLifecycle,
   type LifecycleController,
   type LifecycleDeps,
-} from '../../coordinator/control.js';
-import type { BackendCoreOptions, BackendCoreResult } from '../backend-core-types.js';
+} from '../control.js';
+import type { BackendCoreOptions, BackendCoreResult } from './backend-core-types.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { storePaths } from '../../store/paths.js';
 import { jobsReconcile } from '../../jobs/api.js';
@@ -51,7 +51,7 @@ import { createDiscussRuntime } from '../../discuss/shell/runtime-build.js';
 import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
-import { createReplayCursor } from '../progress-store.js';
+import { createReplayCursor } from '../../store/progress-store.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 
@@ -61,7 +61,7 @@ export type {
   BackendCoreResult,
   CreateServerFn,
   FetchFn,
-} from '../backend-core-types.js';
+} from './backend-core-types.js';
 
 function createLegacyStartupRecoveryFn(
   runtime: BackendCoreOptions['runtime'],

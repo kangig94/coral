@@ -53,7 +53,7 @@ The runtime is anchored by two primary entry points:
 
 | Entry point | Output | Role |
 | --- | --- | --- |
-| `src/execution/server.ts` | `build/coral-backend.cjs` | Backend daemon |
+| `src/coordinator/bootstrap.ts` | `build/coral-backend.cjs` | Backend daemon |
 | `src/cli/bootstrap.ts` | `build/coral-cli.cjs` | CLI entrypoint |
 
 The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude-appserver/server.ts` for the Claude appserver helper runtime.

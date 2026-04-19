@@ -22,13 +22,13 @@ bridge/coral-cli.cjs
       │
       ▼  HTTP + SSE (`127.0.0.1`, authenticated)
 bridge/coral-backend.cjs
-  ├── Request routing (HTTP + SSE)
-  ├── Provider orchestration via the jobs domain facade
-  ├── Workflow execution
-  ├── Discuss runtime (pure core + imperative shell)
-  ├── Jobs + sessions domains (Journal-backed)
+  ├── Coordinator bootstrap + lifecycle
+  ├── HTTP + SSE transport adapter
+  ├── Jobs / sessions / workflow / discuss / KB facades
+  ├── Live ConsumerDriver freshness + drain path
+  ├── Corpus notify seam for KB publication
   ├── Journal substrate (`better-sqlite3`)
-  ├── KB runtime
+  ├── KB runtime + curation scheduler
   └── Optional provider host management
       │
       ├── Codex CLI
@@ -87,19 +87,19 @@ Error responses use real HTTP status codes: 400 (validation), 403 (scope mismatc
 ### Session lifecycle
 
 1. `coral-cli codex -i ...` or `coral-cli codex <agent> -i ...`
-2. `src/client/http-client.ts` calls `createSession()` → `POST /sessions`
-3. `src/execution/http-handler.ts` parses the direct body, builds `CallerContext` server-side
-4. `src/execution/service.ts` resolves agent (if specified), persists session profile, launches provider
-5. Provider adapters in `src/providers/*` spawn the real CLI/runtime and emit progress
-6. `ProgressStore` and `SessionManager` persist job/session state with authoritative provenance
+2. The CLI client calls `POST /sessions`
+3. The transport layer validates the direct body, builds `CallerContext`, and forwards a domain-shaped request into the coordinator
+4. The coordinator API resolves agent intent, persists session continuity, and launches or resumes work through the jobs and sessions shells
+5. Provider adapters spawn the real CLI/runtime and emit progress
+6. Journal appends publish projection freshness through the live `ConsumerDriver`; session continuity remains authoritative in the sessions shell
 
-Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()` which resolves provider from the stored session, merges omitted fields from the stored profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
+Continuations use `POST /sessions/:id/messages`, which resolves provider from stored continuity, merges omitted fields from the session profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
 
 ### Wait / follow
 
 1. Detached launches print `Job <job> <launchState> (session <session>)`
 2. `coral-cli wait --jobs "<ids>" [--embed]` calls `streamWait()`
-3. `POST /jobs/wait` yields SSE events from `ExecutionService.waitStream()`
+3. `POST /jobs/wait` yields SSE events from the coordinator-owned wait surface, which reads the same job truth used by startup recovery and steady-state launch orchestration
 4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 
 ### Job inspection and control
@@ -112,7 +112,7 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 
 1. `coral-cli workflow ...` posts to `POST /workflow`
 2. The workflow domain compiles the DSL into a plan (parse → normalize → AST)
-3. The executor launches provider or `coral:` atoms through `ExecutionService`; launch and retry are intertwined per architecture §10.1a
+3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
 4. Workflow state is persisted as Journal events with a projection row per workflow; `coral-cli wait` reads the same job store
 
 ### Discuss and KB
@@ -120,60 +120,61 @@ Continuations use `POST /sessions/:id/messages` → `service.resumeBySessionId()
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes a single api facade
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
-- KB domain is self-contained under `src/kb/`
+- KB is self-contained and publishes corpus changes through the coordinator notify seam
 
 ## Module Map
 
 | Area | Role |
 | --- | --- |
-| CLI (`src/cli/`) | Command parsing, follow mode, text/JSON formatting |
-| Client (`src/client/`) | Backend startup, HTTP requests, wait/admin helpers |
-| Backend HTTP (`src/execution/`) | Backend composition root and route registration. Post-Phase-2 this layer holds composition/transport/simulation/KB residue pending handoff to `src/coordinator/**`, `src/transport/**`, and `src/simulation/**`. |
-| Provider execution (`src/providers/`, `src/execution/service.ts`, `src/execution/engine.ts`) | Provider adapters, launch orchestration, host/runtime management. `engine.ts` exposes launch-pool mechanics only — domain events are owned by the jobs domain. |
-| Jobs domain (`src/jobs/`) | Truth-owning facade for job lifecycle. Pure core: terminal-outcome and lifecycle-fault ADTs, job phase, cause references. Shell: launch, abort, wait, agent resolution, instruction assembly, legacy ingest. Reconcile: startup recovery and cross-namespace adoption. Facade exposes commands, queries, and reconcile surfaces. |
-| Sessions domain (`src/sessions/`) | Session persistence + continuity. Pure contract types; shell handles atomic persistence and resolution. `sessionsCommands` / `sessionsQueries` facade. |
-| Workflows (`src/workflow/`) | DSL parsing, plan building, decomposed pipeline execution. Launch and retry stay intertwined per architecture §10.1a. `workflowCompiler` / `workflowCommands` / `workflowRecover` facade. |
-| Discuss (`src/discuss/`) | Functional-core / imperative-shell. Pure core: state machine, reducer, events. Shell: persistence, loop, subflows. `discussCommands` / `discussQueries` / `discussReconcile` facade. |
-| Journal (`src/store/`) | `better-sqlite3` Journal substrate: WAL, append + rebuild, envelope + upcasters, domain-reducer dispatch. `CoralStore` is the read-only public surface. |
-| Runtime (`src/runtime/`) | Single-world Runtime with six I/O subports (time / storage / paths / process / ids / env); shared exec builder used by both the real runtime and the simulation runtime. |
-| Simulation (`src/simulation/`) | Deterministic doubles for testing (virtual time, sequential ids). |
-| Coordinator (`src/coordinator/`) | Journal consumer driver; Phase-3 handoff target for the coordinator-facing composition. |
-| Knowledge base (`src/execution/kb-tools.ts`, `src/kb/`) | KB endpoints, indexing, vector/text search, memo/source flows. |
-| Shared / infra (`src/shared/`, `src/infra/`) | Shared helpers, renamed `Legacy*` compat bridges (retire in Phase 6), backend info and path resolution. |
+| CLI | Command parsing, follow mode, text/JSON formatting. |
+| Client | Backend startup, HTTP requests, wait/admin helpers. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, provider-host coordination, and cross-domain assembly. |
+| Transport | HTTP + SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
+| Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
+| Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
+| Sessions | Session persistence and continuity, including resume/fork identity and atomic storage. |
+| Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
+| Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
+| Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |
+| Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
+| Simulation | Deterministic doubles for tests. |
+| Knowledge base | Search, indexing, memo/source flows, and publication into the corpus authority. |
+| Shared / infra | Low-level helpers, settled path resolution, and temporary compat bridges with explicit retirement phases. |
 
 ## Dependency Sketch
 
 ```text
-CLI layer (`src/cli/`)
-  -> Client layer (`src/client/`)
-      -> Backend HTTP routes
+CLI layer
+  -> Client layer
+      -> Transport HTTP surface
 
-Backend HTTP routes
-  -> Execution service (dispatcher)
-  -> Workflow facade
-  -> Discuss facade
-  -> KB facade
+Transport HTTP surface
+  -> Coordinator API + control ports
+  -> Domain facades (workflow / discuss / KB / jobs / sessions)
 
-Execution service
-  -> Jobs domain facade (jobsCommands / jobsQueries / jobsReconcile)
-  -> Sessions domain facade (sessionsCommands / sessionsQueries)
+Coordinator API
+  -> Jobs domain facade
+  -> Sessions domain facade
   -> Provider adapters
-  -> Launch engine (pool mechanics only — emits no domain events)
+  -> Live launch / host management
   -> Provider host manager
 
-Lifecycle startup
+Coordinator startup
   -> Open Journal
-  -> Rebuild projections (one-shot drain, Phase 2)
+  -> Register projection consumers
+  -> Drain freshness to the current Journal head
   -> jobsReconcile.runStartup
   -> discussReconcile.runStartup
   -> workflowRecover.resumeAll
+  -> expose steady-state transport
 
 Discuss shell
   -> Pure discuss core (state machine + reducer)
   -> Journal append via the discuss store-registry
 
-KB bridge
-  -> KB domain
+KB runtime
+  -> Corpus publication + notify seam
+  -> Coordinator freshness / health bridge
 
 Shared / compat layer
   -> Shared foundation consumed by all layers

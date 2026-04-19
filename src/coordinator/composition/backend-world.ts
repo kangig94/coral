@@ -6,18 +6,18 @@ import { setBuildFlavor } from '../../infra/paths.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../shared/utils.js';
-import { TypedEventBus } from '../../coordinator/control.js';
-import type { BackendIdentity } from '../../coordinator/control.js';
-import type { BackendCoreOptions } from '../backend-core-types.js';
+import { TypedEventBus } from '../control.js';
+import type { BackendIdentity } from '../control.js';
+import type { BackendCoreOptions } from './backend-core-types.js';
 import {
   createDiscussContextRegistry,
   type DiscussContextRegistry,
 } from '../../discuss/shell/live-registry.js';
 
-import { LaunchCoordinator } from '../../coordinator/live/admission.js';
-import { createProviderHostManager, type ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
-import type { IdleTimer } from '../../coordinator/live/idle.js';
-import { ProgressStore } from '../progress-store.js';
+import { LaunchCoordinator } from '../live/admission.js';
+import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
+import type { IdleTimer } from '../live/idle.js';
+import { ProgressStore } from '../../store/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
 

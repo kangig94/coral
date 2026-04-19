@@ -6,7 +6,7 @@
     "src/simulation/runner.ts"
   ],
   "forbidden": [
-    "src/execution/server.ts",
+    "src/coordinator/bootstrap.ts",
     "src/providers/bootstrap.ts",
     "src/providers/codex/",
     "src/providers/claude/"

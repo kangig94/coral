@@ -1,7 +1,7 @@
-import type { JobLaunchRecord, JobRuntimeRecord } from '../jobs/records.js';
-import { isDurableCliRuntime } from '../runtime/durable-runtime.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import type { RuntimeProcessPort } from '../runtime/ports.js';
+import type { JobLaunchRecord, JobRuntimeRecord } from '../../jobs/records.js';
+import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
+import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { RuntimeProcessPort } from '../../runtime/ports.js';
 
 export interface RecoveryEntry {
   launchRecord: JobLaunchRecord;

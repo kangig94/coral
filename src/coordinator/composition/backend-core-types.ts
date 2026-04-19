@@ -1,17 +1,17 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { BackendInfo } from '../coordinator/discovery.js';
-import type { ProviderRegistry } from '../providers/registry.js';
-import type { CallerContext } from '../shared/request-context.js';
-import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../coordinator/control.js';
-import type { ExecutionServiceLike } from '../coordinator/api.js';
-import type { VerifyBackendOwnershipFn } from './backend-lock.js';
-import type { DiscussContext } from '../discuss/shell/context.js';
-import type { DiscussContextRegistry } from '../discuss/shell/live-registry.js';
-import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
+import type { BackendInfo } from '../discovery.js';
+import type { ProviderRegistry } from '../../providers/registry.js';
+import type { CallerContext } from '../../shared/request-context.js';
+import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../control.js';
+import type { ExecutionServiceLike } from '../api.js';
+import type { VerifyBackendOwnershipFn } from '../lock.js';
+import type { DiscussContext } from '../../discuss/shell/context.js';
+import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
+import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 
-import type { LaunchCoordinator } from '../coordinator/live/admission.js';
-import type { ProviderHostManager } from '../coordinator/live/provider-hosts/pool.js';
-import type { IdleTimer } from '../coordinator/live/idle.js';
+import type { LaunchCoordinator } from '../live/admission.js';
+import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
+import type { IdleTimer } from '../live/idle.js';
 import type {
   CreateKbSubsystemFn,
   LifecycleController,
@@ -19,10 +19,10 @@ import type {
   RecoverPersistedDiscussFn,
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
-} from '../coordinator/control.js';
-import type { ProgressStore } from './progress-store.js';
-import type { Runtime } from '../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from '../coordinator/api.js';
+} from '../control.js';
+import type { ProgressStore } from '../../store/progress-store.js';
+import type { Runtime } from '../../runtime/ports.js';
+import type { ExecutionServiceDeps, RecoveryCapableService } from '../api.js';
 
 export type BackendBootSnapshot = {
   version?: string;

@@ -13,13 +13,14 @@
 | Area | Layer | Modification Rule |
 |------|-------|-------------------|
 | CLI | L2 | Commander-based CLI client. Changes affect CLI subcommands, not backend logic. |
-| Backend composition | L1 | Persistent HTTP backend daemon. The backend is a composition root; it wires runtime ports, delegates truth to domain facades, and routes HTTP requests. New domain logic does not land at this layer — it lives in its owning domain. |
+| Backend composition | L1 | Persistent daemon bootstrap. Phase 3 splits this into coordinator-owned lifecycle/composition and transport-owned HTTP/SSE wiring. New domain logic does not land here — it lives in its owning domain. |
 | Domain layers (jobs / sessions / discuss / workflow) | L0 | Each domain owns its contract (events, projection, read-models), its functional core (pure state transitions), its imperative shell (I/O and orchestration), and its coordinator-facing facade. Domains do not import each other; cross-domain composition happens at the backend layer. |
 | Provider adapters | L0 | Pluggable adapters for external CLIs. Adapter-level changes must preserve wire-compatibility with the adapted provider. |
 | Journal substrate | L0 | SQLite-backed event log with append / rebuild / envelope / upcaster / projection-dispatch primitives. The read surface is publicly exported; write primitives stay internal. |
 | Runtime | L0 | A single Runtime world with six I/O subports (time / storage / paths / process / ids / env). The backend swaps the entire world once at composition; everything routes I/O through it. |
 | Simulation | L0 | Deterministic doubles used by tests — virtual time, sequential ids, in-memory storage. |
-| Coordinator | L0 | Journal consumer driver and process-level coordination primitives. Live-coordinator shells extracted from the backend composition land here. |
+| Coordinator | L0 | Process lifecycle, startup reconcile sequencing, Journal consumer driving, corpus notify publication, provider-host coordination, and cross-domain assembly. `src/execution/` no longer exists; coordinator owns the former backend composition residue. |
+| Transport | L0 | HTTP + SSE parsing, validation, and wire formatting. Transport depends on domain/coordinator contracts, not on domain shells. |
 | KB | L0 | Knowledge base search, indexing, and mutation. |
 | Shared / infra / client | L0 | Cross-cutting helpers, path resolution, and the public client barrel. Renamed compat bridges live in the shared layer with explicit retirement phases. |
 | Agents / skills | — | Claude-native agent definitions and slash-command skills. |

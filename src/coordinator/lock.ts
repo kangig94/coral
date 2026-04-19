@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 
-import { BackendAlreadyRunningError, CONTENDER_BUDGET, STARTUP_DEADLINE } from '../execution/backend-lock.js';
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
 import type { LockRecord } from '../shared/lock-types.js';
 import { isNoEntryError } from '../shared/utils.js';
+import { readBuildFlavor } from '../shared/utils.js';
 import { probeCoordinator, probeProcessStartedAtSeconds } from './discovery.js';
 import { coordinatorLog } from './log.js';
 import { coordinatorPaths } from './paths.js';
@@ -13,7 +13,25 @@ const RETRY_DELAY_MS = 200;
 const HEALTHCHECK_TIMEOUT_MS = 1_000;
 const DEFAULT_HOST = '127.0.0.1';
 
-export { BackendAlreadyRunningError, CONTENDER_BUDGET, STARTUP_DEADLINE };
+export const STARTUP_DEADLINE = 30_000;
+export const CONTENDER_BUDGET = 90_000;
+export type { LockRecord } from '../shared/lock-types.js';
+export type BackendOwnershipState = 'healthy' | 'contended' | 'stale';
+export type VerifyBackendOwnershipFn = (options: {
+  pluginRoot: string;
+  record: LockRecord;
+}) => Promise<BackendOwnershipState>;
+
+export class BackendAlreadyRunningError extends Error {
+  constructor() {
+    super('Coral backend already running');
+    this.name = 'BackendAlreadyRunningError';
+  }
+}
+
+export function backendLockPath(pluginRoot: string): string {
+  return coordinatorPaths(readBuildFlavor(pluginRoot)).lockFile;
+}
 
 type LockSnapshot = {
   raw: string;
@@ -30,6 +48,17 @@ type LockState = {
 type IncumbentState = 'healthy_same' | 'healthy_replacing' | 'contended' | 'stale';
 
 const activeLocks = new Map<string, LockState>();
+
+type CompatBackendLockStorage = Pick<
+  RuntimeStoragePort,
+  'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'
+>;
+type CompatBackendLockPaths = {
+  backendLockPath(pluginRoot: string): string;
+};
+type CompatBackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'paths' | 'time'> & {
+  verifyOwnership: VerifyBackendOwnershipFn;
+};
 
 function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
   if (typeof time.setTimeout !== 'function') {
@@ -161,6 +190,165 @@ function removeLockIfSnapshotMatches(
   }
 }
 
+type CompatLockSnapshot = {
+  raw: string;
+  record: LockRecord | null;
+};
+
+function readCompatLockSnapshot(
+  pluginRoot: string,
+  storage: Pick<CompatBackendLockStorage, 'readFileSync'>,
+  paths: CompatBackendLockPaths,
+): CompatLockSnapshot | null {
+  try {
+    const raw = storage.readFileSync(paths.backendLockPath(pluginRoot), 'utf-8');
+    return { raw, record: parseLockRecord(raw) };
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function writeCompatLockFile(
+  pluginRoot: string,
+  record: LockRecord,
+  storage: Pick<CompatBackendLockStorage, 'tryExclusiveWriteSync'>,
+  paths: CompatBackendLockPaths,
+): boolean {
+  return storage.tryExclusiveWriteSync(paths.backendLockPath(pluginRoot), JSON.stringify(record), {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+}
+
+function removeCompatLockIfSnapshotMatches(
+  pluginRoot: string,
+  snapshot: CompatLockSnapshot,
+  storage: Pick<CompatBackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  paths: CompatBackendLockPaths,
+): boolean {
+  const lockPath = paths.backendLockPath(pluginRoot);
+  const stagePath = `${lockPath}.removing`;
+
+  try {
+    storage.renameSync(lockPath, stagePath);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return true;
+    }
+    throw error;
+  }
+
+  try {
+    const staged = storage.readFileSync(stagePath, 'utf-8');
+    if (staged !== snapshot.raw) {
+      try {
+        storage.renameSync(stagePath, lockPath);
+      } catch {
+        // Best-effort restore.
+      }
+      return false;
+    }
+
+    storage.unlinkSync(stagePath);
+    return true;
+  } catch (error: unknown) {
+    try {
+      storage.unlinkSync(stagePath);
+    } catch {
+      // Best-effort cleanup.
+    }
+    if (isNoEntryError(error)) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function acquireCompatLock(
+  pluginRoot: string,
+  instanceId: string,
+  version: string,
+  bundleHash: string,
+  flavor: 'prod' | 'dev',
+  runtime: CompatBackendLockRuntime,
+): Promise<void> {
+  const pid = runtime.env.pid();
+  const record: LockRecord = {
+    instanceId,
+    pid,
+    version,
+    bundleHash,
+    flavor,
+    startedAt: runtime.time.now(),
+    processStartedAt: probeProcessStartedAtSeconds(pid, runtime.env.platform() as NodeJS.Platform) ?? undefined,
+  };
+
+  let observedKey: string | null = null;
+  let observedAt = runtime.time.now();
+  const contenderStartedAt = runtime.time.now();
+
+  while (true) {
+    if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
+      coordinatorLog.error(`Compat lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
+      throw new Error('Coral backend lock acquisition timed out');
+    }
+
+    if (writeCompatLockFile(pluginRoot, record, runtime.storage, runtime.paths)) {
+      return;
+    }
+
+    const snapshot = readCompatLockSnapshot(pluginRoot, runtime.storage, runtime.paths);
+    if (!snapshot) {
+      observedKey = null;
+      observedAt = runtime.time.now();
+      continue;
+    }
+
+    const currentKey =
+      snapshot.record === null
+        ? `invalid:${snapshot.raw}`
+        : [
+            snapshot.record.instanceId,
+            snapshot.record.pid,
+            snapshot.record.version,
+            snapshot.record.bundleHash,
+            snapshot.record.flavor,
+            snapshot.record.startedAt,
+            snapshot.record.processStartedAt ?? 'na',
+          ].join(':');
+    if (currentKey !== observedKey) {
+      observedKey = currentKey;
+      observedAt = runtime.time.now();
+    }
+
+    const deadlineExpired = runtime.time.now() - observedAt >= STARTUP_DEADLINE;
+    if (snapshot.record) {
+      const ownershipState = await runtime.verifyOwnership({ pluginRoot, record: snapshot.record });
+      if (ownershipState === 'healthy') {
+        throw new BackendAlreadyRunningError();
+      }
+      if (ownershipState === 'contended' && !deadlineExpired) {
+        await sleepForRetry(runtime.time, RETRY_DELAY_MS);
+        continue;
+      }
+    } else if (!deadlineExpired) {
+      await sleepForRetry(runtime.time, RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (removeCompatLockIfSnapshotMatches(pluginRoot, snapshot, runtime.storage, runtime.paths)) {
+      observedKey = null;
+      observedAt = runtime.time.now();
+      continue;
+    }
+
+    await sleepForRetry(runtime.time, RETRY_DELAY_MS);
+  }
+}
+
 async function readHealth(
   runtime: CoordinatorLockRuntime,
   lockRecord: LockRecord,
@@ -257,7 +445,7 @@ async function inspectIncumbent(
   return 'contended';
 }
 
-export async function acquireLock(
+async function acquireCoordinatorLock(
   flavor: BuildFlavor,
   bundleHash: string,
   options: {
@@ -333,6 +521,44 @@ export async function acquireLock(
   }
 }
 
+export function acquireLock(
+  flavor: BuildFlavor,
+  bundleHash: string,
+  options: {
+    instanceId: string;
+    version: string;
+    runtime: CoordinatorLockRuntime;
+  },
+): Promise<LockRecord>;
+export function acquireLock(
+  pluginRoot: string,
+  instanceId: string,
+  version: string,
+  bundleHash: string,
+  flavor: 'prod' | 'dev',
+  runtime: CompatBackendLockRuntime,
+): Promise<void>;
+export async function acquireLock(
+  arg1: BuildFlavor | string,
+  arg2: string,
+  arg3:
+    | {
+        instanceId: string;
+        version: string;
+        runtime: CoordinatorLockRuntime;
+      }
+    | string,
+  arg4?: string,
+  arg5?: 'prod' | 'dev',
+  arg6?: CompatBackendLockRuntime,
+): Promise<LockRecord | void> {
+  if (typeof arg3 === 'object') {
+    return acquireCoordinatorLock(arg1 as BuildFlavor, arg2, arg3);
+  }
+
+  return acquireCompatLock(arg1, arg2, arg3, arg4 ?? 'unknown', arg5 ?? 'prod', arg6 as CompatBackendLockRuntime);
+}
+
 export function releaseLock(
   instanceId?: string,
   runtime?: Pick<Runtime, 'storage'>,
@@ -364,4 +590,18 @@ export function releaseLock(
     storage,
   );
   activeLocks.delete(key);
+}
+
+export function removeLockIfOwner(
+  pluginRoot: string,
+  instanceId: string,
+  storage: Pick<CompatBackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
+  paths: CompatBackendLockPaths,
+): void {
+  const snapshot = readCompatLockSnapshot(pluginRoot, storage, paths);
+  if (!snapshot?.record || snapshot.record.instanceId !== instanceId) {
+    return;
+  }
+
+  removeCompatLockIfSnapshotMatches(pluginRoot, snapshot, storage, paths);
 }

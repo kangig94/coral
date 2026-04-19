@@ -30,7 +30,12 @@ const TRANSPORT_ALLOWED = new Set([
   'src/workflow/api.ts',
   'src/store/index.ts',
 ]);
-const COORDINATOR_EXEMPT = new Set(['src/coordinator/coordinator.ts', 'src/coordinator/bootstrap.ts']);
+const COORDINATOR_EXEMPT = new Set([
+  'src/coordinator/coordinator.ts',
+  'src/coordinator/bootstrap.ts',
+  'src/coordinator/api.ts',
+]);
+const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/'] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/api.ts',
   'src/sessions/api.ts',
@@ -90,7 +95,11 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
 
   it('#29: only coordinator.ts and bootstrap.ts may bypass coordinator contract entrypoints', () => {
     const violations = collectViolations((source, target) => {
-      if (!source.startsWith('src/coordinator/') || COORDINATOR_EXEMPT.has(source)) {
+      if (
+        !source.startsWith('src/coordinator/') ||
+        COORDINATOR_EXEMPT.has(source) ||
+        startsWithAny(source, COORDINATOR_EXEMPT_PREFIXES)
+      ) {
         return false;
       }
 

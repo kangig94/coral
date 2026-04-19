@@ -23,7 +23,9 @@ Discuss keeps a strict functional-core / imperative-shell split:
 | Layer | Location | Responsibility |
 | --- | --- | --- |
 | Domain | `src/discuss/` | Pure state transitions, event definitions, projections |
-| Runtime | `src/execution/discuss/` | Control loop, persistence, provider execution, live registry |
+| Shell | `src/discuss/shell/` | Control loop, persistence, provider execution, live registry |
+
+Coordinator startup/recovery and HTTP transport stay outside the discuss module; discuss-specific shell code is consumed through those coordinator and transport seams.
 
 The persisted snapshot has two facets:
 
