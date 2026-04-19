@@ -1300,6 +1300,7 @@ describe('execution backend server', () => {
           }),
         },
         events: {
+          bus: new TypedEventBus(),
           addResponse: (res: unknown) => {
             deps.streamResponses.add(res);
           },
@@ -5104,6 +5105,7 @@ describe('execution backend server', () => {
           }),
         },
         events: {
+          bus: new TypedEventBus(),
           addResponse: () => {},
           removeResponse: () => {},
           createStreamId: () => 'stream-id',

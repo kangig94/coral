@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { TypedEventBus } from './sse-subscribe.js';
 import {
   jobAbortSchema,
   providerNameSchema,
@@ -221,6 +222,7 @@ export interface EventStreamHandlers {
 }
 
 export interface EventStreamPort {
+  readonly bus: TypedEventBus;
   addResponse(res: ServerResponse): void;
   removeResponse(res: ServerResponse): void;
   createStreamId(): string;

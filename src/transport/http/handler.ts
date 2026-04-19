@@ -38,6 +38,7 @@ import {
   type WaitStreamRequest,
   workflowRequestSchema,
 } from './contracts.js';
+import { subscribeAll } from './sse-subscribe.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -421,39 +422,42 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   let closed = false;
   const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
 
-  const handlers: EventStreamHandlers = {
-    onJobCreated: (payload) => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:created', payload);
-    },
-    onPhaseChanged: (payload) => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:phase_changed', payload);
-    },
-    onProgress: (payload) => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:progress', payload);
-    },
-    onCompleted: (payload) => {
-      if (closed || !matchesFilter(payload.jobId)) return;
-      writeSseEvent(res, 'job:completed', payload);
-    },
-    onDiscussUpdated: (payload) => {
-      if (closed) return;
-      writeSseEvent(res, 'discuss:updated', payload);
-    },
+  const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
+    if (closed || !matchesFilter(payload.jobId)) return;
+    writeSseEvent(res, 'job:created', payload);
   };
+  const onPhaseChanged: EventStreamHandlers['onPhaseChanged'] = (payload) => {
+    if (closed || !matchesFilter(payload.jobId)) return;
+    writeSseEvent(res, 'job:phase_changed', payload);
+  };
+  const onProgress: EventStreamHandlers['onProgress'] = (payload) => {
+    if (closed || !matchesFilter(payload.jobId)) return;
+    writeSseEvent(res, 'job:progress', payload);
+  };
+  const onCompleted: EventStreamHandlers['onCompleted'] = (payload) => {
+    if (closed || !matchesFilter(payload.jobId)) return;
+    writeSseEvent(res, 'job:completed', payload);
+  };
+  const onDiscussUpdated: EventStreamHandlers['onDiscussUpdated'] = (payload) => {
+    if (closed) return;
+    writeSseEvent(res, 'discuss:updated', payload);
+  };
+  const cleanup = subscribeAll(deps.events.bus, {
+    'job:created': onCreated,
+    'job:phase_changed': onPhaseChanged,
+    'job:progress': onProgress,
+    'job:completed': onCompleted,
+    'discuss:updated': onDiscussUpdated,
+  });
 
   const onClose = () => {
     if (closed) return;
     closed = true;
     deps.events.removeResponse(res);
     res.off('close', onClose);
-    deps.events.unsubscribe(handlers);
+    cleanup();
   };
   res.once('close', onClose);
-
-  deps.events.subscribe(handlers);
 
   await new Promise<void>((resolve) => {
     if (closed) {

@@ -33,6 +33,7 @@ import {
   handleKbDelete,
 } from '../../kb/api.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
+import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import {
   createLifecycle,
   type LifecycleController,
@@ -70,6 +71,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   const defaults = defaultsPlan.finalizeWithWorld(world);
   const runtimeState = createRuntimeState(world.now());
   const streamResponses = new Set<ServerResponse>();
+  const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   const services = createExecutionServices({
     world,
     runtime,
@@ -176,21 +178,29 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       removeResponse: (res) => {
         streamResponses.delete(res);
       },
+      bus: world.eventBus,
       createStreamId: () => runtime.ids.uuid(),
       nowIsoString: () => nowIsoString(runtime.time),
       subscribe: (handlers: EventStreamHandlers) => {
-        world.eventBus.on('job:created', handlers.onJobCreated);
-        world.eventBus.on('job:phase_changed', handlers.onPhaseChanged);
-        world.eventBus.on('job:progress', handlers.onProgress);
-        world.eventBus.on('job:completed', handlers.onCompleted);
-        world.eventBus.on('discuss:updated', handlers.onDiscussUpdated);
+        eventStreamSubscriptions.get(handlers)?.();
+        eventStreamSubscriptions.set(
+          handlers,
+          subscribeAll(world.eventBus, {
+            'job:created': handlers.onJobCreated,
+            'job:phase_changed': handlers.onPhaseChanged,
+            'job:progress': handlers.onProgress,
+            'job:completed': handlers.onCompleted,
+            'discuss:updated': handlers.onDiscussUpdated,
+          }),
+        );
       },
       unsubscribe: (handlers: EventStreamHandlers) => {
-        world.eventBus.off('job:created', handlers.onJobCreated);
-        world.eventBus.off('job:phase_changed', handlers.onPhaseChanged);
-        world.eventBus.off('job:progress', handlers.onProgress);
-        world.eventBus.off('job:completed', handlers.onCompleted);
-        world.eventBus.off('discuss:updated', handlers.onDiscussUpdated);
+        const cleanup = eventStreamSubscriptions.get(handlers);
+        if (!cleanup) {
+          return;
+        }
+        eventStreamSubscriptions.delete(handlers);
+        cleanup();
       },
     },
     sessions: {

@@ -304,6 +304,7 @@ describe('agent wire contract', () => {
         }),
       },
       events: {
+        bus: eventBus,
         addResponse: () => {},
         removeResponse: () => {},
         createStreamId: () => 'stream-id',
