@@ -13,11 +13,11 @@ import {
   closeServer as defaultCloseServer,
   listen as defaultListen,
   markJobsAsError,
-} from '../lifecycle.js';
+} from '../../coordinator/control.js';
 import type { ProgressStore } from '../progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { discussReconcile } from '../../discuss/api.js';
-import { ExecutionService as DefaultExecutionService } from '../service.js';
+import { ExecutionService as DefaultExecutionService } from '../../coordinator/api.js';
 import type { BackendCoreOptions, CreateServerFn, FetchFn } from '../backend-core-types.js';
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;

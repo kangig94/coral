@@ -1,0 +1,51 @@
+declare const __PLUGIN_ROOT__: string;
+
+import { readBackendInfo } from '../coordinator/discovery.js';
+import { isProcessAlive } from '../shared/node-process.js';
+import { BackendUnreachableError } from '../shared/utils.js';
+
+export type BackendHandle = {
+  port: number;
+  host: string;
+  token: string;
+  instanceId: string;
+};
+
+function resolvePluginRoot(pluginRoot?: string): string {
+  if (pluginRoot) {
+    return pluginRoot;
+  }
+  if (typeof __PLUGIN_ROOT__ === 'string') {
+    return __PLUGIN_ROOT__;
+  }
+  if (typeof __dirname === 'string') {
+    return __dirname;
+  }
+  return process.cwd();
+}
+
+export async function withAbortTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await run(controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<BackendHandle> {
+  const root = resolvePluginRoot(pluginRoot);
+  const info = readBackendInfo(root);
+  if (!info || !isProcessAlive(info.pid)) {
+    throw new BackendUnreachableError('Coral backend is not running.');
+  }
+
+  return {
+    port: info.port,
+    host: info.host,
+    token: info.token,
+    instanceId: info.instanceId,
+  };
+}

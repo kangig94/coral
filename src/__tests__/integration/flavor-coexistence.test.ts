@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '../../client/backend-health.js';
-import { ensureBackend } from '../../client/backend-lifecycle.js';
+import { ensureBackend } from '../../cli/backend-lifecycle.js';
 import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';

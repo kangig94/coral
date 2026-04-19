@@ -2,7 +2,7 @@ import type { CallerContext } from '../../shared/request-context.js';
 import { noopAppendEvents } from '../../store/append.js';
 import type { ExecutionServiceLike } from '../backend-contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from '../service.js';
+import type { ExecutionServiceDeps, RecoveryCapableService } from '../../coordinator/api.js';
 import type { BackendWorld } from './backend-world.js';
 
 type CreateExecutionServicesDeps = {

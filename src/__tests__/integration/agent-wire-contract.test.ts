@@ -12,7 +12,7 @@ import { createHttpHandler } from '../../execution/http-handler.js';
 import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../execution/progress-store.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import { ExecutionService } from '../../execution/service.js';
+import { ExecutionService } from '../../coordinator/api.js';
 import { pluginRootNamespace, resolveProjectSource } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';

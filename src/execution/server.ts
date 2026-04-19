@@ -13,8 +13,7 @@ import {
 } from './backend-core.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
-import { StartupInterruptedError } from './lifecycle.js';
-import type { BackendServerInfo, LifecycleState } from './server-types.js';
+import { StartupInterruptedError, type BackendServerInfo, type LifecycleState } from '../coordinator/control.js';
 import { handleSmokeOpenStore } from './smoke-open-store.js';
 import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';

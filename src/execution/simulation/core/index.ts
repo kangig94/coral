@@ -15,14 +15,14 @@ import type { LegacyProviderName, LegacyTerminalOutcome } from '../../../shared/
 import { formatError, nowIsoString } from '../../../shared/utils.js';
 import { SimulationRuntime } from '../../../simulation/runtime.js';
 import { sendJson } from '../../http-handler.js';
-import { TypedEventBus } from '../../backend-contracts.js';
+import { TypedEventBus } from '../../../coordinator/control.js';
 import { LaunchCoordinator } from '../../../coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../progress-store.js';
 import type { Runtime, StoragePort } from '../../../runtime/ports.js';
 import { createBackendCore, type BackendCoreResult, type CreateServerFn, type FetchFn } from '../../backend-core.js';
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../../discuss/reconcile.js';
-import { ExecutionService } from '../../service.js';
+import { ExecutionService } from '../../../coordinator/api.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';

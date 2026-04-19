@@ -90,7 +90,7 @@ vi.mock('../../client/http-client.js', () => {
   return { BackendClient, BackendToolHttpError };
 });
 
-vi.mock('../../client/backend-lifecycle.js', () => ({
+vi.mock('../backend-lifecycle.js', () => ({
   ensureBackend: mockState.ensureBackend,
 }));
 

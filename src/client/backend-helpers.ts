@@ -1,4 +1,4 @@
-import { withAbortTimeout } from './backend-lifecycle.js';
+import { withAbortTimeout } from './backend-handle.js';
 import { isBackendHealth } from './backend-health.js';
 import { BackendToolHttpError } from './http-client.js';
 import { readBackendInfo } from '../coordinator/discovery.js';

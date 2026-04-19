@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
 import { probeProcessStartedAtSeconds } from '../../coordinator/discovery.js';
-import { BackendUnreachableError } from '../../shared/utils.js';
+import { coordinatorPaths } from '../../coordinator/paths.js';
+import { BackendUnreachableError, readBuildFlavor } from '../../shared/utils.js';
 import {
   ensureBackend,
   initialControllerState,
@@ -12,6 +13,18 @@ import {
   type VerifiedOwnership,
 } from '../backend-lifecycle.js';
 import { dirname } from 'node:path';
+
+function installationDir(root: string, flavor = readBuildFlavor(root)): string {
+  return coordinatorPaths(flavor).runDir;
+}
+
+function backendInfoPath(root: string, flavor = readBuildFlavor(root)): string {
+  return coordinatorPaths(flavor).infoFile;
+}
+
+function backendLockPath(root: string, flavor = readBuildFlavor(root)): string {
+  return coordinatorPaths(flavor).lockFile;
+}
 
 /** Client-side exclusive write (mirrors backend-lifecycle.ts logic) */
 function tryExclusiveWrite(filePath: string, payload: string): boolean {
@@ -77,8 +90,10 @@ function writeBackendInfo(
     processStartedAt: number;
   }> = {},
 ): void {
+  const flavor = overrides.flavor ?? readBuildFlavor(root);
+  mkdirSync(dirname(backendInfoPath(root, flavor)), { recursive: true });
   writeFileSync(
-    backendInfoPath(root),
+    backendInfoPath(root, flavor),
     JSON.stringify({
       pid: overrides.pid ?? process.pid,
       port: overrides.port ?? 4100,
@@ -86,7 +101,7 @@ function writeBackendInfo(
       token: overrides.token ?? 'test-token',
       version: overrides.version ?? '0.0.0',
       bundleHash: overrides.bundleHash ?? 'test-hash',
-      flavor: overrides.flavor ?? 'prod',
+      flavor,
       instanceId: overrides.instanceId ?? 'existing-backend',
       namespace: overrides.namespace ?? pluginRootNamespace(root),
       startedAt: overrides.startedAt ?? Date.now(),
@@ -96,17 +111,18 @@ function writeBackendInfo(
   );
 }
 
-function writeLockFile(root: string, pid: number, processStartedAt?: number): void {
+function writeLockFile(root: string, pid: number, processStartedAt?: number, flavor = readBuildFlavor(root)): void {
   const payload = JSON.stringify({
     instanceId: `test-${pid}-${Date.now()}`,
     pid,
     version: '0.0.0',
     bundleHash: 'test-hash',
-    flavor: 'prod',
+    flavor,
     startedAt: Date.now(),
     ...(processStartedAt === undefined ? {} : { processStartedAt }),
   });
-  writeFileSync(backendLockPath(root), payload, 'utf-8');
+  mkdirSync(dirname(backendLockPath(root, flavor)), { recursive: true });
+  writeFileSync(backendLockPath(root, flavor), payload, 'utf-8');
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -273,7 +289,7 @@ describe('shutdown cleanup ordering', () => {
     // preempts cleanup — verified by the fact that backend.lock is absent after
     // idle shutdown (manual verification).
     const lifecycleSrc = readFileSync(
-      join(process.cwd(), 'src/execution/lifecycle.ts'),
+      join(process.cwd(), 'src/coordinator/control.ts'),
       'utf-8',
     );
 
@@ -565,7 +581,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
-  it('forces replacement when the same root flips flavor without changing bundle bytes', async () => {
+  it('boots the desired flavor without draining an incompatible other-flavor backend', async () => {
     const root = createPluginRootWithFlavor('dev');
     writeBackendInfo(root, {
       port: 4101,
@@ -587,29 +603,6 @@ describe('ensureBackend flavor-aware reuse', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
-
-      if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
-        return new Response(
-          JSON.stringify({
-            status: 'ok',
-            version: '0.0.0',
-            bundleHash: 'test-hash',
-            flavor: 'prod',
-            instanceId: 'old-prod-backend',
-            namespace: pluginRootNamespace(root),
-            uptimeMs: 1,
-            active: 0,
-            activeJobs: 0,
-            inflightRequests: 0,
-            queueDepth: 0,
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-
-      if (url === 'http://127.0.0.1:4101/admin/shutdown' && token === 'old-token') {
-        return new Response(null, { status: 200 });
-      }
 
       if (url === 'http://127.0.0.1:4102/health' && token === 'new-token') {
         return new Response(
@@ -643,19 +636,12 @@ describe('ensureBackend flavor-aware reuse', () => {
       instanceId: 'new-dev-backend',
     });
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://127.0.0.1:4101/admin/shutdown',
-      expect.objectContaining({
-        method: 'POST',
-        headers: { 'X-Coral-Backend-Token': 'old-token' },
-      }),
-    );
     expect(
       fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
-  it('keeps a draining incompatible backend on the graceful replacement path', async () => {
+  it('ignores a draining backend from a different flavor and starts the desired flavor independently', async () => {
     const root = createPluginRootWithFlavor('dev');
     writeBackendInfo(root, {
       port: 4101,
@@ -664,62 +650,19 @@ describe('ensureBackend flavor-aware reuse', () => {
       instanceId: 'old-prod-backend',
     });
 
-    let shutdownRequested = false;
-    let replacementPublished = false;
-
-    mockState.spawn.mockImplementation(() => ({ unref: vi.fn() }));
+    mockState.spawn.mockImplementation(() => {
+      writeBackendInfo(root, {
+        port: 4105,
+        token: 'replacement-token',
+        flavor: 'dev',
+        instanceId: 'replacement-backend',
+      });
+      return { unref: vi.fn() };
+    });
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input);
       const token = new Headers(init?.headers).get('X-Coral-Backend-Token');
-
-      if (url === 'http://127.0.0.1:4101/health' && token === 'old-token') {
-        if (!shutdownRequested) {
-          return new Response(
-            JSON.stringify({
-              status: 'ok',
-              version: '0.0.0',
-              bundleHash: 'test-hash',
-              flavor: 'prod',
-              instanceId: 'old-prod-backend',
-              namespace: pluginRootNamespace(root),
-              uptimeMs: 1,
-              active: 0,
-              activeJobs: 0,
-              inflightRequests: 0,
-              queueDepth: 0,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          );
-        }
-
-        if (!replacementPublished) {
-          replacementPublished = true;
-          writeBackendInfo(root, {
-            port: 4105,
-            token: 'replacement-token',
-            flavor: 'dev',
-            instanceId: 'replacement-backend',
-          });
-        }
-
-        return new Response(
-          JSON.stringify({
-            status: 'draining',
-            version: '0.0.0',
-            bundleHash: 'test-hash',
-            flavor: 'prod',
-            instanceId: 'old-prod-backend',
-            namespace: pluginRootNamespace(root),
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-
-      if (url === 'http://127.0.0.1:4101/admin/shutdown' && token === 'old-token') {
-        shutdownRequested = true;
-        return new Response(JSON.stringify({ status: 'draining', instanceId: 'old-prod-backend' }), { status: 200 });
-      }
 
       if (url === 'http://127.0.0.1:4105/health' && token === 'replacement-token') {
         return new Response(
@@ -755,7 +698,7 @@ describe('ensureBackend flavor-aware reuse', () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(
       fetchMock.mock.calls.filter(([input]) => requestUrl(input) === 'http://127.0.0.1:4101/admin/shutdown'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
   });
 
   it('force-replaces a verified sick backend after the 10s ownership window', async () => {

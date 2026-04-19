@@ -11,7 +11,7 @@ const mockState = vi.hoisted(() => ({
   streamWait: vi.fn(),
 }));
 
-vi.mock('../../client/backend-lifecycle.js', () => ({
+vi.mock('../backend-lifecycle.js', () => ({
   ensureBackend: mockState.ensureBackend,
 }));
 

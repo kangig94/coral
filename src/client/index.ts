@@ -39,9 +39,9 @@ export type {
   DiscussView,
 } from './discuss.js';
 
-// ./backend-lifecycle.js
-export { ensureBackend, withAbortTimeout } from './backend-lifecycle.js';
-export type { BackendHandle } from './backend-lifecycle.js';
+// ./backend-handle.js
+export { resolveDiscoveredBackend, withAbortTimeout } from './backend-handle.js';
+export type { BackendHandle } from './backend-handle.js';
 
 // ./http-client.js
 export { BackendClient, BackendToolHttpError, isBackendHealth } from './http-client.js';

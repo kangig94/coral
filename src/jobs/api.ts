@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ExecutionServiceLike } from '../execution/backend-contracts.js';
+import type { ExecutionServiceLike, RecoveryCapableService } from '../coordinator/api.js';
 import { createReplayCursor, type ProgressStore } from '../execution/progress-store.js';
 import type { RecoveryRegistry } from '../execution/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -19,7 +19,6 @@ import type {
 } from '../shared/types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { RecoveryCapableService } from '../execution/service.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
 import type { TerminalOutcome } from './outcome.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';

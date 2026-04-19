@@ -1,4 +1,4 @@
-import { ensureBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-lifecycle.js';
+import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-handle.js';
 import type { BackendHealth } from './backend-health.js';
 import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-helpers.js';

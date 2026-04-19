@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BackendHandle } from '../backend-lifecycle.js';
+import type { BackendHandle } from '../backend-handle.js';
 import {
   BackendClient,
   BackendToolHttpError,

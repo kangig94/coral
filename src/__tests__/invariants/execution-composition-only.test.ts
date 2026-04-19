@@ -153,9 +153,6 @@ const EXECUTION_RESIDUE: Record<string, ResidueContract> = {
   ...entries(
     [
       'src/execution/lifecycle.ts',
-      'src/execution/lifecycle/network.ts',
-      'src/execution/lifecycle/shutdown-mode.ts',
-      'src/execution/lifecycle/shutdown-sequence.ts',
       'src/execution/recovery-registry.ts',
     ],
     contract('src/coordinator/live/**', 'Phase 3 coordinator/live handoff', COORDINATOR_ALLOWED, {

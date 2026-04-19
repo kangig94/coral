@@ -11,7 +11,7 @@ import {
   createLifecycle,
   type LifecycleController,
   type LifecycleDeps,
-} from '../lifecycle.js';
+} from '../../coordinator/control.js';
 import type { BackendCoreOptions, BackendCoreResult } from '../backend-core-types.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { storePaths } from '../../store/paths.js';

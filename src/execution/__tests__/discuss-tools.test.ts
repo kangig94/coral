@@ -20,7 +20,7 @@ import {
 } from '../../discuss/shell/tools.js';
 import { getSession } from '../../discuss/shell/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { ExecutionService } from '../service.js';
+import type { ExecutionService } from '../../coordinator/api.js';
 import type { ToolDomainResult } from '../tool-response.js';
 import {
   DEFAULT_TOPIC,

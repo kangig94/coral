@@ -24,7 +24,7 @@ import { belongsToNamespace, isLivePhase, jobPhaseSchema } from '../shared/types
 import { createReplayCursor } from './progress-store.js';
 import type { ProgressStore } from './progress-store.js';
 import type { DiscussView } from '../discuss/views.js';
-import type { EventStreamHandlers, HttpHandlerDeps } from './backend-contracts.js';
+import type { EventStreamHandlers, HttpHandlerDeps } from '../coordinator/api.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,

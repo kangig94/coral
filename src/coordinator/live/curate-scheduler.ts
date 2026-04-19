@@ -3,7 +3,7 @@ import { errorMessage } from '../../shared/utils.js';
 import type { CurateHandle } from '../../kb/curate/types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
-import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { MutableRuntimeState } from '../control.js';
 import type { KbCorpusPublishFailure } from '../../kb/contracts.js';
 
 const HEALTH_ERROR_PREFIX = 'Corpus publication queue unhealthy';
@@ -11,7 +11,7 @@ const DEFAULT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CURATE_INTERVAL_MS = 60_000;
 
 export interface CurateSchedulerHealthBridge {
-  attachRuntimeState(runtimeState: Pick<MutableBackendRuntimeState, 'getKbInitError' | 'setKbInitError'>): void;
+  attachRuntimeState(runtimeState: Pick<MutableRuntimeState, 'getKbInitError' | 'setKbInitError'>): void;
   onCorpusPublishFailure(failure: KbCorpusPublishFailure): void;
   onCorpusPublishSuccess(): void;
 }
@@ -19,7 +19,7 @@ export interface CurateSchedulerHealthBridge {
 export function createCurateSchedulerHealthBridge(
   failureThreshold = DEFAULT_FAILURE_THRESHOLD,
 ): CurateSchedulerHealthBridge {
-  let runtimeState: Pick<MutableBackendRuntimeState, 'getKbInitError' | 'setKbInitError'> | null = null;
+  let runtimeState: Pick<MutableRuntimeState, 'getKbInitError' | 'setKbInitError'> | null = null;
 
   return {
     attachRuntimeState(nextRuntimeState) {

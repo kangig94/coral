@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { createReplayCursor, type ReplayCursor } from '../progress-store.js';
 import { SessionManager } from '../session-manager.js';
-import type { BackendServerInfo, LifecycleState } from '../server-types.js';
+import type { BackendServerInfo, LifecycleState } from '../../coordinator/control.js';
 import { backendInfoPath } from '../../coordinator/discovery.js';
 import {
   createSimulationBackend,

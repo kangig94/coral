@@ -22,10 +22,10 @@ import type {
   RecoverPersistedDiscussFn,
   RegisterBuiltInProvidersFn,
   RunStartupRecoveryFn,
-} from './lifecycle.js';
+} from '../coordinator/control.js';
 import type { ProgressStore } from './progress-store.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from './service.js';
+import type { ExecutionServiceDeps, RecoveryCapableService } from '../coordinator/api.js';
 
 export type BackendBootSnapshot = {
   version?: string;

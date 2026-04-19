@@ -3,15 +3,15 @@ import { errorMessage, formatError } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { isAppServerRuntime } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { MutableBackendRuntimeState } from '../backend-contracts.js';
+import type { MutableRuntimeState } from '../control.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
-import type { IdleTimer } from '../../coordinator/live/idle.js';
-import type { ProgressStore } from '../progress-store.js';
+import type { IdleTimer } from '../live/idle.js';
+import type { ProgressStore } from '../../execution/progress-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../service.js';
-import type { ProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
+import type { RecoveryCapableService } from '../api.js';
+import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
 import { listLiveJobs } from '../../jobs/reconcile/job-helpers.js';
-import { shutdownModeFromReason, type ShutdownMode } from './shutdown-mode.js';
+import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -65,7 +65,7 @@ type RunShutdownSequenceContext = {
   reason: string;
   state: LifecycleWiringState;
   teardownRecoveryCoordinator: () => void;
-  runtimeState: MutableBackendRuntimeState;
+  runtimeState: MutableRuntimeState;
   idleTimer: IdleTimer;
   closeServerFn: (server: Server) => Promise<void>;
   waitForInflightDrain: (

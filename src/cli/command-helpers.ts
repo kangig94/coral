@@ -9,7 +9,7 @@ import {
   type AcceptedLaunchResponse,
   type CallerContext,
 } from '../client/http-client.js';
-import { ensureBackend } from '../client/backend-lifecycle.js';
+import { ensureBackend } from './backend-lifecycle.js';
 import { collectCoralEnv } from '../shared/utils.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { buildErrorEnvelope, UsageError } from './errors.js';

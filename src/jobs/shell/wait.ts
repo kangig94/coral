@@ -5,7 +5,7 @@ import {
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../shared/types.js';
-import type { TypedEventBus } from '../../execution/backend-contracts.js';
+import type { TypedEventBus } from '../../coordinator/control.js';
 import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
 import { createReplayCursor, type ProgressStore } from '../../execution/progress-store.js';
 import {

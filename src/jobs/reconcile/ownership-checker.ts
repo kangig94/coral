@@ -1,5 +1,5 @@
 import { readBackendInfo } from '../../coordinator/discovery.js';
-import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { MutableRuntimeState } from '../../coordinator/control.js';
 import type { IdleTimer } from '../../coordinator/live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 
@@ -9,7 +9,7 @@ type ReplacementBackendOwnershipCheckerInstaller = {
 
 type CreateReplacementBackendOwnershipCheckerContext = {
   runtime: Runtime;
-  runtimeState: MutableBackendRuntimeState;
+  runtimeState: MutableRuntimeState;
   idleTimer: IdleTimer;
   pluginRoot: string;
   instanceId: string;

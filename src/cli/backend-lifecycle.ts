@@ -5,16 +5,12 @@ import { spawn } from 'node:child_process';
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  backendInfoPath,
-  backendLockPath,
-  installationDir,
-  pluginRootNamespace,
-} from '../infra/paths.js';
+import { pluginRootNamespace } from '../infra/paths.js';
 import {
   probeProcessStartedAtSeconds,
   type BackendInfo,
 } from '../coordinator/discovery.js';
+import { coordinatorPaths } from '../coordinator/paths.js';
 import { type LockRecord } from '../shared/lock-types.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
@@ -129,6 +125,18 @@ export type BackendHandle = {
 
 function summarizeBackend(info: BackendInfo): BackendHandle {
   return { port: info.port, host: info.host, token: info.token, instanceId: info.instanceId };
+}
+
+function backendInfoPath(root: string): string {
+  return coordinatorPaths(readBuildFlavor(root)).infoFile;
+}
+
+function backendLockPath(root: string): string {
+  return coordinatorPaths(readBuildFlavor(root)).lockFile;
+}
+
+function coordinatorRunDir(root: string): string {
+  return coordinatorPaths(readBuildFlavor(root)).runDir;
 }
 
 function currentVersion(root: string): string {
@@ -598,7 +606,7 @@ function spawnBackend(backendBin: string): void {
   let stderr: 'ignore' | number = 'ignore';
   try {
     const root = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : join(__dirname, '..');
-    const logDir = installationDir(root);
+    const logDir = coordinatorRunDir(root);
     mkdirSync(logDir, { recursive: true });
     stderr = openSync(join(logDir, 'backend.log'), 'a');
   } catch {

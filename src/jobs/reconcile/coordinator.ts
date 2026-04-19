@@ -6,12 +6,12 @@ import {
 } from '../../shared/types.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { MutableBackendRuntimeState } from '../../execution/backend-contracts.js';
+import type { MutableRuntimeState } from '../../coordinator/control.js';
 import type { ProgressStore } from '../../execution/progress-store.js';
 import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from '../../execution/recovery-registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../../execution/service.js';
+import type { RecoveryCapableService } from '../../coordinator/api.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './job-helpers.js';
@@ -44,7 +44,7 @@ export interface RecoveryCoordinator {
 type RecoveryCoordinatorContext = {
   progressStore: ProgressStore;
   runtime: Runtime;
-  runtimeState: MutableBackendRuntimeState;
+  runtimeState: MutableRuntimeState;
   providerRegistry: ProviderRegistry;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;

@@ -1,7 +1,7 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 
 import { BackendAlreadyRunningError } from '../execution/backend-lock.js';
-import { StartupInterruptedError } from '../execution/lifecycle.js';
+import { StartupInterruptedError } from './control.js';
 import { handleSmokeOpenStore } from '../execution/smoke-open-store.js';
 import { createCoordinatorServer } from './coordinator.js';
 import { coordinatorLog } from './log.js';

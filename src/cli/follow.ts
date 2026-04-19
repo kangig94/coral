@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
 import type { AcceptedLaunchResponse } from '../client/http-client.js';
-import { ensureBackend } from '../client/backend-lifecycle.js';
+import { ensureBackend } from './backend-lifecycle.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { createRealRuntime } from '../runtime/real.js';

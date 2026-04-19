@@ -21,7 +21,7 @@ import { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '../../discuss/shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '../../discuss/shell/persistence.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { ExecutionService } from '../service.js';
+import type { ExecutionService } from '../../coordinator/api.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { SimulationRuntime } from '../simulation/core/index.js';
 

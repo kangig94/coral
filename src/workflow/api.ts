@@ -78,8 +78,9 @@ export const workflowCommands = {
       compiled.owner === undefined ? ctx : { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: compiled.owner } };
     return service.executeWorkflow(compiled.providerName, compiled.ast, compiled.input, effectiveCtx, compiled.workDir);
   },
-  run: executePipeline,
 } as const;
+
+export { executePipeline };
 
 export const workflowRecover = {
   resumeAll,
