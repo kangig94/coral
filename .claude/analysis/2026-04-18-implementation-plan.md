@@ -89,7 +89,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 - **Skeleton directories**: `src/store/`, `src/coordinator/`, `src/jobs/`, `src/sessions/`, `src/providers/middleware/`, `src/transport/{ipc,http}/`, `src/runtime/`, `src/infra/`, `src/simulation/`, `src/testing/`, `src/workflow/` with `index.ts` barrels.
 
-- **Full SQLite schema** at `src/store/schema/001_initial.sql`:
+- **Canonical SQLite schema reference** at `src/store/schema.sql` plus the first applied migration at `src/store/migrations/001_initial.sql`:
   - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `projection_kb`, `meta`, `corpus_state`, `equipment_cursors`, `curate_scheduler`, `curate_retry_queue`.
   - Indexes: `events_stream`, `events_type`, `events_refs_parent`, `curate_retry_by_time`.
   - All `CREATE TABLE IF NOT EXISTS` for crash-resume idempotency.
@@ -102,11 +102,11 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - **Runtime ports**: `src/runtime/ports.ts` with all 6 subports (`time`, `storage`, `paths`, `process`, `ids`, `env`). `src/runtime/real.ts` stubbed.
 
 - **Flavor-aware paths** at `src/infra/paths.ts`:
-  - Journal substrate: `~/.coral/data/store/store.db` (prod) / `~/.coral/data/store-dev/store.db` (dev).
+  - Journal substrate: `~/.coral/data/store/store.db` (prod) / `~/.coral/data-dev/store/store.db` (dev).
   - **Corpus substrate (flavor-gated)**: `~/.coral/kb/` (prod) / `~/.coral/kb-dev/` (dev). Dev flavor must not share user's live KB.
   - Runtime dir: `~/.coral/run/coordinator.sock`, `coordinator.json`, `coordinator.lock` (prod) / `~/.coral/run-dev/...` (dev).
   - Equipment install base: `~/.coral/data/equipment/<name>/` (prod) / `~/.coral/data-dev/equipment/<name>/` (dev) — parent auto-created with `mkdir -p` at access time.
-  - Exports: `~/.coral/exports/jobs/<id>/result.md`.
+  - Durable job artifact: `<os-tmpdir>/coral-jobs/<id>/result.md`.
   - macOS socket-path fallback: if `$HOME`-based path exceeds 108 bytes, fall back to `$TMPDIR/coral-<flavor>-<sha>.sock`.
 
 - **Error-shape contract** at `src/runtime/errors.ts`:
@@ -130,7 +130,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 **Acceptance criteria**:
 
 - `npm run build` clean.
-- `sqlite3 :memory: < src/store/schema/001_initial.sql` runs without error.
+- `sqlite3 :memory: < src/store/schema.sql` and `sqlite3 :memory: < src/store/migrations/001_initial.sql` run without error.
 - Re-running migrations on an already-migrated DB is a no-op (idempotency test).
 - `src/runtime/errors.ts` exports `CoralSetupError` with the shape above.
 - Flavor-gated paths return distinct paths for `CORAL_FLAVOR=dev` vs unset/prod.
@@ -496,7 +496,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 - `hooks/post-compact.mjs`, `hooks/pre-compact.mjs` rewritten:
   - Read job summaries via `CoralStore.jobs.getTerminalByJobId(id)` (SQLite read-only).
-  - Read result content from `~/.coral/exports/jobs/<id>/result.md`.
+  - Read result content from `<os-tmpdir>/coral-jobs/<id>/result.md`.
 - `hooks/cli-resolve.mjs` unchanged (regex valid).
 - Skill files updated for any changed CLI output shapes. Where ergonomic, skills shift from literal-text parsing to `coral-cli <cmd> --help` dynamic discovery.
 - `docs/architecture.md` rewrite: Journal + Corpus authorities, coordinator + substrate, equipment model.
@@ -549,14 +549,14 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 | Concept | Prod path | Dev path (CORAL_FLAVOR=dev) |
 |---|---|---|
-| Journal substrate | `~/.coral/data/store/store.db` | `~/.coral/data/store-dev/store.db` |
+| Journal substrate | `~/.coral/data/store/store.db` | `~/.coral/data-dev/store/store.db` |
 | Corpus authority | `~/.coral/kb/` | `~/.coral/kb-dev/` |
 | Corpus indexes | `~/.coral/data/kb/` | `~/.coral/data-dev/kb/` |
 | IPC socket | `~/.coral/run/coordinator.sock` | `~/.coral/run-dev/coordinator.sock` |
 | Coordinator info | `~/.coral/run/coordinator.json` | `~/.coral/run-dev/coordinator.json` |
 | Coordinator lock | `~/.coral/run/coordinator.lock` | `~/.coral/run-dev/coordinator.lock` |
 | Equipment install | `~/.coral/data/equipment/<name>/` | `~/.coral/data-dev/equipment/<name>/` |
-| Exports | `~/.coral/exports/jobs/<id>/result.md` | `~/.coral/exports-dev/jobs/<id>/result.md` |
+| Durable job artifact | `<os-tmpdir>/coral-jobs/<id>/result.md` | `<os-tmpdir>/coral-jobs/<id>/result.md` |
 
 All paths resolved via `src/infra/paths.ts`. Dev paths enable safe testing without corrupting user's live KB workflow.
 
@@ -707,3 +707,6 @@ Tracked deviations from the original plan adopted during implementation. Each en
 - **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). Renamed so the filename matches the module's responsibility (discovery record I/O) per architecture §10.3 intent-revealing rule + invariant #31 (no generic filenames at domain roots). Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over this plan's `types.ts`.
 - **`coordinator/bootstrap.ts` introduced as a sibling of `coordinator.ts`** (Phase 3). Owns argv parsing, `--smoke-open-store` short-circuit, and main-process exit-code orchestration. `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh` (the Phase 3 plan §AC1 and AC10 references reflect this split).
 - **Phase 2 sessions filename**: `src/sessions/entry.ts` over this plan's `src/sessions/types.ts` (Phase 2, tag `phase-2-complete`). Same intent-revealing rule. The architecture §10.2 ban on generic filenames at domain roots takes precedence over the implementation-plan's `types.ts` placeholder for this slot.
+- **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
+- **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.
+- **Phase 0 schema deliverable split** (Phase 0 implementation correction). The canonical reference lives at `src/store/schema.sql`; the first applied migration lives at `src/store/migrations/001_initial.sql`. Acceptance criteria require `sqlite3 :memory: < src/store/schema.sql` and `sqlite3 :memory: < src/store/migrations/001_initial.sql` to both exit 0.

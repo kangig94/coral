@@ -145,8 +145,6 @@ export interface DurableExecutionTransport {
   waitForExit(handle: DurableLaunchResult): Promise<JobExitRecord>;
 }
 
-export type DurableTransportLike = DurableExecutionTransport;
-
 export type RuntimeExecOptions = {
   cwd?: string;
   timeout?: number;

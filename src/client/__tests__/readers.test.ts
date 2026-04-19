@@ -21,6 +21,7 @@ import {
   readStatusRecord,
 } from '../readers.js';
 import { openStoreDatabase } from '../../store/db.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
@@ -59,6 +60,7 @@ function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => 
   const db = openStoreDatabase({
     path: storePaths(currentBuildFlavor()).dbFile,
     storage: nodeStoreStorage,
+    migrationsDir: ensureStoreMigrationsDir(nodeStoreStorage),
   });
 
   try {

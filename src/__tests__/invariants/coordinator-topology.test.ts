@@ -34,6 +34,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/corpus-notify.ts',
   'src/coordinator/discovery.ts',
+  'src/coordinator/index.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
@@ -96,7 +97,6 @@ describe('coordinator topology invariants', () => {
   });
 
   it('contains no forbidden coordinator extras', () => {
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/index.ts')).toBe(false);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/event-bus.ts')).toBe(false);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/live/discuss-runtime.ts')).toBe(false);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/info.ts')).toBe(false);

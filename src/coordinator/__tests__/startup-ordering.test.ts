@@ -7,6 +7,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { appendEvents } from '../../store/append.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { createEmptyRegistry } from '../../store/envelope.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { loadJobProjectionDetail } from '../../store/queries/jobs.js';
 import { composeReducers } from '../../store/reducers.js';
 import { storePaths } from '../../store/paths.js';
@@ -44,6 +45,7 @@ describe('coordinator startup ordering', () => {
     const db = openStoreDatabase({
       path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
       storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
     });
 
     try {

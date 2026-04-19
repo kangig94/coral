@@ -12,7 +12,7 @@ Phase 0 lays down the skeleton of the new Journal + Corpus architecture on the `
 - Full SQLite schema at `src/store/schema.sql` and `src/store/migrations/001_initial.sql` (content-identical at Phase 0). TypeScript row types in `src/store/schema.ts`. Idempotent migration runner at `src/store/migrations.ts` (zero `db.totalChanges` delta on rerun). Build-time asset copy into `dist/store/`.
 - `CoralSetupError` class contract at `src/runtime/errors.ts`.
 - `BuildFlavor` type + `resolveBuildFlavor(env)` pure resolver at `src/runtime/flavor.ts`. `npm run dev` now sets `CORAL_FLAVOR=dev`.
-- Per-owner path factories: `src/store/paths.ts`, `src/kb/corpus/paths.ts`, `src/coordinator/info.ts` (with Darwin=104/Linux=108 socket fallback), `src/jobs/exports/paths.ts`, `src/infra/equipment-paths.ts`.
+- Per-owner path factories: `src/store/paths.ts`, `src/kb/corpus/paths.ts`, `src/coordinator/discovery.ts` (renamed from `info.ts` in Phase 3 — see §Amendments; Darwin=104/Linux=108 socket fallback), `src/jobs/exports/paths.ts`, `src/infra/equipment-paths.ts`.
 - `CoralPaths` type at `src/infra/coral-paths.ts` (utility-type ownership). `composeCoralPaths(flavor)` composition root at `src/coordinator/paths.ts` returning `Object.freeze({...})`.
 - `Runtime` + `RuntimePaths` sole ownership migrated to `src/runtime/ports.ts`. `src/shared/runtime-ports.ts` reduced to type-only bridge. Runtime value helpers moved to `src/runtime/spawn.ts`. `Runtime.paths.coral` added as a lazy getter that throws `CoralSetupError('E_FLAVOR_NOT_SETTLED', ...)` before `setBuildFlavor` is called. `InMemoryPaths` extended to implement `coral`. `src/runtime/real.ts` created as Phase 1 placeholder.
 - Skeleton barrels for `src/store`, `src/coordinator`, `src/jobs`, `src/sessions`, `src/providers/middleware`, `src/transport{,/ipc,/http}`, `src/runtime`, `src/workflow`, `src/simulation`, `src/testing`. `src/infra/index.ts` preserved as the canonical `./infra` public-export contract.
@@ -50,7 +50,7 @@ Phase 1 builds the complete Journal truth spine on top of Phase 0's skeleton. Li
 - ✅ `src/shared/runtime-ports.ts` — DELETED (§1.6).
 - ✅ `src/execution/runtime.ts` — DELETED (§1.6).
 - ✅ `Runtime*` compat aliases in `src/runtime/ports.ts` — REMOVED (§1.6).
-- ⏭ `src/infra/backend-info.ts` — retires in Phase 3 when backend discovery I/O moves to `src/coordinator/info.ts`.
+- ⏭ `src/infra/backend-info.ts` — retires in Phase 3 when backend discovery I/O moves to `src/coordinator/discovery.ts` (renamed from `info.ts` in Phase 3 — see §Amendments).
 - ⏭ `src/client/backend-lifecycle.ts` — retires in Phase 3.
 
 **Verification**: `npm run build` (prod + dev) clean; `npm run lint` clean; `npm test` green (1698 pass / 2 skipped / 3 todo across 113 files); integration suite green (14 tests); `node scripts/verify-runtime-cutover.mjs` exits 0; `node scripts/__tests__/verify-runtime-cutover.fixture.mjs` exits 0 (self-test passes); `bash scripts/verify-native-binding.sh` exits 0 with `ok` output. All 14 acceptance criteria satisfied.

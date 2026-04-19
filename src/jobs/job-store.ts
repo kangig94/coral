@@ -6,6 +6,7 @@ import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../sto
 import { openStoreDatabase } from '../store/db.js';
 import { createEmptyRegistry } from '../store/envelope.js';
 import type { CoralEventInput } from '../store/envelope.js';
+import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -100,6 +101,7 @@ export class JobStore {
     this.db = db ?? openStoreDatabase({
       path: this.resolveDefaultDbPath(),
       storage: this.runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(this.runtime.storage),
     });
     this.appendEvents =
       appendEvents ??

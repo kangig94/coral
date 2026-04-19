@@ -25,6 +25,7 @@ import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinat
 import { recoverPersistedDiscuss as defaultRecoverPersistedDiscuss } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/api.js';
 import { openStoreDatabase } from '../../store/db.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -337,7 +338,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     namespace,
     runtime,
     eventBus,
-    openStoreDatabase({ path: ':memory:', storage: runtime.storage }),
+    openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    }),
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();

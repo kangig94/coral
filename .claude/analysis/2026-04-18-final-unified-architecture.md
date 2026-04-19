@@ -171,7 +171,7 @@ This decouples equipment latency from authoritative write latency: a slow or fai
 
 The Journal authority (§2.1) is backed by a **single transactional event database**. Path depends on build flavor (hook isolation requires flavor-gated paths):
 - prod: `~/.coral/data/store/store.db`
-- dev: `~/.coral/data/store-dev/store.db`
+- dev: `~/.coral/data-dev/store/store.db`
 
 SQLite in WAL mode is the reference implementation: it provides append-only write semantics, ACID transactions across multiple events, concurrent readers, and a single-writer discipline via `BEGIN IMMEDIATE` — all properties the Journal requires, without reinventing them.
 
@@ -326,11 +326,13 @@ Materialized files for Journal domains (e.g., `result.md` per job) live outside 
 
 ```
 ~/.coral/data/store/store.db                    (Journal substrate)
-~/.coral/exports/
-  jobs/<jobId>/result.md             (materialized from job.terminal.recorded)
+<os-tmpdir>/coral-jobs/
+  <jobId>/result.md                  (materialized from job.terminal.recorded)
 ```
 
-Deleting `~/.coral/exports/` never loses truth — rebuild from Journal events.
+Deleting `<os-tmpdir>/coral-jobs/<jobId>/result.md` never loses truth — rebuild from Journal events. The
+`~/.coral/exports/jobs/<jobId>/` path remains reserved for future tooling, but it is not the durable wait/follow
+artifact.
 
 Note: KB markdown files at `~/.coral/kb/` are **not exports**. They are the Corpus authority itself (§2.2, §6.4). Derived KB indexes (Orama, needle) live at `~/.coral/data/kb/` and are rebuildable from the Corpus.
 
@@ -1624,7 +1626,7 @@ This section documents the **design delta** between today's codebase and the end
 | `src/bridge/` transport | `transport/` |
 | `status.json`, `launch.json`, `runtime.json`, `exit.json`, `progress.jsonl` | SQLite `events` + `projection_*` tables |
 | Custom segment rotation, checkpoint files, advisory lockfile | SQLite WAL + `BEGIN IMMEDIATE` transactions |
-| `result.md` (authority) | `~/.coral/exports/jobs/<id>/result.md` (materialized view) |
+| `result.md` (authority) | `<os-tmpdir>/coral-jobs/<id>/result.md` (materialized view; job-directory contract) |
 | `TerminalResult` (single struct) | `JobTerminal` + `JobDiagnostics` + `JobView` (three concerns) |
 | `TerminalResult.exitCode` | `outcome.provider_exit.code` |
 | `TerminalResult.nonResumable` | `SessionView.resumable` |
@@ -1689,7 +1691,7 @@ Tag for future reference: resolves during step 5 of derivation order (see §15) 
 The rewrite changes paths and output shapes that external surfaces (hooks, skills) currently parse. Flagged here so they are not forgotten during the rewrite — they update in lockstep with the source changes (same plugin artifact).
 
 **Hook scripts** (`~/.claude/plugins/cache/coral/coral/.../hooks/*.mjs`):
-- `hooks/post-compact.mjs` reads `<JOBS_DIR>/<jobId>/result.md` and parses `<JOBS_DIR>/<jobId>/status.json`. Both paths change: `result.md` moves to `~/.coral/exports/jobs/<jobId>/result.md`, `status.json` disappears entirely (replaced by `events` + `projection_jobs`).
+- `hooks/post-compact.mjs` reads `<JOBS_DIR>/<jobId>/result.md` and parses `<JOBS_DIR>/<jobId>/status.json`. The `result.md` path stays under the job directory contract; `status.json` disappears entirely (replaced by `events` + `projection_jobs`).
 - `hooks/pre-compact.mjs` similarly parses `status.json`.
 - `hooks/cli-resolve.mjs` rewrites bare `coral-cli` invocations. CLI bundle path is unaffected; the rewrite regex stays valid.
 
@@ -1910,3 +1912,5 @@ Tracked deviations from the original design adopted during implementation. Each 
 - **`coordinator/bootstrap.ts` introduced as the main-process entry sibling of `coordinator.ts`** (Phase 3). The original §10 topology folded main-process startup, argv parsing, and `--smoke-open-store` into `coordinator.ts`. Phase 3 split these into a separate `bootstrap.ts` so `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh`.
 - **`coordinator/smoke-open-store.ts` absorbed into `coordinator/bootstrap.ts`** (Phase 3 follow-up review fixes). The original Phase 3 implementation kept the smoke path in a separate helper file. The follow-up collapsed it into `bootstrap.ts` because the behavior is strictly entrypoint-local and does not belong in the durable coordinator module set.
 - **`coordinator/api.ts` is explicit coordinator glue** (Phase 3 follow-up review fixes). The original layering prose treated only `coordinator.ts`/`bootstrap.ts` as broad-import seams, but the implemented request-scoped orchestration in `api.ts` still legitimately composes jobs/session/workflow shells. Invariants and docs now state that explicitly instead of implying a narrower seam than the code actually has.
+- **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
+- **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.

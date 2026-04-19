@@ -12,6 +12,7 @@ import type { JobStatusRecord } from '../../jobs/records.js';
 import { appendEvents } from '../../store/append.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { createEmptyRegistry } from '../../store/envelope.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';
 import { composeReducers } from '../../store/reducers.js';
 import { jobsRegistry } from '../../jobs/events.js';
@@ -110,6 +111,7 @@ function seedCompletedJob(
   const db = openStoreDatabase({
     path: storePaths(flavor).dbFile,
     storage: runtime.storage,
+    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
   });
   const createdAt = new Date().toISOString();
   const sessionId = `${jobId}-session`;

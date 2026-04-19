@@ -1,4 +1,4 @@
-import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -23,6 +23,7 @@ import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../sto
 import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
 import { openStoreDatabase } from '../store/db.js';
 import { createEmptyRegistry } from '../store/envelope.js';
+import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';
 import { composeReducers } from '../store/reducers.js';
 import { storePaths } from '../store/paths.js';
@@ -89,6 +90,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const runtime = providedRuntime ?? createRealRuntime();
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
+  const storeMigrationsDir = ensureStoreMigrationsDir(runtime.storage);
 
   const recordingDir = resolveSpawnRecordingDir(runtime.env.get('CORAL_SIMULATE_RECORD'), runtime.env.cwd());
   if (recordingDir) {
@@ -123,15 +125,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Some direct coordinator tests intentionally bypass flavor-settled bootstrap.
     }
 
-    const storeDbStorage = {
-      ...runtime.storage,
-      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
-      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
-    };
     runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
     storeDb = openStoreDatabase({
       path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
-      storage: storeDbStorage,
+      storage: runtime.storage,
+      migrationsDir: storeMigrationsDir,
     });
     return storeDb;
   };

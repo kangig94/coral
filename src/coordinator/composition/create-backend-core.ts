@@ -1,4 +1,4 @@
-import { existsSync, readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
 import { ZodError } from 'zod';
@@ -42,6 +42,7 @@ import {
 } from '../control.js';
 import type { BackendCoreOptions, BackendCoreResult } from './backend-core-types.js';
 import { openStoreDatabase } from '../../store/db.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { isWorkflowInputFailure, workflowCommands, workflowCompiler, workflowRecover } from '../../workflow/api.js';
@@ -65,6 +66,8 @@ export type {
 function createLegacyStartupRecoveryFn(
   runtime: BackendCoreOptions['runtime'],
 ): NonNullable<BackendCoreOptions['runStartupRecoveryFn']> {
+  const storeMigrationsDir = ensureStoreMigrationsDir(runtime.storage);
+
   return async ({
     identity,
     progressStore,
@@ -87,15 +90,11 @@ function createLegacyStartupRecoveryFn(
       // Some direct backend-core tests intentionally bypass flavor-settled bootstrap.
     }
 
-    const storeDbStorage = {
-      ...runtime.storage,
-      readFileSync: (filePath: string, encoding: 'utf-8') => readNodeFileSync(filePath, encoding),
-      readdirSync: (dirPath: string, options: { withFileTypes: true }) => readNodeDirSync(dirPath, options),
-    };
     runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
     const storeDb = openStoreDatabase({
       path: existsSync(dirname(storeDbPath)) ? storeDbPath : ':memory:',
-      storage: storeDbStorage,
+      storage: runtime.storage,
+      migrationsDir: storeMigrationsDir,
     });
 
     try {

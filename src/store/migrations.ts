@@ -1,3 +1,4 @@
+import { readFileSync as readNodeFileSync, readdirSync as readNodeDirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type BetterSqlite3 from 'better-sqlite3';
@@ -10,8 +11,10 @@ const MODULE_DIR =
 const SOURCE_MIGRATIONS_DIR = join(MODULE_DIR, 'migrations');
 const BUNDLED_MIGRATIONS_DIR =
   typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined;
+const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
 
 type MigrationStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
+type MigrationSeedStorage = Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'writeFileSync'>;
 
 export interface ApplyMigrationsOptions {
   readonly db: BetterSqlite3.Database;
@@ -33,11 +36,38 @@ function parseVersion(filename: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-function defaultMigrationsDir(): string {
+export function resolveDefaultMigrationsDir(): string {
   return BUNDLED_MIGRATIONS_DIR ?? SOURCE_MIGRATIONS_DIR;
 }
 
-export function applyMigrations({ db, storage, migrationsDir = defaultMigrationsDir() }: ApplyMigrationsOptions): void {
+export function ensureStoreMigrationsDir(
+  storage: MigrationSeedStorage,
+  seededDir: string = SEEDED_MIGRATIONS_DIR,
+): string {
+  const migrationsDir = resolveDefaultMigrationsDir();
+  if (storage.existsSync(migrationsDir)) {
+    return migrationsDir;
+  }
+
+  storage.mkdirSync(seededDir, { recursive: true });
+  for (const entry of readNodeDirSync(migrationsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.sql')) {
+      continue;
+    }
+
+    const sourcePath = join(migrationsDir, entry.name);
+    const targetPath = join(seededDir, entry.name);
+    if (storage.existsSync(targetPath)) {
+      continue;
+    }
+
+    storage.writeFileSync(targetPath, readNodeFileSync(sourcePath, 'utf-8'));
+  }
+
+  return seededDir;
+}
+
+export function applyMigrations({ db, storage, migrationsDir = resolveDefaultMigrationsDir() }: ApplyMigrationsOptions): void {
   const currentVersion = readCurrentVersion(db);
   const files = storage
     .readdirSync(migrationsDir, { withFileTypes: true })

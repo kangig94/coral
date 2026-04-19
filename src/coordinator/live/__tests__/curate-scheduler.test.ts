@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { openStoreDatabase } from '../../../store/db.js';
+import { ensureStoreMigrationsDir } from '../../../store/migrations.js';
 import { createCoordinatorCurateScheduler } from '../curate-scheduler.js';
 
 function createInnerScheduler() {
@@ -24,7 +25,11 @@ describe('coordinator curate scheduler', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-04-19T12:00:00.000Z'));
     const runtime = createRealRuntime();
-    const db = openStoreDatabase({ path: ':memory:', storage: runtime.storage });
+    const db = openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    });
     const inner = createInnerScheduler();
     const scheduler = createCoordinatorCurateScheduler({
       scheduler: inner,
@@ -55,7 +60,11 @@ describe('coordinator curate scheduler', () => {
     vi.setSystemTime(new Date('2026-04-20T08:00:00.000Z'));
     vi.stubEnv('CORAL_CURATE_INTERVAL_MS', '2500');
     const runtime = createRealRuntime();
-    const db = openStoreDatabase({ path: ':memory:', storage: runtime.storage });
+    const db = openStoreDatabase({
+      path: ':memory:',
+      storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+    });
     const inner = createInnerScheduler();
     const scheduler = createCoordinatorCurateScheduler({
       scheduler: inner,

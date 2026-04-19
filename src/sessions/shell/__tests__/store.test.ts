@@ -20,6 +20,7 @@ import { createRealRuntime } from '../../../runtime/real.js';
 import { appendEvents } from '../../../store/append.js';
 import { openStoreDatabase } from '../../../store/db.js';
 import { createEmptyRegistry } from '../../../store/envelope.js';
+import { ensureStoreMigrationsDir } from '../../../store/migrations.js';
 import { discussRegistry } from '../../../discuss/store-registry.js';
 import { jobsRegistry } from '../../../jobs/events.js';
 import { composeReducers } from '../../../store/reducers.js';
@@ -64,6 +65,7 @@ describe('sessions shell store', () => {
     const db = openStoreDatabase({
       path: storePaths(currentBuildFlavor()).dbFile,
       storage: runtime.storage,
+      migrationsDir: ensureStoreMigrationsDir(runtime.storage),
     });
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const upcasters = createEmptyRegistry();
