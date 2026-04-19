@@ -56,3 +56,22 @@ export function getEventsSince(
   const nextCursor = events.length > 0 ? events[events.length - 1].seq : afterSeq;
   return { events, nextCursor };
 }
+
+export function readLatestEvent(
+  db: BetterSqlite3.Database,
+  streamKind: StreamKind,
+  streamId: string,
+  type: string,
+): EventsRow | null {
+  const row = db
+    .prepare(
+      `SELECT *
+         FROM events
+        WHERE stream_kind = ? AND stream_id = ? AND type = ?
+        ORDER BY seq DESC
+        LIMIT 1`,
+    )
+    .get(streamKind, streamId, type) as EventsRow | undefined;
+
+  return row ?? null;
+}

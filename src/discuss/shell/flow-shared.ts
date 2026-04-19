@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { errorMessage } from '../../shared/utils.js';
 import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { reduceDiscussEvent } from '../reducer.js';
-import { resolveAgentName } from '../state-machine.js';
+import { resolveAgentName, type DecisionContext } from '../state-machine.js';
 import type { DiscussState, TranscriptEntry } from '../session-types.js';
 import { renderEntries, renderHeader } from '../transcript.js';
 import { nowIsoString } from '../util/time.js';
@@ -77,6 +77,18 @@ export function failedBidOutcome(
 
 export function ctxTs(ctx: DiscussContext): string {
   return nowIsoString(ctx.runtime.time);
+}
+
+export function makeDecisionContext(
+  ctx: Pick<DiscussContext, 'projectRoot'>,
+  sessionId: string,
+  topic: string,
+): DecisionContext {
+  return {
+    sessionId,
+    projectRoot: ctx.projectRoot,
+    topic,
+  };
 }
 
 export function emptyEpochEvaluation(): EpochEvaluation {

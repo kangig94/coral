@@ -9,6 +9,7 @@ import { commitDecision } from './persistence.js';
 import { collectBids } from './bid-flow.js';
 import { collectSpeech } from './speech-flow.js';
 import { handleEpochTransition, runFollowUpTurns } from './followup-flow.js';
+import { makeDecisionContext } from './flow-shared.js';
 import { handleSynthesis } from './synthesis-flow.js';
 import { getSession } from './registry.js';
 
@@ -47,7 +48,7 @@ async function handleBidRoundClose(
   const resolved = await commitDecision(ctx, sessionId, (latest) =>
     decideBidRoundClose(
       latest.state,
-      { sessionId: latest.sessionId, projectRoot: ctx.projectRoot, topic: latest.state.topic },
+      makeDecisionContext(ctx, latest.sessionId, latest.state.topic),
       latest.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -75,7 +76,7 @@ async function forceEndAfterLoopFailure(ctx: DiscussContext, sessionId: string, 
     decideEnd(
       current.state,
       { force: true, reason: detail },
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),

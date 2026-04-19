@@ -466,7 +466,7 @@ export class LaunchOrchestrator {
 
     this.writeJobTerminalRecord(jobId, sessionId, terminalResult, phase);
     progressStore.writeResultMd(jobId, result.content);
-    writeWorkflowResult(jobId, result.content);
+    writeWorkflowResult(this.deps.runtime.storage, jobId, result.content);
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     try {

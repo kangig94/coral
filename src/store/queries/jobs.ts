@@ -6,6 +6,7 @@ import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outc
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../../jobs/records.js';
 import { decodeEventBody } from '../body-codec.js';
+import { readLatestEvent } from './events.js';
 import type { EventsRow } from '../schema.js';
 
 export type JobLaunchRow = {
@@ -117,24 +118,6 @@ function readProjectionRow(
         WHERE job_id = ?`,
     )
     .get(jobId) as ProjectionRow | undefined;
-
-  return row ?? null;
-}
-
-function readLatestEvent(
-  db: BetterSqlite3.Database,
-  jobId: string,
-  type: string,
-): EventRow | null {
-  const row = db
-    .prepare(
-      `SELECT seq, ts, body
-         FROM events
-        WHERE stream_kind = 'job' AND stream_id = ? AND type = ?
-        ORDER BY seq DESC
-        LIMIT 1`,
-    )
-    .get(jobId, type) as EventRow | undefined;
 
   return row ?? null;
 }
@@ -289,10 +272,10 @@ export function loadJobProjectionDetail(
   jobId: string,
 ): JobProjectionDetail {
   const projection = readProjectionRow(db, jobId);
-  const requested = readLatestEvent(db, jobId, 'job.launch.requested');
-  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected');
-  const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
-  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
+  const requested = readLatestEvent(db, 'job', jobId, 'job.launch.requested');
+  const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');
+  const runtime = readLatestEvent(db, 'job', jobId, 'job.runtime.started');
+  const terminal = readLatestEvent(db, 'job', jobId, 'job.terminal.recorded');
   const launch = decodeLaunch(jobId, requested);
   const terminalRecord = decodeTerminalRecord(terminal);
   const exit = terminal && terminalRecord ? toJobExitRow(terminal, terminalRecord) : null;

@@ -832,7 +832,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       'error',
     );
     this.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
-    writeWorkflowResult(launchRecord.jobId, interruptedReport);
+    writeWorkflowResult(this.runtime.storage, launchRecord.jobId, interruptedReport);
     this.abortRegistry.remove(launchRecord.jobId);
     this.launchCoordinator.releaseLaunch(
       launchRecord.jobId,
@@ -1541,7 +1541,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   ): void {
     this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.progressStore.writeResultMd(jobId, result.content);
-    writeWorkflowResult(jobId, result.content);
+    writeWorkflowResult(this.runtime.storage, jobId, result.content);
     this.abortRegistry.remove(jobId);
     const pool = this.jobPools.get(jobId) ?? 'default';
     this.launchCoordinator.releaseLaunch(jobId, pool);
@@ -1721,7 +1721,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     markdown: string,
   ): void {
     this.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
-    writeWorkflowResult(jobId, markdown);
+    writeWorkflowResult(this.runtime.storage, jobId, markdown);
     this.writeJobTerminalRecord(jobId, sessionId, result, phase);
     this.sessionManager.setNonResumable(sessionId);
     this.abortRegistry.remove(jobId);

@@ -4,7 +4,6 @@ import { isLivePhase } from '../phase.js';
 import type { JobStatusRecord, JobTerminalRecord } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
-import { writeWorkflowResult } from '../shell/result-artifact.js';
 
 export function withBackendNamespace(status: JobStatusRecord, namespace: string): JobStatusRecord {
   return {
@@ -58,7 +57,6 @@ export function markJobAsError(
   if (status.jobKind === 'workflow') {
     try {
       progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
-      writeWorkflowResult(status.jobId, '');
     } catch (err) {
       log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
     }

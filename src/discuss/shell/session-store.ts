@@ -9,7 +9,7 @@ import type {
   DiscussSummaryIndexRow,
 } from '../../shared/persistence-types.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../reducer.js';
-import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '../../shared/fs-lock.js';
+import { acquireDirectoryLock, acquireDirectoryLockSync, isAlreadyExistsError, type DirectoryLockDeps } from '../../shared/fs-lock.js';
 import type { DiscussPathResolver, StoragePort, TimePort, RuntimeTimerHandle } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 
@@ -59,7 +59,7 @@ async function withFilesystemLock<T>(
       deps.storage.rmSync(lockDir, { recursive: true, force: true });
     };
   } catch (error: unknown) {
-    if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== 'EEXIST') {
+    if (!isAlreadyExistsError(error)) {
       throw error;
     }
     release = await acquireDirectoryLock(lockDir, deps);

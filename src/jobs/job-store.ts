@@ -312,17 +312,16 @@ export class JobStore {
     this.notifyPhaseChange(previous, next);
 
     if (input.type === 'job.progress.emitted') {
+      const eventId = this.advanceProgressTail(jobId);
       const body = input.body as { kind?: string; message?: string };
       if (body.kind === 'message' && typeof body.message === 'string') {
-        const eventId = this.readProgressTail(jobId);
-        this.progressEventCounters.set(jobId, eventId);
         this.eventBus.emit('job:progress', { jobId, eventId, message: body.message });
       }
       return;
     }
 
     if (input.type === 'job.terminal.recorded') {
-      this.progressEventCounters.delete(jobId);
+      this.advanceProgressTail(jobId);
       this.jobStartedAt.delete(jobId);
       const result = this.readTerminalPayload(jobId);
       if (result !== null) {
@@ -505,8 +504,8 @@ export class JobStore {
     return this.detail(jobId).runtime as JobRuntimeRecord | null;
   }
 
-  writeExitRecord(_jobId: string, _record: JobExitRecord): void {
-    // Journal authority derives terminal state from job.terminal.recorded events.
+  writeExitRecord(): void {
+    // Satisfies legacy JobStoreInterface contract; journal authority owns terminal state via job.terminal.recorded events.
   }
 
   readExitRecord(jobId: string): JobExitRecord | null {
@@ -552,25 +551,19 @@ export class JobStore {
   }
 
   liveJobCountByNamespace(namespace: string): number {
-    return this.listJobProjections().filter(({ status }) => {
-      return (
-        isLivePhase(status.phase)
-        && typeof status.backendNamespace === 'string'
-        && status.backendNamespace.length > 0
-        && status.backendNamespace === namespace
-      );
-    }).length;
+    if (!namespace) {
+      return 0;
+    }
+
+    return this.countProjectedLiveJobsByNamespace(namespace) + this.countLiveOverrideJobs((status) => status.backendNamespace === namespace) + this.countLiveDraftJobs((status) => status.backendNamespace === namespace);
   }
 
   liveJobCount(bundleHash?: string): number {
-    return this.listJobProjections().filter(({ status }) => {
-      return isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash);
-    }).length;
+    return this.countProjectedLiveJobs(bundleHash) + this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash) + this.countLiveDraftJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash);
   }
 
   hydrateEventCounter(jobId: string): void {
-    const history = readJobProgress(this.db, jobId);
-    const maxEventId = history.reduce((max, event) => Math.max(max, event.eventId), 0);
+    const maxEventId = this.readProgressTailFromDb(jobId);
     if (maxEventId > 0) {
       this.progressEventCounters.set(jobId, maxEventId);
     }
@@ -615,12 +608,12 @@ export class JobStore {
         ts: nowIsoString(this.runtime.time),
       },
     });
-    return this.progressEventCounters.get(jobId) ?? this.readProgressTail(jobId);
+    return this.readProgressTail(jobId);
   }
 
-  appendTerminal(jobId: string, sessionId: string, result: JobTerminalRecord, _phase: JobPhase): number {
-    const hasLaunchProjection = this.detail(jobId).launch !== null;
+  appendTerminal(jobId: string, sessionId: string, result: JobTerminalRecord, phase: JobPhase): number {
     const detail = this.detail(jobId);
+    const hasLaunchProjection = detail.launch !== null;
     const status = detail.status ?? this.drafts.get(jobId);
     this.appendEvent({
       type: 'job.terminal.recorded',
@@ -653,7 +646,7 @@ export class JobStore {
       const draft = this.drafts.get(jobId);
       if (draft) {
         const previousPhase = draft.phase;
-        draft.phase = _phase;
+        draft.phase = phase;
         draft.result = {
           ...result,
           ...(result.workflow === undefined
@@ -665,7 +658,7 @@ export class JobStore {
               }),
         };
         draft.launch = {
-          state: _phase === 'completed' ? 'ready' : 'error',
+          state: phase === 'completed' ? 'ready' : 'error',
           updatedAt: nowIsoString(this.runtime.time),
         };
         this.notifyWaiters();
@@ -695,7 +688,136 @@ export class JobStore {
   }
 
   private readProgressTail(jobId: string): number {
-    return this.readJobProgress(jobId).reduce((max, event) => Math.max(max, event.eventId), 0);
+    const cached = this.progressEventCounters.get(jobId);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const eventId = this.readProgressTailFromDb(jobId);
+    if (eventId > 0) {
+      this.progressEventCounters.set(jobId, eventId);
+    }
+    return eventId;
+  }
+
+  private countLiveDraftJobs(predicate: (status: JobStatusRecord) => boolean): number {
+    let count = 0;
+
+    for (const draft of this.drafts.values()) {
+      if (isLivePhase(draft.phase) && predicate(draft)) {
+        count += 1;
+      }
+    }
+
+    return count;
+  }
+
+  private countLiveOverrideJobs(predicate: (status: JobStatusRecord) => boolean): number {
+    let count = 0;
+
+    for (const jobId of this.namespaceOverrides.keys()) {
+      const status = this.detail(jobId).status;
+      if (status && isLivePhase(status.phase) && predicate(status)) {
+        count += 1;
+      }
+    }
+
+    return count;
+  }
+
+  private countProjectedLiveJobs(bundleHash?: string): number {
+    const excludedJobIds = [...this.namespaceOverrides.keys()];
+    const phasePlaceholders = ['queued', 'launching', 'running'];
+    const clauses = [`p.phase IN (${phasePlaceholders.map(() => '?').join(', ')})`];
+    const params: unknown[] = [...phasePlaceholders];
+
+    if (excludedJobIds.length > 0) {
+      clauses.push(`p.job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
+      params.push(...excludedJobIds);
+    }
+
+    if (bundleHash !== undefined) {
+      clauses.push(`EXISTS (
+        SELECT 1
+          FROM events e
+         WHERE e.stream_kind = 'job'
+           AND e.stream_id = p.job_id
+           AND e.type = 'job.launch.requested'
+           AND json_extract(CAST(e.body AS TEXT), '$.bundleHash') = ?
+      )`);
+      params.push(bundleHash);
+    }
+
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM projection_jobs p
+          WHERE ${clauses.join('\n            AND ')}`,
+      )
+      .get(...params) as { count: number } | undefined;
+
+    return row?.count ?? 0;
+  }
+
+  private countProjectedLiveJobsByNamespace(namespace: string): number {
+    const excludedJobIds = [...this.namespaceOverrides.keys()];
+    const phasePlaceholders = ['queued', 'launching', 'running'];
+    const clauses = [
+      `p.phase IN (${phasePlaceholders.map(() => '?').join(', ')})`,
+      `EXISTS (
+        SELECT 1
+          FROM events e
+         WHERE e.stream_kind = 'job'
+           AND e.stream_id = p.job_id
+           AND e.type = 'job.launch.requested'
+           AND json_extract(CAST(e.body AS TEXT), '$.backendNamespace') = ?
+      )`,
+    ];
+    const params: unknown[] = [...phasePlaceholders, namespace];
+
+    if (excludedJobIds.length > 0) {
+      clauses.push(`p.job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
+      params.push(...excludedJobIds);
+    }
+
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM projection_jobs p
+          WHERE ${clauses.join('\n            AND ')}`,
+      )
+      .get(...params) as { count: number } | undefined;
+
+    return row?.count ?? 0;
+  }
+
+  private readProgressTailFromDb(jobId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS event_id
+           FROM events
+          WHERE stream_kind = 'job'
+            AND stream_id = ?
+            AND type IN ('job.progress.emitted', 'job.terminal.recorded')`,
+      )
+      .get(jobId) as { event_id: number } | undefined;
+
+    return row?.event_id ?? 0;
+  }
+
+  private advanceProgressTail(jobId: string): number {
+    const cached = this.progressEventCounters.get(jobId);
+    if (cached !== undefined) {
+      const next = cached + 1;
+      this.progressEventCounters.set(jobId, next);
+      return next;
+    }
+
+    const next = this.readProgressTailFromDb(jobId);
+    if (next > 0) {
+      this.progressEventCounters.set(jobId, next);
+    }
+    return next;
   }
 }
 

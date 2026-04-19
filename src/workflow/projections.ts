@@ -1,10 +1,9 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { decodeEventBody } from '../store/body-codec.js';
 import { appendEvents, type AppendEventsFn } from '../store/append.js';
 import { createEmptyRegistry, type CoralEventInput } from '../store/envelope.js';
 import { composeReducers } from '../store/reducers.js';
-import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema, workflowRegistry } from './events.js';
+import { workflowRegistry } from './events.js';
 import { workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
 const workflowReducers = composeReducers(workflowRegistry);
@@ -71,48 +70,6 @@ export function listWorkflowProjections(db: BetterSqlite3.Database): WorkflowPro
     plan: workflowPlanSchema.parse(JSON.parse(row.plan)),
     lastSeq: row.last_seq,
   }));
-}
-
-export function readLatestWorkflowDrain(
-  db: BetterSqlite3.Database,
-  workflowId: string,
-): { firstFailureSlotId: string; drainDeadline: number } | null {
-  const row = db
-    .prepare(
-      `SELECT body
-         FROM events
-        WHERE stream_kind = 'workflow' AND stream_id = ? AND type = 'workflow.drain.entered'
-        ORDER BY seq DESC
-        LIMIT 1`,
-    )
-    .get(workflowId) as { body: Uint8Array | Buffer } | undefined;
-
-  if (!row) {
-    return null;
-  }
-
-  return workflowDrainEnteredBodySchema.parse(decodeEventBody(row.body));
-}
-
-export function readLatestWorkflowCompletion(
-  db: BetterSqlite3.Database,
-  workflowId: string,
-): { outcome: 'completed' | 'failed' | 'aborted'; causeRef?: { stream: { kind: 'job' | 'session' | 'discuss' | 'workflow'; id: string }; seq: number } } | null {
-  const row = db
-    .prepare(
-      `SELECT body
-         FROM events
-        WHERE stream_kind = 'workflow' AND stream_id = ? AND type = 'workflow.completed'
-        ORDER BY seq DESC
-        LIMIT 1`,
-    )
-    .get(workflowId) as { body: Uint8Array | Buffer } | undefined;
-
-  if (!row) {
-    return null;
-  }
-
-  return workflowCompletedBodySchema.parse(decodeEventBody(row.body));
 }
 
 export function readProjectionJob(db: BetterSqlite3.Database, jobId: string): ProjectionJobRow | null {

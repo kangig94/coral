@@ -26,6 +26,7 @@ import {
   failedBidOutcome,
   formatTurnParseError,
   lastSpeech,
+  makeDecisionContext,
   mustAnswerText,
   parseBidResponse,
   parseMustAnswerItem,
@@ -52,7 +53,7 @@ function buildBidBatch(
       outcome.agentName,
       outcome.score,
       outcome.thought,
-      { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
+      makeDecisionContext(ctx, snapshot.sessionId, snapshot.state.topic),
       nextSeq,
       ctxTs(ctx),
     );
@@ -81,7 +82,7 @@ function buildBidBatch(
       decideExpel(
         working.state,
         expelAgents,
-        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
+        makeDecisionContext(ctx, snapshot.sessionId, snapshot.state.topic),
         nextSeq,
         ctxTs(ctx),
       ),
@@ -121,7 +122,7 @@ function buildBidBatch(
       decideEnd(
         working.state,
         { endReason: 'no_participants' },
-        { sessionId: snapshot.sessionId, projectRoot: snapshot.projectRoot, topic: snapshot.state.topic },
+        makeDecisionContext(ctx, snapshot.sessionId, snapshot.state.topic),
         nextSeq,
         ctxTs(ctx),
       ),

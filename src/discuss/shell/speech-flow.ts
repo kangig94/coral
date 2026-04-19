@@ -13,7 +13,7 @@ import {
 } from './runtime-build.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs } from './flow-shared.js';
+import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './flow-shared.js';
 
 export async function collectSpeech(
   ctx: DiscussContext,
@@ -60,7 +60,7 @@ export async function collectSpeech(
     const committed = await commitDecision(ctx, sessionId, (current) =>
       decideSpeechTimeout(
         current.state,
-        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+        makeDecisionContext(ctx, sessionId, current.state.topic),
         current.lastAppliedSeq + 1,
         ctxTs(ctx),
       ),
@@ -84,7 +84,7 @@ export async function collectSpeech(
       current.state,
       winnerName,
       attempt.content,
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,
       ctxTs(ctx),
     ),

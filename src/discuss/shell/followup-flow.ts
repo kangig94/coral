@@ -28,6 +28,7 @@ import {
   emptyEpochEvaluation,
   encodeCarryForward,
   normalizeFollowUpAnswer,
+  makeDecisionContext,
   parseEpochEvaluation,
   renderTranscriptText,
 } from './flow-shared.js';
@@ -176,7 +177,7 @@ export async function handleEpochTransition(
         decideEpochSummary(
           current.state,
           evaluation.summary,
-          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+          makeDecisionContext(ctx, sessionId, current.state.topic),
           nextSeq,
           ts,
         ),
@@ -218,7 +219,7 @@ export async function handleEpochTransition(
     return decideEnd(
       current.state,
       { force: true, reason: 'Discussion converged.' },
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       nextSeq,
       ts,
     );
@@ -247,7 +248,7 @@ export async function runFollowUpTurns(
         decideEnd(
           current.state,
           { force: true, reason: 'Discussion converged after follow-ups.' },
-          { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+          makeDecisionContext(ctx, sessionId, current.state.topic),
           current.lastAppliedSeq + 1,
           ctxTs(ctx),
         ),

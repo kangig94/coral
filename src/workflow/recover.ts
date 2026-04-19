@@ -5,6 +5,8 @@ import type { JobTerminalRecord } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { errorMessage } from '../shared/utils.js';
 import type { ProgressStore } from '../jobs/job-store.js';
+import { decodeEventBody } from '../store/body-codec.js';
+import { readLatestEvent } from '../store/queries/events.js';
 import { loadJobProjectionDetail } from '../store/queries/jobs.js';
 import {
   buildStepDetailsForAtoms,
@@ -16,11 +18,16 @@ import {
 } from './command.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import { BOOTSTRAP_TIMEOUT_MS, readLaunchFailureMessage } from './launch.js';
-import { workflowCompletedEvent, workflowPlanRevisedEvent } from './events.js';
+import {
+  workflowCompletedBodySchema,
+  workflowCompletedEvent,
+  workflowDrainEnteredBodySchema,
+  workflowPlanRevisedEvent,
+} from './events.js';
 import { executePlannedSteps, DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './executor.js';
 import { formatAtomProgress } from './internal/format.js';
 import type { PlanSlot, WorkflowPlan } from './plan.js';
-import { appendWorkflowEvents, readLatestWorkflowCompletion, readLatestWorkflowDrain, readProjectionJob, readWorkflowProjection } from './projections.js';
+import { appendWorkflowEvents, readProjectionJob, readWorkflowProjection } from './projections.js';
 import { waitForAtoms, type AwaitStepState } from './wait.js';
 
 const MAX_STALE_RECOVERY_RETRIES = 2;
@@ -298,7 +305,8 @@ async function resumeWorkflow(
     pollIntervalMs: number;
   },
 ): Promise<PipelineResult | null> {
-  const completion = readLatestWorkflowCompletion(db, plan.workflowId);
+  const completionRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.completed');
+  const completion = completionRow ? workflowCompletedBodySchema.parse(decodeEventBody(completionRow.body)) : null;
   if (completion) {
     return null;
   }
@@ -340,7 +348,8 @@ async function resumeWorkflow(
 
   const completedOutputs = new Map<string, string>();
   const cursorJobs: Record<string, number> = {};
-  const drain = readLatestWorkflowDrain(db, plan.workflowId);
+  const drainRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.drain.entered');
+  const drain = drainRow ? workflowDrainEnteredBodySchema.parse(decodeEventBody(drainRow.body)) : null;
 
   for (const slot of stepSlots) {
     const detail = loadJobProjectionDetail(db, slot.jobId);

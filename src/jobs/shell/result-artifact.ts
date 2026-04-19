@@ -1,22 +1,21 @@
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { jobsDir } from '../../infra/paths.js';
+import type { StoragePort } from '../../runtime/ports.js';
 
 export function resultPathFor(jobId: string): string {
   return join(jobsDir(), jobId, 'result.md');
 }
 
-export function writeWorkflowResult(jobId: string, markdown: string): string {
+export function writeWorkflowResult(
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>,
+  jobId: string,
+  markdown: string,
+): string {
   const targetPath = resultPathFor(jobId);
-  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
-  mkdirSync(dirname(targetPath), { recursive: true });
-  try {
-    writeFileSync(tmpPath, markdown, 'utf-8');
-    renameSync(tmpPath, targetPath);
-  } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
-    throw error;
+  storage.mkdirSync(dirname(targetPath), { recursive: true });
+  if (!storage.writeAtomicSync(targetPath, markdown, { encoding: 'utf-8' })) {
+    throw new Error(`Failed to write workflow result for ${jobId}`);
   }
   return targetPath;
 }

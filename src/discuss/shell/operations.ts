@@ -27,6 +27,7 @@ import { appendRuntimeEvents, afterCommit, commitDecision, isAbortEnded, readSes
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { collectBids } from './bid-flow.js';
+import { makeDecisionContext } from './flow-shared.js';
 
 function readDiscussMaxEpochs(ctx: DiscussContext): number {
   const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);
@@ -123,7 +124,7 @@ export async function startDiscussSession(
   const created = unwrapResult(
     decideSessionCreate(
       input,
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: topic },
+      makeDecisionContext(ctx, sessionId, topic),
       1,
       nowIsoString(ctx.runtime.time),
       {
@@ -167,7 +168,7 @@ export async function submitManualBid(
       agentName,
       score,
       thought,
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -214,7 +215,7 @@ export async function submitManualSpeech(
       current.state,
       agentName,
       content,
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),
@@ -234,7 +235,7 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
     decideEnd(
       current.state,
       { force: true, reason: ABORT_REASON },
-      { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+      makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,
       nowIsoString(ctx.runtime.time),
     ),

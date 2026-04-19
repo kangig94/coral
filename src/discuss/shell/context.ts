@@ -37,7 +37,6 @@ export type LiveDiscussSession = {
   loopState: { running: boolean };
 };
 
-export type DiscussSession = LiveDiscussSession;
 export type AgentRun = PersistedDiscussAgentRun;
 
 export type DiscussJobStatusReader = {

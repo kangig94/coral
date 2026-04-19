@@ -50,6 +50,7 @@ export interface SessionEntry {
   version: number;
 }
 
+// Compatibility alias for command surfaces that still describe opened entries as handles.
 export type SessionHandle = SessionEntry;
 
 export const sessionEntrySchema = z

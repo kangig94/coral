@@ -4,7 +4,7 @@ import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from './runtime-build.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import { detachSession } from './registry.js';
-import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, renderTranscriptText } from './flow-shared.js';
+import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext, renderTranscriptText } from './flow-shared.js';
 
 export async function handleSynthesis(
   ctx: DiscussContext,
@@ -50,7 +50,7 @@ export async function handleSynthesis(
       decideSynthesis(
         current.state,
         result.content,
-        { sessionId: sessionId, projectRoot: ctx.projectRoot, topic: current.state.topic },
+        makeDecisionContext(ctx, sessionId, current.state.topic),
         current.lastAppliedSeq + 1,
         ctxTs(ctx),
       ),
