@@ -3,6 +3,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { coordinatorPaths } from '../paths.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',
@@ -48,6 +49,7 @@ describe('coordinator discovery', () => {
     writeDiscoveryRecord('prod', {
       pid: process.pid,
       port: 4312,
+      socketPath: coordinatorPaths('prod').socketPath,
       host: '127.0.0.1',
       bundleHash: 'bundle-a',
       flavor: 'prod',
@@ -79,6 +81,7 @@ describe('coordinator discovery', () => {
     writeDiscoveryRecord('dev', {
       pid: process.pid,
       port: 9021,
+      socketPath: coordinatorPaths('dev').socketPath,
       bundleHash: 'bundle-b',
       flavor: 'dev',
       namespace: 'ns-b',
@@ -104,6 +107,7 @@ describe('coordinator discovery', () => {
     writeDiscoveryRecord('prod', {
       pid: process.pid,
       port: 9022,
+      socketPath: coordinatorPaths('prod').socketPath,
       bundleHash: 'bundle-c',
       flavor: 'prod',
       namespace: 'ns-c',

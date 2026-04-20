@@ -1,11 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
-import {
-  acquireLock,
-  BackendAlreadyRunningError,
-  removeLockIfOwner,
-  type LockRecord,
-  type VerifyBackendOwnershipFn,
-} from '../lock.js';
+import { describe, expect, it } from 'vitest';
+import { acquireLock, releaseLock, type LockRecord } from '../lock.js';
+import { coordinatorPaths } from '../paths.js';
 
 function makeEnoent(path: string): NodeJS.ErrnoException {
   const error = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;
@@ -16,8 +11,8 @@ function makeEnoent(path: string): NodeJS.ErrnoException {
 class FakeLockStorage {
   private readonly files = new Map<string, string>();
 
-  backendLockPath(pluginRoot: string): string {
-    return `${pluginRoot}/backend.lock`;
+  lockPath(flavor: 'prod' | 'dev'): string {
+    return coordinatorPaths(flavor).lockFile;
   }
 
   readFileSync(path: string, _encoding: 'utf-8'): string {
@@ -51,28 +46,33 @@ class FakeLockStorage {
     }
   }
 
-  writeLock(pluginRoot: string, record: LockRecord): void {
-    this.files.set(this.backendLockPath(pluginRoot), JSON.stringify(record));
+  writeLock(flavor: 'prod' | 'dev', record: LockRecord): void {
+    this.files.set(this.lockPath(flavor), JSON.stringify(record));
   }
 
-  readLock(pluginRoot: string): LockRecord | null {
-    const raw = this.files.get(this.backendLockPath(pluginRoot));
+  readLock(flavor: 'prod' | 'dev'): LockRecord | null {
+    const raw = this.files.get(this.lockPath(flavor));
     return raw ? (JSON.parse(raw) as LockRecord) : null;
   }
 }
 
 class FakeTime {
   nowMs = 0;
-  readonly sleeps: number[] = [];
 
   now(): number {
     return this.nowMs;
   }
 
   async sleep(ms: number): Promise<void> {
-    this.sleeps.push(ms);
     this.nowMs += ms;
   }
+
+  setTimeout(fn: () => void): number {
+    fn();
+    return 0;
+  }
+
+  clearTimeout(_handle: number): void {}
 }
 
 function makeLockRecord(overrides: Partial<LockRecord> = {}): LockRecord {
@@ -88,62 +88,56 @@ function makeLockRecord(overrides: Partial<LockRecord> = {}): LockRecord {
 }
 
 describe('backend-lock', () => {
-  it('uses the injected ownership verifier and runtime-backed storage/time while contending', async () => {
+  it('replaces a stale lock and acquires the requested flavor/bundle with runtime-backed storage', async () => {
     const storage = new FakeLockStorage();
     const time = new FakeTime();
-    const pluginRoot = '/plugin-root';
-    storage.writeLock(pluginRoot, makeLockRecord());
+    storage.writeLock('prod', makeLockRecord());
 
-    const verifyOwnership = vi
-      .fn<VerifyBackendOwnershipFn>()
-      .mockResolvedValueOnce('contended')
-      .mockResolvedValueOnce('stale');
-
-    await acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
-      env: { pid: () => 222, platform: () => process.platform } as never,
-      storage: storage as never,
-      paths: storage as never,
-      time: time as never,
-      verifyOwnership,
+    const record = await acquireLock('prod', 'bundle-b', {
+      instanceId: 'owner-b',
+      version: '2.0.0',
+      runtime: {
+        env: { pid: () => 222, platform: () => process.platform } as never,
+        process: { isAlive: () => false } as never,
+        storage: storage as never,
+        time: time as never,
+      },
     });
 
-    expect(verifyOwnership).toHaveBeenCalledTimes(2);
-    expect(time.sleeps).toEqual([200]);
-    expect(storage.readLock(pluginRoot)).toMatchObject({
+    expect(record).toMatchObject({
       instanceId: 'owner-b',
       pid: 222,
       version: '2.0.0',
       bundleHash: 'bundle-b',
+      flavor: 'prod',
+      startedAt: 0,
+    });
+    expect(storage.readLock('prod')).toMatchObject({
+      instanceId: 'owner-b',
+      pid: 222,
+      version: '2.0.0',
+      bundleHash: 'bundle-b',
+      flavor: 'prod',
       startedAt: 0,
     });
   });
 
-  it('throws when the injected ownership verifier reports a healthy backend', async () => {
+  it('releaseLock removes the active lock record when runtime-backed storage is provided', async () => {
     const storage = new FakeLockStorage();
     const time = new FakeTime();
-    const pluginRoot = '/plugin-root';
-    const original = makeLockRecord();
-    storage.writeLock(pluginRoot, original);
 
-    await expect(
-      acquireLock(pluginRoot, 'owner-b', '2.0.0', 'bundle-b', 'prod', {
-        env: { pid: () => 222, platform: () => process.platform } as never,
+    await acquireLock('dev', 'bundle-b', {
+      instanceId: 'owner-b',
+      version: '2.0.0',
+      runtime: {
+        env: { pid: () => 333, platform: () => process.platform } as never,
+        process: { isAlive: () => false } as never,
         storage: storage as never,
-        paths: storage as never,
         time: time as never,
-        verifyOwnership: vi.fn<VerifyBackendOwnershipFn>().mockResolvedValue('healthy'),
-      }),
-    ).rejects.toBeInstanceOf(BackendAlreadyRunningError);
+      },
+    });
 
-    expect(storage.readLock(pluginRoot)).toEqual(original);
-  });
-
-  it('removes only the matching owner lock via runtime-backed storage', () => {
-    const storage = new FakeLockStorage();
-    const pluginRoot = '/plugin-root';
-    storage.writeLock(pluginRoot, makeLockRecord({ instanceId: 'owner-a' }));
-
-    removeLockIfOwner(pluginRoot, 'owner-a', storage as never, storage as never);
-    expect(storage.readLock(pluginRoot)).toBeNull();
+    releaseLock('owner-b', { storage: storage as never } as never);
+    expect(storage.readLock('dev')).toBeNull();
   });
 });

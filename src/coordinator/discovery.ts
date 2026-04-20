@@ -4,10 +4,6 @@ import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { RuntimeEnvPort, RuntimeStoragePort } from '../runtime/ports.js';
-import {
-  backendInfoPath as legacyBackendInfoPath,
-  backendLockPath as legacyBackendLockPath,
-} from '../infra/paths.js';
 import { isNoEntryError } from '../shared/utils.js';
 import { readBuildFlavor } from '../shared/utils.js';
 import { coordinatorPaths } from './paths.js';
@@ -15,6 +11,7 @@ import { coordinatorPaths } from './paths.js';
 export interface CoordinatorDiscoveryRecord {
   pid: number;
   port: number;
+  socketPath: string;
   bundleHash: string;
   flavor: BuildFlavor;
   namespace: string;
@@ -52,6 +49,8 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   const record = value as Record<string, unknown>;
   const pid = Number.isInteger(record.pid) && (record.pid as number) > 0 ? (record.pid as number) : null;
   const port = Number.isInteger(record.port) && (record.port as number) > 0 ? (record.port as number) : null;
+  const socketPath =
+    typeof record.socketPath === 'string' && record.socketPath.length > 0 ? record.socketPath : null;
   const bundleHash =
     typeof record.bundleHash === 'string' && record.bundleHash.length > 0 ? record.bundleHash : null;
   const flavor =
@@ -93,6 +92,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   if (
     pid === null ||
     port === null ||
+    socketPath === null ||
     bundleHash === null ||
     flavor === null ||
     namespace === null ||
@@ -109,6 +109,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   const normalized: CoordinatorDiscoveryRecord = {
     pid,
     port,
+    socketPath,
     bundleHash,
     flavor,
     namespace,
@@ -301,72 +302,6 @@ function discoveryFilePath(flavor: BuildFlavor): string {
   return coordinatorPaths(flavor).infoFile;
 }
 
-function legacyBackendFilePath(
-  pluginRoot: string,
-  resolver: (pluginRoot: string) => string,
-): string | null {
-  try {
-    return resolver(pluginRoot);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-function writeCompatFile(
-  filePath: string | null,
-  payload: string,
-  runtime: Required<DiscoveryRuntime>,
-): void {
-  if (!filePath) {
-    return;
-  }
-
-  runtime.storage.mkdirSync(dirname(filePath), { recursive: true });
-  if (!runtime.storage.writeAtomicSync(filePath, payload, { encoding: 'utf-8', mode: 0o600 })) {
-    return;
-  }
-  if (runtime.env.platform() !== 'win32') {
-    try {
-      runtime.storage.chmodSync(filePath, 0o600);
-    } catch {
-      // Best-effort.
-    }
-  }
-}
-
-function removeCompatFileIfOwner(
-  filePath: string | null,
-  owner: string,
-  runtime: Required<DiscoveryRuntime>,
-): void {
-  if (!filePath) {
-    return;
-  }
-
-  try {
-    const raw = runtime.storage.readFileSync(filePath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return;
-    }
-
-    const instanceId = (parsed as Record<string, unknown>).instanceId;
-    if (instanceId !== owner) {
-      return;
-    }
-
-    runtime.storage.unlinkSync(filePath);
-  } catch (error: unknown) {
-    if (isNoEntryError(error) || error instanceof SyntaxError) {
-      return;
-    }
-    throw error;
-  }
-}
-
 function flavorForPluginRoot(pluginRoot: string): BuildFlavor {
   return readBuildFlavor(pluginRoot);
 }
@@ -422,12 +357,20 @@ export function readDiscoveryRecord(
 
 export function removeDiscoveryRecordIfOwner(
   flavor: BuildFlavor,
-  token: string,
+  owner: string,
   runtime?: DiscoveryRuntime,
 ): void {
   const deps = resolveDiscoveryRuntime(runtime);
   const record = readDiscoveryRecord(flavor, deps);
-  if (!record || record.token !== token) {
+  if (!record) {
+    return;
+  }
+
+  if (record.instanceId !== undefined) {
+    if (record.instanceId !== owner) {
+      return;
+    }
+  } else if (record.token !== owner) {
     return;
   }
 
@@ -469,14 +412,7 @@ export function writeBackendInfo(
   runtime?: DiscoveryRuntime,
 ): void {
   const deps = resolveDiscoveryRuntime(runtime);
-  const payload = JSON.stringify(info);
-  const legacyLockPath = legacyBackendFilePath(pluginRoot, legacyBackendLockPath);
-  if (legacyLockPath !== null) {
-    deps.storage.mkdirSync(dirname(legacyLockPath), { recursive: true });
-  }
-
   writeDiscoveryRecord(flavorForPluginRoot(pluginRoot), info, deps);
-  writeCompatFile(legacyBackendFilePath(pluginRoot, legacyBackendInfoPath), payload, deps);
 }
 
 export function readBackendInfo(
@@ -501,21 +437,5 @@ export function removeBackendInfoIfOwner(
   owner: string,
   runtime?: DiscoveryRuntime,
 ): void {
-  const deps = resolveDiscoveryRuntime(runtime);
-  const flavor = flavorForPluginRoot(pluginRoot);
-  const record = readDiscoveryRecord(flavor, deps);
-  if (!record) {
-    return;
-  }
-
-  if (record.instanceId !== undefined) {
-    if (record.instanceId !== owner) {
-      return;
-    }
-  } else if (record.token !== owner) {
-    return;
-  }
-
-  removeDiscoveryRecordIfOwner(flavor, record.token, deps);
-  removeCompatFileIfOwner(legacyBackendFilePath(pluginRoot, legacyBackendInfoPath), owner, deps);
+  removeDiscoveryRecordIfOwner(flavorForPluginRoot(pluginRoot), owner, runtime);
 }

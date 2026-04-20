@@ -9,6 +9,7 @@ export type BackendHandle = {
   host: string;
   token: string;
   instanceId: string;
+  socketPath?: string;
 };
 
 function resolvePluginRoot(pluginRoot?: string): string {
@@ -47,5 +48,8 @@ export async function resolveDiscoveredBackend(pluginRoot?: string): Promise<Bac
     host: info.host,
     token: info.token,
     instanceId: info.instanceId,
+    ...(info.host === '127.0.0.1' || info.host === '::1' || info.host === 'localhost'
+      ? { socketPath: info.socketPath }
+      : {}),
   };
 }

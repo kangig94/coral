@@ -49,16 +49,6 @@ type IncumbentState = 'healthy_same' | 'healthy_replacing' | 'contended' | 'stal
 
 const activeLocks = new Map<string, LockState>();
 
-type CompatBackendLockStorage = Pick<
-  RuntimeStoragePort,
-  'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'
->;
-type CompatBackendLockPaths = {
-  backendLockPath(pluginRoot: string): string;
-};
-type CompatBackendLockRuntime = Pick<Runtime, 'env' | 'storage' | 'paths' | 'time'> & {
-  verifyOwnership: VerifyBackendOwnershipFn;
-};
 type LockFileStorage = Pick<RuntimeStoragePort, 'tryExclusiveWriteSync' | 'readFileSync' | 'renameSync' | 'unlinkSync'>;
 
 function sleepForRetry(time: Pick<Runtime['time'], 'setTimeout' | 'sleep'>, ms: number): Promise<void> {
@@ -213,103 +203,6 @@ function removeLockIfSnapshotMatches(
   return removeLockIfSnapshotMatchesAt(lockFilePath(flavor), snapshot, storage);
 }
 
-function readCompatLockSnapshot(
-  pluginRoot: string,
-  storage: Pick<CompatBackendLockStorage, 'readFileSync'>,
-  paths: CompatBackendLockPaths,
-): LockSnapshot | null {
-  return readLockSnapshotAt(paths.backendLockPath(pluginRoot), storage);
-}
-
-function writeCompatLockFile(
-  pluginRoot: string,
-  record: LockRecord,
-  storage: Pick<CompatBackendLockStorage, 'tryExclusiveWriteSync'>,
-  paths: CompatBackendLockPaths,
-): boolean {
-  return writeLockFileAt(paths.backendLockPath(pluginRoot), record, storage);
-}
-
-function removeCompatLockIfSnapshotMatches(
-  pluginRoot: string,
-  snapshot: LockSnapshot,
-  storage: Pick<CompatBackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
-  paths: CompatBackendLockPaths,
-): boolean {
-  return removeLockIfSnapshotMatchesAt(paths.backendLockPath(pluginRoot), snapshot, storage);
-}
-
-async function acquireCompatLock(
-  pluginRoot: string,
-  instanceId: string,
-  version: string,
-  bundleHash: string,
-  flavor: 'prod' | 'dev',
-  runtime: CompatBackendLockRuntime,
-): Promise<void> {
-  const pid = runtime.env.pid();
-  const record: LockRecord = {
-    instanceId,
-    pid,
-    version,
-    bundleHash,
-    flavor,
-    startedAt: runtime.time.now(),
-    processStartedAt: probeProcessStartedAtSeconds(pid, runtime.env.platform() as NodeJS.Platform) ?? undefined,
-  };
-
-  let observedKey: string | null = null;
-  let observedAt = runtime.time.now();
-  const contenderStartedAt = runtime.time.now();
-
-  while (true) {
-    if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      coordinatorLog.error(`Compat lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
-      throw new Error('Coral backend lock acquisition timed out');
-    }
-
-    if (writeCompatLockFile(pluginRoot, record, runtime.storage, runtime.paths)) {
-      return;
-    }
-
-    const snapshot = readCompatLockSnapshot(pluginRoot, runtime.storage, runtime.paths);
-    if (!snapshot) {
-      observedKey = null;
-      observedAt = runtime.time.now();
-      continue;
-    }
-
-    const currentKey = snapshotKey(snapshot);
-    if (currentKey !== observedKey) {
-      observedKey = currentKey;
-      observedAt = runtime.time.now();
-    }
-
-    const deadlineExpired = runtime.time.now() - observedAt >= STARTUP_DEADLINE;
-    if (snapshot.record) {
-      const ownershipState = await runtime.verifyOwnership({ pluginRoot, record: snapshot.record });
-      if (ownershipState === 'healthy') {
-        throw new BackendAlreadyRunningError();
-      }
-      if (ownershipState === 'contended' && !deadlineExpired) {
-        await sleepForRetry(runtime.time, RETRY_DELAY_MS);
-        continue;
-      }
-    } else if (!deadlineExpired) {
-      await sleepForRetry(runtime.time, RETRY_DELAY_MS);
-      continue;
-    }
-
-    if (removeCompatLockIfSnapshotMatches(pluginRoot, snapshot, runtime.storage, runtime.paths)) {
-      observedKey = null;
-      observedAt = runtime.time.now();
-      continue;
-    }
-
-    await sleepForRetry(runtime.time, RETRY_DELAY_MS);
-  }
-}
-
 async function readHealth(
   runtime: CoordinatorLockRuntime,
   lockRecord: LockRecord,
@@ -412,7 +305,7 @@ async function inspectIncumbent(
   return 'contended';
 }
 
-async function acquireCoordinatorLock(
+export async function acquireLock(
   flavor: BuildFlavor,
   bundleHash: string,
   options: {
@@ -491,44 +384,6 @@ async function acquireCoordinatorLock(
   }
 }
 
-export function acquireLock(
-  flavor: BuildFlavor,
-  bundleHash: string,
-  options: {
-    instanceId: string;
-    version: string;
-    runtime: CoordinatorLockRuntime;
-  },
-): Promise<LockRecord>;
-export function acquireLock(
-  pluginRoot: string,
-  instanceId: string,
-  version: string,
-  bundleHash: string,
-  flavor: 'prod' | 'dev',
-  runtime: CompatBackendLockRuntime,
-): Promise<void>;
-export async function acquireLock(
-  arg1: BuildFlavor | string,
-  arg2: string,
-  arg3:
-    | {
-        instanceId: string;
-        version: string;
-        runtime: CoordinatorLockRuntime;
-      }
-    | string,
-  arg4?: string,
-  arg5?: 'prod' | 'dev',
-  arg6?: CompatBackendLockRuntime,
-): Promise<LockRecord | void> {
-  if (typeof arg3 === 'object') {
-    return acquireCoordinatorLock(arg1 as BuildFlavor, arg2, arg3);
-  }
-
-  return acquireCompatLock(arg1, arg2, arg3, arg4 ?? 'unknown', arg5 ?? 'prod', arg6 as CompatBackendLockRuntime);
-}
-
 export function releaseLock(
   instanceId?: string,
   runtime?: Pick<Runtime, 'storage'>,
@@ -560,18 +415,4 @@ export function releaseLock(
     storage,
   );
   activeLocks.delete(key);
-}
-
-export function removeLockIfOwner(
-  pluginRoot: string,
-  instanceId: string,
-  storage: Pick<CompatBackendLockStorage, 'readFileSync' | 'renameSync' | 'unlinkSync'>,
-  paths: CompatBackendLockPaths,
-): void {
-  const snapshot = readCompatLockSnapshot(pluginRoot, storage, paths);
-  if (!snapshot?.record || snapshot.record.instanceId !== instanceId) {
-    return;
-  }
-
-  removeCompatLockIfSnapshotMatches(pluginRoot, snapshot, storage, paths);
 }

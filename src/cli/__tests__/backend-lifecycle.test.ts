@@ -79,6 +79,7 @@ function writeBackendInfo(
   overrides: Partial<{
     pid: number;
     port: number;
+    socketPath: string;
     host: string;
     token: string;
     version: string;
@@ -97,6 +98,7 @@ function writeBackendInfo(
     JSON.stringify({
       pid: overrides.pid ?? process.pid,
       port: overrides.port ?? 4100,
+      socketPath: overrides.socketPath ?? coordinatorPaths(flavor).socketPath,
       host: overrides.host ?? '127.0.0.1',
       token: overrides.token ?? 'test-token',
       version: overrides.version ?? '0.0.0',
@@ -148,6 +150,7 @@ function makeHealthyInfo(instanceId = 'backend-a') {
   return {
     pid: 4242,
     port: 4100,
+    socketPath: coordinatorPaths('dev').socketPath,
     host: '127.0.0.1',
     token: 'healthy-token',
     version: '0.0.0',

@@ -27,6 +27,8 @@ import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from
 import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
+import { coordinatorPaths } from './paths.js';
+import type { IpcListener } from '../transport/ipc/server.js';
 export type { EventBusEvents } from './event-bus.js';
 export { TypedEventBus } from './event-bus.js';
 
@@ -43,6 +45,7 @@ export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
 export type BackendServerInfo = {
   port: number;
   host: string;
+  socketPath: string;
   token: string;
   version: string;
   bundleHash: string;
@@ -279,6 +282,9 @@ export type LifecycleDeps = {
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
+  readonly ipcServer?: IpcListener;
+  readonly closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
+  readonly listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
   readonly onStopped?: () => void;
   readonly onFatalShutdownError?: (error: unknown) => void;
 };
@@ -338,6 +344,9 @@ async function runLifecycleStartup({
     hooks,
     closeServerFn,
     listenFn,
+    ipcServer,
+    closeIpcServerFn,
+    listenIpcFn,
   } = deps;
   const { pluginRoot, namespace, version, bundleHash, flavor, instanceId, now } = identity;
 
@@ -372,6 +381,10 @@ async function runLifecycleStartup({
     assertStartupStillActive();
 
     const { port, host } = await listenFn(server);
+    const { socketPath } =
+      ipcServer && listenIpcFn
+        ? await listenIpcFn(ipcServer)
+        : { socketPath: coordinatorPaths(flavor).socketPath };
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
@@ -398,6 +411,7 @@ async function runLifecycleStartup({
       pid: backendPid,
       port,
       host,
+      socketPath,
       token: identity.token,
       version,
       bundleHash,
@@ -434,6 +448,7 @@ async function runLifecycleStartup({
     return {
       port,
       host,
+      socketPath,
       token: identity.token,
       version,
       bundleHash,
@@ -452,6 +467,13 @@ async function runLifecycleStartup({
       await closeServerFn(server);
     } catch {
       // best effort
+    }
+    if (ipcServer && closeIpcServerFn) {
+      try {
+        await closeIpcServerFn(ipcServer);
+      } catch {
+        // best effort
+      }
     }
     removeBackendInfoIfOwnerFn(pluginRoot, instanceId);
     removeLockIfOwnerFn(pluginRoot, instanceId);
@@ -479,6 +501,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     providerHostManager,
     hooks,
     closeServerFn,
+    closeIpcServerFn,
+    ipcServer,
     onStopped,
     onFatalShutdownError,
   } = deps;
@@ -527,6 +551,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         closeServerFn,
         waitForInflightDrain,
         server,
+        closeIpcServerFn,
+        ipcServer,
         streamResponses,
         runtime,
         namespace,

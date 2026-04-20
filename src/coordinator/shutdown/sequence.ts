@@ -10,6 +10,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
+import type { IpcListener } from '../../transport/ipc/server.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -66,12 +67,14 @@ type RunShutdownSequenceContext = {
   runtimeState: MutableRuntimeState;
   idleTimer: IdleTimer;
   closeServerFn: (server: Server) => Promise<void>;
+  closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
   waitForInflightDrain: (
     idleTimer: IdleTimer,
     timeoutMs: number,
     time: Pick<Runtime['time'], 'clearInterval' | 'now' | 'setInterval'>,
   ) => Promise<void>;
   server: Server;
+  ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
   namespace: string;
@@ -93,8 +96,10 @@ export async function runShutdownSequence({
   runtimeState,
   idleTimer,
   closeServerFn,
+  closeIpcServerFn,
   waitForInflightDrain,
   server,
+  ipcServer,
   streamResponses,
   runtime,
   namespace,
@@ -119,12 +124,16 @@ export async function runShutdownSequence({
   const remainingDrain = (): number => Math.max(0, drainDeadline - runtime.time.now());
 
   const serverClosed = closeServerFn(server);
+  const ipcClosed = ipcServer && closeIpcServerFn ? closeIpcServerFn(ipcServer) : Promise.resolve();
   await waitForInflightDrain(idleTimer, remainingDrain(), runtime.time);
   server.closeAllConnections?.();
   for (const stream of streamResponses) {
     stream.end();
   }
-  await Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]);
+  await Promise.all([
+    Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]),
+    Promise.race([ipcClosed, runtime.time.sleep(remainingDrain())]),
+  ]);
   teardownRecoveryCoordinator();
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;

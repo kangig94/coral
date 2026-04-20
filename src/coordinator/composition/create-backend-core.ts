@@ -33,6 +33,7 @@ import {
   handleKbDelete,
 } from '../../kb/api.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
+import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { RpcPorts } from '../../transport/rpc-ports.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import {
@@ -50,6 +51,7 @@ import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/views.js';
+import { coordinatorPaths } from '../paths.js';
 
 export type {
   BackendBootSnapshot,
@@ -309,6 +311,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
+  const ipcServer = createIpcServer(httpHandlerDeps);
 
   const server = defaults.createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {
@@ -355,6 +358,9 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     hooks: discuss.hooks,
     closeServerFn: defaults.closeServerFn,
     listenFn: defaults.listenFn,
+    ipcServer,
+    closeIpcServerFn: closeIpcServer,
+    listenIpcFn: (listener) => listenIpcServer(listener, coordinatorPaths(identity.flavor).socketPath),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };
