@@ -13,7 +13,7 @@ import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { ProviderInstruction } from '../providers/protocol.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { EffortLevel, WorkflowCommand } from '../shared/schemas.js';
+import type { EffortLevel } from '../shared/schemas.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ProgressStore } from '../jobs/api.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -22,6 +22,7 @@ import type { SessionLookup } from '../sessions/lookup.js';
 import type { AppendEventsFn } from '../store/append.js';
 import type { ProviderRegistry } from '../providers/api.js';
 import type { PipelineAST } from '../workflow/ast.js';
+import type { WorkflowCommand } from '../workflow/api.js';
 import type { TypedEventBus } from './event-bus.js';
 
 export type ExecutionLaunchPool = 'default' | 'discuss' | 'curate';

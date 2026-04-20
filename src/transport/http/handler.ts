@@ -7,7 +7,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { z, ZodError } from 'zod';
+import { ZodError } from 'zod';
 import {
   buildCallerContextFromQuery,
   type CallerContext,
@@ -21,14 +21,13 @@ import {
   type EventStreamHandlers,
   type HttpHandlerPorts,
   jobAbortSchema,
+  jobsListRequestSchema,
   jobWaitSchema,
-  jobPhaseSchema,
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
-  kbSearchQuerySchema,
+  kbEntriesRequestSchema,
   launchToHttp,
-  providerNameSchema,
   queryParamsToObject,
   sessionCreateSchema,
   sessionForkSchema,
@@ -240,15 +239,6 @@ export function parseEventStreamFilter(url: string): string | null {
   const jobMatch = filter.match(/^job:(.+)$/);
   return jobMatch?.[1] ?? null;
 }
-
-const jobListQuerySchema = z
-  .object({
-    projectRoot: z.string().min(1).optional(),
-    phase: jobPhaseSchema.optional(),
-    all: z.literal('1').optional(),
-    provider: providerNameSchema.optional(),
-  })
-  .strict();
 
 // ---------------------------------------------------------------------------
 // Discuss read helpers
@@ -884,7 +874,7 @@ async function handleKbEntries(
   deps: HttpHandlerPorts,
   params: URLSearchParams,
 ): Promise<void> {
-  const parsed = kbSearchQuerySchema.safeParse(queryParamsToObject(params));
+  const parsed = kbEntriesRequestSchema.safeParse(queryParamsToObject(params));
   if (!parsed.success) {
     const { message, detail } = formatZodError(parsed.error);
     sendToolResult(res, invalidRequestResult(message, detail));
@@ -1231,7 +1221,7 @@ async function handleJobListRoute(
   deps: HttpHandlerPorts,
   parsedUrl: URL,
 ): Promise<void> {
-  const parsed = jobListQuerySchema.safeParse(queryParamsToObject(parsedUrl.searchParams));
+  const parsed = jobsListRequestSchema.safeParse(queryParamsToObject(parsedUrl.searchParams));
   if (!parsed.success) {
     const { message, detail } = formatZodError(parsed.error);
     sendToolResult(res, invalidRequestResult(message, detail));
@@ -1242,7 +1232,7 @@ async function handleJobListRoute(
     ...(parsed.data.projectRoot === undefined ? {} : { projectRoot: parsed.data.projectRoot }),
     ...(parsed.data.phase === undefined ? {} : { phase: parsed.data.phase }),
     ...(parsed.data.provider === undefined ? {} : { provider: parsed.data.provider }),
-    all: parsed.data.all === '1',
+    all: parsed.data.all === true,
   });
   jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
 

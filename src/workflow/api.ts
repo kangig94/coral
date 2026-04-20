@@ -1,15 +1,45 @@
+import { z, ZodError } from 'zod';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { WorkflowCommand } from '../shared/schemas.js';
 import type { LaunchDecision } from '../jobs/launch.js';
+import { identPattern, providerIdentPattern } from '../shared/identifiers.js';
 import { isOwnerId } from '../shared/utils.js';
-import { ZodError } from 'zod';
 import type { PipelineAST } from './ast.js';
 import { executePipeline } from './executor.js';
 import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';
 import { parseExpression } from './parser.js';
 import { readWorkflowProjection } from './projections.js';
 import { resumeAll } from './recover.js';
+
+const modelNameSchema = z
+  .string()
+  .regex(identPattern, 'Model name must be alphanumeric with dots, hyphens, or underscores');
+const projectRootSchema = z.string().min(1, 'Project root is required');
+const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
+const providerNameSchema = z
+  .string()
+  .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
+const claudeModelCapSchema = modelNameSchema.optional();
+
+export const workflowCommandSchema = z
+  .object({
+    expression: z.string().min(1, 'Expression required'),
+    startPrompt: z.string().min(1, 'Prompt required'),
+    context: z.string().optional(),
+    provider: providerNameSchema.default('claude'),
+    workDir: z.string().optional(),
+    owner: ownerSchema.optional(),
+  })
+  .strict();
+
+export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
+
+export const workflowRequestSchema = workflowCommandSchema
+  .extend({
+    projectRoot: projectRootSchema,
+    claudeModelCap: claudeModelCapSchema,
+  })
+  .strict();
 
 function unknownProviderDecision(providers: string[]): LaunchDecision {
   const providerLabel = providers.join(', ');
@@ -96,4 +126,3 @@ export type {
   StepDetail,
   WorkflowSessionHandle,
 } from './command.js';
-export type { WorkflowCommand } from '../shared/schemas.js';

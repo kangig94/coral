@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workflowCommandSchema } from '../../shared/schemas.js';
+import { workflowCommandSchema } from '../api.js';
 
 describe('workflowCommandSchema', () => {
   it('accepts minimal valid input and defaults provider to claude', () => {

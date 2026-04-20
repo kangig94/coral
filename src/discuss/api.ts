@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   getWatchState,
   startDiscussSession,
@@ -9,6 +10,80 @@ import { handleSynthesis } from './shell/synthesis-flow.js';
 import { loadDiscussDetail, listDiscussSessions } from './shell/read-helpers.js';
 import { loadAttachedOrPersistedSnapshot } from './shell/persistence.js';
 import { runStartup } from './reconcile.js';
+import {
+  discussBidSchema,
+  discussSeedSchema,
+  discussSpeechSchema,
+  discussStartSchema,
+} from './command-schemas.js';
+
+const projectRootSchema = z.string().min(1, 'Project root is required');
+const sessionIdSchema = z.string().min(1, 'Session ID is required');
+
+export const discussDetailQuerySchema = z
+  .object({
+    projectRoot: projectRootSchema,
+    view: z.enum(['control', 'audit']).optional(),
+  })
+  .strict();
+
+export const discussEventsQuerySchema = z
+  .object({
+    cursor: z.coerce.number().int().min(0).optional(),
+    projectRoot: projectRootSchema,
+  })
+  .strict();
+
+export const discussDeleteQuerySchema = z
+  .object({
+    projectRoot: projectRootSchema,
+  })
+  .strict();
+
+export const discussSessionListRequestSchema = z.object({}).strict();
+
+export const discussSessionCreateRequestSchema = discussStartSchema
+  .extend({
+    projectRoot: projectRootSchema,
+    owner: z.string().optional(),
+    effort: z.string().optional(),
+    claudeModelCap: z.string().optional(),
+  })
+  .strict();
+
+export const discussSessionDetailRequestSchema = discussDetailQuerySchema.extend({
+  sessionId: sessionIdSchema,
+});
+
+export const discussSessionEventsRequestSchema = discussEventsQuerySchema.extend({
+  sessionId: sessionIdSchema,
+});
+
+export const discussSessionDeleteRequestSchema = discussDeleteQuerySchema.extend({
+  sessionId: sessionIdSchema,
+});
+
+export const discussSessionBidRequestSchema = discussBidSchema
+  .omit({ session: true })
+  .extend({
+    sessionId: sessionIdSchema,
+    projectRoot: projectRootSchema,
+    owner: z.string().optional(),
+    effort: z.string().optional(),
+    claudeModelCap: z.string().optional(),
+  })
+  .strict();
+
+export const discussSessionSpeechRequestSchema = discussSpeechSchema
+  .omit({ session: true })
+  .extend({
+    sessionId: sessionIdSchema,
+    projectRoot: projectRootSchema,
+    owner: z.string().optional(),
+    effort: z.string().optional(),
+    claudeModelCap: z.string().optional(),
+  })
+  .strict();
 
 export const discussCommands = {
   start: startDiscussSession,
@@ -27,6 +102,18 @@ export const discussQueries = {
 
 export const discussReconcile = { runStartup };
 
+export {
+  discussBidSchema,
+  discussSeedSchema,
+  discussSpeechSchema,
+  discussStartSchema,
+} from './command-schemas.js';
+export type {
+  DiscussBidInput,
+  DiscussSeedInput,
+  DiscussSpeechInput,
+  DiscussStartInput,
+} from './command-schemas.js';
 export type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from './views.js';
 export type { DiscussContext } from './shell/context.js';
 export type { RecoveredDiscussResume } from './shell/operations.js';

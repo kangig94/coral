@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildCallerContextFromQuery,
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
   discussEventsQuerySchema,
+} from '../../../discuss/api.js';
+import {
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
+} from '../../../kb/api.js';
+import {
+  buildCallerContextFromQuery,
   parseBooleanQuery,
   queryParamsToObject,
 } from '../query-coerce.js';

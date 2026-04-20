@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { WorkflowCommand } from '../../shared/schemas.js';
+import type { WorkflowCommand } from '../api.js';
 
 const ctx: CallerContext = {
   projectRoot: '/tmp/coral-workflow-project',

@@ -33,6 +33,7 @@ import {
   handleKbDelete,
 } from '../../kb/api.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
+import type { RpcPorts } from '../../transport/rpc-ports.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import {
   createLifecycle,
@@ -122,87 +123,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     return run(kbSubsystem);
   };
 
-  const httpHandlerDeps: HttpHandlerPorts = {
-    identity,
-    coralEnvSnapshot: world.coralEnvSnapshot,
-    admin: {
-      isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
-      isDrainRequested: control.isDrainRequested,
-      isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
-      beginRequest: () => {
-        world.idleTimer.beginRequest();
-      },
-      endRequest: () => {
-        world.idleTimer.endRequest();
-      },
-      requestDrain: control.requestDrain,
-    },
-    health: {
-      read: () => {
-        const env = { ...world.coralEnvSnapshot };
-        const lifecycleState = runtimeState.getLifecycle();
-        let status: string = lifecycleState;
-        if (world.idleTimer.isDraining) {
-          status = 'draining';
-        } else if (lifecycleState === 'running') {
-          status = 'ok';
-        }
-
-        const kbInitError = runtimeState.getKbInitError();
-        return {
-          status,
-          version: identity.version,
-          bundleHash: identity.bundleHash,
-          flavor: identity.flavor,
-          namespace: identity.namespace,
-          instanceId: identity.instanceId,
-          uptimeMs: identity.now() - runtimeState.getStartedAt(),
-          active: world.launchCoordinator.active,
-          activeJobs: world.progressStore.liveJobCountByNamespace(identity.namespace),
-          liveDiscuss: listAttachedSessions(world.discussRegistry).length,
-          queueDepth: world.launchCoordinator.queueDepth(),
-          inflightRequests: world.idleTimer.inflightRequests,
-          subsystems: {
-            kb: kbInitError === null ? 'ok' : 'unavailable',
-            ...(kbInitError === null ? {} : { kbError: kbInitError }),
-            discuss: 'ok' as const,
-          },
-          env,
-        };
-      },
-    },
-    events: {
-      addResponse: (res) => {
-        streamResponses.add(res);
-      },
-      removeResponse: (res) => {
-        streamResponses.delete(res);
-      },
-      bus: world.eventBus,
-      createStreamId: () => runtime.ids.uuid(),
-      nowIsoString: () => nowIsoString(runtime.time),
-      subscribe: (handlers: EventStreamHandlers) => {
-        eventStreamSubscriptions.get(handlers)?.();
-        eventStreamSubscriptions.set(
-          handlers,
-          subscribeAll(world.eventBus, {
-            'job:created': handlers.onJobCreated,
-            'job:phase_changed': handlers.onPhaseChanged,
-            'job:progress': handlers.onProgress,
-            'job:completed': handlers.onCompleted,
-            'discuss:updated': handlers.onDiscussUpdated,
-          }),
-        );
-      },
-      unsubscribe: (handlers: EventStreamHandlers) => {
-        const cleanup = eventStreamSubscriptions.get(handlers);
-        if (!cleanup) {
-          return;
-        }
-        eventStreamSubscriptions.delete(handlers);
-        cleanup();
-      },
-    },
+  const rpcPorts: RpcPorts = {
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
       resumeBySessionId: (input, ctx) => services.getExecutionService(ctx).resumeBySessionId(input, ctx),
@@ -301,6 +222,90 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
+  };
+
+  const httpHandlerDeps: HttpHandlerPorts = {
+    identity,
+    coralEnvSnapshot: world.coralEnvSnapshot,
+    admin: {
+      isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
+      isDrainRequested: control.isDrainRequested,
+      isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+      beginRequest: () => {
+        world.idleTimer.beginRequest();
+      },
+      endRequest: () => {
+        world.idleTimer.endRequest();
+      },
+      requestDrain: control.requestDrain,
+    },
+    health: {
+      read: () => {
+        const env = { ...world.coralEnvSnapshot };
+        const lifecycleState = runtimeState.getLifecycle();
+        let status: string = lifecycleState;
+        if (world.idleTimer.isDraining) {
+          status = 'draining';
+        } else if (lifecycleState === 'running') {
+          status = 'ok';
+        }
+
+        const kbInitError = runtimeState.getKbInitError();
+        return {
+          status,
+          version: identity.version,
+          bundleHash: identity.bundleHash,
+          flavor: identity.flavor,
+          namespace: identity.namespace,
+          instanceId: identity.instanceId,
+          uptimeMs: identity.now() - runtimeState.getStartedAt(),
+          active: world.launchCoordinator.active,
+          activeJobs: world.progressStore.liveJobCountByNamespace(identity.namespace),
+          liveDiscuss: listAttachedSessions(world.discussRegistry).length,
+          queueDepth: world.launchCoordinator.queueDepth(),
+          inflightRequests: world.idleTimer.inflightRequests,
+          subsystems: {
+            kb: kbInitError === null ? 'ok' : 'unavailable',
+            ...(kbInitError === null ? {} : { kbError: kbInitError }),
+            discuss: 'ok' as const,
+          },
+          env,
+        };
+      },
+    },
+    events: {
+      addResponse: (res) => {
+        streamResponses.add(res);
+      },
+      removeResponse: (res) => {
+        streamResponses.delete(res);
+      },
+      bus: world.eventBus,
+      createStreamId: () => runtime.ids.uuid(),
+      nowIsoString: () => nowIsoString(runtime.time),
+      subscribe: (handlers: EventStreamHandlers) => {
+        eventStreamSubscriptions.get(handlers)?.();
+        eventStreamSubscriptions.set(
+          handlers,
+          subscribeAll(world.eventBus, {
+            'job:created': handlers.onJobCreated,
+            'job:phase_changed': handlers.onPhaseChanged,
+            'job:progress': handlers.onProgress,
+            'job:completed': handlers.onCompleted,
+            'discuss:updated': handlers.onDiscussUpdated,
+          }),
+        );
+      },
+      unsubscribe: (handlers: EventStreamHandlers) => {
+        const cleanup = eventStreamSubscriptions.get(handlers);
+        if (!cleanup) {
+          return;
+        }
+        eventStreamSubscriptions.delete(handlers);
+        cleanup();
+      },
+    },
+    ...rpcPorts,
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);

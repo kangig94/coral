@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { jobAbortSchema, jobWaitSchema } from '../../jobs/api.js';
 import {
-  abortInputSchema,
   agentIdentSchema,
-  jobAbortSchema,
-  jobWaitSchema,
   sessionCreateSchema,
   sessionForkSchema,
   sessionMessageSchema,
+} from '../../sessions/api.js';
+import { workflowCommandSchema, workflowRequestSchema } from '../../workflow/api.js';
+import {
+  abortInputSchema,
   waitInputSchema,
-  workflowCommandSchema,
-  workflowRequestSchema,
 } from '../schemas.js';
 
 const AGENT_IDENT_CASES: ReadonlyArray<

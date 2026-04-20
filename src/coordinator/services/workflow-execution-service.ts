@@ -1,6 +1,5 @@
 import { backendLog } from '../../shared/backend-log.js';
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import type { WorkflowCommand } from '../../shared/schemas.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
@@ -14,6 +13,7 @@ import {
   type PipelineAST,
   type PipelineResult,
   type StepDetail,
+  type WorkflowCommand,
   type WorkflowSessionHandle,
 } from '../../workflow/api.js';
 import {
