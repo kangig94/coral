@@ -198,6 +198,46 @@ describe('subscription carriage', () => {
     }
   });
 
+  it('detaches the server-side data listener after accepting a subscription handshake', async () => {
+    const requests: WaitStreamRequest[] = [];
+    const ports = createPorts(requests);
+    let release = () => {};
+    const holdStreamOpen = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
+      requests.push(request);
+      yield makeWaitEvents()[0];
+      await holdStreamOpen;
+    });
+
+    const socketPath = makeSocketPath();
+    const listener = createIpcServer(ports);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      const subscription = await createIpcClient(socketPath).subscribe<ReturnType<typeof makeWaitEvents>[number]>(
+        'jobs.wait',
+        {
+          jobIds: ['job-1'],
+          projectRoot: '/tmp/project',
+          timeoutSeconds: 30,
+        },
+      );
+
+      expect(listener.sockets.size).toBe(1);
+      const serverSocket = Array.from(listener.sockets)[0];
+      expect(serverSocket?.listenerCount('data')).toBe(0);
+
+      release();
+      await subscription.close();
+    } finally {
+      release();
+      await closeIpcServer(listener);
+    }
+  });
+
   it('projects the same scripted subscription sequence to HTTP SSE', async () => {
     const requests: WaitStreamRequest[] = [];
     const ports = createPorts(requests);

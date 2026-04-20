@@ -34,6 +34,8 @@ type DesiredCoordinator = {
   namespace: string;
 };
 
+type CoordinatorFilePaths = ReturnType<typeof coordinatorPaths>;
+
 type RawCoordinatorHealth = {
   status: 'ok' | 'draining';
   version: string;
@@ -153,16 +155,16 @@ function summarizeBackend(info: BackendInfo): EnsuredIpcClient {
   });
 }
 
-function discoveryInfoPath(root: string): string {
-  return coordinatorPaths(readBuildFlavor(root)).infoFile;
+function discoveryInfoPath(paths: CoordinatorFilePaths): string {
+  return paths.infoFile;
 }
 
-function coordinatorLockPath(root: string): string {
-  return coordinatorPaths(readBuildFlavor(root)).lockFile;
+function coordinatorLockPath(paths: CoordinatorFilePaths): string {
+  return paths.lockFile;
 }
 
-function coordinatorRunDir(root: string): string {
-  return coordinatorPaths(readBuildFlavor(root)).runDir;
+function coordinatorRunDir(paths: CoordinatorFilePaths): string {
+  return paths.runDir;
 }
 
 function currentVersion(root: string): string {
@@ -248,9 +250,9 @@ async function readRawCoordinatorHealth(info: BackendInfo): Promise<RawCoordinat
   }
 }
 
-function readDiscoverySnapshot(root: string): DiscoverySnapshot | null {
+function readDiscoverySnapshot(paths: CoordinatorFilePaths): DiscoverySnapshot | null {
   try {
-    const raw = readFileSync(discoveryInfoPath(root), 'utf-8');
+    const raw = readFileSync(discoveryInfoPath(paths), 'utf-8');
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return { raw, info: null };
     const record = parsed as Record<string, unknown>;
@@ -263,9 +265,9 @@ function readDiscoverySnapshot(root: string): DiscoverySnapshot | null {
   }
 }
 
-function readLockSnapshot(root: string): LockSnapshot | 'corrupt' | null {
+function readLockSnapshot(paths: CoordinatorFilePaths): LockSnapshot | 'corrupt' | null {
   try {
-    const raw = readFileSync(coordinatorLockPath(root), 'utf-8');
+    const raw = readFileSync(coordinatorLockPath(paths), 'utf-8');
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
@@ -350,9 +352,9 @@ function verifySickOwnership(
   };
 }
 
-async function observe(root: string, desired: DesiredCoordinator): Promise<DaemonObservation> {
+async function observe(paths: CoordinatorFilePaths, desired: DesiredCoordinator): Promise<DaemonObservation> {
   const observedAt = Date.now();
-  const infoSnapshot = readDiscoverySnapshot(root);
+  const infoSnapshot = readDiscoverySnapshot(paths);
 
   if (infoSnapshot?.info) {
     const health = await readRawCoordinatorHealth(infoSnapshot.info);
@@ -370,7 +372,7 @@ async function observe(root: string, desired: DesiredCoordinator): Promise<Daemo
     }
   }
 
-  const lockSnapshot = readLockSnapshot(root);
+  const lockSnapshot = readLockSnapshot(paths);
   if (lockSnapshot === 'corrupt') {
     return { observedAt, type: 'corruptLock' };
   }
@@ -553,7 +555,7 @@ async function requestCoordinatorShutdown(info: BackendInfo): Promise<void> {
 }
 
 function tryAcquireReplacementLock(
-  root: string,
+  paths: CoordinatorFilePaths,
   version: string,
   bundleHash: string,
   flavor: 'prod' | 'dev',
@@ -568,7 +570,7 @@ function tryAcquireReplacementLock(
     startedAt: Date.now(),
     processStartedAt: probeProcessStartedAtSeconds(replacementPid) ?? undefined,
   });
-  const lockPath = coordinatorLockPath(root);
+  const lockPath = coordinatorLockPath(paths);
   mkdirSync(dirname(lockPath), { recursive: true });
   try {
     writeFileSync(lockPath, payload, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
@@ -586,8 +588,8 @@ function tryAcquireReplacementLock(
   return payload;
 }
 
-function releaseReplacementLock(root: string, lock: ReplacementLock): void {
-  const lockPath = coordinatorLockPath(root);
+function releaseReplacementLock(paths: CoordinatorFilePaths, lock: ReplacementLock): void {
+  const lockPath = coordinatorLockPath(paths);
 
   try {
     if (readFileSync(lockPath, 'utf-8') !== lock) return;
@@ -643,14 +645,14 @@ function removeFileIfSnapshotMatches(filePath: string, expectedRaw: string): boo
   }
 }
 
-function clearStaleLock(root: string, snapshot: LockSnapshot): void {
+function clearStaleLock(paths: CoordinatorFilePaths, snapshot: LockSnapshot): void {
   if (isProcessAlive(snapshot.record.pid)) return;
-  removeFileIfSnapshotMatches(coordinatorLockPath(root), snapshot.raw);
+  removeFileIfSnapshotMatches(coordinatorLockPath(paths), snapshot.raw);
 }
 
-function quarantineCorruptLock(root: string): void {
+function quarantineCorruptLock(paths: CoordinatorFilePaths): void {
   try {
-    unlinkSync(coordinatorLockPath(root));
+    unlinkSync(coordinatorLockPath(paths));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -658,13 +660,13 @@ function quarantineCorruptLock(root: string): void {
 }
 
 async function waitForReplacementCoordinator(
-  root: string,
+  paths: CoordinatorFilePaths,
   desired: DesiredCoordinator,
   oldInstanceId: string | null,
   deadline: number,
 ): Promise<BackendInfo> {
   while (Date.now() < deadline) {
-    const observation = await observe(root, desired);
+    const observation = await observe(paths, desired);
     if (
       observation.type === 'healthyCompatible' &&
       (oldInstanceId === null || observation.info.instanceId !== oldInstanceId)
@@ -680,28 +682,28 @@ async function waitForReplacementCoordinator(
 }
 
 async function ensureReplacement(
-  root: string,
+  paths: CoordinatorFilePaths,
   desired: DesiredCoordinator,
   backendBin: string,
   replacedInstanceId: string | null,
   deadline: number,
 ): Promise<BackendInfo | null> {
-  const replacementLock = tryAcquireReplacementLock(root, desired.version, desired.bundleHash, desired.flavor);
+  const replacementLock = tryAcquireReplacementLock(paths, desired.version, desired.bundleHash, desired.flavor);
   if (!replacementLock) {
     await delay(STARTUP_POLL_MS);
     return null;
   }
 
   try {
-    spawnCoordinator(backendBin, coordinatorRunDir(root));
-    return await waitForReplacementCoordinator(root, desired, replacedInstanceId, deadline);
+    spawnCoordinator(backendBin, coordinatorRunDir(paths));
+    return await waitForReplacementCoordinator(paths, desired, replacedInstanceId, deadline);
   } finally {
-    releaseReplacementLock(root, replacementLock);
+    releaseReplacementLock(paths, replacementLock);
   }
 }
 
 async function forceReplaceCoordinator(
-  root: string,
+  paths: CoordinatorFilePaths,
   pid: number,
   ownership: VerifiedOwnership,
   deadline: number,
@@ -723,14 +725,14 @@ async function forceReplaceCoordinator(
     throw new BackendUnreachableError(`Failed to terminate sick Coral backend pid ${pid}.`);
   }
 
-  removeFileIfSnapshotMatches(coordinatorLockPath(root), ownership.cleanupSnapshot.lockRaw);
+  removeFileIfSnapshotMatches(coordinatorLockPath(paths), ownership.cleanupSnapshot.lockRaw);
   if (ownership.cleanupSnapshot.discoveryRaw !== null) {
-    removeFileIfSnapshotMatches(discoveryInfoPath(root), ownership.cleanupSnapshot.discoveryRaw);
+    removeFileIfSnapshotMatches(discoveryInfoPath(paths), ownership.cleanupSnapshot.discoveryRaw);
   }
 }
 
 async function applyAction(
-  root: string,
+  paths: CoordinatorFilePaths,
   desired: DesiredCoordinator,
   backendBin: string,
   deadline: number,
@@ -746,14 +748,14 @@ async function applyAction(
       return null;
 
     case 'ensureReplacement':
-      return await ensureReplacement(root, desired, backendBin, action.replacedInstanceId, deadline);
+      return await ensureReplacement(paths, desired, backendBin, action.replacedInstanceId, deadline);
 
     case 'clearStaleLock':
-      clearStaleLock(root, action.snapshot);
+      clearStaleLock(paths, action.snapshot);
       return null;
 
     case 'forceReplace':
-      await forceReplaceCoordinator(root, action.pid, action.ownership, deadline);
+      await forceReplaceCoordinator(paths, action.pid, action.ownership, deadline);
       return null;
 
     case 'failUnsafeReplacement':
@@ -762,7 +764,7 @@ async function applyAction(
       );
 
     case 'quarantineCorruptLock':
-      quarantineCorruptLock(root);
+      quarantineCorruptLock(paths);
       return null;
 
     case 'converged':
@@ -785,15 +787,19 @@ function resolvePluginRoot(pluginRoot?: string): string {
 
 export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
   const root = resolvePluginRoot(pluginRoot);
+  const flavor = readBuildFlavor(root);
+  const bundleHash = readBundleHash(root);
+  const namespace = pluginRootNamespace(root);
+  const paths = coordinatorPaths(flavor);
   const desired: DesiredCoordinator = {
     version: currentVersion(root),
-    bundleHash: readBundleHash(root),
-    flavor: readBuildFlavor(root),
-    namespace: pluginRootNamespace(root),
+    bundleHash,
+    flavor,
+    namespace,
   };
   const backendBin = join(root, 'bridge', 'coral-backend.cjs');
 
-  const initialObservation = await observe(root, desired);
+  const initialObservation = await observe(paths, desired);
   if (initialObservation.type === 'healthyCompatible') {
     return summarizeBackend(initialObservation.info);
   }
@@ -801,11 +807,11 @@ export async function ensure(pluginRoot?: string): Promise<EnsuredIpcClient> {
   let state = initialControllerState();
   const startupDeadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < startupDeadline) {
-    const observation = await observe(root, desired);
+    const observation = await observe(paths, desired);
     const { action, nextState } = reconcile(observation, desired, state);
     state = nextState;
 
-    const info = await applyAction(root, desired, backendBin, startupDeadline, action);
+    const info = await applyAction(paths, desired, backendBin, startupDeadline, action);
     if (info) return summarizeBackend(info);
   }
 

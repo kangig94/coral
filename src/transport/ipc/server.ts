@@ -353,7 +353,6 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
   const server = createServer((socket) => {
     sockets.add(socket);
     const framer = createLineFramer();
-    let handled = false;
     let inflightRequest = false;
 
     const finishRequest = () => {
@@ -374,12 +373,12 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
       finishRequest();
     });
 
-    socket.on('data', (chunk) => {
+    const onData = (chunk: Buffer | string) => {
       for (const frame of framer.push(chunk)) {
-        if (handled || frame.trim().length === 0) {
+        if (frame.trim().length === 0) {
           continue;
         }
-        handled = true;
+        socket.off('data', onData);
         void dispatchFrame(
           frame,
           socket,
@@ -391,8 +390,11 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
           },
           finishRequest,
         );
+        return;
       }
-    });
+    };
+
+    socket.on('data', onData);
   });
 
   return {
