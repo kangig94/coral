@@ -199,8 +199,7 @@ function readProjectionRows(
             job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
        FROM projection_jobs
       WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
-  )
-    .all(...jobIds) as ProjectionRow[];
+  ).all(...jobIds);
 
   return new Map(rows.map((row) => [row.job_id, row]));
 }
@@ -242,8 +241,7 @@ function readOrderedProjectionRows(
        FROM projection_jobs
       ${whereClause}
       ORDER BY job_id ASC`,
-  )
-    .all(...params) as ProjectionRow[];
+  ).all(...params);
 }
 
 function readLatestEventsForJobs(
@@ -263,8 +261,7 @@ function readLatestEventsForJobs(
         AND type = ?
         AND stream_id IN (${sqlPlaceholders(jobIds.length)})
       ORDER BY stream_id ASC, seq DESC`,
-  )
-    .all(type, ...jobIds) as LatestJobEventProjection[];
+  ).all(type, ...jobIds);
 
   const eventsByJob = new Map<string, EventRow>();
   for (const row of rows) {
@@ -305,8 +302,7 @@ function readLatestProjectionStatusEvents(
             AND stream_id IN (${sqlPlaceholders(jobIds.length)})
        )
       WHERE row_number = 1`,
-  )
-    .all(...jobIds) as Array<LatestJobEventProjection & { type: ProjectionStatusEventType }>;
+  ).all(...jobIds);
 
   for (const row of rows) {
     const current = eventsByJob.get(row.stream_id) ?? {

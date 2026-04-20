@@ -153,6 +153,15 @@ type ProviderEventQueueEntry =
   | { kind: 'done' }
   | { kind: 'error'; error: unknown };
 
+const QUEUE_CAP = 1024;
+
+export class ProviderEventBackpressureError extends Error {
+  constructor(cap = QUEUE_CAP) {
+    super(`Provider event queue exceeded ${cap} buffered events without a consumer.`);
+    this.name = 'ProviderEventBackpressureError';
+  }
+}
+
 export function streamProviderEvents(
   producer: (emit: (event: ProviderEventBody) => void) => Promise<void> | void,
 ): AsyncIterable<ProviderEventBody> {
@@ -182,6 +191,9 @@ export function streamProviderEvents(
   const emit = (event: ProviderEventBody): void => {
     if (closed) {
       return;
+    }
+    if (!waiter && queue.length >= QUEUE_CAP) {
+      throw new ProviderEventBackpressureError();
     }
     dispatch({ kind: 'event', event });
   };

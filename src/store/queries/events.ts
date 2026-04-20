@@ -77,8 +77,7 @@ export function getEventsSince(
   const rows = prepareCached<unknown[], EventsRow>(
     db,
     `SELECT * FROM events WHERE ${clauses.join(' AND ')} ORDER BY seq ASC LIMIT ?`,
-  )
-    .all(...params) as EventsRow[];
+  ).all(...params);
 
   const events = rows.map((row) => rowToCoralEvent(row, decodeStoredBody(row, ctx)));
   const nextCursor = events.length > 0 ? events[events.length - 1].seq : afterSeq;
