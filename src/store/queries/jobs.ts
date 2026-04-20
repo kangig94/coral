@@ -120,6 +120,7 @@ type DecodedTerminalRow = {
 };
 
 const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const;
+const statementCache = new WeakMap<BetterSqlite3.Database, Map<string, BetterSqlite3.Statement>>();
 
 export type JobsListFilters = {
   projectRoot?: string;
@@ -147,19 +148,38 @@ function sqlPlaceholders(count: number): string {
   return Array.from({ length: count }, () => '?').join(', ');
 }
 
+function prepareCached<TParams extends unknown[] = unknown[], TResult = unknown>(
+  db: BetterSqlite3.Database,
+  sql: string,
+): BetterSqlite3.Statement<TParams, TResult> {
+  let cache = statementCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    statementCache.set(db, cache);
+  }
+
+  const cached = cache.get(sql);
+  if (cached) {
+    return cached as BetterSqlite3.Statement<TParams, TResult>;
+  }
+
+  const statement = db.prepare(sql);
+  cache.set(sql, statement);
+  return statement as BetterSqlite3.Statement<TParams, TResult>;
+}
+
 function readProjectionRow(
   db: BetterSqlite3.Database,
   jobId: string,
 ): ProjectionRow | null {
-  const row = db
-    .prepare(
-      `SELECT job_id, phase, terminal, diagnostics,
-              session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-         FROM projection_jobs
-        WHERE job_id = ?`,
-    )
-    .get(jobId) as ProjectionRow | undefined;
+  const row = prepareCached<[string], ProjectionRow | undefined>(
+    db,
+    `SELECT job_id, phase, terminal, diagnostics,
+            session_id, provider, project_root, backend_namespace, bundle_hash,
+            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+       FROM projection_jobs
+      WHERE job_id = ?`,
+  ).get(jobId);
 
   return row ?? null;
 }
@@ -172,14 +192,14 @@ function readProjectionRows(
     return new Map();
   }
 
-  const rows = db
-    .prepare(
-      `SELECT job_id, phase, terminal, diagnostics,
-              session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-         FROM projection_jobs
-        WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
-    )
+  const rows = prepareCached<unknown[], ProjectionRow>(
+    db,
+    `SELECT job_id, phase, terminal, diagnostics,
+            session_id, provider, project_root, backend_namespace, bundle_hash,
+            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+       FROM projection_jobs
+      WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
+  )
     .all(...jobIds) as ProjectionRow[];
 
   return new Map(rows.map((row) => [row.job_id, row]));
@@ -214,15 +234,15 @@ function readOrderedProjectionRows(
   }
 
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-  return db
-    .prepare(
-      `SELECT job_id, phase, terminal, diagnostics,
-              session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-         FROM projection_jobs
-        ${whereClause}
-        ORDER BY job_id ASC`,
-    )
+  return prepareCached<unknown[], ProjectionRow>(
+    db,
+    `SELECT job_id, phase, terminal, diagnostics,
+            session_id, provider, project_root, backend_namespace, bundle_hash,
+            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+       FROM projection_jobs
+      ${whereClause}
+      ORDER BY job_id ASC`,
+  )
     .all(...params) as ProjectionRow[];
 }
 
@@ -235,15 +255,15 @@ function readLatestEventsForJobs(
     return new Map();
   }
 
-  const rows = db
-    .prepare(
-      `SELECT stream_id, seq, ts, type, body_version, body
-         FROM events
-        WHERE stream_kind = 'job'
-          AND type = ?
-          AND stream_id IN (${sqlPlaceholders(jobIds.length)})
-        ORDER BY stream_id ASC, seq DESC`,
-    )
+  const rows = prepareCached<unknown[], LatestJobEventProjection>(
+    db,
+    `SELECT stream_id, seq, ts, type, body_version, body
+       FROM events
+      WHERE stream_kind = 'job'
+        AND type = ?
+        AND stream_id IN (${sqlPlaceholders(jobIds.length)})
+      ORDER BY stream_id ASC, seq DESC`,
+  )
     .all(type, ...jobIds) as LatestJobEventProjection[];
 
   const eventsByJob = new Map<string, EventRow>();
@@ -273,19 +293,19 @@ function readLatestProjectionStatusEvents(
     return eventsByJob;
   }
 
-  const rows = db
-    .prepare(
-      `SELECT stream_id, type, seq, ts, body_version, body
-         FROM (
-           SELECT stream_id, type, seq, ts, body_version, body,
-                  ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
-             FROM events
-            WHERE stream_kind = 'job'
-              AND type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
-              AND stream_id IN (${sqlPlaceholders(jobIds.length)})
-         )
-        WHERE row_number = 1`,
-    )
+  const rows = prepareCached<unknown[], LatestJobEventProjection & { type: ProjectionStatusEventType }>(
+    db,
+    `SELECT stream_id, type, seq, ts, body_version, body
+       FROM (
+         SELECT stream_id, type, seq, ts, body_version, body,
+                ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
+           FROM events
+          WHERE stream_kind = 'job'
+            AND type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
+            AND stream_id IN (${sqlPlaceholders(jobIds.length)})
+       )
+      WHERE row_number = 1`,
+  )
     .all(...jobIds) as Array<LatestJobEventProjection & { type: ProjectionStatusEventType }>;
 
   for (const row of rows) {
@@ -608,21 +628,28 @@ export function readJobProgress(
   jobId: string,
   ctx: StoreReadContext,
 ): JobProgress[] {
-  const rows = db
-    .prepare(
-      `SELECT
-         seq,
-         ts,
-         type,
-         body_version,
-         ROW_NUMBER() OVER (ORDER BY seq) AS per_job_index,
-         body
-       FROM events
-       WHERE stream_kind = 'job'
-         AND stream_id = ?
-         AND type IN ('job.progress.emitted', 'job.terminal.recorded')
-       ORDER BY seq ASC`,
-    )
+  const rows = prepareCached<[string], {
+    seq: number;
+    ts: string;
+    type: string;
+    body_version: number;
+    per_job_index: number;
+    body: Uint8Array | Buffer;
+  }>(
+    db,
+    `SELECT
+       seq,
+       ts,
+       type,
+       body_version,
+       ROW_NUMBER() OVER (ORDER BY seq) AS per_job_index,
+       body
+     FROM events
+     WHERE stream_kind = 'job'
+       AND stream_id = ?
+       AND type IN ('job.progress.emitted', 'job.terminal.recorded')
+     ORDER BY seq ASC`,
+  )
     .all(jobId) as Array<{
       seq: number;
       ts: string;
