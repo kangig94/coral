@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendEvents, type AppendInput } from '../append.js';
 import type { StoreReadContext } from '../body-codec.js';
 import { applyMigrations } from '../migrations.js';
-import { loadJobProjectionDetail, loadJobProjectionDetails } from '../queries/jobs.js';
+import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '../queries/jobs.js';
 import { composeReducers } from '../reducers.js';
 import { createDefaultUpcasterRegistry } from '../upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
@@ -247,5 +247,32 @@ describe('jobs queries', () => {
     });
 
     expect(prepareCallCount).toBeLessThanOrEqual(4);
+  });
+
+  it('pushes list filters into the projection query', () => {
+    const prepareSpy = vi.spyOn(db, 'prepare');
+
+    const jobs = listJobs(
+      db,
+      {
+        namespace: 'tests',
+        projectRoot: '/workspace/coral',
+        phase: 'queued',
+        provider: 'codex',
+      },
+      readCtx,
+    );
+
+    expect(jobs.map((entry) => entry.jobId)).toEqual(['job-queued']);
+
+    const projectionQuery = prepareSpy.mock.calls
+      .map(([sql]) => sql)
+      .find((sql) => sql.includes('FROM projection_jobs'));
+
+    expect(projectionQuery).toContain('backend_namespace = ?');
+    expect(projectionQuery).toContain('phase IN (?, ?, ?)');
+    expect(projectionQuery).toContain('project_root = ?');
+    expect(projectionQuery).toContain('phase = ?');
+    expect(projectionQuery).toContain('provider = ?');
   });
 });

@@ -3,7 +3,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
-import { isLivePhase, type JobPhase } from '../../jobs/phase.js';
+import { type JobPhase } from '../../jobs/phase.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
 import type { JobProgress, JobStatus, JobTerminal } from '../../jobs/views.js';
 import { belongsToNamespace } from '../../jobs/views.js';
@@ -119,6 +119,8 @@ type DecodedTerminalRow = {
   signal?: string | null;
 };
 
+const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const;
+
 export type JobsListFilters = {
   projectRoot?: string;
   phase?: JobPhase;
@@ -183,16 +185,45 @@ function readProjectionRows(
   return new Map(rows.map((row) => [row.job_id, row]));
 }
 
-function readOrderedProjectionRows(db: BetterSqlite3.Database): ProjectionRow[] {
+function readOrderedProjectionRows(
+  db: BetterSqlite3.Database,
+  filters?: JobsListFilters,
+): ProjectionRow[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters?.namespace !== undefined) {
+    clauses.push('backend_namespace = ?');
+    params.push(filters.namespace);
+  }
+  if (filters && filters.all !== true) {
+    clauses.push(`phase IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})`);
+    params.push(...LIVE_JOB_PHASES);
+  }
+  if (filters?.projectRoot !== undefined) {
+    clauses.push('project_root = ?');
+    params.push(filters.projectRoot);
+  }
+  if (filters?.phase !== undefined) {
+    clauses.push('phase = ?');
+    params.push(filters.phase);
+  }
+  if (filters?.provider !== undefined) {
+    clauses.push('provider = ?');
+    params.push(filters.provider);
+  }
+
+  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
   return db
     .prepare(
       `SELECT job_id, phase, terminal, diagnostics,
               session_id, provider, project_root, backend_namespace, bundle_hash,
               job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
          FROM projection_jobs
+        ${whereClause}
         ORDER BY job_id ASC`,
     )
-    .all() as ProjectionRow[];
+    .all(...params) as ProjectionRow[];
 }
 
 function readLatestEventsForJobs(
@@ -512,8 +543,9 @@ export function loadJobProjectionDetails(
 export function listJobProjections(
   db: BetterSqlite3.Database,
   ctx: StoreReadContext,
+  filters?: JobsListFilters,
 ): Array<{ jobId: string; status: JobStatus }> {
-  const projections = readOrderedProjectionRows(db);
+  const projections = readOrderedProjectionRows(db, filters);
   const statusEventsByJob = readLatestProjectionStatusEvents(
     db,
     projections.map(({ job_id: jobId }) => jobId),
@@ -546,26 +578,7 @@ export function listJobs(
   filters: JobsListFilters,
   ctx: StoreReadContext,
 ): Array<{ jobId: string; status: JobStatus }> {
-  let jobs = listJobProjections(db, ctx);
-
-  const { namespace } = filters;
-  if (namespace !== undefined) {
-    jobs = jobs.filter((entry) => belongsToNamespace(entry.status, namespace));
-  }
-  if (filters.all !== true) {
-    jobs = jobs.filter((entry) => isLivePhase(entry.status.phase));
-  }
-  if (filters.projectRoot !== undefined) {
-    jobs = jobs.filter((entry) => entry.status.projectRoot === filters.projectRoot);
-  }
-  if (filters.phase !== undefined) {
-    jobs = jobs.filter((entry) => entry.status.phase === filters.phase);
-  }
-  if (filters.provider !== undefined) {
-    jobs = jobs.filter((entry) => entry.status.provider === filters.provider);
-  }
-
-  return jobs;
+  return listJobProjections(db, ctx, filters);
 }
 
 export function loadJobDetail(
