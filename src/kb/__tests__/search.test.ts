@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
-import type * as EmbeddingModule from '../vector/embedding.js';
-import type * as VectorSyncModule from '../vector/sync.js';
+import type * as EmbeddingModule from '../search/embedding.js';
+import type * as NeedleBackendModule from '../search/needle-backend.js';
 import type { EntityGraph } from '../entry-types.js';
 
 const mockState = vi.hoisted(() => ({
@@ -12,8 +12,8 @@ const mockState = vi.hoisted(() => ({
 }));
 
 const hybridMockState = vi.hoisted(() => ({
-  ensureVectorIndex: null as null | ((...args: any[]) => Promise<any>),
   createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
+  createNeedleBackend: null as null | ((...args: any[]) => any),
 }));
 
 vi.mock('node:os', async () => {
@@ -24,23 +24,25 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('../vector/sync.js', async () => {
-  const actual = await vi.importActual<typeof VectorSyncModule>('../vector/sync.js');
-  return {
-    ...actual,
-    ensureVectorIndex: (...args: Parameters<typeof actual.ensureVectorIndex>) =>
-      hybridMockState.ensureVectorIndex === null ? actual.ensureVectorIndex(...args) : hybridMockState.ensureVectorIndex(...args),
-  };
-});
-
-vi.mock('../vector/embedding.js', async () => {
-  const actual = await vi.importActual<typeof EmbeddingModule>('../vector/embedding.js');
+vi.mock('../search/embedding.js', async () => {
+  const actual = await vi.importActual<typeof EmbeddingModule>('../search/embedding.js');
   return {
     ...actual,
     createEmbeddingProvider: (...args: Parameters<typeof actual.createEmbeddingProvider>) =>
       hybridMockState.createEmbeddingProvider === null
         ? actual.createEmbeddingProvider(...args)
         : hybridMockState.createEmbeddingProvider(...args),
+  };
+});
+
+vi.mock('../search/needle-backend.js', async () => {
+  const actual = await vi.importActual<typeof NeedleBackendModule>('../search/needle-backend.js');
+  return {
+    ...actual,
+    createNeedleBackend: (...args: Parameters<typeof actual.createNeedleBackend>) =>
+      hybridMockState.createNeedleBackend === null
+        ? actual.createNeedleBackend(...args)
+        : hybridMockState.createNeedleBackend(...args),
   };
 });
 
@@ -56,6 +58,7 @@ async function loadKbModules() {
     searchKb,
     reindex,
     createKbRuntime: runtime.createKbRuntime,
+    captureKbCorpusSnapshot: runtime.captureKbCorpusSnapshot,
     paths,
   };
 }
@@ -68,6 +71,97 @@ function createRuntime(
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
   });
+}
+
+function seedNeedleRouteState(
+  kb: {
+    db: { prepare: (...args: any[]) => { run: (...params: any[]) => unknown } };
+    invalidateCorpusStateSnapshot?: () => void;
+  },
+  snapshot: {
+    snapshotId: string;
+    contentSeq: number;
+    metadataSeq: number;
+    contentManifestHash: string;
+    metadataManifestHash: string;
+  },
+  options: {
+    cursorContentManifestHash?: string;
+  } = {},
+): void {
+  kb.db
+    .prepare(
+      `
+        INSERT INTO corpus_state (
+          id,
+          snapshot_id,
+          content_seq,
+          metadata_seq,
+          content_manifest_hash,
+          metadata_manifest_hash,
+          last_mutation
+        ) VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          snapshot_id = excluded.snapshot_id,
+          content_seq = excluded.content_seq,
+          metadata_seq = excluded.metadata_seq,
+          content_manifest_hash = excluded.content_manifest_hash,
+          metadata_manifest_hash = excluded.metadata_manifest_hash,
+          last_mutation = excluded.last_mutation
+      `,
+    )
+    .run(
+      snapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.contentManifestHash,
+      snapshot.metadataManifestHash,
+      '2026-04-01T00:00:00.000Z',
+    );
+
+  kb.db
+    .prepare(
+      `
+        INSERT INTO equipment_cursors (
+          consumer_id,
+          authority,
+          lane,
+          corpus_interest,
+          cursor,
+          snapshot_id,
+          content_seq,
+          metadata_seq,
+          content_manifest_hash,
+          metadata_manifest_hash,
+          equipped_at
+        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(consumer_id) DO UPDATE SET
+          authority = excluded.authority,
+          lane = excluded.lane,
+          corpus_interest = excluded.corpus_interest,
+          cursor = excluded.cursor,
+          snapshot_id = excluded.snapshot_id,
+          content_seq = excluded.content_seq,
+          metadata_seq = excluded.metadata_seq,
+          content_manifest_hash = excluded.content_manifest_hash,
+          metadata_manifest_hash = excluded.metadata_manifest_hash,
+          equipped_at = excluded.equipped_at
+      `,
+    )
+    .run(
+      'kb-needle',
+      'corpus',
+      'content',
+      'content',
+      snapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      options.cursorContentManifestHash ?? snapshot.contentManifestHash,
+      snapshot.metadataManifestHash,
+      '2026-04-01T00:00:00.000Z',
+    );
+
+  kb.invalidateCorpusStateSnapshot?.();
 }
 
 function writeNote(
@@ -254,54 +348,157 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
   return result!;
 }
 
-function mockHybridSearch(
-  kb: {
-    acquireVectorLease: (...args: any[]) => Promise<any>;
-    readIndexState: () => { contentSeq: number; mutationSeq: number };
-  },
-  {
-    searchVector,
-    embedQuery = vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
-    specId = 'spec-1',
-    snapshotId = 'snapshot-1',
-    indexedSeq = kb.readIndexState().contentSeq,
-  }: {
-    searchVector: (query: Float32Array, candidateK: number) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>;
-    embedQuery?: (query: string) => Promise<Float32Array>;
-    specId?: string;
-    snapshotId?: string;
-    indexedSeq?: number;
-  },
-) {
-  const release = vi.fn().mockResolvedValue(undefined);
+type MockNeedleChunkHit = {
+  chunkId: string;
+  entryId: string;
+  score: number;
+};
 
-  hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
-    mode: 'hybrid',
-    specId,
-    vectorStatus: {
-      indexedSeq,
-      activeSnapshotId: snapshotId,
-    },
-  });
+function scopeAllowsVectorKind(
+  kind: 'note' | 'source',
+  scope: 'all' | 'notes' | 'sources' | 'communities' | undefined,
+): boolean {
+  if (scope === undefined || scope === 'all') {
+    return true;
+  }
+  if (scope === 'notes') {
+    return kind === 'note';
+  }
+  if (scope === 'sources') {
+    return kind === 'source';
+  }
+  return false;
+}
+
+function aggregateMockNeedleHits(
+  kb: {
+    db: { prepare: (...args: any[]) => { get: (...params: any[]) => Record<string, unknown> | undefined } };
+    readIndex: () => { entries: Record<string, any> } | null;
+  },
+  rawHits: MockNeedleChunkHit[],
+  scope: 'all' | 'notes' | 'sources' | 'communities' | undefined,
+) {
+  const index = kb.readIndex();
+  if (index === null) {
+    return [];
+  }
+
+  const aggregated = new Map<
+    string,
+    {
+      entryId: string;
+      slug: string;
+      kind: 'note' | 'source';
+      title: string;
+      tags: string[];
+      principles: string[];
+      score: number;
+    }
+  >();
+
+  for (const rawHit of rawHits) {
+    const entry = index.entries[rawHit.entryId];
+    if (entry === undefined || (entry.kind !== 'note' && entry.kind !== 'source')) {
+      continue;
+    }
+    if (!scopeAllowsVectorKind(entry.kind, scope)) {
+      continue;
+    }
+
+    const previous = aggregated.get(rawHit.entryId);
+    if (previous !== undefined && previous.score >= rawHit.score) {
+      continue;
+    }
+
+    aggregated.set(rawHit.entryId, {
+      entryId: rawHit.entryId,
+      slug: entry.slug,
+      kind: entry.kind,
+      title: entry.title,
+      tags: [...entry.tags],
+      principles: entry.kind === 'note' ? [...entry.principles] : [],
+      score: rawHit.score,
+    });
+  }
+
+  return [...aggregated.values()]
+    .sort((left, right) => right.score - left.score || left.entryId.localeCompare(right.entryId))
+    .map((hit, index) => ({
+      ...hit,
+      rank: index + 1,
+    }));
+}
+
+function isMockNeedleSnapshotStale(kb: {
+  db: { prepare: (...args: any[]) => { get: (...params: any[]) => Record<string, unknown> | undefined } };
+}): boolean {
+  const latest = kb.db
+    .prepare(`SELECT content_manifest_hash FROM corpus_state WHERE id = 1`)
+    .get() as { content_manifest_hash?: string } | undefined;
+  const cursor = kb.db
+    .prepare(`SELECT snapshot_id, content_manifest_hash FROM equipment_cursors WHERE consumer_id = ?`)
+    .get('kb-needle') as { snapshot_id?: string; content_manifest_hash?: string } | undefined;
+
+  return (
+    typeof cursor?.content_manifest_hash === 'string' &&
+    cursor.content_manifest_hash !== '' &&
+    cursor.content_manifest_hash !== (latest?.content_manifest_hash ?? '')
+  );
+}
+
+function isMockNeedleSearchReady(kb: {
+  db: { prepare: (...args: any[]) => { get: (...params: any[]) => Record<string, unknown> | undefined } };
+}): boolean {
+  const cursor = kb.db
+    .prepare(`SELECT snapshot_id, content_manifest_hash FROM equipment_cursors WHERE consumer_id = ?`)
+    .get('kb-needle') as { snapshot_id?: string; content_manifest_hash?: string } | undefined;
+
+  return (
+    typeof cursor?.snapshot_id === 'string' &&
+    cursor.snapshot_id !== '' &&
+    typeof cursor.content_manifest_hash === 'string' &&
+    cursor.content_manifest_hash !== '' &&
+    !isMockNeedleSnapshotStale(kb)
+  );
+}
+
+function mockHybridSearch({
+  searchVector,
+  embedQuery = vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
+}: {
+  searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>;
+  embedQuery?: (query: string) => Promise<Float32Array>;
+},
+) {
   hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
     embedQuery,
   });
-  kb.acquireVectorLease = vi.fn().mockResolvedValue({
-    store: {
-      searchVector,
+  hybridMockState.createNeedleBackend = vi.fn().mockImplementation((kb) => ({
+    isSearchReady: () => isMockNeedleSearchReady(kb),
+    isSnapshotStale: () => isMockNeedleSnapshotStale(kb),
+    search: async (
+      embedding: number[],
+      topK: number,
+      scope?: 'all' | 'notes' | 'sources' | 'communities',
+    ) => {
+      let candidateK = Math.max(topK, 1);
+      const candidateCap = Math.max(topK, 10 * topK);
+      let rawHits = await searchVector(Float32Array.from(embedding), candidateK);
+      let hits = aggregateMockNeedleHits(kb, rawHits, scope);
+      let exhausted = rawHits.length < candidateK;
+
+      while (hits.length < topK && !exhausted && candidateK < candidateCap) {
+        candidateK = Math.min(candidateCap, candidateK * 2);
+        rawHits = await searchVector(Float32Array.from(embedding), candidateK);
+        hits = aggregateMockNeedleHits(kb, rawHits, scope);
+        exhausted = rawHits.length < candidateK;
+      }
+
+      return { hits: hits.slice(0, topK) };
     },
-    specId,
-    snapshotId,
-    generation: 1,
-    vectorStatus: {
-      indexedSeq,
-      activeSnapshotId: snapshotId,
-    },
-    release,
-  });
+  }));
 
   return {
-    release,
     embedQuery,
   };
 }
@@ -316,8 +513,8 @@ describe('kb search', () => {
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
-    hybridMockState.ensureVectorIndex = null;
     hybridMockState.createEmbeddingProvider = null;
+    hybridMockState.createNeedleBackend = null;
     vi.resetModules();
   });
 
@@ -512,7 +709,7 @@ describe('kb search', () => {
         },
       ],
     };
-    kb.writeEntityGraph(graph);
+    await kb.writeEntityGraph(graph);
 
     await reindex(kb);
 
@@ -546,7 +743,7 @@ describe('kb search', () => {
       body: 'Retrieval quality depends on graph traces.',
     });
 
-    kb.writeEntityGraph({
+    await kb.writeEntityGraph({
       entityMeta: {
         'graph-rag': {
           type: 'concept',
@@ -626,7 +823,7 @@ describe('kb search', () => {
     expect(communityScope.results).toEqual([]);
   });
 
-  it('rebuilds graph-aware search state on the next search after a manual entity graph edit', async () => {
+  it('rebuilds graph-aware search state after ensureIndex observes a manual entity graph edit', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
@@ -658,11 +855,7 @@ describe('kb search', () => {
       )}\n`,
       'utf-8',
     );
-    // Ensure the entity graph file mtime is strictly after the index file
-    // so detectTextArtifactRebuildInfo triggers a rebuild.
-    const futureTime = new Date(Date.now() + 60_000);
-    utimesSync(kb.entityGraphPath(), futureTime, futureTime);
-
+    await kb.ensureIndex();
     const response = await searchKb(kb, 'vram', 5);
 
     expect(resultNotes(response.results)).toEqual(['memory-entry']);
@@ -670,7 +863,7 @@ describe('kb search', () => {
   });
 
   it('fuses Orama and vector ranks with RRF for note and source entries', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.sourcesDir(), { recursive: true });
@@ -689,8 +882,9 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
-    mockHybridSearch(kb, {
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'beta:0', entryId: 'note:beta-archive', score: 0.99 },
         { chunkId: 'gamma:0', entryId: 'source:gamma-reference', score: 0.98 },
@@ -707,8 +901,101 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'gamma-reference').matchedBy).toEqual([]);
   });
 
-  it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
+  it('routes explicit vector search through Orama cosine without equipment', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'vector-alpha', {
+      title: 'Vector Alpha',
+      body: 'Archive only.',
+    });
+    writeNote(paths.notesDir(), 'vector-beta', {
+      title: 'Vector Beta',
+      body: 'History only.',
+    });
+
+    await reindex(kb);
+    const [{ insertMultiple }, { createOramaDb }] = await Promise.all([
+      import('@orama/orama'),
+      import('../search/orama-backend.js'),
+    ]);
+    const { db } = await createOramaDb();
+    await insertMultiple(db, [
+      {
+        id: 'note:vector-alpha',
+        entryId: 'note:vector-alpha',
+        slug: 'vector-alpha',
+        kind: 'note',
+        freshness: 'fresh',
+        title: 'Vector Alpha',
+        body: 'Archive only.',
+        tags: [],
+        principles: [],
+        contentHash: 'content:vector-alpha',
+        metadataHash: 'metadata:vector-alpha',
+        vector: [1, 0],
+      },
+      {
+        id: 'note:vector-beta',
+        entryId: 'note:vector-beta',
+        slug: 'vector-beta',
+        kind: 'note',
+        freshness: 'fresh',
+        title: 'Vector Beta',
+        body: 'History only.',
+        tags: [],
+        principles: [],
+        contentHash: 'content:vector-beta',
+        metadataHash: 'metadata:vector-beta',
+        vector: [0, 1],
+      },
+    ]);
+    kb.persistOramaSnapshot(db);
+    kb.invalidateKbCache();
+    hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+      embedQuery: vi.fn().mockResolvedValue(new Float32Array([1, 0])),
+    });
+
+    const response = await searchKb(kb, 'semantic', 2, 'all', 'vector');
+
+    expect(response.mode).toBe('vector');
+    expect(resultNotes(response.results)).toEqual(['vector-alpha', 'vector-beta']);
+    expect(resultFor(response.results, 'vector-alpha').matchedBy).toEqual([]);
+  });
+
+  it('routes explicit vector search through needle when equipment content manifests match', async () => {
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'needle-alpha', {
+      title: 'Needle Alpha',
+      body: 'Archive only.',
+    });
+    writeNote(paths.notesDir(), 'needle-beta', {
+      title: 'Needle Beta',
+      body: 'Archive only.',
+    });
+
+    await reindex(kb);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
+    mockHybridSearch({
+      searchVector: vi.fn().mockResolvedValue([
+        { chunkId: 'needle:0', entryId: 'note:needle-beta', score: 0.99 },
+        { chunkId: 'needle:1', entryId: 'note:needle-alpha', score: 0.97 },
+      ]),
+    });
+
+    const response = await searchKb(kb, 'semantic', 2, 'all', 'vector');
+
+    expect(response.mode).toBe('vector');
+    expect(resultNotes(response.results)).toEqual(['needle-beta', 'needle-alpha']);
+    expect(resultFor(response.results, 'needle-beta').matchedBy).toEqual([]);
+  });
+
+  it('widens vector candidates until topK distinct entries survive chunk aggregation', async () => {
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -722,6 +1009,7 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
     const searchVector = vi.fn().mockImplementation(async (_query: Float32Array, candidateK: number) => {
       if (candidateK === 2) {
@@ -739,7 +1027,7 @@ describe('kb search', () => {
       ];
     });
 
-    mockHybridSearch(kb, { searchVector });
+    mockHybridSearch({ searchVector });
 
     const response = await searchKb(kb, 'semantic', 2);
 
@@ -753,7 +1041,7 @@ describe('kb search', () => {
   });
 
   it('filters vector-only hits to the requested source scope', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.sourcesDir(), { recursive: true });
@@ -768,8 +1056,9 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
-    mockHybridSearch(kb, {
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'note:0', entryId: 'note:vector-note', score: 0.99 },
         { chunkId: 'source:0', entryId: 'source:vector-source', score: 0.97 },
@@ -785,7 +1074,7 @@ describe('kb search', () => {
   });
 
   it('keeps communities text-only in all scope while allowing vector-backed note results', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
     mkdirSync(paths.communitiesDir(), { recursive: true });
@@ -805,8 +1094,9 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
-    mockHybridSearch(kb, {
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'latent:0', entryId: 'note:latent-note', score: 0.99 }]),
     });
 
@@ -820,7 +1110,7 @@ describe('kb search', () => {
   });
 
   it('keeps community-only searches in pure text mode even when vector search is configured', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.communitiesDir(), { recursive: true });
 
@@ -835,16 +1125,8 @@ describe('kb search', () => {
     writeCommunities();
 
     await ensureFreshCommunityIndex(kb, reindex, writeCommunities);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
-    const acquireVectorLease = vi.spyOn(kb, 'acquireVectorLease');
-    hybridMockState.ensureVectorIndex = vi.fn().mockResolvedValue({
-      mode: 'hybrid',
-      specId: 'spec-1',
-      vectorStatus: {
-        indexedSeq: kb.readIndexState().contentSeq,
-        activeSnapshotId: 'snapshot-1',
-      },
-    });
     hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
       embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
     });
@@ -853,13 +1135,11 @@ describe('kb search', () => {
 
     expect(response.mode).toBe('text');
     expect(resultNotes(response.results)).toEqual(['graph-rag']);
-    expect(acquireVectorLease).not.toHaveBeenCalled();
-    expect(hybridMockState.ensureVectorIndex).not.toHaveBeenCalled();
     expect(hybridMockState.createEmbeddingProvider).not.toHaveBeenCalled();
   });
 
   it('keeps hybrid search enabled when only metadataSeq advances beyond the vector snapshot', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -869,16 +1149,20 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    kb.writeIndexState({
-      contentSeq: 5,
-      metadataSeq: 9,
-      mutationSeq: 9,
-      textIndexedSeq: 9,
-      vector: { bySpec: {} },
-    });
+    const snapshot = captureKbCorpusSnapshot(kb);
+    seedNeedleRouteState(
+      kb,
+      {
+        ...snapshot,
+        metadataSeq: snapshot.metadataSeq + 4,
+        snapshotId: `${snapshot.snapshotId}-metadata`,
+      },
+      {
+        cursorContentManifestHash: snapshot.contentManifestHash,
+      },
+    );
 
-    mockHybridSearch(kb, {
-      indexedSeq: 5,
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([
         { chunkId: 'hybrid:0', entryId: 'note:hybrid-metadata-note', score: 0.99 },
       ]),
@@ -891,7 +1175,7 @@ describe('kb search', () => {
   });
 
   it('falls back to text mode when the vector snapshot lags behind contentSeq', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -901,16 +1185,18 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
-    kb.writeIndexState({
-      contentSeq: 6,
-      metadataSeq: 9,
-      mutationSeq: 9,
-      textIndexedSeq: 9,
-      vector: { bySpec: {} },
+    const snapshot = captureKbCorpusSnapshot(kb);
+    seedNeedleRouteState(kb, {
+      ...snapshot,
+      contentSeq: snapshot.contentSeq + 1,
+      snapshotId: `${snapshot.snapshotId}-stale`,
+      contentManifestHash: `stale-${snapshot.contentManifestHash}`,
+      metadataManifestHash: snapshot.metadataManifestHash,
+    }, {
+      cursorContentManifestHash: snapshot.contentManifestHash,
     });
 
-    mockHybridSearch(kb, {
-      indexedSeq: 5,
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'stale:0', entryId: 'note:stale-vector-note', score: 0.99 }]),
     });
 
@@ -923,7 +1209,7 @@ describe('kb search', () => {
   });
 
   it('falls back to text mode when vector query embedding fails', async () => {
-    const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(), { recursive: true });
 
@@ -933,8 +1219,9 @@ describe('kb search', () => {
     });
 
     await reindex(kb);
+    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
 
-    const { release } = mockHybridSearch(kb, {
+    mockHybridSearch({
       searchVector: vi.fn().mockResolvedValue([{ chunkId: 'rendering:0', entryId: 'note:rendering-guides', score: 0.99 }]),
       embedQuery: vi.fn().mockRejectedValue(new Error('embedding offline')),
     });
@@ -946,7 +1233,6 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'rendering-guides').matchedBy).toEqual(
       expect.arrayContaining(['filename', 'title', 'content']),
     );
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('auto-rebuilds when the search index is missing', async () => {

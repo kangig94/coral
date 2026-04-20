@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../../infra/paths.js';
 import { isNoEntryError, unlinkIfExists } from '../../shared/utils.js';
-import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../frontmatter.js';
+import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {
   KbMemoDeleteInput,
   KbMemoDeleteResult,
@@ -10,7 +10,7 @@ import type {
   KbMemoListResult,
   KbMemoPurgeResult,
 } from '../entry-types.js';
-import { writeFileAtomic } from '../mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';
 

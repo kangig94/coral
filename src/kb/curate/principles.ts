@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { isNoEntryError, nowIsoString, unlinkIfExists } from '../../shared/utils.js';
 import type { KbRuntime } from '../contracts.js';
-import { extractPrincipleStatement } from '../frontmatter.js';
+import { extractPrincipleStatement } from '../corpus/frontmatter.js';
 import {
   cloneKbIndex,
   markTextIndexStale,
   recordMetadataMutation,
   writeFileAtomic,
-} from '../mutation-helpers.js';
+} from '../corpus/mutation-helpers.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { readClaimedEntry } from './claim-io.js';

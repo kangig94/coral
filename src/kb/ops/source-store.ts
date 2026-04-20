@@ -1,12 +1,12 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
-import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../frontmatter.js';
+import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
 import {
   buildSourceIndexEntry,
   commitIndexUpdate,
   recordContentAndMetadataMutation,
   writeFileAtomic,
-} from '../mutation-helpers.js';
+} from '../corpus/mutation-helpers.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
 import {

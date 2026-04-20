@@ -23,15 +23,32 @@ import {
   type KbIndex,
   type KbMatchSurface,
   type KbResult,
+  type KbSearchMode,
   type KbSearchResponse,
   type KbSearchScope,
   type RelationshipType,
 } from '../entry-types.js';
-import { createEmbeddingProvider } from '../vector/embedding.js';
-import { ensureVectorIndex } from '../vector/sync.js';
+import type {
+  FusedRetrievalHit,
+  GraphRetrieval,
+  GraphRetrievalResult,
+  HybridFusion,
+  TextRetrievalResult,
+  VectorRetrievalHit,
+  VectorRetrievalResult,
+} from '../search/contract.js';
+import { createEmbeddingProvider } from '../search/embedding.js';
+import { createOramaBaseProjection } from '../search/orama-backend.js';
+import { createRouter, resolveVectorRoute } from '../search/router.js';
 
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
-const ORAMA_SEARCH_PROPERTIES: Array<keyof KbOramaDocument> = ['slug', 'title', 'body', 'tags', 'principles'];
+const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
+  'slug',
+  'title',
+  'body',
+  'tags',
+  'principles',
+];
 const ORAMA_SEARCH_BOOST = {
   slug: 3,
   title: 2,
@@ -44,9 +61,6 @@ const KIND_ORDER: Record<KbResult['kind'], number> = {
   community: 1,
   source: 2,
 };
-const HYBRID_RRF_K = 60;
-const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
-const GRAPH_RRF_WEIGHT = 0.22;
 const GRAPH_MAX_NEIGHBORS_PER_SEED = 10;
 const GRAPH_CONTEXT_MAX_COMMUNITIES = 3;
 const GRAPH_COMMUNITY_RESULT_SPAN_MIN = 2;
@@ -88,16 +102,7 @@ type ResolvedKbSearchHit = ResolvedKbSearchEntry & {
   score: number;
 };
 
-type VectorKbSearchHit = ResolvedKbSearchEntry & {
-  score: number;
-};
-
-type HybridKbSearchHit = ResolvedKbSearchEntry & {
-  document: KbOramaDocument | null;
-  score: number;
-  vectorRank?: number;
-  graphRank?: number;
-};
+type HybridKbSearchHit = FusedRetrievalHit;
 
 type GraphNeighbor = {
   entity: string;
@@ -115,6 +120,13 @@ type GraphSearchContext = {
 type GraphKbSearchHit = ResolvedKbSearchEntry & {
   score: number;
 };
+
+type SearchResponseWarnings = {
+  warning?: string;
+  warnings?: string[];
+};
+
+const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
 function denormalizeSlug(slug: string): string {
   return slug.replace(/ /g, '-');
@@ -516,6 +528,47 @@ function scoreGraphMatches(matchScores: number[]): number {
     .reduce((total, score, index) => total + score * GRAPH_ENTRY_MATCH_WEIGHTS[index], 0);
 }
 
+function compareRetrievalRoleHits(
+  left: Pick<ResolvedKbSearchEntry, 'entryId'> & { score: number },
+  right: Pick<ResolvedKbSearchEntry, 'entryId'> & { score: number },
+): number {
+  const scoreDelta = right.score - left.score;
+  if (Math.abs(scoreDelta) > 1e-12) {
+    return scoreDelta;
+  }
+
+  return left.entryId.localeCompare(right.entryId);
+}
+
+function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: number }>(
+  hits: readonly T[],
+): Array<T & { rank: number }> {
+  return [...hits]
+    .sort(compareRetrievalRoleHits)
+    .map((hit, index) => ({
+      ...hit,
+      rank: index + 1,
+    }));
+}
+
+function toTextRetrievalResult(hits: readonly ResolvedKbSearchHit[]): TextRetrievalResult {
+  return {
+    hits: rankRetrievalRoleHits(hits).map((hit) => ({
+      ...hit,
+      document: hit.document,
+    })),
+  };
+}
+
+function fuseRetrievalRoles(
+  hybrid: HybridFusion,
+  textHits: readonly ResolvedKbSearchHit[],
+  vectorHits: readonly VectorRetrievalHit[],
+  graph: GraphRetrievalResult,
+): HybridKbSearchHit[] {
+  return hybrid.fuse(toTextRetrievalResult(textHits), { hits: [...vectorHits] }, graph).hits;
+}
+
 function buildGraphHits(
   index: KbIndex,
   rawQuery: string,
@@ -556,7 +609,20 @@ function buildGraphHits(
     });
   }
 
-  return rerankHits(hits);
+  return [...hits].sort(compareRetrievalRoleHits);
+}
+
+class RuntimeGraphRetrieval implements GraphRetrieval {
+  constructor(
+    private readonly index: KbIndex,
+    private readonly graph: GraphSearchContext | null,
+  ) {}
+
+  async search(query: string, scope: KbSearchScope = 'all'): Promise<GraphRetrievalResult> {
+    return {
+      hits: rankRetrievalRoleHits(buildGraphHits(this.index, query, scope, this.graph)),
+    };
+  }
 }
 
 function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
@@ -578,7 +644,7 @@ function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scop
 }
 
 function areCommunityResultsFresh(
-  rt: Pick<KbRuntime, 'curateStatePath' | 'notePath' | 'sourcePath'>,
+  rt: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
   index: KbIndex,
 ): boolean {
   const hasCommunityEntries = Object.values(index.entries).some((entry) => entry.kind === 'community');
@@ -854,7 +920,7 @@ function buildTextResponse(
   index: KbIndex,
   communitiesFresh: boolean,
   graphFresh: boolean,
-  warning?: string,
+  responseWarnings: SearchResponseWarnings = {},
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
@@ -862,7 +928,8 @@ function buildTextResponse(
   return {
     results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'text',
-    ...(warning === undefined ? {} : { warning }),
+    ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
+    ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
   };
 }
 
@@ -873,7 +940,7 @@ function buildHybridResponse(
   index: KbIndex,
   communitiesFresh: boolean,
   graphFresh: boolean,
-  warning?: string,
+  responseWarnings: SearchResponseWarnings = {},
 ): KbSearchResponse {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, graphFresh);
@@ -881,7 +948,21 @@ function buildHybridResponse(
   return {
     results: finalHits.map((hit) => toHybridResult(hit, query, communityContext.get(hit.entryId))),
     mode: 'hybrid',
-    ...(warning === undefined ? {} : { warning }),
+    ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
+    ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
+  };
+}
+
+function buildVectorResponse(
+  hits: readonly ResolvedKbSearchEntry[],
+  topK: number,
+  responseWarnings: SearchResponseWarnings = {},
+): KbSearchResponse {
+  return {
+    results: hits.slice(0, topK).map((hit) => toVectorOnlyResult(hit)),
+    mode: 'vector',
+    ...(responseWarnings.warning === undefined ? {} : { warning: responseWarnings.warning }),
+    ...(responseWarnings.warnings === undefined ? {} : { warnings: responseWarnings.warnings }),
   };
 }
 
@@ -905,126 +986,100 @@ function isVectorScope(kind: KbResult['kind'], scope: KbSearchScope): boolean {
   return false;
 }
 
-function aggregateVectorHits(
-  hits: Array<{ chunkId: string; entryId: string; score: number }>,
-  index: KbIndex,
-  scope: KbSearchScope,
-): VectorKbSearchHit[] {
-  const aggregated = new Map<KbEntryId, VectorKbSearchHit>();
-
-  for (const hit of hits) {
-    const entry = resolveEntry(hit.entryId, index);
-    if (entry === null || !isVectorScope(entry.kind, scope)) {
-      continue;
-    }
-
-    const previous = aggregated.get(entry.entryId);
-    if (previous === undefined || hit.score > previous.score) {
-      aggregated.set(entry.entryId, {
-        ...entry,
-        score: hit.score,
-      });
-    }
+function emptySearchResponse(mode?: KbSearchMode): KbSearchResponse {
+  if (mode === 'vector') {
+    return {
+      results: [],
+      mode: 'vector',
+    };
   }
-
-  return rerankHits([...aggregated.values()]);
+  if (mode === 'hybrid') {
+    return {
+      results: [],
+      mode: 'hybrid',
+    };
+  }
+  return {
+    results: [],
+    mode: 'text',
+  };
 }
 
-function rrfScore(rank: number): number {
-  return 1 / (HYBRID_RRF_K + rank);
+async function embedQueryForVectorSearch(rt: KbRuntime, rawQuery: string): Promise<number[] | null> {
+  const provider = await createEmbeddingProvider(rt.runtimeDir);
+  if (provider === null) {
+    return null;
+  }
+
+  const queryVector = await provider.embedQuery(rawQuery);
+  return Array.from(queryVector);
 }
 
-function fuseHits(
-  oramaHits: ResolvedKbSearchHit[],
-  vectorHits: VectorKbSearchHit[],
-  graphHits: GraphKbSearchHit[],
-): HybridKbSearchHit[] {
-  const fused = new Map<KbEntryId, HybridKbSearchHit>();
-
-  for (const [index, hit] of oramaHits.entries()) {
-    fused.set(hit.entryId, {
-      ...hit,
-      document: hit.document,
-      score: rrfScore(index + 1),
-    });
-  }
-
-  for (const [index, hit] of graphHits.entries()) {
-    const graphRank = index + 1;
-    const contribution = GRAPH_RRF_WEIGHT * rrfScore(graphRank);
-    const previous = fused.get(hit.entryId);
-
-    if (previous === undefined) {
-      fused.set(hit.entryId, {
-        ...hit,
-        document: null,
-        score: contribution,
-        graphRank,
-      });
-      continue;
-    }
-
-    fused.set(hit.entryId, {
-      ...previous,
-      score: previous.score + contribution,
-      graphRank,
-    });
-  }
-
-  for (const [index, hit] of vectorHits.entries()) {
-    const vectorRank = index + 1;
-    const contribution = rrfScore(vectorRank);
-    const previous = fused.get(hit.entryId);
-
-    if (previous === undefined) {
-      fused.set(hit.entryId, {
-        ...hit,
-        document: null,
-        score: contribution,
-        vectorRank,
-      });
-      continue;
-    }
-
-    fused.set(hit.entryId, {
-      ...previous,
-      score: previous.score + contribution,
-      vectorRank,
-    });
-  }
-
-  return rerankHits([...fused.values()]);
-}
-
-async function searchVectorEntries(
-  searchVector: (
-    query: Float32Array,
-    candidateK: number,
-  ) => Promise<Array<{ chunkId: string; entryId: string; score: number }>>,
-  queryVector: Float32Array,
+async function searchExplicitVectorResults(
+  rt: KbRuntime,
+  rawQuery: string,
   topK: number,
-  index: KbIndex,
   scope: KbSearchScope,
-): Promise<VectorKbSearchHit[]> {
-  let candidateK = topK;
-  const candidateCap = Math.max(topK, VECTOR_CANDIDATE_CAP_MULTIPLIER * topK);
-  let hits = await searchVector(queryVector, candidateK);
-  let aggregated = aggregateVectorHits(hits, index, scope);
-  let exhausted = hits.length < candidateK;
-
-  while (aggregated.length < topK && !exhausted && candidateK < candidateCap) {
-    const nextCandidateK = Math.min(candidateK * 2, candidateCap);
-    if (nextCandidateK === candidateK) {
-      break;
-    }
-
-    candidateK = nextCandidateK;
-    hits = await searchVector(queryVector, candidateK);
-    aggregated = aggregateVectorHits(hits, index, scope);
-    exhausted = hits.length < candidateK;
+  options: {
+    allowNeedleFallbackToOrama: boolean;
+  },
+): Promise<{ hits: VectorRetrievalHit[]; responseWarnings: SearchResponseWarnings; fallbackToText: boolean }> {
+  const vectorRoute = resolveVectorRoute(rt);
+  const responseWarnings: SearchResponseWarnings =
+    vectorRoute.warning === undefined ? {} : { warning: vectorRoute.warning };
+  let queryVector: number[] | null;
+  try {
+    queryVector = await embedQueryForVectorSearch(rt, rawQuery);
+  } catch {
+    return {
+      hits: [],
+      responseWarnings: {
+        warning: responseWarnings.warning ?? 'KB vector query embedding is unavailable.',
+      },
+      fallbackToText: true,
+    };
+  }
+  if (queryVector === null) {
+    return {
+      hits: [],
+      responseWarnings: {
+        warning: responseWarnings.warning ?? 'KB vector query embedding is unavailable.',
+      },
+      fallbackToText: true,
+    };
   }
 
-  return aggregated;
+  try {
+    return {
+      hits: (await vectorRoute.retrieval.search(queryVector, topK, scope)).hits,
+      responseWarnings,
+      fallbackToText: false,
+    };
+  } catch {
+    if (vectorRoute.backend === 'needle' && options.allowNeedleFallbackToOrama) {
+      try {
+        return {
+          hits: (await createOramaBaseProjection(rt).search(queryVector, topK, scope)).hits,
+          responseWarnings: {
+            warning:
+              responseWarnings.warning ??
+              'KB needle search is unavailable; falling back to Orama cosine for this query.',
+          },
+          fallbackToText: false,
+        };
+      } catch {
+        // Fall through to text fallback below.
+      }
+    }
+
+    return {
+      hits: [],
+      responseWarnings: {
+        warning: responseWarnings.warning ?? 'KB vector search is unavailable for this query.',
+      },
+      fallbackToText: true,
+    };
+  }
 }
 
 export async function searchKb(
@@ -1032,102 +1087,133 @@ export async function searchKb(
   query: string,
   top_k = 20,
   scope: KbSearchScope = 'all',
+  mode?: KbSearchMode,
 ): Promise<KbSearchResponse> {
   const rawQuery = query.trim();
   const oramaTerm = normalizeOramaTerm(rawQuery);
   const topK = Number.isInteger(top_k) && top_k > 0 ? top_k : 20;
-  const { db, tokenizer, index } = await rt.ensureOramaIndex();
+  const { db, tokenizer, index, warnings: oramaWarnings } = await rt.ensureOramaIndex();
+  if (oramaWarnings?.includes('orama_snapshot_absent')) {
+    return {
+      mode: 'text',
+      results: [],
+      warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+    };
+  }
 
   if (Object.keys(index.entries).length === 0) {
-    return {
-      results: [],
-      mode: 'text',
-    };
+    return emptySearchResponse(mode);
   }
 
   const queryTokens = tokenizeQuery(oramaTerm, tokenizer);
-  if (queryTokens.length === 0) {
-    return {
-      results: [],
-      mode: 'text',
-    };
-  }
 
   const queryCtx: QueryContext = { rawQuery, oramaTerm, queryTokens, tokenizer };
-  const indexState = rt.readIndexState();
   const communitiesFresh = areCommunityResultsFresh(rt, index);
   const graphContext = buildGraphSearchContext(index, rt.readEntityGraph());
   const graphFresh = graphContext !== null;
+  const resolvedHits: ResolvedKbSearchHit[] = [];
+  if (queryTokens.length > 0) {
+    let limit = topK;
+    let hits = await searchOrama(db, oramaTerm, limit);
+    let exhausted = hits.length < limit;
+    resolvedHits.push(...hits.map((hit) => resolveHit(hit, index)));
 
-  let limit = topK;
-  let hits = await searchOrama(db, oramaTerm, limit);
-  let exhausted = hits.length < limit;
-  const resolvedHits = hits.map((hit) => resolveHit(hit, index));
-
-  while (shouldContinueWidening(hits, resolvedHits, communitiesFresh, scope, topK, exhausted)) {
-    const prevCount = hits.length;
-    limit = Math.max(limit + 1, limit * 2);
-    hits = await searchOrama(db, oramaTerm, limit);
-    exhausted = hits.length < limit;
-    for (let i = prevCount; i < hits.length; i++) {
-      resolvedHits.push(resolveHit(hits[i], index));
+    while (shouldContinueWidening(hits, resolvedHits, communitiesFresh, scope, topK, exhausted)) {
+      const prevCount = hits.length;
+      limit = Math.max(limit + 1, limit * 2);
+      hits = await searchOrama(db, oramaTerm, limit);
+      exhausted = hits.length < limit;
+      for (let i = prevCount; i < hits.length; i += 1) {
+        resolvedHits.push(resolveHit(hits[i], index));
+      }
     }
   }
 
   const searchableHits = filterSearchableHits(resolvedHits, communitiesFresh);
   const selectedHits = scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, scope);
-  const graphHits = buildGraphHits(index, rawQuery, scope, graphContext);
+  const router = createRouter(rt, {
+    graph: new RuntimeGraphRetrieval(index, graphContext),
+  });
+  const graphResult = await router.graph.search(rawQuery, scope);
+  const graphHits = graphResult.hits;
   const textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit> =
-    graphHits.length === 0 ? selectedHits : fuseHits(selectedHits, [], graphHits);
+    graphHits.length === 0 ? selectedHits : fuseRetrievalRoles(router.hybrid, selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, graphResult);
+
   if (scope === 'communities') {
+    if (mode === 'hybrid') {
+      return buildHybridResponse(
+        fuseRetrievalRoles(router.hybrid, selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, graphResult),
+        queryCtx,
+        topK,
+        index,
+        communitiesFresh,
+        graphFresh,
+      );
+    }
+    if (mode === 'vector') {
+      return buildVectorResponse([], topK);
+    }
     return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh);
   }
 
-  const vectorResult = await ensureVectorIndex(rt);
-  const vectorLease = await rt.acquireVectorLease();
-
-  try {
-    const canUseHybrid =
-      vectorResult.mode === 'hybrid' &&
-      vectorResult.specId !== null &&
-      vectorLease !== null &&
-      vectorLease.specId === vectorResult.specId &&
-      vectorLease.vectorStatus !== null &&
-      vectorLease.vectorStatus.indexedSeq === indexState.contentSeq &&
-      vectorLease.vectorStatus.staleReason === undefined &&
-      vectorLease.vectorStatus.activeSnapshotId === vectorLease.snapshotId;
-
-    if (!canUseHybrid) {
-      return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
-    }
-
-    try {
-      const provider = await createEmbeddingProvider(rt.runtimeDir);
-      if (provider === null) {
-        return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
-      }
-
-      const queryVector = await provider.embedQuery(rawQuery);
-      const vectorHits = await searchVectorEntries(
-        vectorLease.store.searchVector.bind(vectorLease.store),
-        queryVector,
-        topK,
-        index,
-        scope,
-      );
-      const fusedHits = fuseHits(selectedHits, vectorHits, graphHits);
-      const finalHits = fusedHits.slice(0, topK);
-      const usedVector = finalHits.some((hit) => hit.vectorRank !== undefined);
-
-      if (!usedVector) {
-        return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
-      }
-
-      return buildHybridResponse(fusedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
-    } catch {
-      return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.warning);
-    }
-  } finally {
-    await vectorLease?.release();
+  if (mode === 'text') {
+    return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh);
   }
+
+  if (mode === 'vector') {
+    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+      allowNeedleFallbackToOrama: true,
+    });
+    if (vectorResult.fallbackToText) {
+      return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+    }
+    return buildVectorResponse(vectorResult.hits, topK, vectorResult.responseWarnings);
+  }
+
+  if (mode === 'hybrid') {
+    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+      allowNeedleFallbackToOrama: true,
+    });
+    if (vectorResult.fallbackToText) {
+      return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+    }
+    return buildHybridResponse(
+      fuseRetrievalRoles(router.hybrid, selectedHits, vectorResult.hits, graphResult),
+      queryCtx,
+      topK,
+      index,
+      communitiesFresh,
+      graphFresh,
+      vectorResult.responseWarnings,
+    );
+  }
+
+  const vectorRoute = resolveVectorRoute(rt);
+  if (vectorRoute.backend !== 'needle') {
+    const responseWarnings = vectorRoute.warning === undefined ? {} : { warning: vectorRoute.warning };
+    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, responseWarnings);
+  }
+
+  const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+    allowNeedleFallbackToOrama: false,
+  });
+  if (vectorResult.fallbackToText) {
+    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+  }
+
+  const fusedHits = fuseRetrievalRoles(router.hybrid, selectedHits, vectorResult.hits, graphResult);
+  const usedVector = fusedHits.slice(0, topK).some((hit) => hit.vectorRank !== undefined);
+  if (!usedVector) {
+    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+  }
+
+  return buildHybridResponse(
+    fusedHits,
+    queryCtx,
+    topK,
+    index,
+    communitiesFresh,
+    graphFresh,
+    vectorResult.responseWarnings,
+  );
 }

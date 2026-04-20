@@ -9,7 +9,7 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from './frontmatter.js';
+} from './corpus/frontmatter.js';
 import { communityPathFromName, memoDir, notePathFromName, principlePathFromName, sourcePathFromName } from './paths.js';
 import type { CommunityFrontmatter, KbNoteFrontmatter, KbReadInput, KbReadResult, KbSourceFrontmatter } from './entry-types.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from './validation.js';

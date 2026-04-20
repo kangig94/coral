@@ -91,9 +91,7 @@ function createFakeProviderHostManager() {
 
 function createMockKbSubsystem() {
   return {
-    kb: {
-      closeVectorStores: vi.fn(async () => {}),
-    } as never,
+    kb: {} as never,
     curateScheduler: {
       start: vi.fn(async () => {}),
       schedule: vi.fn(),

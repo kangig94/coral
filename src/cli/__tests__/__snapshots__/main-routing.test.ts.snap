@@ -102,6 +102,7 @@ Options:
 
 Commands:
   search [options] <query>      Search KB entries
+  diagnose [options]            Show KB incidents that need manual repair
   principles [options]          List KB principles
   source                        Manage KB sources
   memo                          Manage project memos

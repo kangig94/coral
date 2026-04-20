@@ -73,17 +73,34 @@ describe('migrations idempotency', () => {
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
       expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
 
-      const corpusStateA = dbFromSchema.prepare('SELECT id, content_seq, metadata_seq FROM corpus_state').get() as {
+      const corpusStateA = dbFromSchema.prepare(
+        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
+      ).get() as {
         id: number;
+        snapshot_id: string | null;
         content_seq: number;
         metadata_seq: number;
+        content_manifest_hash: string | null;
+        metadata_manifest_hash: string | null;
       };
-      const corpusStateB = dbFromMigration.prepare('SELECT id, content_seq, metadata_seq FROM corpus_state').get() as {
+      const corpusStateB = dbFromMigration.prepare(
+        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
+      ).get() as {
         id: number;
+        snapshot_id: string | null;
         content_seq: number;
         metadata_seq: number;
+        content_manifest_hash: string | null;
+        metadata_manifest_hash: string | null;
       };
-      expect(corpusStateA).toEqual({ id: 1, content_seq: 0, metadata_seq: 0 });
+      expect(corpusStateA).toEqual({
+        id: 1,
+        snapshot_id: null,
+        content_seq: 0,
+        metadata_seq: 0,
+        content_manifest_hash: null,
+        metadata_manifest_hash: null,
+      });
       expect(corpusStateB).toEqual(corpusStateA);
 
       const equipmentCursorColumnsA = (
@@ -92,16 +109,49 @@ describe('migrations idempotency', () => {
       const equipmentCursorColumnsB = (
         dbFromMigration.prepare("PRAGMA table_info('equipment_cursors')").all() as Array<{ name: string }>
       ).map((row) => row.name);
-      expect(equipmentCursorColumnsA).toEqual(['consumer_id', 'authority', 'lane', 'cursor', 'equipped_at']);
+      expect(equipmentCursorColumnsA).toEqual([
+        'consumer_id',
+        'authority',
+        'lane',
+        'corpus_interest',
+        'cursor',
+        'snapshot_id',
+        'content_seq',
+        'metadata_seq',
+        'content_manifest_hash',
+        'metadata_manifest_hash',
+        'equipped_at',
+      ]);
       expect(new Set(equipmentCursorColumnsB)).toEqual(new Set(equipmentCursorColumnsA));
+
+      const curateSchedulerColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const curateSchedulerColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(curateSchedulerColumnsA).toEqual([
+        'id',
+        'processed_through_seq',
+        'processed_through_entry_id',
+        'processed_through_entry_kind',
+        'discovery_high_seq',
+        'discovery_offset',
+        'last_run_day',
+        'consecutive_failures',
+        'community_topology_hash',
+      ]);
+      expect(curateSchedulerColumnsB).toEqual(curateSchedulerColumnsA);
 
       const curateSchedulerA = dbFromSchema
         .prepare(
-          'SELECT id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
         )
         .get() as {
           id: number;
-          processed_through: string | null;
+          processed_through_seq: number | null;
+          processed_through_entry_id: string | null;
+          processed_through_entry_kind: string | null;
           discovery_high_seq: number | null;
           discovery_offset: number | null;
           last_run_day: string | null;
@@ -110,11 +160,13 @@ describe('migrations idempotency', () => {
         };
       const curateSchedulerB = dbFromMigration
         .prepare(
-          'SELECT id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
         )
         .get() as {
           id: number;
-          processed_through: string | null;
+          processed_through_seq: number | null;
+          processed_through_entry_id: string | null;
+          processed_through_entry_kind: string | null;
           discovery_high_seq: number | null;
           discovery_offset: number | null;
           last_run_day: string | null;
@@ -123,7 +175,9 @@ describe('migrations idempotency', () => {
         };
       expect(curateSchedulerA).toEqual({
         id: 1,
-        processed_through: null,
+        processed_through_seq: null,
+        processed_through_entry_id: null,
+        processed_through_entry_kind: null,
         discovery_high_seq: null,
         discovery_offset: null,
         last_run_day: null,
@@ -131,6 +185,86 @@ describe('migrations idempotency', () => {
         community_topology_hash: null,
       });
       expect(curateSchedulerB).toEqual(curateSchedulerA);
+
+      const retryQueueColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_retry_queue')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const retryQueueColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_retry_queue')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(retryQueueColumnsA).toEqual([
+        'entry_id',
+        'reason',
+        'observed_at',
+        'locus',
+        'canonical_incident',
+        'signals_json',
+        'repair_hint',
+        'retry_not_before',
+        'retry_count',
+      ]);
+      expect(retryQueueColumnsB).toEqual(retryQueueColumnsA);
+
+      const retryPlanA = (
+        dbFromSchema
+          .prepare(
+            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
+          )
+          .all('9999-12-31T23:59:59.999Z') as Array<{ detail: string }>
+      ).map((row) => row.detail);
+      const retryPlanB = (
+        dbFromMigration
+          .prepare(
+            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
+          )
+          .all('9999-12-31T23:59:59.999Z') as Array<{ detail: string }>
+      ).map((row) => row.detail);
+      expect(retryPlanA.some((detail) => detail.includes('USING INDEX curate_retry_by_time'))).toBe(true);
+      expect(retryPlanB.some((detail) => detail.includes('USING INDEX curate_retry_by_time'))).toBe(true);
+
+      const discoveryBacklogColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_discovery_backlog')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const discoveryBacklogColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_discovery_backlog')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(discoveryBacklogColumnsA).toEqual(['entry_id', 'principle_slug', 'statement', 'queued_at', 'reason']);
+      expect(discoveryBacklogColumnsB).toEqual(discoveryBacklogColumnsA);
+
+      const discoveryBacklogNotesColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_discovery_backlog_notes')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const discoveryBacklogNotesColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_discovery_backlog_notes')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(discoveryBacklogNotesColumnsA).toEqual(['backlog_entry_id', 'note_id']);
+      expect(discoveryBacklogNotesColumnsB).toEqual(discoveryBacklogNotesColumnsA);
+
+      const discoveryBacklogFksA = (
+        dbFromSchema.prepare("PRAGMA foreign_key_list('curate_discovery_backlog_notes')").all() as Array<{
+          table: string;
+          from: string;
+          to: string;
+          on_delete: string;
+        }>
+      ).map(({ table, from, to, on_delete }) => ({ table, from, to, on_delete }));
+      const discoveryBacklogFksB = (
+        dbFromMigration.prepare("PRAGMA foreign_key_list('curate_discovery_backlog_notes')").all() as Array<{
+          table: string;
+          from: string;
+          to: string;
+          on_delete: string;
+        }>
+      ).map(({ table, from, to, on_delete }) => ({ table, from, to, on_delete }));
+      expect(discoveryBacklogFksA).toEqual([
+        {
+          table: 'curate_discovery_backlog',
+          from: 'backlog_entry_id',
+          to: 'entry_id',
+          on_delete: 'CASCADE',
+        },
+      ]);
+      expect(discoveryBacklogFksB).toEqual(discoveryBacklogFksA);
     } finally {
       dbFromSchema.close();
       dbFromMigration.close();

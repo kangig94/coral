@@ -18,6 +18,8 @@ import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '.
 import { ConsumerDriver, type CorpusConsumerRegistration } from '../consumer-driver.js';
 import { createNotifyCorpusMutation } from '../corpus-notify.js';
 
+type ObservedSnapshot = Pick<CorpusStateSnapshot, 'contentSeq' | 'metadataSeq'>;
+
 const nodeStorage = {
   readFileSync(path: string, encoding: BufferEncoding): string {
     return readFileSync(path, encoding);
@@ -82,11 +84,42 @@ async function waitFor(assertion: () => void | Promise<void>, timeoutMs = 3000):
   throw lastError instanceof Error ? lastError : new Error('Timed out waiting for condition.');
 }
 
-function readCursor(db: InstanceType<typeof Database>, consumerId: string): number {
-  const row = db.prepare('SELECT cursor FROM equipment_cursors WHERE consumer_id = ?').get(consumerId) as
-    | { cursor: number }
+function readCursor(db: InstanceType<typeof Database>, consumerId: string): CorpusStateSnapshot {
+  const row = db
+    .prepare(
+      `
+        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
+          FROM equipment_cursors
+         WHERE consumer_id = ?
+      `,
+    )
+    .get(consumerId) as
+    | {
+        snapshot_id: string | null;
+        content_seq: number | null;
+        metadata_seq: number | null;
+        content_manifest_hash: string | null;
+        metadata_manifest_hash: string | null;
+      }
     | undefined;
-  return row?.cursor ?? 0;
+  return {
+    snapshotId: row?.snapshot_id ?? '',
+    contentSeq: row?.content_seq ?? 0,
+    metadataSeq: row?.metadata_seq ?? 0,
+    contentManifestHash: row?.content_manifest_hash ?? '',
+    metadataManifestHash: row?.metadata_manifest_hash ?? '',
+  };
+}
+
+function snapshotSeqView(snapshot: ObservedSnapshot): ObservedSnapshot {
+  return {
+    contentSeq: snapshot.contentSeq,
+    metadataSeq: snapshot.metadataSeq,
+  };
+}
+
+function snapshotSeqViews(snapshots: readonly ObservedSnapshot[]): ObservedSnapshot[] {
+  return snapshots.map(snapshotSeqView);
 }
 
 function git(cwd: string, args: string[]): string {
@@ -110,8 +143,8 @@ type Harness = {
   db: InstanceType<typeof Database>;
   driver: ConsumerDriver;
   kb: ReturnType<typeof createKbRuntime>;
-  contentCalls: CorpusStateSnapshot[];
-  metadataCalls: CorpusStateSnapshot[];
+  contentCalls: ObservedSnapshot[];
+  metadataCalls: ObservedSnapshot[];
   notifyCalls: CorpusStateSnapshot[];
   persistCalls: CorpusStateSnapshot[];
   failures: Array<{ stage: 'persist' | 'notify'; snapshot: CorpusStateSnapshot }>;
@@ -138,8 +171,8 @@ async function createHarness(options?: {
     db,
     now: () => new Date(BASE_UPDATED_AT),
   });
-  const contentCalls: CorpusStateSnapshot[] = [];
-  const metadataCalls: CorpusStateSnapshot[] = [];
+  const contentCalls: ObservedSnapshot[] = [];
+  const metadataCalls: ObservedSnapshot[] = [];
   const notifyCalls: CorpusStateSnapshot[] = [];
   const persistCalls: CorpusStateSnapshot[] = [];
   const failures: Array<{ stage: 'persist' | 'notify'; snapshot: CorpusStateSnapshot }> = [];
@@ -149,17 +182,17 @@ async function createHarness(options?: {
   const contentConsumer: CorpusConsumerRegistration = {
     id: 'content-proj',
     authority: 'corpus',
-    lane: 'content',
-    async apply({ contentSeq, metadataSeq }) {
-      contentCalls.push({ contentSeq, metadataSeq });
+    corpusInterest: 'content',
+    async apply({ snapshot }) {
+      contentCalls.push({ ...snapshot });
     },
   };
   const metadataConsumer: CorpusConsumerRegistration = {
     id: 'metadata-proj',
     authority: 'corpus',
-    lane: 'metadata',
-    async apply({ contentSeq, metadataSeq }) {
-      metadataCalls.push({ contentSeq, metadataSeq });
+    corpusInterest: 'metadata',
+    async apply({ snapshot }) {
+      metadataCalls.push({ ...snapshot });
     },
   };
   driver.register(contentConsumer);
@@ -251,14 +284,14 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 0 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(1);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(0);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 1, metadataSeq: 0 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(1);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(0);
       });
 
-      expect(harness.contentCalls).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
-      expect(harness.metadataCalls).toEqual([]);
-      expect(harness.notifyCalls).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
     } finally {
       await harness.cleanup();
     }
@@ -283,14 +316,14 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 0, metadataSeq: 1 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(0);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(1);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 0, metadataSeq: 1 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(0);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(1);
       });
 
-      expect(harness.contentCalls).toEqual([]);
-      expect(harness.metadataCalls).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
-      expect(harness.notifyCalls).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
     } finally {
       await harness.cleanup();
     }
@@ -317,14 +350,14 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 1 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(1);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(1);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 0, metadataSeq: 1 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(0);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(1);
       });
 
-      expect(harness.notifyCalls).toEqual([{ contentSeq: 1, metadataSeq: 1 }]);
-      expect(harness.contentCalls).toEqual([{ contentSeq: 1, metadataSeq: 1 }]);
-      expect(harness.metadataCalls).toEqual([{ contentSeq: 1, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
     } finally {
       await harness.cleanup();
     }
@@ -382,14 +415,14 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 0, metadataSeq: 1 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(0);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(1);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 0, metadataSeq: 1 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(0);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(1);
       }, 5000);
 
-      expect(harness.notifyCalls).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
-      expect(harness.contentCalls).toEqual([]);
-      expect(harness.metadataCalls).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([{ contentSeq: 0, metadataSeq: 1 }]);
     } finally {
       await scheduler?.stop();
       await harness.cleanup();
@@ -412,9 +445,11 @@ describe('Corpus notify E2E', () => {
       });
 
       await waitFor(() => {
-        expect(harness.failures).toEqual([{ stage: 'persist', snapshot: { contentSeq: 1, metadataSeq: 0 } }]);
+        expect(harness.failures.map((failure) => ({ stage: failure.stage, snapshot: snapshotSeqView(failure.snapshot) }))).toEqual([
+          { stage: 'persist', snapshot: { contentSeq: 1, metadataSeq: 0 } },
+        ]);
       });
-      expect(readCorpusState(harness.db)).toEqual({ contentSeq: 0, metadataSeq: 0 });
+      expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 0, metadataSeq: 0 });
       expect(harness.notifyCalls).toEqual([]);
       expect(harness.contentCalls).toEqual([]);
       const updatedAt = readNoteUpdatedAt(harness);
@@ -432,17 +467,20 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 2 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(1);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(2);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 1, metadataSeq: 2 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(1);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(2);
       });
 
-      expect(harness.notifyCalls).toEqual([
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([
         { contentSeq: 1, metadataSeq: 0 },
         { contentSeq: 1, metadataSeq: 2 },
       ]);
-      expect(harness.contentCalls).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
-      expect(harness.metadataCalls).toEqual([{ contentSeq: 1, metadataSeq: 2 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([
+        { contentSeq: 1, metadataSeq: 0 },
+        { contentSeq: 1, metadataSeq: 2 },
+      ]);
     } finally {
       await harness.cleanup();
     }
@@ -464,11 +502,13 @@ describe('Corpus notify E2E', () => {
       });
 
       await waitFor(() => {
-        expect(harness.failures).toEqual([{ stage: 'notify', snapshot: { contentSeq: 1, metadataSeq: 0 } }]);
+        expect(harness.failures.map((failure) => ({ stage: failure.stage, snapshot: snapshotSeqView(failure.snapshot) }))).toEqual([
+          { stage: 'notify', snapshot: { contentSeq: 1, metadataSeq: 0 } },
+        ]);
       });
-      expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 0 });
-      expect(readCursor(harness.db, 'content-proj')).toBe(0);
-      expect(readCursor(harness.db, 'metadata-proj')).toBe(0);
+      expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 1, metadataSeq: 0 });
+      expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(0);
+      expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(0);
       const updatedAt = readNoteUpdatedAt(harness);
 
       await commitMetadataTargets(harness.kb, [
@@ -484,22 +524,25 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 2 });
-        expect(readCursor(harness.db, 'content-proj')).toBe(1);
-        expect(readCursor(harness.db, 'metadata-proj')).toBe(2);
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 1, metadataSeq: 2 });
+        expect(readCursor(harness.db, 'content-proj').contentSeq).toBe(1);
+        expect(readCursor(harness.db, 'metadata-proj').metadataSeq).toBe(2);
       });
 
-      expect(harness.persistCalls).toEqual([
+      expect(snapshotSeqViews(harness.persistCalls)).toEqual([
         { contentSeq: 1, metadataSeq: 0 },
         { contentSeq: 1, metadataSeq: 2 },
       ]);
-      expect(harness.notifyCalls).toEqual([
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([
         { contentSeq: 1, metadataSeq: 0 },
         { contentSeq: 1, metadataSeq: 0 },
         { contentSeq: 1, metadataSeq: 2 },
       ]);
-      expect(harness.contentCalls).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
-      expect(harness.metadataCalls).toEqual([{ contentSeq: 1, metadataSeq: 2 }]);
+      expect(snapshotSeqViews(harness.contentCalls)).toEqual([{ contentSeq: 1, metadataSeq: 0 }]);
+      expect(snapshotSeqViews(harness.metadataCalls)).toEqual([
+        { contentSeq: 1, metadataSeq: 0 },
+        { contentSeq: 1, metadataSeq: 2 },
+      ]);
     } finally {
       await harness.cleanup();
     }
@@ -553,10 +596,10 @@ describe('Corpus notify E2E', () => {
 
       await waitFor(async () => {
         await harness.driver.drainAll();
-        expect(readCorpusState(harness.db)).toEqual({ contentSeq: 1, metadataSeq: 2 });
+        expect(snapshotSeqView(readCorpusState(harness.db))).toEqual({ contentSeq: 1, metadataSeq: 2 });
       });
 
-      expect(harness.notifyCalls).toEqual([
+      expect(snapshotSeqViews(harness.notifyCalls)).toEqual([
         { contentSeq: 1, metadataSeq: 0 },
         { contentSeq: 1, metadataSeq: 2 },
       ]);

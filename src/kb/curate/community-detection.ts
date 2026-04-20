@@ -13,9 +13,9 @@ import {
   parseMembersFromBody,
   parseSummaryFromBody,
   serializeCommunityFrontmatter,
-} from '../frontmatter.js';
-import { sortedMarkdownEntries } from '../markdown-entries.js';
-import { writeFileAtomic } from '../mutation-helpers.js';
+} from '../corpus/frontmatter.js';
+import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
+import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbRuntime } from '../contracts.js';

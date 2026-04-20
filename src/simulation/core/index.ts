@@ -114,9 +114,7 @@ function readFileIfPresent(storage: Pick<StoragePort, 'existsSync' | 'readFileSy
 
 function createMockKbSubsystem() {
   return {
-    kb: {
-      closeVectorStores: async () => {},
-    } as never,
+    kb: {} as never,
     curateScheduler: {
       start: async () => {},
       schedule: () => {},

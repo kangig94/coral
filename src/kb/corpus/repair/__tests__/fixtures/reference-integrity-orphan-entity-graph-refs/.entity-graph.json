@@ -1,0 +1,30 @@
+{
+  "entityMeta": {
+    "anchor": {
+      "type": "concept",
+      "description": "Anchor entity"
+    }
+  },
+  "relationships": [
+    {
+      "source": "anchor",
+      "target": "anchor",
+      "type": "implements",
+      "description": "anchor evidence",
+      "evidence": [
+        "note:graph-anchor",
+        "note:missing-note",
+        "note:graph-anchor"
+      ]
+    },
+    {
+      "source": "anchor",
+      "target": "anchor",
+      "type": "requires",
+      "description": "orphan-only relationship",
+      "evidence": [
+        "source:missing-source"
+      ]
+    }
+  ]
+}

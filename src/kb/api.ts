@@ -10,7 +10,7 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from './frontmatter.js';
+} from './corpus/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
 import {
   memoDir,
@@ -23,8 +23,11 @@ import { promote as kbPromote } from './ops/promote.js';
 import { reindex as kbReindex } from './ops/reindex.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources, persistPreparedSource } from './ops/source-store.js';
+import type { KbDiagnoseResult } from './entry-types.js';
 import { isNoteEntry } from './entry-types.js';
 import { update as kbUpdate } from './ops/update.js';
+import { readCurateRetryQueue } from './curate/retry.js';
+import type { PendingRepair } from './curate/state.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
 import {
   expandKbReadSelector,
@@ -84,6 +87,7 @@ export const kbSearchSchema = z
     query: z.string().min(1),
     scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
     top_k: z.number().int().positive().optional(),
+    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
   .strict();
 
@@ -92,6 +96,7 @@ export const kbSearchQuerySchema = z
     q: z.string().min(1),
     scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
     top_k: z.coerce.number().int().positive().optional(),
+    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
   })
   .strict();
 
@@ -250,6 +255,7 @@ export const kbNoteUpdateRequestSchema = kbUpdateSchema
 export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
+export const kbDiagnoseSchema = z.object({}).strict();
 
 function kbErrorResult(error: unknown): ToolDomainResult {
   const detail = error instanceof Error ? { message: error.message } : error;
@@ -278,6 +284,28 @@ function invalidRequestResult(error: unknown): ToolDomainResult {
 
 function kbNotFoundResult(kind: KbReadKind, slug: string): ToolDomainResult {
   return domainError('not_found', `KB ${kind} not found: ${slug}`);
+}
+
+function parseDiagnoseSignals(entry: PendingRepair): unknown {
+  if (entry.signalsJson === undefined) {
+    return null;
+  }
+
+  return JSON.parse(entry.signalsJson);
+}
+
+export function buildKbDiagnoseResult(entries: ReadonlyArray<PendingRepair>): KbDiagnoseResult {
+  return {
+    incidents: entries.map((entry) => ({
+      entry_id: entry.entryId,
+      locus: entry.locus ?? null,
+      canonical_incident: entry.canonicalIncident ?? null,
+      repair_hint: entry.repairHint ?? null,
+      signals: parseDiagnoseSignals(entry),
+      retry_count: entry.retryCount ?? 0,
+      retry_not_before: entry.retryNotBefore ?? entry.detectedAt,
+    })),
+  };
 }
 
 function normalizeKbSlug(
@@ -356,7 +384,12 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   }
 
   return runKbAction(() =>
-    searchKb(kbSubsystem.kb, parsed.data.query, parsed.data.top_k ?? 20, parsed.data.scope ?? 'all'),
+    searchKb(
+      kbSubsystem.kb,
+      parsed.data.query,
+      parsed.data.top_k ?? 20,
+      parsed.data.scope ?? 'all',
+    ),
   );
 }
 
@@ -617,6 +650,15 @@ export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeB
     kbSubsystem.curateScheduler.scheduleDeferredCommit();
     return result;
   });
+}
+
+export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): ToolDomainResult {
+  const parsed = kbDiagnoseSchema.safeParse(args);
+  if (!parsed.success) {
+    return toolValidationError(parsed.error);
+  }
+
+  return runKbSyncAction(() => buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.kb.db)));
 }
 
 export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {

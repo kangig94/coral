@@ -7,4 +7,12 @@ export { openStoreDatabase } from './db.js';
 export { applyMigrations } from './migrations.js';
 export { journalEventEnvelopeSchema } from './envelope.js';
 export type { CoralEvent, CoralEventInput } from './envelope.js';
-export type { EventsRow, MetaRow, CorpusStateRow, CurateSchedulerRow } from './schema.js';
+export type {
+  EventsRow,
+  MetaRow,
+  CorpusStateRow,
+  CurateSchedulerRow,
+  CurateRetryQueueRow,
+  CurateDiscoveryBacklogRow,
+  CurateDiscoveryBacklogNoteRow,
+} from './schema.js';

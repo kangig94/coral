@@ -47,6 +47,35 @@ function setMtime(path: string, mtime: Date): void {
   utimesSync(path, mtime, mtime);
 }
 
+function expectPendingRepairEntries(
+  pendingRepair: Array<{
+    entryId: string;
+    entrySeq: number | null;
+    detectedAt: string;
+    reason?: string;
+    retryCount?: number;
+    retryNotBefore?: string;
+  }> | null,
+  expected: ReadonlyArray<{ entryId: string; entrySeq: number | null }>,
+): void {
+  expect(pendingRepair).not.toBeNull();
+  expect(pendingRepair).toHaveLength(expected.length);
+
+  for (const expectedEntry of expected) {
+    const repair = pendingRepair?.find((entry) => entry.entryId === expectedEntry.entryId);
+    expect(repair).toBeDefined();
+    expect(repair).toEqual(
+      expect.objectContaining({
+        entryId: expectedEntry.entryId,
+        entrySeq: expectedEntry.entrySeq,
+        reason: 'pending-repair',
+        retryCount: 0,
+      }),
+    );
+    expect(repair?.retryNotBefore).toBe(repair?.detectedAt);
+  }
+}
+
 // @flaky — mtime comparison race: parallel test I/O can shift directory mtime between reindex() and ensureIndex()
 describe('kb reindex', { retry: 2 }, () => {
   beforeEach(() => {
@@ -275,7 +304,7 @@ Body.
         },
       ],
     };
-    kb.writeEntityGraph(graph);
+    await kb.writeEntityGraph(graph);
 
     const result = await reindex(kb);
 
@@ -315,7 +344,7 @@ Body.
       'utf-8',
     );
 
-    kb.writeEntityGraph({
+    await kb.writeEntityGraph({
       entityMeta: {
         'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
         retrieval: { type: 'operation', description: 'Retrieval workflows.' },
@@ -406,7 +435,7 @@ Body.
       'utf-8',
     );
 
-    kb.writeEntityGraph({
+    await kb.writeEntityGraph({
       entityMeta: {
         'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
         retrieval: { type: 'operation', description: 'Retrieval workflows.' },
@@ -517,7 +546,6 @@ Make the contract explicit first.
       metadataSeq: 3,
       mutationSeq: 3,
       textIndexedSeq: 3,
-      vector: { bySpec: {} },
     });
 
     const result = await reindex(kb);
@@ -635,20 +663,16 @@ entrySeq: nope
       sources: 0,
       mode: 'text',
     });
-    expect(readCurateState(kb).pendingRepair).toEqual(
-      expect.arrayContaining([
-        {
-          entryId: noteEntryId('bad-note'),
-          entrySeq: 7,
-          detectedAt: expect.any(String),
-        },
-        {
-          entryId: sourceEntryId('bad-source'),
-          entrySeq: null,
-          detectedAt: expect.any(String),
-        },
-      ]),
-    );
+    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
+      {
+        entryId: noteEntryId('bad-note'),
+        entrySeq: 7,
+      },
+      {
+        entryId: sourceEntryId('bad-source'),
+        entrySeq: null,
+      },
+    ]);
   });
 
   it('does not retry unchanged pendingRepair files on every runtime access', async () => {
@@ -698,11 +722,10 @@ This note has malformed frontmatter.
     await kb.ensureIndex();
 
     expect(reindexSuccessSpy).not.toHaveBeenCalled();
-    expect(readCurateState(kb).pendingRepair).toEqual([
+    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
-        detectedAt: expect.any(String),
       },
     ]);
   });
@@ -762,11 +785,10 @@ This note has malformed frontmatter.
     await reindex(kb);
 
     const pendingRepair = readCurateState(kb).pendingRepair;
-    expect(pendingRepair).toEqual([
+    expectPendingRepairEntries(pendingRepair, [
       {
         entryId: noteEntryId('bad-note'),
         entrySeq: 7,
-        detectedAt: expect.any(String),
       },
     ]);
     expect(readCurateState(kb)).toMatchObject({
@@ -846,11 +868,10 @@ Malformed source frontmatter.
     await reindex(kb);
 
     const detectedAt = readCurateState(kb).pendingRepair?.[0]?.detectedAt;
-    expect(readCurateState(kb).pendingRepair).toEqual([
+    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
       {
         entryId: sourceEntryId('bad-source'),
         entrySeq: 8,
-        detectedAt: expect.any(String),
       },
     ]);
 
@@ -875,11 +896,10 @@ Source body.
 
     await kb.ensureIndex();
     expect(reindexSuccessSpy).not.toHaveBeenCalled();
-    expect(readCurateState(kb).pendingRepair).toEqual([
+    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
       {
         entryId: sourceEntryId('bad-source'),
         entrySeq: 8,
-        detectedAt: expect.any(String),
       },
     ]);
 

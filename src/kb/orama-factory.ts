@@ -1,5 +1,6 @@
 import { components, create } from '@orama/orama';
 import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './orama-schema.js';
+import { computeContentSurfaceHash, computeMetadataSurfaceHash, type CanonicalFrontmatterRecord } from './corpus/snapshot.js';
 import {
   communityEntryId,
   noteEntryId,
@@ -12,6 +13,7 @@ import {
 const ORAMA_LANGUAGE = 'english';
 
 export type KbOramaDocument = {
+  id: string;
   entryId: string;
   slug: string;
   kind: 'note' | 'source' | 'community';
@@ -20,6 +22,9 @@ export type KbOramaDocument = {
   body: string;
   tags: string[];
   principles: string[];
+  contentHash: string;
+  metadataHash: string;
+  vector: number[];
 };
 
 export function normalizeWhitespace(value: string): string {
@@ -52,11 +57,18 @@ export function tokenizeField(value: string, tokenizer: KbOramaTokenizer): strin
 
 export function toOramaDocument(
   record: KbReindexNoteRecord | KbReindexSourceRecord | KbReindexCommunityRecord,
-  options: { communityFresh?: boolean } = {},
+  options: {
+    communityFresh?: boolean;
+    contentHash?: string;
+    metadataHash?: string;
+    vector?: number[];
+  } = {},
 ): KbOramaDocument {
   if ('note' in record) {
+    const entryId = noteEntryId(record.note);
     return {
-      entryId: noteEntryId(record.note),
+      id: entryId,
+      entryId,
       slug: normalizeHyphens(record.note),
       kind: 'note',
       freshness: 'fresh',
@@ -64,12 +76,34 @@ export function toOramaDocument(
       body: record.body,
       tags: record.tags.map(normalizeHyphens),
       principles: record.principles.map(normalizeHyphens),
+      contentHash:
+        options.contentHash ??
+        computeContentSurfaceHash({
+          title: record.title,
+          body: record.body,
+        }),
+      metadataHash:
+        options.metadataHash ??
+        computeMetadataSurfaceHash({
+          frontmatter: {
+            tags: record.tags,
+            principles: record.principles,
+            source: record.source,
+            createdAt: record.createdAt,
+            updatedAt: record.updatedAt,
+            entrySeq: record.entrySeq,
+            related: record.related,
+          } as CanonicalFrontmatterRecord,
+        }),
+      vector: [...(options.vector ?? [])],
     };
   }
 
   if ('type' in record) {
+    const entryId = sourceEntryId(record.slug);
     return {
-      entryId: sourceEntryId(record.slug),
+      id: entryId,
+      entryId,
       slug: normalizeHyphens(record.slug),
       kind: 'source',
       freshness: 'fresh',
@@ -77,11 +111,32 @@ export function toOramaDocument(
       body: record.body,
       tags: record.tags.map(normalizeHyphens),
       principles: [],
+      contentHash:
+        options.contentHash ??
+        computeContentSurfaceHash({
+          title: record.title,
+          body: record.body,
+        }),
+      metadataHash:
+        options.metadataHash ??
+        computeMetadataSurfaceHash({
+          frontmatter: {
+            type: record.type,
+            tags: record.tags,
+            url: record.url,
+            importedAt: record.importedAt,
+            entrySeq: record.entrySeq,
+            related: record.related,
+          } as CanonicalFrontmatterRecord,
+        }),
+      vector: [...(options.vector ?? [])],
     };
   }
 
+  const entryId = communityEntryId(record.slug);
   return {
-    entryId: communityEntryId(record.slug),
+    id: entryId,
+    entryId,
     slug: normalizeHyphens(record.slug),
     kind: 'community',
     freshness: options.communityFresh === false ? 'stale' : 'fresh',
@@ -89,6 +144,26 @@ export function toOramaDocument(
     body: record.body,
     tags: record.members.map(normalizeHyphens),
     principles: [],
+    contentHash:
+      options.contentHash ??
+      computeContentSurfaceHash({
+        title: record.title,
+        body: record.body,
+      }),
+    metadataHash:
+      options.metadataHash ??
+      computeMetadataSurfaceHash({
+        frontmatter: {
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          level: record.level,
+          parent: record.parent,
+          children: record.children,
+          members: record.members,
+          summary: record.summary,
+        } as CanonicalFrontmatterRecord,
+      }),
+    vector: [...(options.vector ?? [])],
   };
 }
 

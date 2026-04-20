@@ -439,6 +439,7 @@ export class BackendClient {
         q: args.query,
         scope: args.scope,
         top_k: args.top_k,
+        mode: args.mode,
       }),
       context,
     );

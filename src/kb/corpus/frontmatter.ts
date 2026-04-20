@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
-import { identPattern, isRecord, isStringArray } from '../shared/utils.js';
+import { identPattern, isRecord, isStringArray } from '../../shared/utils.js';
 import {
   entryIdToVaultLink,
   parseKbEntryId,
@@ -10,14 +10,14 @@ import {
   type KbNoteFrontmatter,
   type KbNoteIdentity,
   type KbSourceFrontmatter,
-} from './entry-types.js';
+} from '../entry-types.js';
 import {
   NOTE_SLUG_PATTERN,
   assertNonEmptyText,
   compareLocale,
   parseNonNegativeInteger,
   parsePositiveInteger,
-} from './validation.js';
+} from '../validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 

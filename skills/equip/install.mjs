@@ -146,7 +146,7 @@ function fetchLatest(repo) {
 }
 
 function kbAddonPath(targetDir) {
-  return join(targetDir, 'vec', 'coral-needle.node');
+  return join(targetDir, 'needle', 'coral-needle.node');
 }
 
 function resolveKbTargetVersion(entry, requestedVersion) {

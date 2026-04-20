@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { noteEntryId, sourceEntryId, type EntryRecord } from '../entry-types.js';
-import type { ChunkRecord } from './contracts.js';
+import type { ChunkRecord } from './needle-store.js';
 
 const MAX_CHUNK_TOKENS = 2048;
 const APPROX_CHARS_PER_TOKEN = 4;

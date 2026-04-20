@@ -39,6 +39,7 @@ import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
+import { createNeedleBackend } from '../kb/search/needle-backend.js';
 export { createBackendCore } from './composition/create-backend-core.js';
 export { listInstantiatedExecutionServices } from './composition/execution-services.js';
 export type {
@@ -158,6 +159,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     createKbSubsystemFn: async (ctx) => {
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
+        db: getStoreDb(),
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => new Date(runtime.time.now()),
@@ -176,6 +178,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           db: getStoreDb(),
           runtime,
         });
+      }
+      await kbSubsystem.kb.retryPendingCorpusPublication();
+      await kbSubsystem.kb.withMutationLock(async () => {
+        kbSubsystem.kb.runEntrySeqUpgradeGuardIfNeeded();
+        await kbSubsystem.kb.ensureOramaIndex();
+      });
+      const driver = getConsumerDriver();
+      driver.register(
+        createNeedleBackend(kbSubsystem.kb, {
+          pluginRoot: coreOptions.pluginRoot ?? runtime.env.cwd(),
+        }),
+      );
+      driver.notifyCorpus(kbSubsystem.kb.getCorpusStateSnapshot());
+      if (kbSubsystem.curateScheduler) {
         await kbSubsystem.curateScheduler.start();
       }
       return kbSubsystem;

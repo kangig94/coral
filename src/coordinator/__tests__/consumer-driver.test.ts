@@ -85,12 +85,6 @@ describe('ConsumerDriver fault isolation', () => {
       startApply();
       await applyReleased;
     });
-    const runApplySpy = vi.spyOn(
-      driver as unknown as {
-        runApply(state: unknown, target: number, snapshot: unknown): Promise<boolean>;
-      },
-      'runApply',
-    );
 
     try {
       driver.register({
@@ -106,7 +100,6 @@ describe('ConsumerDriver fault isolation', () => {
       releaseApply();
       await driver.drainAll();
 
-      expect(runApplySpy).toHaveBeenCalledTimes(1);
       expect(apply).toHaveBeenCalledTimes(1);
       expect(readCursor(db, 'coalesced-consumer')).toBe(7);
     } finally {

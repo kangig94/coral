@@ -26,7 +26,7 @@ async function loadKbModules() {
     import('../read.js'),
     import('../runtime.js'),
     import('../paths.js'),
-    import('../frontmatter.js'),
+    import('../corpus/frontmatter.js'),
   ]);
   return {
     promote,

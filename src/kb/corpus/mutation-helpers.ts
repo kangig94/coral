@@ -1,8 +1,8 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
-import type { KbIndexState, KbRuntime } from './contracts.js';
+import { errorMessage } from '../../shared/utils.js';
+import { backendLog } from '../../shared/backend-log.js';
+import type { KbIndexState, KbRuntime } from '../contracts.js';
 import {
   type EntityMeta,
   type EntityRelationship,
@@ -14,7 +14,7 @@ import {
   type KbIndex,
   type NoteEntry,
   type SourceEntry,
-} from './entry-types.js';
+} from '../entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
 type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;

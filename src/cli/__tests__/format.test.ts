@@ -346,6 +346,19 @@ describe('cli format', () => {
       expect(parsed.count).toBe(0);
     });
 
+    it('formats vector kb search results with a vector indicator and warning codes', () => {
+      const parsed = JSON.parse(
+        formatKbSearch({
+          results: [],
+          mode: 'vector',
+          warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+        }),
+      );
+
+      expect(parsed.indicator).toBe('[vector]');
+      expect(parsed.warnings).toEqual(['kb_search_degraded_until_coordinator_rebuild']);
+    });
+
     it('formats kb read note payloads as JSON', () => {
       const formatted = formatKbRead({
         kind: 'note',

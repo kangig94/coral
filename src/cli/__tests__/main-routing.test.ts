@@ -39,6 +39,7 @@ const mockState = vi.hoisted(() => ({
   discussSpeech: vi.fn(),
   discussAbort: vi.fn(),
   kbSearch: vi.fn(),
+  kbDiagnose: vi.fn(),
   kbPrinciples: vi.fn(),
   kbSourceImport: vi.fn(),
   kbSourceList: vi.fn(),
@@ -113,6 +114,7 @@ vi.mock('../command-helpers.js', async () => {
       discussSpeech: mockState.discussSpeech,
       discussAbort: mockState.discussAbort,
       kbSearch: mockState.kbSearch,
+      kbDiagnose: mockState.kbDiagnose,
       kbPrinciples: mockState.kbPrinciples,
       kbRead: mockState.kbRead,
       kbPromote: mockState.kbPromote,
@@ -220,6 +222,7 @@ describe('cli main routing', () => {
     mockState.discussSpeech.mockReset();
     mockState.discussAbort.mockReset();
     mockState.kbSearch.mockReset();
+    mockState.kbDiagnose.mockReset();
     mockState.kbPrinciples.mockReset();
     mockState.kbSourceImport.mockReset();
     mockState.kbSourceList.mockReset();
@@ -1385,6 +1388,60 @@ describe('cli main routing', () => {
       mode: 'text',
       warning: 'Run kb_reindex to build the search index.',
     });
+  });
+
+  it('routes kb diagnose and formats manual-repair incidents in text mode', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbDiagnose.mockResolvedValueOnce({
+      incidents: [
+        {
+          entry_id: 'note:broken-frontmatter',
+          locus: 'frontmatter-shape',
+          canonical_incident: 'frontmatter-shape/missing-required-fields',
+          repair_hint: 'Restore createdAt and updatedAt in note frontmatter.',
+          signals: {
+            missingFields: ['createdAt', 'updatedAt'],
+          },
+          retry_count: 2,
+          retry_not_before: '2026-04-21T00:00:00.000Z',
+        },
+      ],
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'diagnose']);
+
+    expect(mockState.kbDiagnose).toHaveBeenCalledWith({});
+    expect(stdout).toBe(
+      'entry_id: note:broken-frontmatter\n'
+        + 'locus: frontmatter-shape\n'
+        + 'canonical_incident: frontmatter-shape/missing-required-fields\n'
+        + 'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n'
+        + 'signals:\n'
+        + '{\n'
+        + '  "missingFields": [\n'
+        + '    "createdAt",\n'
+        + '    "updatedAt"\n'
+        + '  ]\n'
+        + '}\n'
+        + 'retry_count: 2\n'
+        + 'retry_not_before: 2026-04-21T00:00:00.000Z\n',
+    );
+  });
+
+  it('routes kb diagnose --json as raw machine output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    mockState.kbDiagnose.mockResolvedValueOnce({
+      incidents: [],
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'diagnose', '--json']);
+
+    expect(mockState.kbDiagnose).toHaveBeenCalledWith({});
+    expect(JSON.parse(stdout.trim())).toEqual({ incidents: [] });
   });
 
   it('formats hybrid kb search output with an indicator and rewritten warning text in text mode', async () => {

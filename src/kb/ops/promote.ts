@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../../shared/utils.js';
-import { parseMemoFrontmatter, serializeNote } from '../frontmatter.js';
+import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
@@ -9,7 +9,7 @@ import {
   commitIndexUpdate,
   recordContentAndMetadataMutation,
   writeFileAtomic,
-} from '../mutation-helpers.js';
+} from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
 
 export async function promote(

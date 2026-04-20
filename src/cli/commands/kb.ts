@@ -26,6 +26,7 @@ import {
   type KbUpdateOptions,
 } from '../command-helpers.js';
 import {
+  formatKbDiagnose,
   formatKbDelete,
   formatKbMemo,
   formatKbMemoDelete,
@@ -193,6 +194,8 @@ export function registerKbCommands(program: Command): void {
     .description('Search KB entries')
     .argument('<query>', 'Search query')
     .option('--top-k <n>', 'Maximum results')
+    .option('--vector', 'Force vector-only search')
+    .option('--hybrid', 'Force hybrid search')
     .addOption(
       new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
         'notes',
@@ -205,14 +208,36 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
       try {
+        if (opts.vector === true && opts.hybrid === true) {
+          throw new UsageError('Choose at most one of --vector or --hybrid');
+        }
+
         const args = {
           query,
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
+          ...(opts.vector === true ? { mode: 'vector' as const } : {}),
+          ...(opts.hybrid === true ? { mode: 'hybrid' as const } : {}),
         };
         const client = makeClient(process.cwd(), kbSearchCommand);
         const result = await client.kbSearch(args);
         emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbDiagnoseCommand = kb.command('diagnose');
+  kbDiagnoseCommand
+    .description('Show KB incidents that need manual repair')
+    .option('--json', 'Emit machine-readable JSON')
+    .action(async (opts: { json?: boolean }) => {
+      const outputFormat = opts.json === true ? 'json' : getOutputFormat(kbDiagnoseCommand);
+
+      try {
+        const client = makeClient(process.cwd(), kbDiagnoseCommand);
+        const result = await client.kbDiagnose({});
+        emit(result, outputFormat, formatKbDiagnose);
       } catch (error) {
         emitError(error);
       }

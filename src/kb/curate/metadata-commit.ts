@@ -7,7 +7,7 @@ import {
   parseSourceFrontmatter,
   replaceFrontmatter,
   replaceSourceFrontmatter,
-} from '../frontmatter.js';
+} from '../corpus/frontmatter.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
@@ -16,7 +16,8 @@ import {
   cloneKbIndex,
   recordMetadataMutation,
   writeFileAtomic,
-} from '../mutation-helpers.js';
+} from '../corpus/mutation-helpers.js';
+import { writeEntityGraphLocked } from '../runtime.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -214,7 +215,7 @@ export async function commitMetadataTargetsLocked(
 
   if (graphChanged) {
     try {
-      writeFileAtomic(kb.entityGraphPath(), `${JSON.stringify(desiredGraph, null, 2)}\n`);
+      writeEntityGraphLocked(kb, desiredGraph);
     } catch (error: unknown) {
       failure ??= error;
     }

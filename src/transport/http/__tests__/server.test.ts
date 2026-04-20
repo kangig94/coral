@@ -508,7 +508,26 @@ describe('execution backend server', () => {
   function createMockKbSubsystem() {
     return {
       kb: {
-        closeVectorStores: vi.fn(async () => {}),
+        retryPendingCorpusPublication: vi.fn(async () => {}),
+        withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
+        runEntrySeqUpgradeGuardIfNeeded: vi.fn(() => false),
+        ensureOramaIndex: vi.fn(async () => ({
+          db: {} as never,
+          tokenizer: {} as never,
+          index: {
+            entries: {},
+            principles: {},
+            entityMeta: {},
+            relationships: [],
+          },
+        })),
+        getCorpusStateSnapshot: vi.fn(() => ({
+          snapshotId: '',
+          contentSeq: 0,
+          metadataSeq: 0,
+          contentManifestHash: '',
+          metadataManifestHash: '',
+        })),
       } as never,
       curateScheduler: {
         start: vi.fn(async () => {}),
@@ -929,9 +948,7 @@ describe('execution backend server', () => {
     const createKbSubsystemFn = vi.fn(async (options) => {
       receivedKbOptions = options;
       return {
-        kb: {
-          closeVectorStores: vi.fn(async () => {}),
-        } as never,
+        kb: {} as never,
         curateScheduler: {
           start: vi.fn(async () => {}),
           schedule: vi.fn(),
@@ -1088,7 +1105,36 @@ describe('execution backend server', () => {
   });
 
   it('routes KB tool calls through direct handlers and catches errors', async () => {
-    const backend = await startBackendServer();
+    const kbSubsystem = createMockKbSubsystem();
+    const backend = await startBackendServer({
+      createKbSubsystemFn: async () => ({
+        kb: {
+          ...(kbSubsystem.kb as Record<string, unknown>),
+          ensureOramaIndex: vi.fn(async () => ({
+            db: {} as never,
+            tokenizer: {} as never,
+            index: {
+              entries: {
+                'note:broken-entry': {
+                  kind: 'note',
+                  slug: 'broken-entry',
+                  title: 'Broken Entry',
+                  tags: [],
+                  principles: [],
+                  source: ['kangig94/coral'],
+                  createdAt: '2026-03-20T00:00:00.000Z',
+                  updatedAt: '2026-03-20T00:00:00.000Z',
+                  related: [],
+                  entrySeq: 1,
+                },
+              },
+              principles: {},
+            },
+          })),
+        } as never,
+        curateScheduler: kbSubsystem.curateScheduler,
+      }),
+    });
 
     const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {
       headers: {

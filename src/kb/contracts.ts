@@ -1,13 +1,13 @@
+import type BetterSqlite3 from 'better-sqlite3';
+
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
-import type { VectorStore } from './vector/contracts.js';
+import type { CorpusSnapshot } from './corpus/snapshot.js';
+import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
-export interface KbCorpusSnapshot {
-  contentSeq: number;
-  metadataSeq: number;
-}
+export type KbCorpusSnapshot = CorpusSnapshot;
 
 export type KbCorpusLane = 'content' | 'metadata';
 
@@ -36,22 +36,7 @@ export interface KbCorpusPublishCallbacks {
   onPublishSuccess?(): void;
 }
 
-export interface KbVectorSpecState {
-  indexedSeq: number;
-  staleReason?: string;
-  activeSnapshotId?: string;
-}
-
-export interface KbVectorLease {
-  store: VectorStore;
-  specId: string;
-  snapshotId: string;
-  generation: number;
-  vectorStatus: KbVectorSpecState | null;
-  release(): Promise<void>;
-}
-
-export interface KbVectorTextSnapshot {
+export interface KbTextArtifactsSnapshot {
   index: KbIndex;
   notes: Array<{ entry: NoteEntry; body: string }>;
   sources: Array<{ entry: SourceEntry; body: string }>;
@@ -61,9 +46,6 @@ export interface KbIndexState {
   contentSeq: number;
   metadataSeq: number;
   textStaleReason?: string;
-  vector: {
-    bySpec: Record<string, KbVectorSpecState>;
-  };
   mutationSeq: number;
   textIndexedSeq: number;
 }
@@ -76,19 +58,7 @@ export interface KbCachedOramaIndex {
 export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
-  vectorStore: VectorStore | null;
-  initVectorStore(pluginRoot: string): Promise<void>;
-  openVectorStore(
-    dbPath: string,
-    handleToken: string,
-  ): Promise<{
-    store: VectorStore;
-    close(): Promise<void>;
-  } | null>;
-  activateVectorSnapshot(specId: string, snapshotId: string): Promise<void>;
-  acquireVectorLease(): Promise<KbVectorLease | null>;
-  closeVectorStores(): Promise<void>;
-  getActiveVectorHandleInfo(): { specId: string; snapshotId: string; generation: number } | null;
+  readonly db: BetterSqlite3.Database;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;
@@ -105,17 +75,18 @@ export interface KbRuntime {
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
     externalMutation?: KbIndexMutationLane | null,
   ): KbIndexState;
-  recordVectorSyncSuccess(specId: string, startContentSeq: number, snapshotId: string): KbIndexState;
-  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState;
-  getVectorStatus(specId: string): KbVectorSpecState | null;
+  getCorpusStateSnapshot(): KbCorpusSnapshot;
+  invalidateCorpusStateSnapshot(): void;
   ensureIndex(): Promise<KbIndex>;
   ensureOramaIndex(): Promise<{
     db: KbOramaDb;
     tokenizer: KbOramaTokenizer;
     index: KbIndex;
+    warnings?: string[];
   }>;
-  ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot>;
-  withMutationLock<T>(fn: () => Promise<T> | T): Promise<T>;
+  loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null>;
+  ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot>;
+  withMutationLock<T>(fn: () => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
   runInboundSync<T>(fn: () => Promise<T> | T): Promise<T>;
   invalidateKbCache(): void;
@@ -132,7 +103,6 @@ export interface KbRuntime {
   communityPath(community: string): string;
   principlePath(principle: string): string;
   sourceImportStageDir(): string;
-  curateStatePath(): string;
   readEntityGraph(): EntityGraph | null;
-  writeEntityGraph(graph: EntityGraph): void;
+  writeEntityGraph(graph: EntityGraph): Promise<void>;
 }

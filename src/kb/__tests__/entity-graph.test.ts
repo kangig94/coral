@@ -96,7 +96,7 @@ describe('entity-graph', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('writes graphs atomically through a tmp file and updates the live index copy', () => {
+  it('writes graphs atomically through a tmp file and updates the live index copy', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
     const kb = createKbRuntime({
       markdownRoot: root,
@@ -109,7 +109,7 @@ describe('entity-graph', () => {
     });
 
     const graph = createGraph();
-    kb.writeEntityGraph(graph);
+    await kb.writeEntityGraph(graph);
 
     expect(kb.readEntityGraph()).toEqual(graph);
     expect(kb.readIndex()).toMatchObject({

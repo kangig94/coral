@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate/scheduler.js';
 import type { KbRuntime } from '../contracts.js';
 import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '../curate/state.js';
-import { parseFrontmatter, parseSourceFrontmatter } from '../frontmatter.js';
+import { parseFrontmatter, parseSourceFrontmatter } from '../corpus/frontmatter.js';
 import { reindex } from '../ops/reindex.js';
 import { createKbRuntime } from '../runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '../entry-types.js';
@@ -372,7 +372,6 @@ describe('curate AC6/AC8', () => {
       metadataSeq: 10,
       mutationSeq: 10,
       textIndexedSeq: 10,
-      vector: { bySpec: {} },
     });
     writeCurateState(runtime, {
       processedThrough: null,
@@ -410,8 +409,13 @@ describe('curate AC6/AC8', () => {
       cwd: tempDir,
       encoding: 'utf-8',
     });
+    const nonRuntimeStatus = status
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+      .filter((line) => !['?? store.db', '?? store.db-shm', '?? store.db-wal'].includes(line));
 
-    expect(status.trim()).toBe('');
+    expect(nonRuntimeStatus).toEqual([]);
     expect(lastCommit).toContain('curate:');
     expect(readCurateState(runtime).processedThrough).toEqual({
       entryId: sourceEntryId('sqlite-source-10'),

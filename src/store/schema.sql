@@ -85,30 +85,41 @@ CREATE TABLE IF NOT EXISTS meta (
 -- Corpus version state (KB authority - see §6.4)
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
 CREATE TABLE IF NOT EXISTS corpus_state (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
-  content_seq   INTEGER NOT NULL,
-  metadata_seq  INTEGER NOT NULL,
-  last_mutation TEXT    NOT NULL    -- ISO 8601
+  id                     INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+  snapshot_id            TEXT,
+  content_seq            INTEGER NOT NULL,
+  metadata_seq           INTEGER NOT NULL,
+  content_manifest_hash  TEXT,
+  metadata_manifest_hash TEXT,
+  last_mutation          TEXT    NOT NULL    -- ISO 8601
 );
 
 -- Equipment projection cursors (async push model; see §2.6)
 -- Cursor interpretation depends on the consumer's authority:
 -- - Journal consumers: cursor is events.seq
--- - Corpus consumers: cursor is corpus contentSeq (or metadataSeq)
+-- - Corpus consumers: snapshot_id + seq/hash fields reflect the last applied snapshot
 CREATE TABLE IF NOT EXISTS equipment_cursors (
-  consumer_id TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
-  authority   TEXT NOT NULL,         -- 'journal' | 'corpus'
-  lane        TEXT,                  -- NULL for journal, 'content' | 'metadata' for corpus
-  cursor      INTEGER NOT NULL,      -- last successfully-applied seq/contentSeq
-  equipped_at TEXT    NOT NULL       -- ISO 8601 of most recent equip
+  consumer_id            TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
+  authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
+  lane                   TEXT,                  -- legacy/internal hint; NULL for journal and 'both' corpus consumers
+  corpus_interest        TEXT,                  -- NULL for journal, 'content' | 'metadata' | 'both' for corpus
+  cursor                 INTEGER,               -- journal only (events.seq)
+  snapshot_id            TEXT,                  -- corpus only
+  content_seq            INTEGER,               -- corpus only
+  metadata_seq           INTEGER,               -- corpus only
+  content_manifest_hash  TEXT,                  -- corpus only
+  metadata_manifest_hash TEXT,                  -- corpus only
+  equipped_at            TEXT    NOT NULL       -- ISO 8601 of most recent equip
 );
 
--- Curate scheduler bookkeeping (replaces today's curate-state.json).
+-- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
 -- Single row. Worker claim is omitted (coordinator single-writer covers it);
 -- migration_version is omitted (meta.schema_version handles schema evolution).
 CREATE TABLE IF NOT EXISTS curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
-  processed_through          TEXT,                        -- JSON: CurateCursor
+  processed_through_seq      INTEGER,
+  processed_through_entry_id TEXT,
+  processed_through_entry_kind TEXT,
   discovery_high_seq         INTEGER,
   discovery_offset           INTEGER,
   last_run_day               TEXT,
@@ -116,17 +127,36 @@ CREATE TABLE IF NOT EXISTS curate_scheduler (
   community_topology_hash    TEXT
 );
 
--- Curate retry queue (pendingRepair[] in today's JSON state).
+-- Curate retry queue (pendingRepair[] in the legacy file-backed state).
 -- Each entry has its own retry schedule; indexed by retry_not_before for
 -- O(log n) "who is due now" scans.
 CREATE TABLE IF NOT EXISTS curate_retry_queue (
   entry_id                   TEXT PRIMARY KEY,
   reason                     TEXT NOT NULL,
   observed_at                TEXT NOT NULL,
+  locus                      TEXT,
+  canonical_incident         TEXT,
+  signals_json               TEXT,
+  repair_hint                TEXT,
   retry_not_before           TEXT NOT NULL,
   retry_count                INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS curate_retry_by_time ON curate_retry_queue(retry_not_before);
+
+CREATE TABLE IF NOT EXISTS curate_discovery_backlog (
+  entry_id                   TEXT PRIMARY KEY,
+  principle_slug            TEXT NOT NULL,
+  statement                 TEXT NOT NULL,
+  queued_at                 TEXT NOT NULL,
+  reason                    TEXT,
+  UNIQUE(principle_slug, statement)
+);
+
+CREATE TABLE IF NOT EXISTS curate_discovery_backlog_notes (
+  backlog_entry_id          TEXT NOT NULL REFERENCES curate_discovery_backlog(entry_id) ON DELETE CASCADE,
+  note_id                   TEXT NOT NULL,
+  PRIMARY KEY(backlog_entry_id, note_id)
+);
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
   ('schema_version', '1'),
@@ -134,8 +164,26 @@ INSERT OR IGNORE INTO meta (key, value) VALUES
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
-INSERT OR IGNORE INTO corpus_state (id, content_seq, metadata_seq, last_mutation) VALUES
-  (1, 0, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+INSERT OR IGNORE INTO corpus_state (
+  id,
+  snapshot_id,
+  content_seq,
+  metadata_seq,
+  content_manifest_hash,
+  metadata_manifest_hash,
+  last_mutation
+) VALUES
+  (1, NULL, 0, 0, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
-INSERT OR IGNORE INTO curate_scheduler (id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash) VALUES
-  (1, NULL, NULL, NULL, NULL, 0, NULL);
+INSERT OR IGNORE INTO curate_scheduler (
+  id,
+  processed_through_seq,
+  processed_through_entry_id,
+  processed_through_entry_kind,
+  discovery_high_seq,
+  discovery_offset,
+  last_run_day,
+  consecutive_failures,
+  community_topology_hash
+) VALUES
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL);

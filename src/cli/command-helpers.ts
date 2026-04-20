@@ -24,6 +24,8 @@ import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/sess
 import type { WatchState } from '../discuss/watch.js';
 import type { JobStatus } from '../jobs/views.js';
 import type {
+  KbDiagnoseInput,
+  KbDiagnoseResult,
   KbDeleteInput,
   KbMemoDeleteInput,
   KbMemoDeleteResult,
@@ -136,6 +138,7 @@ export type CliCommandClient = AbortCapableClient & {
   }): Promise<SpeechResult>;
   discussAbort(session: string): Promise<DiscussAbortResponse>;
   kbSearch(args: KbSearchInput): Promise<KbSearchResponse>;
+  kbDiagnose(args?: KbDiagnoseInput): Promise<KbDiagnoseResult>;
   kbPrinciples(args: KbPrinciplesInput): Promise<KbPrinciplesResult>;
   kbRead(args: KbReadInput): Promise<KbReadResult>;
   kbPromote(args: KbPromoteInput): Promise<KbPromoteResponse>;
@@ -223,6 +226,8 @@ export type DiscussAbortOptions = {
 export type KbSearchOptions = {
   topK?: string;
   scope?: 'notes' | 'communities' | 'sources' | 'all';
+  vector?: boolean;
+  hybrid?: boolean;
 };
 
 export type KbPrinciplesOptions = {
@@ -486,6 +491,13 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         ...(args.scope === undefined ? {} : { scope: args.scope }),
         ...(args.top_k === undefined ? {} : { top_k: args.top_k }),
       });
+    },
+    kbDiagnose: async (_args = {}) => {
+      if (commandClass === 'read') {
+        return await Promise.resolve(readStore().kb.diagnose());
+      }
+
+      throw new Error(`Command "${path}" is classified as ${commandClass} and cannot issue direct KB diagnose reads.`);
     },
     kbPrinciples: async (args) => {
       if (commandClass === 'read') {

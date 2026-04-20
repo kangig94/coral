@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
 import { CoralSetupError } from '../runtime/errors.js';
-import type { KbCorpusSnapshot } from '../kb/api.js';
 import { backendLog } from '../shared/backend-log.js';
 
 export class FreshnessTimeout extends Error {
@@ -13,7 +13,8 @@ export class FreshnessTimeout extends Error {
 }
 
 export type Authority = 'journal' | 'corpus';
-export type CorpusLane = 'content' | 'metadata';
+export type CorpusLaneHint = 'content' | 'metadata';
+export type CorpusInterest = CorpusLaneHint | 'both';
 
 export interface JournalApplyContext {
   readonly fromSeq: number;
@@ -37,8 +38,8 @@ export interface JournalConsumerRegistration {
 export interface CorpusConsumerRegistration {
   readonly id: string;
   readonly authority: 'corpus';
-  readonly lane: CorpusLane;
-  apply(_ctx: { contentSeq: number; metadataSeq: number; db: BetterSqlite3.Database }): Promise<void>;
+  readonly corpusInterest: CorpusInterest;
+  apply(_ctx: { snapshot: CorpusSnapshot; db: BetterSqlite3.Database }): Promise<void>;
 }
 
 interface Waiter {
@@ -53,8 +54,26 @@ interface ConsumerState {
   readonly reg: JournalConsumerRegistration | CorpusConsumerRegistration;
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
-  pendingCorpusSnapshot: KbCorpusSnapshot | null;
+  pendingCorpusSnapshot: CorpusSnapshot | null;
   waiters: Set<Waiter>;
+}
+
+interface StoredCursorMetadataRow {
+  authority: string;
+  lane: string | null;
+  corpus_interest: string | null;
+}
+
+interface JournalCursorRow {
+  cursor: number | null;
+}
+
+interface CorpusCursorRow {
+  snapshot_id: string | null;
+  content_seq: number | null;
+  metadata_seq: number | null;
+  content_manifest_hash: string | null;
+  metadata_manifest_hash: string | null;
 }
 
 export interface ConsumerDriverOptions {
@@ -62,47 +81,206 @@ export interface ConsumerDriverOptions {
   readonly now?: () => Date;
 }
 
+const EMPTY_CORPUS_CURSOR: CorpusSnapshot = {
+  snapshotId: '',
+  contentSeq: 0,
+  metadataSeq: 0,
+  contentManifestHash: '',
+  metadataManifestHash: '',
+};
+
+function isCorpusInterest(value: unknown): value is CorpusInterest {
+  return value === 'content' || value === 'metadata' || value === 'both';
+}
+
+function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint | null {
+  return interest === 'both' ? null : interest;
+}
+
+function parseStoredCorpusInterest(row: StoredCursorMetadataRow): CorpusInterest | null {
+  const raw = row.corpus_interest ?? row.lane;
+  return isCorpusInterest(raw) ? raw : null;
+}
+
+function normalizeCorpusCursor(row: CorpusCursorRow | undefined): CorpusSnapshot {
+  if (row === undefined) {
+    return { ...EMPTY_CORPUS_CURSOR };
+  }
+
+  return {
+    snapshotId: row.snapshot_id ?? '',
+    contentSeq: row.content_seq ?? 0,
+    metadataSeq: row.metadata_seq ?? 0,
+    contentManifestHash: row.content_manifest_hash ?? '',
+    metadataManifestHash: row.metadata_manifest_hash ?? '',
+  };
+}
+
+function shouldNotifyCorpusConsumer(
+  interest: CorpusInterest,
+  laneHint: CorpusLaneHint | undefined,
+): boolean {
+  return laneHint === undefined || interest === 'both' || interest === laneHint;
+}
+
+function isSnapshotFresherForInterest(
+  next: CorpusSnapshot,
+  current: CorpusSnapshot,
+  interest: CorpusInterest,
+): boolean {
+  if (interest === 'content') {
+    return (
+      next.contentSeq > current.contentSeq ||
+      (next.contentSeq === current.contentSeq && next.contentManifestHash !== current.contentManifestHash)
+    );
+  }
+
+  if (interest === 'metadata') {
+    return (
+      next.metadataSeq > current.metadataSeq ||
+      (next.metadataSeq === current.metadataSeq && next.metadataManifestHash !== current.metadataManifestHash)
+    );
+  }
+
+  return (
+    next.contentSeq > current.contentSeq ||
+    next.metadataSeq > current.metadataSeq ||
+    (next.contentSeq === current.contentSeq &&
+      next.metadataSeq === current.metadataSeq &&
+      next.snapshotId !== current.snapshotId)
+  );
+}
+
 export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
   private readonly consumers = new Map<string, ConsumerState>();
-  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], { authority: string; lane: string | null }>;
-  private readonly insertCursorRowStmt: BetterSqlite3.Statement<[string, Authority, CorpusLane | null, string]>;
-  private readonly readCursorStmt: BetterSqlite3.Statement<[string], { cursor: number }>;
-  private readonly advanceCursorStmt: BetterSqlite3.Statement<[number, CorpusLane | null, string, number]>;
+  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], StoredCursorMetadataRow>;
+  private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<[string, Authority, string]>;
+  private readonly insertCorpusCursorRowStmt: BetterSqlite3.Statement<
+    [string, Authority, CorpusLaneHint | null, CorpusInterest, string]
+  >;
+  private readonly readJournalCursorStmt: BetterSqlite3.Statement<[string], JournalCursorRow>;
+  private readonly readCorpusCursorStmt: BetterSqlite3.Statement<[string], CorpusCursorRow>;
+  private readonly advanceJournalCursorStmt: BetterSqlite3.Statement<[number, string, number]>;
+  private readonly advanceContentCursorStmt: BetterSqlite3.Statement<
+    [string, number, number, string, string, string, number, number, string]
+  >;
+  private readonly advanceMetadataCursorStmt: BetterSqlite3.Statement<
+    [string, number, number, string, string, string, number, number, string]
+  >;
+  private readonly advanceBothCursorStmt: BetterSqlite3.Statement<[string, number, number, string, string, string, string]>;
 
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
     this.now = opts.now ?? (() => new Date());
-    this.selectCursorMetadataStmt = this.db.prepare<[string], { authority: string; lane: string | null }>(
-      'SELECT authority, lane FROM equipment_cursors WHERE consumer_id = ?',
+    this.selectCursorMetadataStmt = this.db.prepare<[string], StoredCursorMetadataRow>(
+      'SELECT authority, lane, corpus_interest FROM equipment_cursors WHERE consumer_id = ?',
     );
-    this.insertCursorRowStmt = this.db.prepare<[string, Authority, CorpusLane | null, string]>(
-      'INSERT INTO equipment_cursors (consumer_id, authority, lane, cursor, equipped_at) VALUES (?, ?, ?, 0, ?)',
+    this.insertJournalCursorRowStmt = this.db.prepare<[string, Authority, string]>(
+      'INSERT INTO equipment_cursors (consumer_id, authority, cursor, equipped_at) VALUES (?, ?, 0, ?)',
     );
-    this.readCursorStmt = this.db.prepare<[string], { cursor: number }>(
+    this.insertCorpusCursorRowStmt = this.db.prepare<
+      [string, Authority, CorpusLaneHint | null, CorpusInterest, string]
+    >(
+      `
+        INSERT INTO equipment_cursors (
+          consumer_id,
+          authority,
+          lane,
+          corpus_interest,
+          cursor,
+          snapshot_id,
+          content_seq,
+          metadata_seq,
+          content_manifest_hash,
+          metadata_manifest_hash,
+          equipped_at
+        ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?)
+      `,
+    );
+    this.readJournalCursorStmt = this.db.prepare<[string], JournalCursorRow>(
       'SELECT cursor FROM equipment_cursors WHERE consumer_id = ?',
     );
-    this.advanceCursorStmt = this.db.prepare<[number, CorpusLane | null, string, number]>(
-      'UPDATE equipment_cursors SET cursor = ?, lane = ? WHERE consumer_id = ? AND cursor < ?',
+    this.readCorpusCursorStmt = this.db.prepare<[string], CorpusCursorRow>(
+      `
+        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
+          FROM equipment_cursors
+         WHERE consumer_id = ?
+      `,
+    );
+    this.advanceJournalCursorStmt = this.db.prepare<[number, string, number]>(
+      'UPDATE equipment_cursors SET cursor = ? WHERE consumer_id = ? AND cursor < ?',
+    );
+    this.advanceContentCursorStmt = this.db.prepare<
+      [string, number, number, string, string, string, number, number, string]
+    >(
+      `
+        UPDATE equipment_cursors
+           SET snapshot_id = ?,
+               content_seq = ?,
+               metadata_seq = ?,
+               content_manifest_hash = ?,
+               metadata_manifest_hash = ?
+         WHERE consumer_id = ?
+           AND (content_seq < ? OR (content_seq = ? AND content_manifest_hash != ?))
+      `,
+    );
+    this.advanceMetadataCursorStmt = this.db.prepare<
+      [string, number, number, string, string, string, number, number, string]
+    >(
+      `
+        UPDATE equipment_cursors
+           SET snapshot_id = ?,
+               content_seq = ?,
+               metadata_seq = ?,
+               content_manifest_hash = ?,
+               metadata_manifest_hash = ?
+         WHERE consumer_id = ?
+           AND (metadata_seq < ? OR (metadata_seq = ? AND metadata_manifest_hash != ?))
+      `,
+    );
+    this.advanceBothCursorStmt = this.db.prepare<[string, number, number, string, string, string, string]>(
+      `
+        UPDATE equipment_cursors
+           SET snapshot_id = ?,
+               content_seq = ?,
+               metadata_seq = ?,
+               content_manifest_hash = ?,
+               metadata_manifest_hash = ?
+         WHERE consumer_id = ?
+           AND snapshot_id != ?
+      `,
     );
   }
 
   register(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
-    if (reg.authority === 'corpus' && (reg.lane !== 'content' && reg.lane !== 'metadata')) {
+    if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
       throw new CoralSetupError({
         code: 'consumer_lane_invalid',
-        userMessage: `Corpus consumer '${reg.id}' must declare a valid lane`,
-        remediation: "Register corpus consumers with lane 'content' or 'metadata'.",
-        context: { consumerId: reg.id, authority: reg.authority, lane: reg.lane },
+        userMessage: `Consumer '${reg.id}' must not declare a corpus lane`,
+        remediation: "Use corpusInterest on the registration; lane is only an internal routing hint on notify().",
+        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
       });
     }
-    if (reg.authority === 'journal' && 'lane' in reg) {
+    if (reg.authority === 'corpus' && !isCorpusInterest(reg.corpusInterest)) {
       throw new CoralSetupError({
-        code: 'consumer_lane_invalid',
-        userMessage: `Journal consumer '${reg.id}' must not declare a corpus lane`,
-        remediation: 'Remove the lane field from journal consumers.',
-        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
+        code: 'consumer_interest_invalid',
+        userMessage: `Corpus consumer '${reg.id}' must declare a valid corpus interest`,
+        remediation: "Register corpus consumers with corpusInterest 'content', 'metadata', or 'both'.",
+        context: { consumerId: reg.id, authority: reg.authority, corpusInterest: reg.corpusInterest },
+      });
+    }
+    if (reg.authority === 'journal' && 'corpusInterest' in reg) {
+      throw new CoralSetupError({
+        code: 'consumer_interest_invalid',
+        userMessage: `Journal consumer '${reg.id}' must not declare a corpus interest`,
+        remediation: 'Remove the corpusInterest field from journal consumers.',
+        context: {
+          consumerId: reg.id,
+          authority: reg.authority,
+          corpusInterest: (reg as { corpusInterest?: unknown }).corpusInterest,
+        },
       });
     }
 
@@ -122,36 +300,41 @@ export class ConsumerDriver {
   }
 
   notify(authority: 'journal', version: number): void;
-  notify(authority: 'corpus', snapshot: KbCorpusSnapshot, lane: CorpusLane): void;
-  notify(authority: Authority, versionOrSnapshot: number | KbCorpusSnapshot, lane?: CorpusLane): void {
+  notify(authority: 'corpus', snapshot: CorpusSnapshot, laneHint?: CorpusLaneHint): void;
+  notify(authority: Authority, versionOrSnapshot: number | CorpusSnapshot, laneHint?: CorpusLaneHint): void {
     if (authority === 'journal') {
       for (const state of this.consumers.values()) {
         if (state.reg.authority !== 'journal') {
           continue;
         }
-        this.scheduleApply(state, versionOrSnapshot as number, null);
+        this.scheduleJournalApply(state, versionOrSnapshot as number);
       }
       return;
     }
 
-    if (lane !== 'content' && lane !== 'metadata') {
+    if (laneHint !== undefined && laneHint !== 'content' && laneHint !== 'metadata') {
       throw new CoralSetupError({
         code: 'consumer_lane_invalid',
-        userMessage: 'Corpus notifications require an explicit lane',
-        remediation: "Call notify('corpus', snapshot, lane) with lane 'content' or 'metadata'.",
-        context: { authority, lane },
+        userMessage: 'Corpus notifications require a valid routing hint when lane is provided',
+        remediation: "Call notify('corpus', snapshot, laneHint) with laneHint 'content' or 'metadata', or omit it.",
+        context: { authority, laneHint },
       });
     }
 
-    const snapshot = versionOrSnapshot as KbCorpusSnapshot;
+    const snapshot = versionOrSnapshot as CorpusSnapshot;
     for (const state of this.consumers.values()) {
-      if (state.reg.authority !== 'corpus' || state.reg.lane !== lane) {
+      if (state.reg.authority !== 'corpus') {
         continue;
       }
-
-      const target = lane === 'content' ? snapshot.contentSeq : snapshot.metadataSeq;
-      this.scheduleApply(state, target, snapshot);
+      if (!shouldNotifyCorpusConsumer(state.reg.corpusInterest, laneHint)) {
+        continue;
+      }
+      this.scheduleCorpusApply(state, snapshot);
     }
+  }
+
+  notifyCorpus(snapshot: CorpusSnapshot, laneHint?: CorpusLaneHint): void {
+    this.notify('corpus', snapshot, laneHint);
   }
 
   waitFreshUntil(target: number, consumerId: string, timeoutMs = 30000): Promise<void> {
@@ -164,8 +347,16 @@ export class ConsumerDriver {
         context: { consumerId },
       });
     }
+    if (state.reg.authority !== 'journal') {
+      throw new CoralSetupError({
+        code: 'consumer_wait_unsupported',
+        userMessage: `Consumer '${consumerId}' uses snapshot freshness and cannot wait on a numeric cursor`,
+        remediation: 'Use waitFreshUntil only with journal consumers.',
+        context: { consumerId, authority: state.reg.authority },
+      });
+    }
 
-    const current = this.readCursor(consumerId);
+    const current = this.readJournalCursor(consumerId);
     if (current >= target) {
       return Promise.resolve();
     }
@@ -229,7 +420,6 @@ export class ConsumerDriver {
   }
 
   private ensureCursorRow(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
-    const requestedLane = reg.authority === 'corpus' ? reg.lane : null;
     const row = this.selectCursorMetadataStmt.get(reg.id);
 
     if (row) {
@@ -241,87 +431,117 @@ export class ConsumerDriver {
           context: { consumerId: reg.id, existing: row.authority, requested: reg.authority },
         });
       }
-      if ((row.lane ?? null) !== requestedLane) {
-        throw new CoralSetupError({
-          code: 'consumer_lane_mismatch',
-          userMessage: `Consumer '${reg.id}' registered with conflicting corpus lane`,
-          remediation: 'Either delete the stored cursor row or reconcile the lane registration.',
-          context: { consumerId: reg.id, existing: row.lane ?? null, requested: requestedLane },
-        });
+      if (reg.authority === 'corpus') {
+        const storedInterest = parseStoredCorpusInterest(row);
+        if (storedInterest !== reg.corpusInterest) {
+          throw new CoralSetupError({
+            code: 'consumer_interest_mismatch',
+            userMessage: `Consumer '${reg.id}' registered with conflicting corpus interest`,
+            remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
+            context: { consumerId: reg.id, existing: storedInterest, requested: reg.corpusInterest },
+          });
+        }
       }
 
       return;
     }
 
-    this.insertCursorRowStmt.run(reg.id, reg.authority, requestedLane, this.now().toISOString());
+    if (reg.authority === 'journal') {
+      this.insertJournalCursorRowStmt.run(reg.id, reg.authority, this.now().toISOString());
+      return;
+    }
+
+    this.insertCorpusCursorRowStmt.run(
+      reg.id,
+      reg.authority,
+      laneHintFromInterest(reg.corpusInterest),
+      reg.corpusInterest,
+      this.now().toISOString(),
+    );
   }
 
-  private scheduleApply(state: ConsumerState, target: number, snapshot: KbCorpusSnapshot | null): void {
-    if (target <= this.readCursor(state.reg.id)) {
+  private scheduleJournalApply(state: ConsumerState, target: number): void {
+    if (state.reg.authority !== 'journal') {
+      return;
+    }
+    if (target <= this.readJournalCursor(state.reg.id)) {
       return;
     }
 
     if (state.inFlight) {
-      if (
-        state.pendingTarget === null ||
-        target > state.pendingTarget ||
-        (target === state.pendingTarget && snapshot !== null)
-      ) {
+      if (state.pendingTarget === null || target > state.pendingTarget) {
         state.pendingTarget = target;
-        state.pendingCorpusSnapshot = snapshot;
       }
       return;
     }
 
     state.inFlight = (async () => {
-      const succeeded = await this.runApply(state, target, snapshot);
+      const succeeded = await this.runJournalApply(state, target);
       state.inFlight = null;
 
       if (!succeeded) {
         state.pendingTarget = null;
-        state.pendingCorpusSnapshot = null;
         return;
       }
 
       if (state.pendingTarget !== null) {
         const nextTarget = state.pendingTarget;
-        const nextSnapshot = state.pendingCorpusSnapshot;
         state.pendingTarget = null;
-        state.pendingCorpusSnapshot = null;
-        this.scheduleApply(state, nextTarget, nextSnapshot);
+        this.scheduleJournalApply(state, nextTarget);
       }
     })();
   }
 
-  private async runApply(state: ConsumerState, target: number, snapshot: KbCorpusSnapshot | null): Promise<boolean> {
+  private scheduleCorpusApply(state: ConsumerState, snapshot: CorpusSnapshot): void {
+    if (state.reg.authority !== 'corpus') {
+      return;
+    }
+    if (!isSnapshotFresherForInterest(snapshot, this.readCorpusCursor(state.reg.id), state.reg.corpusInterest)) {
+      return;
+    }
+
+    if (state.inFlight) {
+      if (
+        state.pendingCorpusSnapshot === null ||
+        isSnapshotFresherForInterest(snapshot, state.pendingCorpusSnapshot, state.reg.corpusInterest)
+      ) {
+        state.pendingCorpusSnapshot = { ...snapshot };
+      }
+      return;
+    }
+
+    state.inFlight = (async () => {
+      const succeeded = await this.runCorpusApply(state, snapshot);
+      state.inFlight = null;
+
+      if (!succeeded) {
+        state.pendingCorpusSnapshot = null;
+        return;
+      }
+
+      if (state.pendingCorpusSnapshot !== null) {
+        const nextSnapshot = state.pendingCorpusSnapshot;
+        state.pendingCorpusSnapshot = null;
+        this.scheduleCorpusApply(state, nextSnapshot);
+      }
+    })();
+  }
+
+  private async runJournalApply(state: ConsumerState, target: number): Promise<boolean> {
     try {
-      if (state.reg.authority === 'journal') {
-        const fromSeq = this.readCursor(state.reg.id);
-        const upToSeq = Math.max(fromSeq, target);
-
-        if (upToSeq <= fromSeq) {
-          return true;
-        }
-
-        await state.reg.apply({ fromSeq, upToSeq, db: this.db });
-        this.advanceCursor(state.reg, upToSeq);
-        this.resolveWaiters(state, upToSeq);
+      if (state.reg.authority !== 'journal') {
         return true;
       }
 
-      const corpusSnapshot = snapshot ?? { contentSeq: target, metadataSeq: target };
-      const fromSeq = this.readCursor(state.reg.id);
-      const upToSeq = Math.max(
-        fromSeq,
-        state.reg.lane === 'content' ? corpusSnapshot.contentSeq : corpusSnapshot.metadataSeq,
-      );
+      const fromSeq = this.readJournalCursor(state.reg.id);
+      const upToSeq = Math.max(fromSeq, target);
 
       if (upToSeq <= fromSeq) {
         return true;
       }
 
-      await state.reg.apply({ ...corpusSnapshot, db: this.db });
-      this.advanceCursor(state.reg, upToSeq);
+      await state.reg.apply({ fromSeq, upToSeq, db: this.db });
+      this.advanceJournalCursor(state.reg, upToSeq);
       this.resolveWaiters(state, upToSeq);
       return true;
     } catch (err) {
@@ -330,14 +550,82 @@ export class ConsumerDriver {
     }
   }
 
-  private readCursor(consumerId: string): number {
-    const row = this.readCursorStmt.get(consumerId);
+  private async runCorpusApply(state: ConsumerState, snapshot: CorpusSnapshot): Promise<boolean> {
+    try {
+      if (state.reg.authority !== 'corpus') {
+        return true;
+      }
+
+      const current = this.readCorpusCursor(state.reg.id);
+      if (!isSnapshotFresherForInterest(snapshot, current, state.reg.corpusInterest)) {
+        return true;
+      }
+
+      await state.reg.apply({ snapshot, db: this.db });
+      this.advanceCorpusCursor(state.reg, snapshot);
+      return true;
+    } catch (err) {
+      backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
+      return false;
+    }
+  }
+
+  private readJournalCursor(consumerId: string): number {
+    const row = this.readJournalCursorStmt.get(consumerId);
     return row?.cursor ?? 0;
   }
 
-  private advanceCursor(reg: JournalConsumerRegistration | CorpusConsumerRegistration, newCursor: number): void {
+  private readCorpusCursor(consumerId: string): CorpusSnapshot {
+    return normalizeCorpusCursor(this.readCorpusCursorStmt.get(consumerId));
+  }
+
+  private advanceJournalCursor(reg: JournalConsumerRegistration, newCursor: number): void {
     this.ensureCursorRow(reg);
-    this.advanceCursorStmt.run(newCursor, reg.authority === 'corpus' ? reg.lane : null, reg.id, newCursor);
+    this.advanceJournalCursorStmt.run(newCursor, reg.id, newCursor);
+  }
+
+  private advanceCorpusCursor(reg: CorpusConsumerRegistration, snapshot: CorpusSnapshot): void {
+    this.ensureCursorRow(reg);
+
+    if (reg.corpusInterest === 'content') {
+      this.advanceContentCursorStmt.run(
+        snapshot.snapshotId,
+        snapshot.contentSeq,
+        snapshot.metadataSeq,
+        snapshot.contentManifestHash,
+        snapshot.metadataManifestHash,
+        reg.id,
+        snapshot.contentSeq,
+        snapshot.contentSeq,
+        snapshot.contentManifestHash,
+      );
+      return;
+    }
+
+    if (reg.corpusInterest === 'metadata') {
+      this.advanceMetadataCursorStmt.run(
+        snapshot.snapshotId,
+        snapshot.contentSeq,
+        snapshot.metadataSeq,
+        snapshot.contentManifestHash,
+        snapshot.metadataManifestHash,
+        reg.id,
+        snapshot.metadataSeq,
+        snapshot.metadataSeq,
+        snapshot.metadataManifestHash,
+      );
+      return;
+    }
+
+    this.advanceBothCursorStmt.run(
+      snapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.contentManifestHash,
+      snapshot.metadataManifestHash,
+      reg.id,
+      snapshot.snapshotId,
+    );
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number): void {

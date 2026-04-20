@@ -11,7 +11,6 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
-  CURATE_STATE_FILE,
   CURATE_STATE_MIGRATION_VERSION,
   curateStatePath,
   extractMalformedEntryRepair,
@@ -20,11 +19,45 @@ import {
   readCurateState,
   writeCurateState,
   type CurateState,
+  type PendingRepair,
 } from '../curate/state.js';
-import { parseFrontmatter } from '../frontmatter.js';
+import { readCurateDiscoveryBacklog } from '../curate/discovery-backlog.js';
+import { readCurateRetryQueue } from '../curate/retry.js';
+import { writeCurateSchedulerState, readCurateSchedulerState } from '../curate/state-scheduler.js';
+import { writeMetaValue } from '../curate/sqlite.js';
+import { parseFrontmatter } from '../corpus/frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { createRealRuntime } from '../../runtime/real.js';
+
+const INITIALIZED_KEY = 'curate.initialized';
+
+function expectPendingRepairEntries(
+  pendingRepair: PendingRepair[] | null,
+  expected: ReadonlyArray<{ entryId: string; entrySeq: number | null; detectedAt?: string }>,
+): void {
+  expect(pendingRepair).not.toBeNull();
+  expect(pendingRepair).toHaveLength(expected.length);
+
+  for (const expectedEntry of expected) {
+    const repair = pendingRepair?.find((entry) => entry.entryId === expectedEntry.entryId);
+    expect(repair).toBeDefined();
+    expect(repair).toEqual(
+      expect.objectContaining({
+        entryId: expectedEntry.entryId,
+        entrySeq: expectedEntry.entrySeq,
+        ...(expectedEntry.detectedAt === undefined ? {} : { detectedAt: expectedEntry.detectedAt }),
+        reason: 'pending-repair',
+        retryCount: 0,
+      }),
+    );
+    expect(repair?.retryNotBefore).toBe(repair?.detectedAt);
+    expect(repair?.canonicalIncident).toBeUndefined();
+    expect(repair?.locus).toBeUndefined();
+    expect(repair?.repairHint).toBeUndefined();
+    expect(repair?.signalsJson).toBeUndefined();
+  }
+}
 
 function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   return {
@@ -224,22 +257,48 @@ describe('curate state', () => {
       initialized: true,
     });
 
-    mkdirSync(tempDir, { recursive: true });
-    writeFileSync(curateStatePath(runtime), JSON.stringify(persisted), 'utf-8');
+    writeCurateState(runtime, persisted);
 
-    expect(readCurateState(runtime)).toEqual(persisted);
+    expect(readCurateSchedulerState(runtime)).toEqual({
+      processedThrough: cursor('coral-first', 3),
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+      lastRunDay: '2026-03-25',
+      consecutiveFailures: 2,
+      communityTopologyHash: 'graph-hash',
+    });
+    expect(readCurateDiscoveryBacklog(runtime)).toEqual(persisted.pendingDiscoveries);
+    expectPendingRepairEntries(readCurateRetryQueue(runtime), [
+      {
+        entryId: noteEntryId('coral-repair'),
+        entrySeq: 6,
+        detectedAt: '2026-03-25T11:57:00.000Z',
+      },
+    ]);
+
+    const state = readCurateState(runtime);
+    const { pendingRepair, ...actualRest } = state;
+    const { pendingRepair: _expectedPendingRepair, ...expectedRest } = persisted;
+    expect(actualRest).toEqual(expectedRest);
+    expectPendingRepairEntries(pendingRepair, [
+      {
+        entryId: noteEntryId('coral-repair'),
+        entrySeq: 6,
+        detectedAt: '2026-03-25T11:57:00.000Z',
+      },
+    ]);
   });
 
   it('treats missing community fingerprint fields as undefined when reading legacy state', () => {
-    mkdirSync(tempDir, { recursive: true });
-    writeFileSync(
-      curateStatePath(runtime),
-      JSON.stringify({
-        processedThrough: cursor('coral-legacy', 8),
-        initialized: true,
-      }),
-      'utf-8',
-    );
+    writeCurateSchedulerState(runtime, {
+      processedThrough: cursor('coral-legacy', 8),
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+      lastRunDay: null,
+      consecutiveFailures: 0,
+      communityTopologyHash: undefined,
+    });
+    writeMetaValue(runtime, INITIALIZED_KEY, '1');
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
@@ -266,7 +325,17 @@ describe('curate state', () => {
     writeCurateState(runtime, state);
 
     expect(readCurateState(runtime)).toEqual(state);
-    expect(existsSync(curateStatePath(runtime))).toBe(true);
+    expect(readCurateSchedulerState(runtime)).toEqual({
+      processedThrough: cursor('coral-atomic', 7),
+      discoveryHighSeq: 0,
+      discoveryOffset: 0,
+      lastRunDay: null,
+      consecutiveFailures: 0,
+      communityTopologyHash: undefined,
+    });
+    expect(readCurateDiscoveryBacklog(runtime)).toEqual(state.pendingDiscoveries);
+    expect(readCurateRetryQueue(runtime)).toEqual([]);
+    expect(existsSync(curateStatePath(runtime))).toBe(false);
     expect(existsSync(`${curateStatePath(runtime)}.tmp`)).toBe(false);
   });
 
@@ -504,7 +573,6 @@ describe('curate state', () => {
       metadataSeq: 8,
       mutationSeq: 8,
       textIndexedSeq: 8,
-      vector: { bySpec: {} },
     });
     writeCurateState(runtime, createCurateState());
     const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
@@ -534,7 +602,6 @@ describe('curate state', () => {
       metadataSeq: 13,
       mutationSeq: 13,
       textIndexedSeq: 13,
-      vector: { bySpec: {} },
     });
     expect(readCurateState(runtime).initialized).toBe(true);
   });
@@ -571,7 +638,6 @@ describe('curate state', () => {
       metadataSeq: 5,
       mutationSeq: 5,
       textIndexedSeq: 5,
-      vector: { bySpec: {} },
     });
     writeCurateState(runtime, createCurateState());
 
@@ -580,11 +646,10 @@ describe('curate state', () => {
     expect(
       parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-needs-seq.md'), 'utf-8')).entrySeq,
     ).toBe(31);
-    expect(readCurateState(runtime).pendingRepair).toEqual([
+    expectPendingRepairEntries(readCurateState(runtime).pendingRepair, [
       {
         entryId: noteEntryId('coral-malformed'),
         entrySeq: 30,
-        detectedAt: expect.any(String),
       },
     ]);
     expect(runtime.readIndexState()).toEqual({
@@ -592,7 +657,6 @@ describe('curate state', () => {
       metadataSeq: 31,
       mutationSeq: 31,
       textIndexedSeq: 31,
-      vector: { bySpec: {} },
     });
   });
 
@@ -652,7 +716,6 @@ describe('curate state', () => {
       metadataSeq: 6,
       mutationSeq: 6,
       textIndexedSeq: 6,
-      vector: { bySpec: {} },
     });
     writeCurateState(
       runtime,
@@ -675,21 +738,16 @@ describe('curate state', () => {
       initialized: true,
       migrationVersion: CURATE_STATE_MIGRATION_VERSION,
     });
-    expect(state.pendingRepair).toHaveLength(2);
-    expect(state.pendingRepair).toEqual(
-      expect.arrayContaining([
-        {
-          entryId: noteEntryId('coral-malformed-note'),
-          entrySeq: 7,
-          detectedAt: expect.any(String),
-        },
-        {
-          entryId: sourceEntryId('coral-malformed-source'),
-          entrySeq: null,
-          detectedAt: expect.any(String),
-        },
-      ]),
-    );
+    expectPendingRepairEntries(state.pendingRepair, [
+      {
+        entryId: noteEntryId('coral-malformed-note'),
+        entrySeq: 7,
+      },
+      {
+        entryId: sourceEntryId('coral-malformed-source'),
+        entrySeq: null,
+      },
+    ]);
   });
 
   it('uses the current mutation sequence as the assignment floor and skips notes that already have mutation sequences', async () => {
@@ -731,7 +789,6 @@ describe('curate state', () => {
       metadataSeq: 20,
       mutationSeq: 20,
       textIndexedSeq: 18,
-      vector: { bySpec: {} },
     });
     writeCurateState(runtime, createCurateState());
 
@@ -759,7 +816,6 @@ describe('curate state', () => {
       metadataSeq: 21,
       mutationSeq: 21,
       textIndexedSeq: 21,
-      vector: { bySpec: {} },
     });
   });
 
@@ -778,7 +834,6 @@ describe('curate state', () => {
       metadataSeq: 4,
       mutationSeq: 4,
       textIndexedSeq: 4,
-      vector: { bySpec: {} },
     });
     writeCurateState(
       runtime,
@@ -805,7 +860,6 @@ describe('curate state', () => {
       metadataSeq: 4,
       mutationSeq: 4,
       textIndexedSeq: 4,
-      vector: { bySpec: {} },
     });
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
@@ -834,7 +888,7 @@ describe('curate state', () => {
 
     mkdirSync(markdownRoot, { recursive: true });
     writeFileSync(
-      join(markdownRoot, CURATE_STATE_FILE),
+      curateStatePath(markdownRoot),
       JSON.stringify(
         createCurateState({
           processedThrough: cursor('stale-shared-state', 99),
@@ -847,7 +901,7 @@ describe('curate state', () => {
 
     await splitInternals.migrateCurateStateIfNeeded();
 
-    expect(existsSync(join(markdownRoot, CURATE_STATE_FILE))).toBe(true);
+    expect(existsSync(curateStatePath(markdownRoot))).toBe(true);
     expect(readCurateState(splitRuntime)).toEqual(
       createCurateState({
         initialized: true,
@@ -868,7 +922,6 @@ describe('curate state', () => {
       metadataSeq: 0,
       mutationSeq: 0,
       textIndexedSeq: 0,
-      vector: { bySpec: {} },
     });
     writeFileSync(
       curateStatePath(runtime),

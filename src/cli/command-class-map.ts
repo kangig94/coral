@@ -8,6 +8,7 @@ export type StaticCommandPath =
   | 'abort'
   | 'workflow'
   | 'kb search'
+  | 'kb diagnose'
   | 'kb principles'
   | 'kb read'
   | 'kb source import'
@@ -32,6 +33,7 @@ export const commandClassMap = {
   abort: 'mutate',
   workflow: 'mutate',
   'kb search': 'read',
+  'kb diagnose': 'read',
   'kb principles': 'read',
   'kb read': 'read',
   'kb source import': 'mutate',

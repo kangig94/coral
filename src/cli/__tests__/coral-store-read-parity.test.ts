@@ -27,6 +27,25 @@ async function loadMainModule(): Promise<MainModule> {
   return import('../main.js');
 }
 
+async function seedKbSearchSnapshot(): Promise<void> {
+  const [{ reindex }, { closeNeedleBackend }, runtime, kbPaths] = await Promise.all([
+    import('../../kb/ops/reindex.js'),
+    import('../../kb/search/needle-backend.js'),
+    import('../../kb/runtime.js'),
+    import('../../kb/paths.js'),
+  ]);
+  const kb = runtime.createKbRuntime({
+    markdownRoot: process.env.CORAL_KB_PATH!,
+    runtimeDir: kbPaths.kbRuntimeDir(),
+  });
+
+  try {
+    await reindex(kb);
+  } finally {
+    await closeNeedleBackend(kb);
+  }
+}
+
 function writeKbFixtures(kbRoot: string): void {
   const notesDir = join(kbRoot, 'notes');
   const principlesDir = join(kbRoot, 'principles');
@@ -140,7 +159,7 @@ describe('cli coral-store read parity', () => {
   let originalPluginRoot: string | undefined;
   let originalCwd: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.setSystemTime(FIXED_NOW);
 
@@ -160,6 +179,7 @@ describe('cli coral-store read parity', () => {
 
     writeKbFixtures(process.env.CORAL_KB_PATH);
     seedStore(projectRoot);
+    await seedKbSearchSnapshot();
   });
 
   afterEach(() => {
@@ -201,5 +221,19 @@ describe('cli coral-store read parity', () => {
 
     expect(stderr).toBe('');
     expect(normalizedStdout).toMatchSnapshot();
+  });
+
+  it('degrades direct-read kb search when the Orama snapshot is absent', async () => {
+    const [{ kbRuntimeDir }] = await Promise.all([import('../../kb/paths.js')]);
+    rmSync(kbRuntimeDir(), { recursive: true, force: true });
+
+    const { searchKnowledgeBase } = await import('../../store/queries/kb.js');
+    const result = await searchKnowledgeBase({ query: 'authoritative', mode: 'vector' });
+
+    expect(result).toEqual({
+      results: [],
+      mode: 'text',
+      warnings: ['kb_search_degraded_until_coordinator_rebuild'],
+    });
   });
 });

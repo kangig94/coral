@@ -1,0 +1,506 @@
+import { readFileSync } from 'node:fs';
+
+import { backendLog } from '../../../shared/backend-log.js';
+import { errorMessage } from '../../../shared/utils.js';
+import type { KbRuntime } from '../../contracts.js';
+import {
+  communityEntryId,
+  noteEntryId,
+  parseKbEntryId,
+  sourceEntryId,
+  type KbEntryId,
+  type KbIndex,
+} from '../../entry-types.js';
+import { stripMdExt } from '../../paths.js';
+import { createGitSyncController } from '../../curate/git-sync.js';
+import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
+import type { SpawnCliFn } from '../../curate/types.js';
+import { createRealRuntime } from '../../../runtime/real.js';
+import { writeEntityGraphLocked } from '../../runtime.js';
+import {
+  commitIndexUpdate,
+  buildCommunityIndexEntry,
+  buildNoteIndexEntry,
+  buildSourceIndexEntry,
+  recordContentAndMetadataMutation,
+  recordMetadataMutation,
+  writeFileAtomic,
+} from '../mutation-helpers.js';
+import { sortedMarkdownEntries } from '../markdown-entries.js';
+import {
+  extractBody,
+  extractPrincipleStatement,
+  extractTitle,
+  parseCommunityFrontmatter,
+  parseFrontmatter,
+  parseMembersFromBody,
+  parseSourceFrontmatter,
+  parseSummaryFromBody,
+} from '../frontmatter.js';
+import { classifyIncident, type IncidentClassification } from './classify.js';
+import type { DetectedIncident } from './types.js';
+
+const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
+  /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
+const ENTRYSEQ_LEADING_ZERO_PATTERN =
+  /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?:#.*)?)(?=\r?\n|$)/;
+const LENIENT_ENTRYSEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
+
+type RepairAction = 'fixed' | 'enqueued' | 'skipped';
+
+export interface RepairResult {
+  locus: DetectedIncident['locus'];
+  canonical: string;
+  entryId: string;
+  action: RepairAction;
+  timestamp: string;
+}
+
+type MarkdownRepairTarget =
+  | {
+      kind: 'note';
+      slug: string;
+      entryId: KbEntryId;
+      path: string;
+      content: string;
+    }
+  | {
+      kind: 'source';
+      slug: string;
+      entryId: KbEntryId;
+      path: string;
+      content: string;
+    }
+  | {
+      kind: 'community';
+      slug: string;
+      entryId: KbEntryId;
+      path: string;
+      content: string;
+    }
+  | {
+      kind: 'principle';
+      slug: string;
+      entryId: `principle:${string}`;
+      path: string;
+      content: string;
+    };
+
+type PreparedMarkdownFix = {
+  content: string;
+  updateIndex(index: KbIndex): void;
+};
+
+type LockedAutoFixOutcome = { kind: 'fixed' } | { kind: 'manual' } | { kind: 'skipped' };
+
+const REPAIR_HINTS: Readonly<Record<string, string>> = {
+  'file-syntax/conflict-markers': 'Resolve the merge conflict and keep one authoritative document.',
+  'file-syntax/malformed-markdown': 'Repair markdown structure manually and leave the file with balanced fences and valid headings.',
+  'frontmatter-shape/unterminated-yaml': 'Close the YAML frontmatter at the correct boundary and ensure markdown body starts after it.',
+  'frontmatter-shape/yaml-parse-error': 'Repair YAML syntax manually until the top-level frontmatter parses as a mapping.',
+  'frontmatter-shape/missing-required-fields': 'Restore the missing required identity fields without inventing new authority.',
+  'identity-sequence/entryseq-collision': 'Resolve the conflicting entrySeq ownership manually so only one entry claims each positive integer.',
+  'identity-sequence/entryseq-format': 'Normalize entrySeq to one unquoted positive base-10 integer token.',
+  'reference-integrity/orphan-entity-graph-refs': 'Remove evidence references that no longer point at active corpus entries.',
+  'reference-integrity/orphan-principle-refs': 'Remove missing principle references from note frontmatter or restore the principle documents.',
+};
+
+const noopSpawnCli: SpawnCliFn = async () => {
+  throw new Error('KB repair git-sync conflict resolution is unavailable in the standalone auto-fix runner.');
+};
+
+export async function applyDetectedIncidentFixes(
+  incidents: readonly DetectedIncident[],
+  kb: KbRuntime,
+): Promise<RepairResult[]> {
+  const runtime = createRealRuntime();
+  const gitSync = createGitSyncController({
+    kb,
+    spawnCli: noopSpawnCli,
+    processPort: runtime.process,
+    storagePort: runtime.storage,
+    envPort: runtime.env,
+  });
+
+  const results: RepairResult[] = [];
+
+  for (const incident of incidents) {
+    let result: RepairResult;
+
+    try {
+      const classification = resolveRepairClassification(incident);
+      if (classification === 'auto-fixable') {
+        const outcome = await kb.withMutationLock(() => applyAutoFixLocked(kb, incident));
+        if (outcome.kind === 'fixed') {
+          gitSync.scheduleDeferredCommit();
+          result = createRepairResult(incident, 'fixed');
+        } else if (outcome.kind === 'manual') {
+          const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
+          result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped');
+        } else {
+          result = createRepairResult(incident, 'skipped');
+        }
+      } else if (classification === 'needs-manual') {
+        const enqueued = await kb.withMutationLock(() => enqueueManualRepairLocked(kb, incident));
+        result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped');
+      } else {
+        result = createRepairResult(incident, 'skipped');
+      }
+    } catch (error: unknown) {
+      backendLog.warn(
+        `kb_repair_error ${JSON.stringify({
+          locus: incident.locus,
+          canonical: incident.canonical,
+          entryId: incident.entryId,
+          message: errorMessage(error),
+          timestamp: new Date().toISOString(),
+        })}`,
+      );
+      result = createRepairResult(incident, 'skipped');
+    }
+
+    logRepairResult(result);
+    results.push(result);
+  }
+
+  return results;
+}
+
+function createRepairResult(incident: DetectedIncident, action: RepairAction): RepairResult {
+  return {
+    locus: incident.locus,
+    canonical: incident.canonical,
+    entryId: incident.entryId,
+    action,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function logRepairResult(result: RepairResult): void {
+  const message = JSON.stringify(result);
+  if (result.action === 'skipped') {
+    backendLog.warn(message);
+    return;
+  }
+
+  backendLog.info(message);
+}
+
+function resolveRepairClassification(incident: DetectedIncident): IncidentClassification {
+  if (incident.canonical === 'identity-sequence/entryseq-format' && !isNormalizableEntrySeqIncident(incident)) {
+    return 'needs-manual';
+  }
+
+  return classifyIncident(incident);
+}
+
+function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
+  const reasons = (incident.signals as { reasons?: unknown }).reasons;
+  if (!Array.isArray(reasons)) {
+    return false;
+  }
+
+  const normalizedValue = (incident.signals as { normalizedValue?: unknown }).normalizedValue;
+  if (typeof normalizedValue !== 'number' || !Number.isSafeInteger(normalizedValue) || normalizedValue < 1) {
+    return false;
+  }
+
+  return reasons.length >= 1 && reasons.every((reason) => reason === 'quoted-decimal' || reason === 'leading-zeros');
+}
+
+function applyAutoFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {
+  switch (incident.canonical) {
+    case 'identity-sequence/entryseq-format':
+      return applyEntrySeqFormatFixLocked(kb, incident);
+    case 'reference-integrity/orphan-entity-graph-refs':
+      return applyOrphanEntityGraphFixLocked(kb);
+    default:
+      return { kind: 'manual' };
+  }
+}
+
+function applyEntrySeqFormatFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {
+  if (!isNormalizableEntrySeqIncident(incident)) {
+    return { kind: 'manual' };
+  }
+
+  const target = resolveMarkdownRepairTarget(kb, incident.entryId);
+  if (target === null || target.kind === 'principle') {
+    return { kind: 'skipped' };
+  }
+
+  const normalizedQuoted = target.content.replace(
+    ENTRYSEQ_QUOTED_DECIMAL_PATTERN,
+    (_match, prefix: string, label: string, _quote: string, digits: string, suffix: string) =>
+      `${prefix}${label}${Number.parseInt(digits, 10)}${suffix}`,
+  );
+  const replacement = normalizedQuoted.replace(
+    ENTRYSEQ_LEADING_ZERO_PATTERN,
+    (_match, prefix: string, label: string, digits: string, suffix: string) =>
+      `${prefix}${label}${Number.parseInt(digits, 10)}${suffix}`,
+  );
+
+  if (replacement === target.content) {
+    return { kind: 'manual' };
+  }
+
+  const prepared = prepareMarkdownFix(target, replacement);
+  if (prepared === null) {
+    return { kind: 'manual' };
+  }
+
+  applyPreparedMarkdownFixLocked(kb, target, prepared, 'metadata', 'KB metadata snapshot is stale after kb_repair.');
+  return { kind: 'fixed' };
+}
+
+function applyOrphanEntityGraphFixLocked(kb: KbRuntime): LockedAutoFixOutcome {
+  const currentGraph = kb.readEntityGraph();
+  if (currentGraph === null) {
+    return { kind: 'skipped' };
+  }
+
+  const activeEntryIds = collectActiveCorpusEntryIds(kb);
+  let changed = false;
+  const nextRelationships = currentGraph.relationships.flatMap((relationship) => {
+    const dedupedEvidence = dedupe(
+      relationship.evidence.filter((reference) => {
+        const normalized = parseKbEntryId(reference);
+        const keep = normalized !== null && activeEntryIds.has(normalized);
+        if (!keep) {
+          changed = true;
+        }
+        return keep;
+      }),
+    );
+
+    if (dedupedEvidence.length === 0) {
+      changed = true;
+      return [];
+    }
+
+    if (dedupedEvidence.length !== relationship.evidence.length) {
+      changed = true;
+    }
+
+    return [
+      {
+        ...relationship,
+        evidence: dedupedEvidence,
+      },
+    ];
+  });
+
+  if (!changed) {
+    return { kind: 'skipped' };
+  }
+
+  writeEntityGraphLocked(kb, {
+    entityMeta: currentGraph.entityMeta,
+    relationships: nextRelationships,
+  });
+  return { kind: 'fixed' };
+}
+
+function prepareMarkdownFix(target: MarkdownRepairTarget, content: string): PreparedMarkdownFix | null {
+  try {
+    return {
+      content,
+      updateIndex: buildIndexUpdater(target, content),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildIndexUpdater(target: MarkdownRepairTarget, content: string): (index: KbIndex) => void {
+  switch (target.kind) {
+    case 'note': {
+      const frontmatter = parseFrontmatter(content);
+      const title = extractTitle(content);
+      return (index) => {
+        index.entries[target.entryId] = buildNoteIndexEntry({
+          slug: target.slug,
+          title,
+          ...frontmatter,
+        });
+      };
+    }
+    case 'source': {
+      const frontmatter = parseSourceFrontmatter(content);
+      return (index) => {
+        index.entries[target.entryId] = buildSourceIndexEntry({
+          slug: target.slug,
+          ...frontmatter,
+        });
+      };
+    }
+    case 'community': {
+      const frontmatter = parseCommunityFrontmatter(content);
+      const title = extractTitle(content);
+      const body = extractBody(content);
+      const members = parseMembersFromBody(body);
+      const summary = parseSummaryFromBody(body);
+      return (index) => {
+        index.entries[target.entryId] = buildCommunityIndexEntry({
+          slug: target.slug,
+          title,
+          members,
+          summary,
+          ...frontmatter,
+        });
+      };
+    }
+    case 'principle': {
+      const statement = extractPrincipleStatement(content);
+      return (index) => {
+        index.principles[target.slug] = statement;
+      };
+    }
+  }
+}
+
+function applyPreparedMarkdownFixLocked(
+  kb: KbRuntime,
+  target: MarkdownRepairTarget,
+  prepared: PreparedMarkdownFix,
+  mutation: 'both' | 'metadata',
+  reason: string,
+): void {
+  writeFileAtomic(target.path, prepared.content);
+  commitIndexUpdate(kb, prepared.updateIndex);
+
+  const queueEntryId = parseKbEntryId(target.entryId);
+  if (queueEntryId !== null) {
+    deleteCurateRetryEntry(kb, queueEntryId);
+  }
+
+  if (mutation === 'metadata') {
+    recordMetadataMutation(kb, reason);
+  } else {
+    recordContentAndMetadataMutation(kb, reason);
+  }
+}
+
+function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): boolean {
+  const entryId = parseKbEntryId(incident.entryId);
+  if (entryId === null) {
+    return false;
+  }
+
+  const target = resolveMarkdownRepairTarget(kb, incident.entryId);
+  const content = target?.content ?? null;
+
+  upsertCurateRetryEntry(kb, {
+    entryId,
+    entrySeq: readLenientEntrySeq(content),
+    detectedAt: new Date().toISOString(),
+    reason: incident.canonical,
+    locus: incident.locus,
+    canonicalIncident: incident.canonical,
+    signalsJson: JSON.stringify(incident.signals),
+    repairHint: REPAIR_HINTS[incident.canonical],
+    retryNotBefore: new Date().toISOString(),
+    retryCount: 0,
+  });
+  return true;
+}
+
+function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRepairTarget | null {
+  if (entryId.startsWith('note:')) {
+    const slug = entryId.slice('note:'.length);
+    return readMarkdownRepairTarget(kb.notePath(slug), {
+      kind: 'note',
+      slug,
+      entryId: noteEntryId(slug),
+    });
+  }
+
+  if (entryId.startsWith('source:')) {
+    const slug = entryId.slice('source:'.length);
+    return readMarkdownRepairTarget(kb.sourcePath(slug), {
+      kind: 'source',
+      slug,
+      entryId: sourceEntryId(slug),
+    });
+  }
+
+  if (entryId.startsWith('community:')) {
+    const slug = entryId.slice('community:'.length);
+    return readMarkdownRepairTarget(kb.communityPath(slug), {
+      kind: 'community',
+      slug,
+      entryId: communityEntryId(slug),
+    });
+  }
+
+  if (entryId.startsWith('principle:')) {
+    const slug = entryId.slice('principle:'.length);
+    return readMarkdownRepairTarget(kb.principlePath(slug), {
+      kind: 'principle',
+      slug,
+      entryId: `principle:${slug}`,
+    });
+  }
+
+  return null;
+}
+
+function readMarkdownRepairTarget<T extends Omit<MarkdownRepairTarget, 'path' | 'content'>>(
+  path: string,
+  target: T,
+): (T & Pick<MarkdownRepairTarget, 'path' | 'content'>) | null {
+  try {
+    return {
+      ...target,
+      path,
+      content: readFileSync(path, 'utf-8'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function collectActiveCorpusEntryIds(kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir'>): ReadonlySet<KbEntryId> {
+  const activeEntryIds = new Set<KbEntryId>();
+
+  for (const filename of sortedMarkdownEntries(kb.notesDir())) {
+    const parsed = parseKbEntryId(noteEntryId(stripMdExt(filename)));
+    if (parsed !== null) {
+      activeEntryIds.add(parsed);
+    }
+  }
+
+  for (const filename of sortedMarkdownEntries(kb.sourcesDir())) {
+    const parsed = parseKbEntryId(sourceEntryId(stripMdExt(filename)));
+    if (parsed !== null) {
+      activeEntryIds.add(parsed);
+    }
+  }
+
+  for (const filename of sortedMarkdownEntries(kb.communitiesDir())) {
+    const parsed = parseKbEntryId(communityEntryId(stripMdExt(filename)));
+    if (parsed !== null) {
+      activeEntryIds.add(parsed);
+    }
+  }
+
+  return activeEntryIds;
+}
+
+function readLenientEntrySeq(content: string | null): number | null {
+  if (content === null) {
+    return null;
+  }
+
+  const match = content.match(LENIENT_ENTRYSEQ_PATTERN);
+  if (match === null) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(match[1] ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function dedupe(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}

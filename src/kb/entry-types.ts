@@ -132,9 +132,24 @@ export interface KbIndex {
 
 export interface KbSearchResponse {
   results: KbResult[];
-  mode: 'text' | 'hybrid';
+  mode: 'text' | 'vector' | 'hybrid';
   warning?: string;
+  warnings?: string[];
 }
+
+export type KbDiagnoseIncident = {
+  entry_id: KbEntryId;
+  locus: string | null;
+  canonical_incident: string | null;
+  repair_hint: string | null;
+  signals: unknown;
+  retry_count: number;
+  retry_not_before: string;
+};
+
+export type KbDiagnoseResult = {
+  incidents: KbDiagnoseIncident[];
+};
 
 export type ReindexResult = {
   notes: number;
@@ -198,9 +213,13 @@ export type KbSearchInput = {
   query: string;
   top_k?: number;
   scope?: KbSearchScope;
+  mode?: KbSearchMode;
 };
 
+export type KbDiagnoseInput = Record<string, never>;
+
 export type KbSearchScope = 'notes' | 'sources' | 'communities' | 'all';
+export type KbSearchMode = 'text' | 'vector' | 'hybrid';
 
 export type KbPromoteInput = {
   memo: string;

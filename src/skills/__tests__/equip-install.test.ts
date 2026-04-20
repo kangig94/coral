@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const INSTALL_SCRIPT = join(process.cwd(), 'skills', 'equip', 'install.mjs');
 const KB_VERSION = '0.2.0';
+const RETIRED_VECTOR_DIR_NAME = ['v', 'e', 'c'].join('');
 const createdRoots: string[] = [];
 
 interface InstallerChoice {
@@ -144,8 +145,8 @@ function writeInstalledKb(
   version: string = KB_VERSION,
   method: 'prebuild' | 'source-build' = 'prebuild',
 ): void {
-  mkdirSync(join(fixture.targetDir, 'vec'), { recursive: true });
-  writeFileSync(join(fixture.targetDir, 'vec', 'coral-needle.node'), Buffer.from('installed-addon'));
+  mkdirSync(join(fixture.targetDir, 'needle'), { recursive: true });
+  writeFileSync(join(fixture.targetDir, 'needle', 'coral-needle.node'), Buffer.from('installed-addon'));
   writeFileSync(join(fixture.targetDir, '.kb-meta.json'), JSON.stringify({ version, method }), 'utf-8');
 }
 
@@ -210,7 +211,7 @@ function readLog(path: string): string[] {
 }
 
 describe('skills/equip/install.mjs kb addon flow', () => {
-  it('installs the KB addon into the runtime vec dir and emits single-line onboarding JSON', () => {
+  it('installs the KB addon into the runtime needle dir and emits single-line onboarding JSON', () => {
     const fixture = createFixture();
     const addonBytes = Buffer.from('native-addon');
     writeFakeCurl(fixture.binDir);
@@ -262,7 +263,8 @@ describe('skills/equip/install.mjs kb addon flow', () => {
         dims: null,
       },
     ]);
-    expect(readFileSync(join(fixture.targetDir, 'vec', 'coral-needle.node'))).toEqual(addonBytes);
+    expect(readFileSync(join(fixture.targetDir, 'needle', 'coral-needle.node'))).toEqual(addonBytes);
+    expect(existsSync(join(fixture.targetDir, RETIRED_VECTOR_DIR_NAME))).toBe(false);
     expect(readJson(join(fixture.targetDir, '.kb-meta.json'))).toEqual({
       version: KB_VERSION,
       method: 'prebuild',

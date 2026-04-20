@@ -28,6 +28,7 @@ import {
   isClaimStale,
   migrateCurateStateIfNeeded,
   readCurateState,
+  writeCurateState,
   type CurateCursor,
   type CurateState,
 } from './state.js';
@@ -66,6 +67,7 @@ export {
 import { isUsageBudgetExhausted } from './usage-budget.js';
 
 const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
+const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
 
 class CurateRunError extends Error {
   readonly through: CurateCursor | null;
@@ -101,6 +103,7 @@ export function createCurateScheduler({
   let activeRunController: AbortController | null = null;
   let retryWakeTimer: NodeJS.Timeout | null = null;
   let debounceTimer: NodeJS.Timeout | null = null;
+  let pendingCommunitySkipTicks = 0;
 
   const ports = ((): GitSyncRuntimePicks => {
     if (processPort && storagePort && envPort) {
@@ -123,6 +126,55 @@ export function createCurateScheduler({
     if (retryWakeTimer !== null) {
       clearTimeout(retryWakeTimer);
       retryWakeTimer = null;
+    }
+  }
+
+  async function incrementCommunityBatchFailures(): Promise<number> {
+    let nextFailures = 0;
+
+    await kb.withMutationLock(() => {
+      const state = readCurateState(kb);
+      nextFailures = state.consecutiveFailures + 1;
+      writeCurateState(kb, {
+        ...state,
+        consecutiveFailures: nextFailures,
+      });
+    });
+
+    return nextFailures;
+  }
+
+  async function runCommunityBatch(signal: AbortSignal): Promise<boolean> {
+    if (stopped || signal.aborted) {
+      return false;
+    }
+
+    if (pendingCommunitySkipTicks > 0) {
+      pendingCommunitySkipTicks -= 1;
+      schedule();
+      return false;
+    }
+
+    try {
+      const wroteCommunityFiles = await runCommunitySubphase(kb, spawnCli, {
+        signal,
+        shouldStop: () => stopped,
+        onFreshnessMismatch: schedule,
+      });
+      if (readCurateState(kb).consecutiveFailures === 0) {
+        pendingCommunitySkipTicks = 0;
+      }
+      return wroteCommunityFiles;
+    } catch (error: unknown) {
+      if (stopped || signal.aborted) {
+        return false;
+      }
+
+      backendLog.error('kb_curate: community batch failed', error);
+      const consecutiveFailures = await incrementCommunityBatchFailures();
+      pendingCommunitySkipTicks = calculateCommunityBatchBackoffTicks(consecutiveFailures);
+      schedule();
+      return false;
     }
   }
 
@@ -197,12 +249,8 @@ export function createCurateScheduler({
     }
 
     if (!stopped && !signal.aborted) {
-      try {
-        if (await runCommunitySubphase(kb, spawnCli, { signal, shouldStop: () => stopped })) {
-          gitSync.gitAutoCommit('curate: detect communities');
-        }
-      } catch (error: unknown) {
-        throw new CurateRunError(lastCompletedThrough, error);
+      if (await runCommunityBatch(signal)) {
+        gitSync.gitAutoCommit('curate: detect communities');
       }
     }
 
@@ -229,7 +277,7 @@ export function createCurateScheduler({
       try {
         lastCompletedThrough = await runScheduledCurate(runController.signal);
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
-          if (await runCommunitySubphase(kb, spawnCli, { signal: runController.signal, shouldStop: () => stopped })) {
+          if (await runCommunityBatch(runController.signal)) {
             gitSync.gitAutoCommit('curate: detect communities');
             await gitSync.gitPush();
           }
@@ -283,8 +331,13 @@ export function createCurateScheduler({
     gitSync.ensureKbGitignore();
     await kb.ensureIndex();
     await migrateCurateStateIfNeeded(kb);
+    const state = readCurateState(kb);
+    pendingCommunitySkipTicks =
+      state.retryNotBefore === null && state.consecutiveFailures > 0
+        ? calculateCommunityBatchBackoffTicks(state.consecutiveFailures)
+        : 0;
     runtimeStarted = true;
-    armRetryWake();
+    armRetryWake(state);
     schedule();
   }
 
@@ -379,9 +432,17 @@ export function createCurateScheduler({
       runCommunitySubphase() {
         return runCommunitySubphase(kb, spawnCli, { shouldStop: () => stopped });
       },
+      calculateCommunityBatchBackoffTicks,
+      getPendingCommunitySkipTicks() {
+        return pendingCommunitySkipTicks;
+      },
       async migrateCurateStateIfNeeded() {
         await migrateCurateStateIfNeeded(kb);
       },
     },
   };
+}
+
+export function calculateCommunityBatchBackoffTicks(consecutiveFailures: number): number {
+  return Math.min(2 ** Math.max(consecutiveFailures, 0), COMMUNITY_BATCH_BACKOFF_TICK_CAP);
 }

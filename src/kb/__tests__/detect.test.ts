@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,24 @@ async function loadKbModules() {
     paths,
     infraPaths,
   };
+}
+
+function collectDirectoryPaths(root: string): string[] {
+  if (!existsSync(root)) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const next = join(root, entry.name);
+    paths.push(next, ...collectDirectoryPaths(next));
+  }
+
+  return paths;
 }
 
 describe('kb detection and paths', () => {
@@ -61,12 +79,18 @@ describe('kb detection and paths', () => {
     expect(infraPaths.currentBuildFlavor()).toBe('prod');
     expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb'));
     expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
+    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
+    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle'));
+    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'needle-staging'));
 
     infraPaths.setBuildFlavor('dev');
 
     expect(infraPaths.currentBuildFlavor()).toBe('dev');
     expect(infraPaths.kbRoot()).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
     expect(paths.kbRuntimeDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev'));
+    expect(paths.oramaSnapshotDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'orama'));
+    expect(paths.needleIndexDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'needle'));
+    expect(paths.needleStagingDir()).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb-dev', 'needle-staging'));
   });
 
   it('treats build flavor as single-assignment', async () => {
@@ -79,7 +103,7 @@ describe('kb detection and paths', () => {
     expect(infraPaths.currentBuildFlavor()).toBe('dev');
   });
 
-  it('falls back to text-only startup when the vector store is unavailable', async () => {
+  it('creates the runtime without requiring needle equipment at startup', async () => {
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
     const { createKbRuntime, paths } = await loadKbModules();
     const kb = createKbRuntime({
@@ -89,10 +113,32 @@ describe('kb detection and paths', () => {
     const pluginRoot = join(mockState.tmpHome, 'plugin');
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(join(pluginRoot, 'bridge', 'coral-backend.cjs'), '', 'utf-8');
+    void pluginRoot;
 
-    await kb.initVectorStore(pluginRoot);
+    expect(kb.runtimeDir).toBe(paths.kbRuntimeDir());
+  });
 
-    expect(kb.vectorStore).toBeNull();
+  it('uses orama/ for a fresh cold-start and never creates vec/ anywhere under the machine-local runtime tree', async () => {
+    process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
+    const { createKbRuntime, paths } = await loadKbModules();
+    const kb = createKbRuntime({
+      markdownRoot: process.env.CORAL_KB_PATH,
+      runtimeDir: paths.kbRuntimeDir(),
+    });
+
+    try {
+      const result = await kb.ensureOramaIndex();
+
+      expect(result.warnings).toBeUndefined();
+      expect(existsSync(paths.oramaSnapshotDir(kb.runtimeDir))).toBe(true);
+      expect(existsSync(paths.needleIndexDir(kb.runtimeDir))).toBe(false);
+      expect(existsSync(paths.needleStagingDir(kb.runtimeDir))).toBe(false);
+      expect(
+        collectDirectoryPaths(join(mockState.tmpHome, '.coral')).some((path) => path.endsWith('/vec')),
+      ).toBe(false);
+    } finally {
+      kb.db.close();
+    }
   });
 
   it('resolves configured-root markdown paths while keeping runtime artifacts machine-local', async () => {

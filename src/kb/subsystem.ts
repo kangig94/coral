@@ -1,3 +1,5 @@
+import type { Database } from 'better-sqlite3';
+
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contracts.js';
@@ -15,6 +17,7 @@ export type KnowledgeBaseRuntime = {
 };
 
 export type CreateKbSubsystemOptions = {
+  db?: Database;
   pluginRoot: string;
   spawnCli: SpawnCliFn;
   persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
@@ -24,6 +27,7 @@ export type CreateKbSubsystemOptions = {
 } & GitSyncRuntimePicks;
 
 export async function createKbSubsystem({
+  db,
   pluginRoot,
   spawnCli: spawnKbCli,
   processPort,
@@ -37,6 +41,7 @@ export async function createKbSubsystem({
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
+    ...(db === undefined ? {} : { db }),
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {
     kb.register({
@@ -46,11 +51,7 @@ export async function createKbSubsystem({
       ...(onCorpusPublishSuccess === undefined ? {} : { onPublishSuccess: onCorpusPublishSuccess }),
     });
   }
-  await kb.retryPendingCorpusPublication();
-  await kb.withMutationLock(() => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
-  });
-  await kb.initVectorStore(pluginRoot);
+  void pluginRoot;
 
   const curateScheduler = createCurateScheduler({
     kb,
@@ -59,8 +60,6 @@ export async function createKbSubsystem({
     storagePort,
     envPort,
   });
-
-  await curateScheduler.start();
 
   return {
     kb,

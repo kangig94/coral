@@ -37,8 +37,10 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
   'src/coordinator/contracts.ts',
+  'src/coordinator/consumer-driver.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
+  'src/coordinator/shutdown/sequence.ts',
   'src/coordinator/workflow-cleanup.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;

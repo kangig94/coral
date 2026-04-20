@@ -11,7 +11,7 @@ import {
   serializeFrontmatter,
   serializeNote,
   serializeSourceFrontmatter,
-} from '../frontmatter.js';
+} from '../corpus/frontmatter.js';
 
 describe('kb frontmatter', () => {
   it('reads wikilink and bare principle references as bare names', () => {
@@ -190,7 +190,7 @@ Keep the body stable.
   });
 
   it('markTextIndexStale logs to stderr on double failure instead of silently swallowing', async () => {
-    const { markTextIndexStale } = await import('../mutation-helpers.js');
+    const { markTextIndexStale } = await import('../corpus/mutation-helpers.js');
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     const alwaysThrows = () => {
@@ -207,7 +207,11 @@ Keep the body stable.
   it('imports frontmatter and mutation helpers through validation without a circular load failure', async () => {
     vi.resetModules();
     const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] =
-      await Promise.all([import('../frontmatter.js'), import('../mutation-helpers.js'), import('../validation.js')]);
+      await Promise.all([
+        import('../corpus/frontmatter.js'),
+        import('../corpus/mutation-helpers.js'),
+        import('../validation.js'),
+      ]);
 
     expect(
       dynamicParseFrontmatter(`---

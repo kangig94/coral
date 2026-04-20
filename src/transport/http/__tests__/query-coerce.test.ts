@@ -42,11 +42,13 @@ describe('query-coerce transport helpers', () => {
         q: 'retrieval',
         scope: 'all',
         top_k: '5',
+        mode: 'vector',
       }),
     ).toEqual({
       q: 'retrieval',
       scope: 'all',
       top_k: 5,
+      mode: 'vector',
     });
 
     expect(

@@ -13,6 +13,7 @@ import {
   type JobsListFilters,
 } from './queries/jobs.js';
 import {
+  diagnoseKnowledgeBase,
   listKnowledgeBaseMemos,
   listKnowledgeBasePrinciples,
   listKnowledgeBaseSources,
@@ -34,6 +35,7 @@ import {
   readSessionProvenanceById,
 } from './queries/sessions.js';
 import type {
+  KbDiagnoseResult,
   KbMemoListInput,
   KbMemoListResult,
   KbPrinciplesInput,
@@ -67,6 +69,7 @@ export class CoralStore implements StoreReadContext {
   };
   public readonly kb: {
     search: (args: KbSearchInput) => Promise<KbSearchResponse>;
+    diagnose: () => KbDiagnoseResult;
     read: (selector: KbReadInput) => KbReadResult;
     listPrinciples: (args: KbPrinciplesInput) => Promise<KbPrinciplesResult>;
     listSources: () => Promise<KbSourceListResult>;
@@ -111,6 +114,7 @@ export class CoralStore implements StoreReadContext {
 
     this.kb = {
       search: (args) => searchKnowledgeBase(args, { pluginRoot: this.pluginRoot }),
+      diagnose: () => diagnoseKnowledgeBase(),
       read: (selector) => readKnowledgeBaseEntry(selector, { projectRoot: this.projectRoot, pluginRoot: this.pluginRoot }),
       listPrinciples: (args) => listKnowledgeBasePrinciples(args),
       listSources: () => listKnowledgeBaseSources(),

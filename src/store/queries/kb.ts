@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import { createKbRuntime } from '../../kb/runtime.js';
 import type {
+  KbDiagnoseResult,
   KbMemoListInput,
   KbMemoListResult,
   KbPrincipleVerboseRow,
@@ -15,16 +16,22 @@ import type {
 } from '../../kb/entry-types.js';
 import { isNoteEntry } from '../../kb/entry-types.js';
 import {
+  buildKbDiagnoseResult,
   handleKbRead,
   kbPrinciplesSchema,
   kbSearchSchema,
 } from '../../kb/api.js';
+import { readCurateRetryQueue } from '../../kb/curate/retry.js';
 import { listMemos } from '../../kb/ops/memo.js';
 import { searchKb } from '../../kb/ops/search.js';
 import { listSources } from '../../kb/ops/source-store.js';
+import { closeNeedleBackend } from '../../kb/search/needle-backend.js';
 import { compareLocale } from '../../kb/validation.js';
 import { kbRuntimeDir } from '../../kb/paths.js';
 import { kbRoot } from '../../infra/paths.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import { openBackendStoreDb } from '../db.js';
+import { readBuildFlavor } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ToolDomainResult } from '../../shared/tool-domain-result.js';
 
@@ -38,6 +45,8 @@ const EMPTY_CALLER_CONTEXT: Omit<CallerContext, 'projectRoot'> = {
   coralEnv: {},
 };
 
+let sharedKbQueryDb: ReturnType<typeof openBackendStoreDb> | null = null;
+
 function unwrapDomainResult<T>(result: ToolDomainResult): T {
   if (result.ok) {
     return result.data as T;
@@ -47,9 +56,16 @@ function unwrapDomainResult<T>(result: ToolDomainResult): T {
 }
 
 function createKbQueryRuntime(): ReturnType<typeof createKbRuntime> {
+  if (sharedKbQueryDb === null) {
+    const runtime = createRealRuntime();
+    sharedKbQueryDb = openBackendStoreDb(runtime, readBuildFlavor(runtime.env.cwd()));
+  }
+
   return createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
+    db: sharedKbQueryDb,
+    readOnlyOrama: true,
   });
 }
 
@@ -61,13 +77,10 @@ export async function searchKnowledgeBase(
   const kb = createKbQueryRuntime();
 
   try {
-    if (context.pluginRoot) {
-      await kb.initVectorStore(context.pluginRoot);
-    }
-
-    return await searchKb(kb, parsed.query, parsed.top_k ?? 20, parsed.scope ?? 'all');
+    void context;
+    return await searchKb(kb, parsed.query, parsed.top_k ?? 20, parsed.scope ?? 'all', parsed.mode);
   } finally {
-    await kb.closeVectorStores();
+    await closeNeedleBackend(kb);
   }
 }
 
@@ -149,7 +162,7 @@ export async function listKnowledgeBasePrinciples(
       ...(warning === undefined ? {} : { warning }),
     };
   } finally {
-    await kb.closeVectorStores();
+    await closeNeedleBackend(kb);
   }
 }
 
@@ -159,8 +172,17 @@ export async function listKnowledgeBaseSources(): Promise<KbSourceListResult> {
   try {
     return await listSources(kb);
   } finally {
-    await kb.closeVectorStores();
+    await closeNeedleBackend(kb);
   }
+}
+
+export function diagnoseKnowledgeBase(): KbDiagnoseResult {
+  if (sharedKbQueryDb === null) {
+    const runtime = createRealRuntime();
+    sharedKbQueryDb = openBackendStoreDb(runtime, readBuildFlavor(runtime.env.cwd()));
+  }
+
+  return buildKbDiagnoseResult(readCurateRetryQueue(sharedKbQueryDb));
 }
 
 export function listKnowledgeBaseMemos(

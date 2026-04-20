@@ -17,6 +17,7 @@ import type {
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {
+  KbDiagnoseResult,
   KbMemoDeleteResult,
   KbMemoListResult,
   KbMemoPurgeResult,
@@ -90,6 +91,17 @@ function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'
   }
 
   return warning.replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
+}
+
+function normalizeKbWarnings(
+  warnings: string[] | undefined,
+  cliPrefix = 'coral-cli',
+): string[] | undefined {
+  if (warnings === undefined || warnings.length === 0) {
+    return undefined;
+  }
+
+  return warnings.map((warning) => normalizeKbWarning(warning, cliPrefix) ?? warning);
 }
 
 function formatTable(headers: string[], rows: string[][]): string {
@@ -353,6 +365,7 @@ export function formatDiscussWatch(result: WatchState | Record<string, unknown>)
 /** KB search is consumed by LLM agents, not humans — always return JSON. Do not add text-mode formatting. */
 export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'): string {
   const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const warnings = normalizeKbWarnings(data.warnings, cliPrefix);
   const results = data.results.map((result) => {
     return {
       note: result.note,
@@ -371,13 +384,39 @@ export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'):
 
   if (data.mode === 'hybrid') {
     output.indicator = '[hybrid]';
+  } else if (data.mode === 'vector') {
+    output.indicator = '[vector]';
   }
 
   if (warning !== undefined) {
     output.warning = warning;
   }
+  if (warnings !== undefined) {
+    output.warnings = warnings;
+  }
 
   return JSON.stringify(output);
+}
+
+export function formatKbDiagnose(data: KbDiagnoseResult): string {
+  if (data.incidents.length === 0) {
+    return 'No incidents need manual repair';
+  }
+
+  return data.incidents
+    .map((incident) =>
+      joinLines([
+        `entry_id: ${incident.entry_id}`,
+        `locus: ${incident.locus ?? 'null'}`,
+        `canonical_incident: ${incident.canonical_incident ?? 'null'}`,
+        `repair_hint: ${incident.repair_hint ?? 'null'}`,
+        'signals:',
+        JSON.stringify(incident.signals, null, 2) ?? 'null',
+        `retry_count: ${incident.retry_count}`,
+        `retry_not_before: ${incident.retry_not_before}`,
+      ]),
+    )
+    .join('\n\n');
 }
 
 export function formatKbPrinciples(data: KbPrinciplesResult, cliPrefix = 'coral-cli'): string {

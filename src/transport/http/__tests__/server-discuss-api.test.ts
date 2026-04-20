@@ -169,7 +169,7 @@ describe('server discuss API', () => {
       discussRegistry: registry,
       createExecutionService: () => service as never,
       createKbSubsystemFn: async () => ({
-        kb: { closeVectorStores: vi.fn(async () => {}) } as never,
+        kb: {} as never,
         curateScheduler: {
           start: async () => {},
           schedule: () => {},

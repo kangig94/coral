@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
-import { errorMessage } from '../../shared/utils.js';
+import { errorMessage, isRecord } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import {
   extractMalformedEntryRepair,
@@ -19,7 +19,12 @@ import {
   parseMembersFromBody,
   parseSourceFrontmatter,
   parseSummaryFromBody,
-} from '../frontmatter.js';
+} from '../corpus/frontmatter.js';
+import {
+  computeContentSurfaceHash,
+  computeMetadataSurfaceHash,
+  type CanonicalFrontmatterRecord,
+} from '../corpus/snapshot.js';
 import {
   buildCommunityDocuments,
   buildEntityRelationshipGraph,
@@ -29,8 +34,8 @@ import {
   generateCommunityFiles,
   loadExistingCommunityState,
 } from './community-detection.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../mutation-helpers.js';
-import { sortedMarkdownEntries } from '../markdown-entries.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/mutation-helpers.js';
+import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote } from '../read.js';
 import { assertCommunitySlug, assertSourceSlug } from '../validation.js';
@@ -53,10 +58,16 @@ import {
 } from '../entry-types.js';
 
 const INDEX_FILE = 'index.json';
+const ORAMA_INDEX_FILE = 'orama-index.json';
 
 type LoadedArtifacts<T> = {
   entries: T[];
   pendingRepair: PendingRepair[];
+};
+
+type StoredAuthorityHashes = {
+  contentHash: string;
+  metadataHash: string;
 };
 
 function mergeMutationLane(
@@ -89,55 +100,119 @@ function markdownDirModifiedAfter(dir: string, threshold: bigint): boolean {
   return sortedMarkdownEntries(dir).some((entry) => fileModifiedAfter(join(dir, entry), threshold));
 }
 
-function markdownFilesModifiedAfter(
-  dir: string,
-  threshold: bigint,
-  ignoredBasenames: ReadonlySet<string> = new Set<string>(),
-): boolean {
-  return sortedMarkdownEntries(dir).some((entry) => !ignoredBasenames.has(stripMdExt(entry)) && fileModifiedAfter(join(dir, entry), threshold));
-}
-
 function fileModifiedAfter(filePath: string, threshold: bigint): boolean {
   const modifiedAt = modifiedAtNs(filePath);
   return modifiedAt !== null && modifiedAt > threshold;
 }
 
-function sameStringList(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((entry, index) => right[index] === entry);
+function noteMetadataHash(entry: Pick<NoteEntry, 'tags' | 'principles' | 'source' | 'createdAt' | 'updatedAt' | 'entrySeq' | 'related'>): string {
+  return computeMetadataSurfaceHash({
+    frontmatter: {
+      tags: entry.tags,
+      principles: entry.principles,
+      source: entry.source,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      entrySeq: entry.entrySeq,
+      related: entry.related,
+    } as CanonicalFrontmatterRecord,
+  });
 }
 
-function sameNoteEntry(left: NoteEntry | undefined, right: NoteEntry): boolean {
-  return (
-    left !== undefined &&
-    left.title === right.title &&
-    left.entrySeq === right.entrySeq &&
-    sameStringList(left.tags, right.tags) &&
-    sameStringList(left.principles, right.principles) &&
-    sameStringList(left.source, right.source) &&
-    sameStringList(left.related ?? [], right.related ?? []) &&
-    left.createdAt === right.createdAt &&
-    left.updatedAt === right.updatedAt
-  );
+function sourceMetadataHash(entry: Pick<SourceEntry, 'type' | 'tags' | 'url' | 'importedAt' | 'entrySeq' | 'related'>): string {
+  return computeMetadataSurfaceHash({
+    frontmatter: {
+      type: entry.type,
+      tags: entry.tags,
+      url: entry.url,
+      importedAt: entry.importedAt,
+      entrySeq: entry.entrySeq,
+      related: entry.related,
+    } as CanonicalFrontmatterRecord,
+  });
 }
 
-function sameSourceEntry(left: SourceEntry | undefined, right: SourceEntry): boolean {
-  return (
-    left !== undefined &&
-    left.title === right.title &&
-    left.type === right.type &&
-    left.url === right.url &&
-    left.importedAt === right.importedAt &&
-    left.entrySeq === right.entrySeq &&
-    sameStringList(left.tags, right.tags) &&
-    sameStringList(left.related ?? [], right.related ?? [])
-  );
+function collectStoredAuthorityHashes(value: unknown, hashes: Map<string, StoredAuthorityHashes>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectStoredAuthorityHashes(entry, hashes);
+    }
+    return;
+  }
+
+  if (!isRecord(value)) {
+    return;
+  }
+
+  const entryId = typeof value.entryId === 'string' ? value.entryId : null;
+  const contentHash = typeof value.contentHash === 'string' ? value.contentHash : null;
+  const metadataHash = typeof value.metadataHash === 'string' ? value.metadataHash : null;
+  if (entryId !== null && contentHash !== null && metadataHash !== null) {
+    hashes.set(entryId, {
+      contentHash,
+      metadataHash,
+    });
+  }
+
+  for (const child of Object.values(value)) {
+    collectStoredAuthorityHashes(child, hashes);
+  }
+}
+
+function readStoredOramaAuthorityHashes(runtimeDir: string): Map<string, StoredAuthorityHashes> {
+  const snapshotPath = join(runtimeDir, ORAMA_INDEX_FILE);
+  try {
+    const parsed = JSON.parse(readFileSync(snapshotPath, 'utf-8')) as unknown;
+    const hashes = new Map<string, StoredAuthorityHashes>();
+    collectStoredAuthorityHashes(parsed, hashes);
+    return hashes;
+  } catch {
+    return new Map<string, StoredAuthorityHashes>();
+  }
+}
+
+function classifyAuthorityDrift(
+  previous: StoredAuthorityHashes | undefined,
+  current: StoredAuthorityHashes,
+  fallback: {
+    contentChangedByIndex: boolean;
+    metadataChangedByIndex: boolean;
+    fileModifiedAfterIndex: boolean;
+  },
+): KbIndexMutationLane | null {
+  let lane: KbIndexMutationLane | null = null;
+
+  if (previous !== undefined) {
+    if (previous.contentHash !== current.contentHash) {
+      lane = mergeMutationLane(lane, 'content');
+    }
+    if (previous.metadataHash !== current.metadataHash) {
+      lane = mergeMutationLane(lane, 'metadata');
+    }
+    return lane;
+  }
+
+  if (fallback.contentChangedByIndex) {
+    lane = mergeMutationLane(lane, 'content');
+  }
+  if (fallback.metadataChangedByIndex) {
+    lane = mergeMutationLane(lane, 'metadata');
+  }
+  if (lane === null && fallback.fileModifiedAfterIndex) {
+    lane = 'content';
+  }
+
+  return lane;
 }
 
 function detectStructuredTextDrift(
-  kb: Pick<KbRuntime, 'notesDir' | 'sourcesDir'>,
+  kb: Pick<KbRuntime, 'runtimeDir' | 'notesDir' | 'sourcesDir'>,
   index: KbIndex,
   pendingRepairIds: ReadonlySet<string>,
+  indexMtime: bigint,
 ): KbIndexMutationLane | null {
+  const storedAuthorityHashes = readStoredOramaAuthorityHashes(kb.runtimeDir);
+  let lane: KbIndexMutationLane | null = null;
   const noteSlugs = new Set<string>();
   for (const entry of sortedMarkdownEntries(kb.notesDir())) {
     const note = stripMdExt(entry);
@@ -147,7 +222,8 @@ function detectStructuredTextDrift(
       continue;
     }
     try {
-      const loaded = loadKbNote(join(kb.notesDir(), entry));
+      const notePath = join(kb.notesDir(), entry);
+      const loaded = loadKbNote(notePath);
       const nextEntry = buildNoteIndexEntry({
         slug: note,
         title: loaded.title,
@@ -155,9 +231,28 @@ function detectStructuredTextDrift(
       });
       const existingEntry = index.entries[entryId];
       const existing = existingEntry !== undefined && isNoteEntry(existingEntry) ? existingEntry : undefined;
-      if (!sameNoteEntry(existing, nextEntry)) {
-        return 'both';
+      if (existing === undefined) {
+        lane = mergeMutationLane(lane, 'both');
+        continue;
       }
+      lane = mergeMutationLane(
+        lane,
+        classifyAuthorityDrift(
+          storedAuthorityHashes.get(entryId),
+          {
+            contentHash: computeContentSurfaceHash({
+              title: loaded.title,
+              body: loaded.body,
+            }),
+            metadataHash: noteMetadataHash(nextEntry),
+          },
+          {
+            contentChangedByIndex: existing.title !== nextEntry.title,
+            metadataChangedByIndex: noteMetadataHash(existing) !== noteMetadataHash(nextEntry),
+            fileModifiedAfterIndex: fileModifiedAfter(notePath, indexMtime),
+          },
+        ),
+      );
     } catch {
       return 'both';
     }
@@ -165,7 +260,7 @@ function detectStructuredTextDrift(
 
   for (const entry of Object.values(index.entries)) {
     if (isNoteEntry(entry) && !noteSlugs.has(entry.slug)) {
-      return 'both';
+      lane = mergeMutationLane(lane, 'both');
     }
   }
 
@@ -178,16 +273,36 @@ function detectStructuredTextDrift(
       continue;
     }
     try {
-      const raw = readFileSync(join(kb.sourcesDir(), entry), 'utf-8');
+      const sourcePath = join(kb.sourcesDir(), entry);
+      const raw = readFileSync(sourcePath, 'utf-8');
       const nextEntry = buildSourceIndexEntry({
         slug,
         ...parseSourceFrontmatter(raw),
       });
       const existingEntry = index.entries[entryId];
       const existing = existingEntry !== undefined && isSourceEntry(existingEntry) ? existingEntry : undefined;
-      if (!sameSourceEntry(existing, nextEntry)) {
-        return 'both';
+      if (existing === undefined) {
+        lane = mergeMutationLane(lane, 'both');
+        continue;
       }
+      lane = mergeMutationLane(
+        lane,
+        classifyAuthorityDrift(
+          storedAuthorityHashes.get(entryId),
+          {
+            contentHash: computeContentSurfaceHash({
+              title: nextEntry.title,
+              body: extractBody(raw),
+            }),
+            metadataHash: sourceMetadataHash(nextEntry),
+          },
+          {
+            contentChangedByIndex: existing.title !== nextEntry.title,
+            metadataChangedByIndex: sourceMetadataHash(existing) !== sourceMetadataHash(nextEntry),
+            fileModifiedAfterIndex: fileModifiedAfter(sourcePath, indexMtime),
+          },
+        ),
+      );
     } catch {
       return 'both';
     }
@@ -195,24 +310,24 @@ function detectStructuredTextDrift(
 
   for (const entry of Object.values(index.entries)) {
     if (isSourceEntry(entry) && !sourceSlugs.has(entry.slug)) {
-      return 'both';
+      lane = mergeMutationLane(lane, 'both');
     }
   }
 
-  return null;
+  return lane;
 }
 
 export function detectTextArtifactRebuildInfo(
   kb: Pick<
     KbRuntime,
     | 'runtimeDir'
+    | 'db'
     | 'readIndex'
     | 'notesDir'
     | 'sourcesDir'
     | 'communitiesDir'
     | 'principlesDir'
     | 'entityGraphPath'
-    | 'curateStatePath'
   >,
 ): {
   needsRebuild: boolean;
@@ -230,16 +345,6 @@ export function detectTextArtifactRebuildInfo(
     const indexMtime = statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
     const pendingRepairIds = new Set((readCurateState(kb).pendingRepair ?? []).map((entry) => entry.entryId));
-    const pendingRepairNotes = new Set(
-      [...pendingRepairIds]
-        .filter((entryId) => entryId.startsWith('note:'))
-        .map((entryId) => entryId.slice('note:'.length)),
-    );
-    const pendingRepairSources = new Set(
-      [...pendingRepairIds]
-        .filter((entryId) => entryId.startsWith('source:'))
-        .map((entryId) => entryId.slice('source:'.length)),
-    );
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (!existsSync(kb.entityGraphPath())) {
@@ -254,14 +359,11 @@ export function detectTextArtifactRebuildInfo(
       externalMutation = mergeMutationLane(externalMutation, 'metadata');
     }
 
-    if (
-      markdownFilesModifiedAfter(kb.notesDir(), indexMtime, pendingRepairNotes) ||
-      markdownFilesModifiedAfter(kb.sourcesDir(), indexMtime, pendingRepairSources)
-    ) {
-      externalMutation = mergeMutationLane(externalMutation, 'both');
-    }
-    if (externalMutation === null && currentIndex !== null) {
-      externalMutation = mergeMutationLane(externalMutation, detectStructuredTextDrift(kb, currentIndex, pendingRepairIds));
+    if (currentIndex !== null) {
+      externalMutation = mergeMutationLane(
+        externalMutation,
+        detectStructuredTextDrift(kb, currentIndex, pendingRepairIds, indexMtime),
+      );
     }
 
     return {
@@ -278,7 +380,7 @@ export function detectTextArtifactRebuildInfo(
 
 function areCommunityDocumentsFreshForState(
   state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
-  kb: Pick<KbRuntime, 'curateStatePath' | 'notePath' | 'sourcePath'>,
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
   index: KbIndex,
 ): boolean {
   const communityEntries = Object.values(index.entries).filter(isCommunityEntry);
@@ -739,6 +841,11 @@ export async function rebuildTextArtifacts(
 
 /**
  * @precondition Caller already holds `kb.withMutationLock()`.
+ *
+ * Legacy divergence retained intentionally: this rebuild path still refreshes curate repair state
+ * in addition to rebuilding the base projection. AC4 write-lock installers use
+ * `OramaBaseProjection.installFullSnapshotInWriteLock()` instead so lock-held delta/full installs stay
+ * pure and do not regenerate repair or curate side effects.
  */
 export async function rebuildTextArtifactsAndPersistRepairState(
   kb: KbRuntime,

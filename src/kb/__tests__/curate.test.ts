@@ -21,7 +21,7 @@ import {
   type SpawnCliFn,
 } from '../curate/scheduler.js';
 import { readCurateState, writeCurateState, type CurateState } from '../curate/state.js';
-import { parseFrontmatter } from '../frontmatter.js';
+import { parseFrontmatter } from '../corpus/frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { createDeferred } from '../../shared/test-deferred.js';
@@ -183,14 +183,14 @@ let scheduler: CurateHandle;
 let internals: NonNullable<CurateHandle['_testInternals']>;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
-function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli): void {
+function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli, scheduleDebounceMs = 0): void {
   scheduler = createCurateScheduler({
     kb: runtime,
     spawnCli,
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
-    scheduleDebounceMs: 0,
+    scheduleDebounceMs,
   });
   internals = scheduler._testInternals!;
 }
@@ -2010,7 +2010,6 @@ describe('curate', () => {
         metadataSeq: 10,
         mutationSeq: 10,
         textIndexedSeq: 10,
-        vector: { bySpec: {} },
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
@@ -2140,7 +2139,6 @@ describe('curate', () => {
         metadataSeq: 10,
         mutationSeq: 10,
         textIndexedSeq: 10,
-        vector: { bySpec: {} },
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
@@ -2283,7 +2281,7 @@ describe('curate', () => {
           },
         ],
       };
-      runtime.writeEntityGraph(graph);
+      await runtime.writeEntityGraph(graph);
       writeCurateState(runtime, createCurateState({ initialized: true }));
 
       const spawn = vi.fn<SpawnCliFn>(async () => ({
@@ -2295,26 +2293,20 @@ describe('curate', () => {
       useScheduler(spawn);
 
       const lockSpy = vi.spyOn(runtime, 'withMutationLock');
-      const reindexSuccessSpy = vi.spyOn(runtime, 'recordReindexSuccess');
+      const indexSyncSuccessSpy = vi.spyOn(runtime, 'recordIndexSyncSuccess');
 
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       expect(lockSpy).toHaveBeenCalledTimes(1);
-      expect(reindexSuccessSpy.mock.calls.length).toBeGreaterThan(0);
+      expect(indexSyncSuccessSpy.mock.calls.length).toBeGreaterThan(0);
       expect(spawn.mock.calls.length).toBeGreaterThan(0);
 
       const state = readCurateState(runtime);
       expect(state).toMatchObject({
         communityTopologyHash: expect.any(String),
         communitySummaryTopologyHash: expect.any(String),
-        pendingRepair: [
-          {
-            entryId: noteEntryId('coral-malformed'),
-            entrySeq: 9,
-            detectedAt: expect.any(String),
-          },
-        ],
       });
+      expect(state.pendingRepair).toBeNull();
       expect(state.communitySummaryInputFingerprints).toBeDefined();
       expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
 
@@ -2325,7 +2317,7 @@ describe('curate', () => {
       ).toBe(true);
     });
 
-    it('persists topology before summary failures and resumes summary generation on the next run', async () => {
+    it('discards the prepared community batch on summary failures and retries cleanly on the next run', async () => {
       writeNote('coral-graph-rag', {
         title: 'Graph RAG',
         tags: ['graph-rag', 'retrieval'],
@@ -2342,7 +2334,7 @@ describe('curate', () => {
         }),
         principles: {},
       });
-      runtime.writeEntityGraph({
+      await runtime.writeEntityGraph({
         entityMeta: {
           'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
           retrieval: { type: 'operation', description: 'Retrieval workflows.' },
@@ -2366,14 +2358,14 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).rejects.toThrow('summary failed');
 
       const stateAfterFailure = readCurateState(runtime);
-      const filesAfterFailure = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      const filesAfterFailure = existsSync(runtime.communitiesDir())
+        ? readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'))
+        : [];
 
-      expect(stateAfterFailure.communityTopologyHash).toEqual(expect.any(String));
-      expect(stateAfterFailure.communitySummaryTopologyHash).toEqual(expect.any(String));
-      expect(filesAfterFailure.length).toBeGreaterThan(0);
-      expect(
-        filesAfterFailure.every((entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
-      ).toBe(true);
+      expect(stateAfterFailure.communityTopologyHash).toBeUndefined();
+      expect(stateAfterFailure.communitySummaryTopologyHash).toBeUndefined();
+      expect(stateAfterFailure.communitySummaryInputFingerprints).toBeUndefined();
+      expect(filesAfterFailure).toEqual([]);
 
       useScheduler(async () => ({
         stdout: 'Recovered community summary.',
@@ -2385,11 +2377,89 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       const filesAfterRecovery = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      expect(filesAfterRecovery).toEqual(filesAfterFailure);
+      expect(filesAfterRecovery.length).toBeGreaterThan(0);
       expect(
         filesAfterRecovery.every((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
       ).toBe(true);
       expect(Object.keys(readCurateState(runtime).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
+    });
+
+    it('backs off community batch retries by scheduler tick and resets on success', async () => {
+      writeNote('coral-community-backoff', {
+        title: 'Community Backoff',
+        tags: ['community-backoff', 'scheduler'],
+        entrySeq: 1,
+        body: 'Scheduler backoff should skip community prepare ticks after failures.',
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-community-backoff': createIndexNote({
+            title: 'Community Backoff',
+            tags: ['community-backoff', 'scheduler'],
+            entrySeq: 1,
+          }),
+        }),
+        principles: {},
+      });
+      await runtime.writeEntityGraph({
+        entityMeta: {
+          'community-backoff': { type: 'concept', description: 'Tick-based community backoff.' },
+          scheduler: { type: 'operation', description: 'Scheduler ticks.' },
+        },
+        relationships: [
+          {
+            source: 'community-backoff',
+            target: 'scheduler',
+            type: 'requires',
+            description: 'Community retries rely on scheduler ticks.',
+            evidence: ['note:coral-community-backoff'],
+          },
+        ],
+      });
+      writeCurateState(runtime, createCurateState({ initialized: true }));
+
+      let attempts = 0;
+      const spawn = vi.fn<SpawnCliFn>(async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('summary failed');
+        }
+
+        return {
+          stdout: 'Recovered community summary.',
+          stderr: '',
+          code: 0,
+          aborted: false,
+        };
+      });
+      useScheduler(spawn, 100);
+
+      await scheduler.start();
+      expect(internals.calculateCommunityBatchBackoffTicks(7)).toBe(64);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(readCurateState(runtime).consecutiveFailures).toBe(1);
+      expect(internals.getPendingCommunitySkipTicks()).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(internals.getPendingCommunitySkipTicks()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(internals.getPendingCommunitySkipTicks()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(readCurateState(runtime).consecutiveFailures).toBe(0);
+
+      await settleCurateRuntime(scheduler);
+      expect(
+        readdirSync(runtime.communitiesDir()).some((entry) =>
+          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        ),
+      ).toBe(true);
     });
   });
 

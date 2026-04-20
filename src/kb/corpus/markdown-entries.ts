@@ -1,6 +1,6 @@
 import { readdirSync } from 'node:fs';
-import { isNoEntryError } from '../shared/utils.js';
-import { compareLocale } from './validation.js';
+import { isNoEntryError } from '../../shared/utils.js';
+import { compareLocale } from '../validation.js';
 
 export function sortedMarkdownEntries(dirPath: string): string[] {
   try {

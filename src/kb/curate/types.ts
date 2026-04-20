@@ -143,6 +143,8 @@ export type CurateHandle = {
     addPendingDiscovery(entry: PendingDiscovery): Promise<void>;
     removePendingDiscovery(entry: PendingDiscovery): Promise<void>;
     runCommunitySubphase(): Promise<boolean>;
+    calculateCommunityBatchBackoffTicks(consecutiveFailures: number): number;
+    getPendingCommunitySkipTicks(): number;
     migrateCurateStateIfNeeded(): Promise<void>;
   };
 };

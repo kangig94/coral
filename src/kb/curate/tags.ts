@@ -1,4 +1,4 @@
-import { deriveNoteIdentity } from '../frontmatter.js';
+import { deriveNoteIdentity } from '../corpus/frontmatter.js';
 import { getEntry, isNoteEntry, isSourceEntry, noteEntryId, sourceEntryId, type KbIndex } from '../entry-types.js';
 import { compareLocale } from '../validation.js';
 

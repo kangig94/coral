@@ -1,9 +1,21 @@
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
+import type BetterSqlite3 from 'better-sqlite3';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { CURATE_STATE_FILE, readCurateState, type PendingRepair } from './curate/state.js';
+import { readCurateState, type PendingRepair } from './curate/state.js';
+import {
+  type CanonicalFrontmatterRecord,
+  computeContentManifestHash,
+  computeContentSurfaceHash,
+  computeMetadataManifestHash,
+  computeMetadataSurfaceHash,
+  type ContentManifestEntry,
+  type CorpusSnapshot,
+  type MetadataManifestInput,
+} from './corpus/snapshot.js';
 import type {
   KbCachedOramaIndex,
   KbCorpusLane,
@@ -14,24 +26,38 @@ import type {
   KbIndexState,
   KbPersistCorpusStateResult,
   KbRuntime,
-  KbVectorLease,
-  KbVectorSpecState,
-  KbVectorTextSnapshot,
+  KbTextArtifactsSnapshot,
 } from './contracts.js';
-import { normalizeCommunityChildren, normalizeCommunityParent } from './frontmatter.js';
-import { cloneKbIndex, writeFileAtomic } from './mutation-helpers.js';
+import {
+  INBOUND_SYNC_ORAMA_DELTA_THRESHOLD,
+  createKbMutationLock,
+  type KbMutationLockContext,
+  type KbMutationLockOptions,
+} from './corpus/mutation-lock.js';
+import {
+  extractBody,
+  extractTitle,
+  normalizeCommunityChildren,
+  normalizeCommunityParent,
+  parseFrontmatter,
+  parseSourceFrontmatter,
+} from './corpus/frontmatter.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './corpus/mutation-helpers.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
+import { sortedMarkdownEntries } from './corpus/markdown-entries.js';
 import {
   communityPathFromName,
   communitiesDir as pathsCommunitiesDir,
   notePathFromName,
   notesDir as pathsNotesDir,
+  oramaSnapshotDir,
   principlePathFromName,
   principlesDir as pathsPrinciplesDir,
   sourceImportStageDir as pathsSourceImportStageDir,
   sourcePathFromName,
   sourcesDir as pathsSourcesDir,
+  stripMdExt,
 } from './paths.js';
 import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
 import {
@@ -43,6 +69,7 @@ import {
   type EntityMeta,
   type EntityRelationship,
   type EntityType,
+  isCommunityEntry,
   isNoteEntry,
   isSourceEntry,
   noteEntryId,
@@ -62,16 +89,13 @@ import {
   parseOptionalTrimmedString,
   parsePositiveInteger,
 } from './validation.js';
-import { resolveEmbeddingProviderConfig } from './vector/embedding.js';
-import {
-  type ActiveVectorHandleInfo,
-  type OpenedVectorStore,
-  VectorHandleLifecycle,
-} from './vector/handle-lifecycle.js';
+import { createOramaBaseProjection } from './search/orama-backend.js';
+import { createCorpusStateMirror } from './runtime-state.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import { readActiveSnapshotId } from './vector/store.js';
-import type { VectorStore } from './vector/contracts.js';
-import { runEntrySeqUpgradeGuard } from './entry-seq-guard.js';
+import { runEntrySeqUpgradeGuard } from './corpus/entry-seq-guard.js';
+import { openStoreDatabase } from '../store/db.js';
+import { ensureStoreMigrationsDir } from '../store/migrations.js';
+import { createRealRuntime } from '../runtime/real.js';
 
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
@@ -82,6 +106,7 @@ const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
 
 type PersistedKbIndexState = Omit<KbIndexState, 'mutationSeq' | 'textIndexedSeq'>;
 type KbIndexStateSnapshot = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
+type SearchVisibleEntry = NoteEntry | SourceEntry | CommunityEntry;
 
 function maxIndexSeq(state: KbIndexStateSnapshot): number {
   return Math.max(state.contentSeq, state.metadataSeq);
@@ -117,6 +142,49 @@ function indexStateMatchesSnapshot(state: KbIndexStateSnapshot, snapshot: KbInde
   return state.contentSeq === snapshot.contentSeq && state.metadataSeq === snapshot.metadataSeq;
 }
 
+function isSearchVisibleEntry(entry: KbIndex['entries'][string] | undefined): entry is SearchVisibleEntry {
+  return entry !== undefined && (isNoteEntry(entry) || isSourceEntry(entry) || isCommunityEntry(entry));
+}
+
+function entryFingerprint(entry: SearchVisibleEntry): string {
+  return JSON.stringify(entry);
+}
+
+function diffSearchVisibleEntryIds(previous: KbIndex, next: KbIndex): {
+  changedEntryIds: string[];
+  deletedEntryIds: string[];
+} {
+  const changedEntryIds = new Set<string>();
+  const deletedEntryIds = new Set<string>();
+  const entryIds = new Set([
+    ...Object.keys(previous.entries),
+    ...Object.keys(next.entries),
+  ]);
+
+  for (const entryId of entryIds) {
+    const previousEntry = previous.entries[entryId];
+    const nextEntry = next.entries[entryId];
+    const previousVisible = isSearchVisibleEntry(previousEntry) ? previousEntry : undefined;
+    const nextVisible = isSearchVisibleEntry(nextEntry) ? nextEntry : undefined;
+
+    if (previousVisible === undefined && nextVisible === undefined) {
+      continue;
+    }
+    if (nextVisible === undefined) {
+      deletedEntryIds.add(entryId);
+      continue;
+    }
+    if (previousVisible === undefined || entryFingerprint(previousVisible) !== entryFingerprint(nextVisible)) {
+      changedEntryIds.add(entryId);
+    }
+  }
+
+  return {
+    changedEntryIds: [...changedEntryIds].sort(),
+    deletedEntryIds: [...deletedEntryIds].sort(),
+  };
+}
+
 function applyMutationLane(state: PersistedKbIndexState, lane: KbIndexMutationLane | null): PersistedKbIndexState {
   if (lane === null) {
     return state;
@@ -138,9 +206,6 @@ function defaultIndexState(): KbIndexState {
   return {
     contentSeq: 0,
     metadataSeq: 0,
-    vector: {
-      bySpec: {},
-    },
     mutationSeq: 0,
     textIndexedSeq: 0,
   };
@@ -152,6 +217,136 @@ function emptyIndex(): KbIndex {
     principles: {},
     entityMeta: {},
     relationships: [],
+  };
+}
+
+function deriveStableCorpusSnapshotId(snapshot: Omit<CorpusSnapshot, 'snapshotId'>): string {
+  const digest = createHash('sha256')
+    .update(
+      [
+        snapshot.contentSeq.toString(10),
+        snapshot.metadataSeq.toString(10),
+        snapshot.contentManifestHash,
+        snapshot.metadataManifestHash,
+      ].join('\t'),
+      'utf8',
+    )
+    .digest();
+  const bytes = Uint8Array.from(digest.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Buffer.from(bytes).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+function collectContentManifestEntries(
+  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir'>,
+): ContentManifestEntry[] {
+  const entries: ContentManifestEntry[] = [];
+
+  for (const filename of sortedMarkdownEntries(runtime.notesDir())) {
+    const slug = stripMdExt(filename);
+    const raw = readFileSync(join(runtime.notesDir(), filename), 'utf-8');
+    entries.push({
+      entryId: noteEntryId(slug),
+      title: extractTitle(raw),
+      body: extractBody(raw),
+    });
+  }
+
+  for (const filename of sortedMarkdownEntries(runtime.sourcesDir())) {
+    const slug = stripMdExt(filename);
+    try {
+      const raw = readFileSync(join(runtime.sourcesDir(), filename), 'utf-8');
+      entries.push({
+        entryId: sourceEntryId(slug),
+        title: parseSourceFrontmatter(raw).title,
+        body: extractBody(raw),
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return entries;
+}
+
+function collectMetadataManifestInputs(
+  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'>,
+): MetadataManifestInput[] {
+  const inputs: MetadataManifestInput[] = [];
+
+  for (const filename of sortedMarkdownEntries(runtime.notesDir())) {
+    const slug = stripMdExt(filename);
+    try {
+      const raw = readFileSync(join(runtime.notesDir(), filename), 'utf-8');
+      inputs.push({
+        manifestId: `note-meta:${slug}`,
+        frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  for (const filename of sortedMarkdownEntries(runtime.sourcesDir())) {
+    const slug = stripMdExt(filename);
+    try {
+      const raw = readFileSync(join(runtime.sourcesDir(), filename), 'utf-8');
+      const { title: _title, ...metadata } = parseSourceFrontmatter(raw);
+      inputs.push({
+        manifestId: `source-meta:${slug}`,
+        frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  for (const filename of sortedMarkdownEntries(runtime.communitiesDir())) {
+    const slug = stripMdExt(filename);
+    inputs.push({
+      manifestId: `community:${slug}`,
+      rawBytes: readFileSync(join(runtime.communitiesDir(), filename), 'utf-8'),
+    });
+  }
+
+  for (const filename of sortedMarkdownEntries(runtime.principlesDir())) {
+    const slug = stripMdExt(filename);
+    inputs.push({
+      manifestId: `principle:${slug}`,
+      rawBytes: readFileSync(join(runtime.principlesDir(), filename), 'utf-8'),
+    });
+  }
+
+  try {
+    inputs.push({
+      manifestId: 'entity-graph:.entity-graph.json',
+      rawBytes: readFileSync(runtime.entityGraphPath(), 'utf-8'),
+    });
+  } catch (error: unknown) {
+    if (!isNoEntryError(error)) {
+      throw error;
+    }
+  }
+
+  return inputs;
+}
+
+function buildCorpusSnapshot(
+  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'>,
+  state: KbIndexStateSnapshot,
+): CorpusSnapshot {
+  const snapshotWithoutId = {
+    contentSeq: state.contentSeq,
+    metadataSeq: state.metadataSeq,
+    contentManifestHash: computeContentManifestHash(collectContentManifestEntries(runtime)),
+    metadataManifestHash: computeMetadataManifestHash(collectMetadataManifestInputs(runtime)),
+  };
+
+  return {
+    ...snapshotWithoutId,
+    snapshotId: deriveStableCorpusSnapshotId(snapshotWithoutId),
   };
 }
 
@@ -414,38 +609,6 @@ function parseIndexState(value: unknown): KbIndexState {
       ? 'KB text snapshot requires lane-state migration rebuild.'
       : undefined;
 
-  const bySpec: Record<string, KbVectorSpecState> = {};
-  const vectorValue = value.vector;
-  if (vectorValue !== undefined) {
-    const rawBySpec = isRecord(vectorValue) && isRecord(vectorValue.bySpec) ? vectorValue.bySpec : null;
-    if (rawBySpec !== null) {
-      for (const [specId, rawSpecState] of Object.entries(rawBySpec)) {
-        if (!isRecord(rawSpecState)) {
-          continue;
-        }
-
-        const indexedSeq = rawSpecState.indexedSeq;
-        const staleReason = rawSpecState.staleReason;
-        const activeSnapshotId = rawSpecState.activeSnapshotId;
-        if (typeof indexedSeq !== 'number' || !Number.isInteger(indexedSeq) || indexedSeq < 0) {
-          continue;
-        }
-        if (staleReason !== undefined && typeof staleReason !== 'string') {
-          continue;
-        }
-        if (activeSnapshotId !== undefined && typeof activeSnapshotId !== 'string') {
-          continue;
-        }
-
-        bySpec[specId] = {
-          indexedSeq,
-          ...(typeof staleReason === 'string' ? { staleReason } : {}),
-          ...(typeof activeSnapshotId === 'string' ? { activeSnapshotId } : {}),
-        };
-      }
-    }
-  }
-
   return withLegacyIndexStateAliases({
     contentSeq,
     metadataSeq,
@@ -454,9 +617,6 @@ function parseIndexState(value: unknown): KbIndexState {
       : migratedLegacyState === undefined
         ? {}
         : { textStaleReason: migratedLegacyState }),
-    vector: {
-      bySpec,
-    },
   });
 }
 
@@ -473,24 +633,28 @@ type PublishQueueEntry = {
   persisted: boolean;
 };
 
-type MutationLockContext = {
-  pendingMutationLane: KbIndexMutationLane | null;
-  pendingMutationReason?: string;
-  publication: KbCorpusPublication | null;
-};
+type MutationLockContext = KbMutationLockContext<KbIndex, KbCorpusPublication, KbIndexMutationLane>;
 
 type CorpusFilesystemSnapshot = {
-  notes: number;
-  sources: number;
-  principles: number;
-  communities: number;
-  entityGraph: number;
+  notes: Map<string, { contentHash: string; metadataHash: string }>;
+  sources: Map<string, { contentHash: string; metadataHash: string }>;
+  principles: Map<string, string>;
+  communities: Map<string, string>;
+  entityGraphHash: string | null;
+};
+
+type InboundSyncMutationDiff = {
+  lane: KbIndexMutationLane | null;
+  changedEntryIds: string[];
+  requiresFullInstall: boolean;
 };
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
+  db?: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
+  readOnlyOrama?: boolean;
 }
 
 const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
@@ -502,6 +666,15 @@ const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
   },
   notifyCorpusMutation() {},
 };
+
+function createFallbackKbDb(runtimeDir: string): BetterSqlite3.Database {
+  const runtime = createRealRuntime();
+  return openStoreDatabase({
+    path: join(runtimeDir, 'store.db'),
+    storage: runtime.storage,
+    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+  });
+}
 
 function mergeMutationLane(
   current: KbIndexMutationLane | null,
@@ -525,7 +698,17 @@ function mergeCorpusLanes(current: readonly KbCorpusLane[], next: readonly KbCor
   return [...merged].sort();
 }
 
-function mutationLanesFromDiff(before: KbCorpusSnapshot, after: KbCorpusSnapshot): KbCorpusLane[] {
+function sameCorpusSnapshot(left: CorpusSnapshot, right: CorpusSnapshot): boolean {
+  return (
+    left.snapshotId === right.snapshotId &&
+    left.contentSeq === right.contentSeq &&
+    left.metadataSeq === right.metadataSeq &&
+    left.contentManifestHash === right.contentManifestHash &&
+    left.metadataManifestHash === right.metadataManifestHash
+  );
+}
+
+function mutationLanesFromDiff(before: KbIndexStateSnapshot, after: KbIndexStateSnapshot): KbCorpusLane[] {
   const changedLanes: KbCorpusLane[] = [];
   if (after.contentSeq > before.contentSeq) {
     changedLanes.push('content');
@@ -537,69 +720,108 @@ function mutationLanesFromDiff(before: KbCorpusSnapshot, after: KbCorpusSnapshot
   return changedLanes;
 }
 
+function isLaterSnapshot(next: CorpusSnapshot, current: CorpusSnapshot): boolean {
+  return (
+    next.contentSeq > current.contentSeq ||
+    next.metadataSeq > current.metadataSeq ||
+    (next.contentSeq === current.contentSeq &&
+      next.metadataSeq === current.metadataSeq &&
+      next.snapshotId !== current.snapshotId)
+  );
+}
+
 function mergePublication(
   current: KbCorpusPublication | null,
   next: KbCorpusPublication,
 ): KbCorpusPublication {
   if (current === null) {
     return {
-      snapshot: {
-        contentSeq: next.snapshot.contentSeq,
-        metadataSeq: next.snapshot.metadataSeq,
-      },
+      snapshot: { ...next.snapshot },
       changedLanes: [...next.changedLanes].sort(),
     };
   }
 
   return {
     snapshot: {
-      contentSeq: Math.max(current.snapshot.contentSeq, next.snapshot.contentSeq),
-      metadataSeq: Math.max(current.snapshot.metadataSeq, next.snapshot.metadataSeq),
+      ...(isLaterSnapshot(next.snapshot, current.snapshot) ? next.snapshot : current.snapshot),
     },
     changedLanes: mergeCorpusLanes(current.changedLanes, next.changedLanes),
   };
 }
 
-function latestMarkdownMtime(dirPath: string): number {
-  let latestMtime = 0;
+function captureNoteFileSnapshot(dirPath: string): Map<string, { contentHash: string; metadataHash: string }> {
+  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
 
-  try {
-    latestMtime = Math.max(latestMtime, statSync(dirPath).mtimeMs);
-  } catch (error: unknown) {
-    if (!isNoEntryError(error)) {
-      throw error;
-    }
-  }
-
-  let entries: string[];
-  try {
-    entries = readdirSync(dirPath).filter((entry) => entry.endsWith('.md'));
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return latestMtime;
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
+  for (const entry of sortedMarkdownEntries(dirPath)) {
+    const slug = stripMdExt(entry);
+    const raw = readFileSync(join(dirPath, entry), 'utf-8');
     try {
-      latestMtime = Math.max(latestMtime, statSync(join(dirPath, entry)).mtimeMs);
-    } catch (error: unknown) {
-      if (!isNoEntryError(error)) {
-        throw error;
-      }
+      snapshot.set(slug, {
+        contentHash: computeContentSurfaceHash({
+          title: extractTitle(raw),
+          body: extractBody(raw),
+        }),
+        metadataHash: computeMetadataSurfaceHash({
+          frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
+        }),
+      });
+    } catch {
+      const rawHash = createHash('sha256').update(raw).digest('hex');
+      snapshot.set(slug, {
+        contentHash: rawHash,
+        metadataHash: rawHash,
+      });
     }
   }
 
-  return latestMtime;
+  return snapshot;
 }
 
-function fileMtime(filePath: string): number {
+function captureSourceFileSnapshot(dirPath: string): Map<string, { contentHash: string; metadataHash: string }> {
+  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
+
+  for (const entry of sortedMarkdownEntries(dirPath)) {
+    const slug = stripMdExt(entry);
+    const raw = readFileSync(join(dirPath, entry), 'utf-8');
+    try {
+      const { title, ...metadata } = parseSourceFrontmatter(raw);
+      snapshot.set(slug, {
+        contentHash: computeContentSurfaceHash({
+          title,
+          body: extractBody(raw),
+        }),
+        metadataHash: computeMetadataSurfaceHash({
+          frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
+        }),
+      });
+    } catch {
+      const rawHash = createHash('sha256').update(raw).digest('hex');
+      snapshot.set(slug, {
+        contentHash: rawHash,
+        metadataHash: rawHash,
+      });
+    }
+  }
+
+  return snapshot;
+}
+
+function captureMarkdownFileHashes(dirPath: string): Map<string, string> {
+  const snapshot = new Map<string, string>();
+
+  for (const entry of sortedMarkdownEntries(dirPath)) {
+    snapshot.set(stripMdExt(entry), createHash('sha256').update(readFileSync(join(dirPath, entry), 'utf-8')).digest('hex'));
+  }
+
+  return snapshot;
+}
+
+function captureEntityGraphHash(filePath: string): string | null {
   try {
-    return statSync(filePath).mtimeMs;
+    return createHash('sha256').update(readFileSync(filePath, 'utf-8')).digest('hex');
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
-      return 0;
+      return null;
     }
     throw error;
   }
@@ -609,58 +831,136 @@ function captureCorpusFilesystemSnapshot(
   runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'principlesDir' | 'communitiesDir' | 'entityGraphPath'>,
 ): CorpusFilesystemSnapshot {
   return {
-    notes: latestMarkdownMtime(runtime.notesDir()),
-    sources: latestMarkdownMtime(runtime.sourcesDir()),
-    principles: latestMarkdownMtime(runtime.principlesDir()),
-    communities: latestMarkdownMtime(runtime.communitiesDir()),
-    entityGraph: fileMtime(runtime.entityGraphPath()),
+    notes: captureNoteFileSnapshot(runtime.notesDir()),
+    sources: captureSourceFileSnapshot(runtime.sourcesDir()),
+    principles: captureMarkdownFileHashes(runtime.principlesDir()),
+    communities: captureMarkdownFileHashes(runtime.communitiesDir()),
+    entityGraphHash: captureEntityGraphHash(runtime.entityGraphPath()),
   };
 }
 
-function detectMutationLaneFromFilesystemSnapshots(
+function inboundSnapshotMapsEqual(left: Map<string, string>, right: Map<string, string>): boolean {
+  return (
+    left.size === right.size &&
+    [...left.entries()].every(([key, value]) => right.get(key) === value)
+  );
+}
+
+function detectInboundSyncMutation(
   before: CorpusFilesystemSnapshot,
   after: CorpusFilesystemSnapshot,
-): KbIndexMutationLane | null {
+): InboundSyncMutationDiff {
   let lane: KbIndexMutationLane | null = null;
+  const changedEntryIds = new Set<string>();
 
-  if (before.entityGraph !== after.entityGraph || before.principles !== after.principles || before.communities !== after.communities) {
+  const noteSlugs = new Set([...before.notes.keys(), ...after.notes.keys()]);
+  for (const slug of noteSlugs) {
+    const beforeEntry = before.notes.get(slug);
+    const afterEntry = after.notes.get(slug);
+    if (beforeEntry === undefined && afterEntry === undefined) {
+      continue;
+    }
+
+    changedEntryIds.add(noteEntryId(slug));
+    if (beforeEntry === undefined || afterEntry === undefined) {
+      lane = mergeMutationLane(lane, 'both');
+      continue;
+    }
+    if (beforeEntry.contentHash !== afterEntry.contentHash) {
+      lane = mergeMutationLane(lane, 'content');
+    }
+    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
+      lane = mergeMutationLane(lane, 'metadata');
+    }
+  }
+
+  const sourceSlugs = new Set([...before.sources.keys(), ...after.sources.keys()]);
+  for (const slug of sourceSlugs) {
+    const beforeEntry = before.sources.get(slug);
+    const afterEntry = after.sources.get(slug);
+    if (beforeEntry === undefined && afterEntry === undefined) {
+      continue;
+    }
+
+    changedEntryIds.add(sourceEntryId(slug));
+    if (beforeEntry === undefined || afterEntry === undefined) {
+      lane = mergeMutationLane(lane, 'both');
+      continue;
+    }
+    if (beforeEntry.contentHash !== afterEntry.contentHash) {
+      lane = mergeMutationLane(lane, 'content');
+    }
+    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
+      lane = mergeMutationLane(lane, 'metadata');
+    }
+  }
+
+  const principlesChanged = !inboundSnapshotMapsEqual(before.principles, after.principles);
+  const communitiesChanged = !inboundSnapshotMapsEqual(before.communities, after.communities);
+  const entityGraphChanged = before.entityGraphHash !== after.entityGraphHash;
+
+  if (principlesChanged || communitiesChanged || entityGraphChanged) {
     lane = mergeMutationLane(lane, 'metadata');
   }
-  if (before.notes !== after.notes || before.sources !== after.sources) {
-    lane = mergeMutationLane(lane, 'both');
-  }
 
-  return lane;
+  return {
+    lane,
+    changedEntryIds: [...changedEntryIds].sort(),
+    requiresFullInstall: communitiesChanged || entityGraphChanged,
+  };
 }
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
-  vectorStore: VectorStore | null = null;
+  readonly db: BetterSqlite3.Database;
+  private readonly readOnlyOrama: boolean;
 
   private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
-  private readonly vectorLifecycle: VectorHandleLifecycle;
+  private baseProjection = createOramaBaseProjection(this);
+  private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private upgradeGuardDone = false;
-  private pendingRepairCache: { mtime: number; result: boolean } | null = null;
   private corpusPublishCallbacks: KbCorpusPublishCallbacks = NOOP_CORPUS_PUBLISH_CALLBACKS;
   private activeMutationContext: MutationLockContext | null = null;
   private readonly publishQueue: PublishQueueEntry[] = [];
   private publishDrain: Promise<void> | null = null;
   private publishDrainRequested = false;
   private consecutivePublishFailures = 0;
+  private readonly mutationLockController = createKbMutationLock<KbIndex, KbCorpusPublication, KbIndexMutationLane>({
+    cloneStartIndex: () => cloneKbIndex(this.readIndex()),
+    getCurrentLock: () => this.mutationLock,
+    setCurrentLock: (lock) => {
+      this.mutationLock = lock;
+    },
+    setActiveContext: (context) => {
+      this.activeMutationContext = context;
+    },
+    finalizePendingMutation: (context) => {
+      this.finalizePendingMutation(context);
+    },
+    installPendingBaseProjectionBeforeRelease: (snapshot, context) =>
+      this.installPendingBaseProjectionBeforeRelease(snapshot, context),
+    recordIndexSyncSuccess: () => {
+      this.recordIndexSyncSuccess();
+    },
+    enqueuePublication: (publication) => {
+      this.publishQueue.push({
+        publication,
+        persisted: false,
+      });
+    },
+    hasQueuedPublications: () => this.publishQueue.length > 0,
+    processPublishQueue: () => this.processPublishQueue(),
+  });
 
-  constructor({ markdownRoot, runtimeDir, corpusPublishCallbacks }: CreateKbRuntimeOptions) {
+  constructor({ markdownRoot, runtimeDir, db, corpusPublishCallbacks, readOnlyOrama }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
-    this.vectorLifecycle = new VectorHandleLifecycle({
-      runtimeDir: this.runtimeDir,
-      getVectorStatus: (specId) => this.getVectorStatus(specId),
-      syncVectorStore: (store) => {
-        this.vectorStore = store;
-      },
-    });
+    this.db = db ?? createFallbackKbDb(runtimeDir);
+    this.readOnlyOrama = readOnlyOrama === true;
+    this.corpusStateMirror = createCorpusStateMirror(this.db);
 
     mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -709,10 +1009,6 @@ class KbRuntimeImpl implements KbRuntime {
     return pathsSourceImportStageDir(this.runtimeDir);
   }
 
-  curateStatePath(): string {
-    return join(this.runtimeDir, CURATE_STATE_FILE);
-  }
-
   readEntityGraph(): EntityGraph | null {
     const graphPath = this.entityGraphPath();
 
@@ -735,9 +1031,16 @@ class KbRuntimeImpl implements KbRuntime {
     }
   }
 
-  writeEntityGraph(graph: EntityGraph): void {
+  async writeEntityGraph(graph: EntityGraph): Promise<void> {
+    await this.withMutationLock(() => {
+      this.writeEntityGraphLocked(graph);
+    });
+  }
+
+  writeEntityGraphLocked(graph: EntityGraph): void {
     const normalized = parseEntityGraph(graph);
     writeJsonAtomic(this.entityGraphPath(), normalized);
+    this.setMutationLockProjectionDispatchMode('full');
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 
     const currentIndex = this.readIndex();
@@ -747,65 +1050,6 @@ class KbRuntimeImpl implements KbRuntime {
       nextIndex.relationships = normalized.relationships;
       this.writeIndex(nextIndex);
     }
-  }
-
-  async initVectorStore(pluginRoot: string): Promise<void> {
-    this.vectorLifecycle.setPluginRoot(pluginRoot);
-    rmSync(join(this.runtimeDir, 'vec-staging'), { recursive: true, force: true });
-    await this.closeVectorStores();
-    mkdirSync(this.runtimeDir, { recursive: true });
-
-    if (this.textArtifactsNeedRebuild()) {
-      return;
-    }
-
-    try {
-      this.installOramaCache(await this.loadOramaSnapshot());
-    } catch {
-      this.cachedOramaIndex = null;
-    }
-
-    let desiredSpecId: string | null;
-    try {
-      desiredSpecId = resolveEmbeddingProviderConfig()?.specId ?? null;
-    } catch {
-      return;
-    }
-
-    if (desiredSpecId === null) {
-      return;
-    }
-
-    const snapshotId = readActiveSnapshotId(this.runtimeDir, desiredSpecId);
-    if (snapshotId === null) {
-      return;
-    }
-
-    try {
-      await this.activateVectorSnapshot(desiredSpecId, snapshotId);
-    } catch {
-      await this.closeVectorStores();
-    }
-  }
-
-  async openVectorStore(dbPath: string, handleToken: string): Promise<OpenedVectorStore | null> {
-    return this.vectorLifecycle.open(dbPath, handleToken);
-  }
-
-  async activateVectorSnapshot(specId: string, snapshotId: string): Promise<void> {
-    await this.vectorLifecycle.activate(specId, snapshotId);
-  }
-
-  async acquireVectorLease(): Promise<KbVectorLease | null> {
-    return this.vectorLifecycle.acquireLease();
-  }
-
-  async closeVectorStores(): Promise<void> {
-    await this.vectorLifecycle.closeAll();
-  }
-
-  getActiveVectorHandleInfo(): ActiveVectorHandleInfo | null {
-    return this.vectorLifecycle.getActiveInfo();
   }
 
   readIndex(): KbIndex | null {
@@ -931,7 +1175,6 @@ class KbRuntimeImpl implements KbRuntime {
     const nextState = withLegacyIndexStateAliases({
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
-      vector: state.vector,
     });
     this.writeIndexState(nextState);
     return nextState;
@@ -943,7 +1186,6 @@ class KbRuntimeImpl implements KbRuntime {
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
       textStaleReason: reason,
-      vector: state.vector,
     });
     this.writeIndexState(nextState);
     return nextState;
@@ -960,57 +1202,17 @@ class KbRuntimeImpl implements KbRuntime {
 
     const nextState = withLegacyIndexStateAliases({
       ...applyMutationLane(withoutTextStaleReason(stripLegacyIndexStateAliases(state)), externalMutation),
-      vector: state.vector,
     });
     this.writeIndexState(nextState);
     return nextState;
   }
 
-  recordVectorSyncSuccess(specId: string, startContentSeq: number, snapshotId: string): KbIndexState {
-    const state = this.readIndexState();
-    if (state.contentSeq !== startContentSeq) {
-      return state;
-    }
-
-    const nextState: KbIndexState = {
-      ...state,
-      vector: {
-        bySpec: {
-          ...state.vector.bySpec,
-          [specId]: {
-            indexedSeq: startContentSeq,
-            activeSnapshotId: snapshotId,
-          },
-        },
-      },
-    };
-    this.writeIndexState(nextState);
-    return nextState;
+  getCorpusStateSnapshot(): KbCorpusSnapshot {
+    return this.corpusStateMirror.get();
   }
 
-  recordVectorSyncFailure(specId: string, reason: string, activeSnapshotId?: string): KbIndexState {
-    const state = this.readIndexState();
-    const current = state.vector.bySpec[specId];
-    const nextActiveSnapshotId = activeSnapshotId ?? current?.activeSnapshotId;
-    const nextState: KbIndexState = {
-      ...state,
-      vector: {
-        bySpec: {
-          ...state.vector.bySpec,
-          [specId]: {
-            indexedSeq: current?.indexedSeq ?? 0,
-            staleReason: reason,
-            ...(nextActiveSnapshotId === undefined ? {} : { activeSnapshotId: nextActiveSnapshotId }),
-          },
-        },
-      },
-    };
-    this.writeIndexState(nextState);
-    return nextState;
-  }
-
-  getVectorStatus(specId: string): KbVectorSpecState | null {
-    return this.readIndexState().vector.bySpec[specId] ?? null;
+  invalidateCorpusStateSnapshot(): void {
+    this.corpusStateMirror.invalidate();
   }
 
   async ensureIndex(): Promise<KbIndex> {
@@ -1033,51 +1235,46 @@ class KbRuntimeImpl implements KbRuntime {
     db: KbOramaDb;
     tokenizer: KbOramaTokenizer;
     index: KbIndex;
+    warnings?: string[];
   }> {
-    const indexAfterEnsure = await this.ensureIndex();
-    // Fast path: index is fresh and Orama cache is valid — skip re-read.
-    // ensureIndex() guarantees text artifacts are up-to-date when it returns.
-    if (this.cachedOramaIndex !== null && this.indexCache !== null) {
+    const state = this.readIndexStateIfPresent();
+    if (!this.textArtifactsNeedRebuild(state) && this.cachedOramaIndex !== null && this.indexCache !== null) {
       return {
         ...this.cachedOramaIndex,
-        index: indexAfterEnsure,
+        index: this.indexCache.index ?? emptyIndex(),
       };
     }
 
-    return this.withMutationLock(async () => {
-      const state = this.readIndexStateIfPresent();
-      const startState = captureIndexStateSnapshot(state);
+    if (this.readOnlyOrama) {
+      return this.ensureOramaIndexReadOnly();
+    }
 
-      let needsRebuild = this.textArtifactsNeedRebuild(state);
-      if (!needsRebuild && this.cachedOramaIndex === null) {
-        try {
-          this.installOramaCache(await this.loadOramaSnapshot());
-        } catch {
-          needsRebuild = true;
-        }
-      }
+    if (this.activeMutationContext !== null) {
+      return this.ensureOramaIndexInMutationLock();
+    }
 
-      if (needsRebuild) {
-        try {
-          await rebuildTextArtifactsAndPersistRepairState(this, startState);
-        } catch (error: unknown) {
-          throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
-        }
-      }
-
-      const stateAfterArtifacts = this.readIndexStateIfPresent();
-      if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
-        throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
-      }
-
-      return {
-        ...this.cachedOramaIndex,
-        index: this.readIndex() ?? emptyIndex(),
-      };
-    });
+    return this.withMutationLock(async () => this.ensureOramaIndexInMutationLock());
   }
 
-  async ensureTextArtifactsFreshUnderLock(): Promise<KbVectorTextSnapshot> {
+  async loadOramaSnapshotIfPresent(): Promise<KbCachedOramaIndex | null> {
+    if (this.cachedOramaIndex !== null) {
+      return this.cachedOramaIndex;
+    }
+
+    try {
+      const loaded = await this.loadOramaSnapshot();
+      this.installOramaCache(loaded);
+      return loaded;
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) {
+        this.cachedOramaIndex = null;
+        rmSync(this.oramaIndexPath(), { force: true });
+      }
+      return null;
+    }
+  }
+
+  async ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot> {
     let rebuilt: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>> | null = null;
     if (this.textArtifactsNeedRebuild()) {
       rebuilt = await rebuildTextArtifactsAndPersistRepairState(
@@ -1104,46 +1301,11 @@ class KbRuntimeImpl implements KbRuntime {
       throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
     }
 
-    return this.captureVectorTextSnapshot();
+    return this.captureTextArtifactsSnapshot();
   }
 
-  async withMutationLock<T>(fn: () => Promise<T> | T): Promise<T> {
-    const previous = this.mutationLock;
-    let release!: () => void;
-    this.mutationLock = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    await previous;
-
-    const lockContext: MutationLockContext = {
-      pendingMutationLane: null,
-      pendingMutationReason: undefined,
-      publication: null,
-    };
-    this.activeMutationContext = lockContext;
-    let succeeded = false;
-
-    try {
-      const result = await fn();
-      succeeded = true;
-      return result;
-    } finally {
-      if (succeeded) {
-        this.finalizePendingMutation(lockContext);
-      }
-      this.activeMutationContext = null;
-      if (succeeded && lockContext.publication !== null) {
-        this.publishQueue.push({
-          publication: lockContext.publication,
-          persisted: false,
-        });
-      }
-      release();
-      if (this.publishQueue.length > 0) {
-        void this.processPublishQueue();
-      }
-    }
+  async withMutationLock<T>(fn: () => Promise<T> | T, options: KbMutationLockOptions = {}): Promise<T> {
+    return this.mutationLockController.withMutationLock(fn, options);
   }
 
   async retryPendingCorpusPublication(): Promise<void> {
@@ -1156,16 +1318,137 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   async runInboundSync<T>(fn: () => Promise<T> | T): Promise<T> {
+    let mutationDiff: InboundSyncMutationDiff | null = null;
+
     return this.withMutationLock(async () => {
       const before = captureCorpusFilesystemSnapshot(this);
       const result = await fn();
       const after = captureCorpusFilesystemSnapshot(this);
-      const lane = detectMutationLaneFromFilesystemSnapshots(before, after);
-      if (lane !== null) {
-        this.recordMutationCommitted(lane, 'KB text snapshot is stale after inbound git sync.');
+      mutationDiff = detectInboundSyncMutation(before, after);
+
+      if (mutationDiff.lane !== null) {
+        if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
+          this.writeIndex(this.buildInboundSyncIndexDelta(mutationDiff.changedEntryIds));
+        } else if (mutationDiff.requiresFullInstall) {
+          this.invalidateKbCache();
+        }
+        this.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
       }
       return result;
+    }, {
+      preReleaseInstallProjection: async (snapshot) => {
+        if (mutationDiff === null || mutationDiff.lane === null) {
+          return false;
+        }
+
+        if (mutationDiff.requiresFullInstall) {
+          const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus();
+          await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
+          return true;
+        }
+
+        const shouldInstallDelta =
+          mutationDiff.changedEntryIds.length <= INBOUND_SYNC_ORAMA_DELTA_THRESHOLD;
+        if (!shouldInstallDelta) {
+          const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus();
+          await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
+          return true;
+        }
+
+        const preparedDelta = await this.baseProjection.prepareDeltaForCurrentCorpusEntries(
+          this.readIndexOrEmpty(),
+          mutationDiff.changedEntryIds,
+          [],
+        );
+        await this.baseProjection.applyDeltaInWriteLock(snapshot, preparedDelta);
+        return true;
+      },
     });
+  }
+
+  setMutationLockProjectionDispatchMode(mode: 'delta' | 'full'): void {
+    if (this.activeMutationContext === null) {
+      throw new Error('KB mutation-lock projection mode can only change while the mutation lock is held.');
+    }
+    if (mode === 'full') {
+      this.activeMutationContext.projectionDispatchMode = 'full';
+    }
+  }
+
+  captureCurrentCorpusSnapshot(): KbCorpusPublication['snapshot'] {
+    return buildCorpusSnapshot(this, captureIndexStateSnapshot(this.readIndexState()));
+  }
+
+  private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
+    const nextIndex = cloneKbIndex(this.activeMutationContext?.startIndex ?? this.readIndex());
+
+    for (const entryId of changedEntryIds) {
+      if (entryId.startsWith('note:')) {
+        const slug = entryId.slice('note:'.length);
+        const notePath = this.notePath(slug);
+
+        try {
+          const { frontmatter, title } = loadKbNote(notePath);
+          nextIndex.entries[entryId] = buildNoteIndexEntry({
+            slug,
+            title,
+            ...frontmatter,
+          });
+        } catch (error: unknown) {
+          if (!isNoEntryError(error)) {
+            throw error;
+          }
+          delete nextIndex.entries[entryId];
+        }
+        continue;
+      }
+
+      if (entryId.startsWith('source:')) {
+        const slug = entryId.slice('source:'.length);
+        const sourcePath = this.sourcePath(slug);
+
+        try {
+          const { frontmatter } = loadKbSource(sourcePath);
+          nextIndex.entries[entryId] = buildSourceIndexEntry({
+            slug,
+            ...frontmatter,
+          });
+        } catch (error: unknown) {
+          if (!isNoEntryError(error)) {
+            throw error;
+          }
+          delete nextIndex.entries[entryId];
+        }
+      }
+    }
+
+    return nextIndex;
+  }
+
+  private async installPendingBaseProjectionBeforeRelease(
+    snapshot: CorpusSnapshot,
+    lockContext: MutationLockContext,
+  ): Promise<boolean> {
+    const currentIndex = this.readIndexOrEmpty();
+    const delta = diffSearchVisibleEntryIds(lockContext.startIndex, currentIndex);
+
+    if (lockContext.projectionDispatchMode === 'full') {
+      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(currentIndex);
+      await this.baseProjection.installFullSnapshotInWriteLock(snapshot, preparedProjection);
+      return true;
+    }
+
+    if (delta.changedEntryIds.length === 0 && delta.deletedEntryIds.length === 0) {
+      return false;
+    }
+
+    const preparedDelta = await this.baseProjection.prepareDeltaForCurrentCorpusEntries(
+      currentIndex,
+      delta.changedEntryIds,
+      delta.deletedEntryIds,
+    );
+    await this.baseProjection.applyDeltaInWriteLock(snapshot, preparedDelta);
+    return true;
   }
 
   invalidateKbCache(): void {
@@ -1192,14 +1475,14 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private publishCurrentSnapshot(): void {
-    const snapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
-    if (snapshot.contentSeq === 0 && snapshot.metadataSeq === 0) {
+    const stateSnapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
+    if (stateSnapshot.contentSeq === 0 && stateSnapshot.metadataSeq === 0) {
       return;
     }
 
     this.publishQueue.push({
       publication: {
-        snapshot,
+        snapshot: buildCorpusSnapshot(this, stateSnapshot),
         changedLanes: ['content', 'metadata'],
       },
       persisted: false,
@@ -1231,9 +1514,13 @@ class KbRuntimeImpl implements KbRuntime {
           }
 
           if (!current.persisted) {
+            const mirrorBeforePersist = this.getCorpusStateSnapshot();
             try {
               const persisted = await this.corpusPublishCallbacks.persistCorpusState(current.publication.snapshot);
               current.publication = this.normalizePersistResult(current.publication, persisted);
+              if (!sameCorpusSnapshot(mirrorBeforePersist, current.publication.snapshot)) {
+                this.invalidateCorpusStateSnapshot();
+              }
               current.persisted = true;
             } catch (error: unknown) {
               this.consecutivePublishFailures += 1;
@@ -1309,7 +1596,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.refreshIndexBaselineIfPresent();
   }
 
-  private capturePublicationFromStateChange(previous: KbCorpusSnapshot, next: KbCorpusSnapshot): void {
+  private capturePublicationFromStateChange(previous: KbIndexStateSnapshot, next: KbIndexStateSnapshot): void {
     if (this.activeMutationContext === null) {
       return;
     }
@@ -1320,7 +1607,7 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.activeMutationContext.publication = mergePublication(this.activeMutationContext.publication, {
-      snapshot: next,
+      snapshot: buildCorpusSnapshot(this, next),
       changedLanes,
     });
   }
@@ -1351,13 +1638,100 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private oramaIndexPath(): string {
-    return join(this.runtimeDir, ORAMA_INDEX_FILE);
+    return join(oramaSnapshotDir(this.runtimeDir), ORAMA_INDEX_FILE);
   }
 
-  private captureVectorTextSnapshot(): KbVectorTextSnapshot {
+  private async ensureOramaIndexInMutationLock(): Promise<{
+    db: KbOramaDb;
+    tokenizer: KbOramaTokenizer;
+    index: KbIndex;
+    warnings?: string[];
+  }> {
+    const state = this.readIndexStateIfPresent();
+    const startState = captureIndexStateSnapshot(state);
+
+    if (this.textArtifactsNeedRebuild(state)) {
+      try {
+        await rebuildTextArtifactsAndPersistRepairState(this, startState);
+      } catch (error: unknown) {
+        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
+      }
+    } else if (this.cachedOramaIndex === null) {
+      try {
+        this.installOramaCache(await this.loadOramaSnapshot());
+      } catch {
+        await this.installCurrentOramaProjectionInWriteLock(startState);
+      }
+    }
+
+    const stateAfterArtifacts = this.readIndexStateIfPresent();
+    if (this.cachedOramaIndex === null || this.textArtifactsNeedRebuild(stateAfterArtifacts)) {
+      throw new Error('KB text search is unavailable: a fresh text snapshot could not be installed.');
+    }
+
+    return {
+      ...this.cachedOramaIndex,
+      index: this.readIndex() ?? emptyIndex(),
+    };
+  }
+
+  private async ensureOramaIndexReadOnly(): Promise<{
+    db: KbOramaDb;
+    tokenizer: KbOramaTokenizer;
+    index: KbIndex;
+    warnings?: string[];
+  }> {
+    if (this.cachedOramaIndex !== null) {
+      return {
+        ...this.cachedOramaIndex,
+        index: this.readIndex() ?? emptyIndex(),
+      };
+    }
+
+    try {
+      const loaded = await this.loadOramaSnapshot();
+      this.installOramaCache(loaded);
+      return {
+        ...loaded,
+        index: this.readIndex() ?? emptyIndex(),
+      };
+    } catch {
+      const { db, tokenizer } = await createOramaDb();
+      return {
+        db,
+        tokenizer,
+        index: emptyIndex(),
+        warnings: ['orama_snapshot_absent'],
+      };
+    }
+  }
+
+  private async installCurrentOramaProjectionInWriteLock(startState: KbIndexStateSnapshot): Promise<void> {
+    this.cachedOramaIndex = null;
+    rmSync(this.oramaIndexPath(), { force: true });
+
+    const currentIndex = this.readIndex();
+    if (currentIndex === null) {
+      try {
+        await rebuildTextArtifactsAndPersistRepairState(this, startState);
+        return;
+      } catch (error: unknown) {
+        throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
+      }
+    }
+
+    try {
+      const preparedProjection = await this.baseProjection.prepareFullSnapshotForCurrentCorpus(currentIndex);
+      await this.baseProjection.installFullSnapshotInWriteLock(this.captureCurrentCorpusSnapshot(), preparedProjection);
+    } catch (error: unknown) {
+      throw new Error(`KB text search is unavailable: ${errorMessage(error)}`, { cause: error });
+    }
+  }
+
+  private captureTextArtifactsSnapshot(): KbTextArtifactsSnapshot {
     const index = this.readIndex() ?? emptyIndex();
-    const notes: KbVectorTextSnapshot['notes'] = [];
-    const sources: KbVectorTextSnapshot['sources'] = [];
+    const notes: KbTextArtifactsSnapshot['notes'] = [];
+    const sources: KbTextArtifactsSnapshot['sources'] = [];
 
     for (const entry of Object.values(index.entries)) {
       if (isNoteEntry(entry)) {
@@ -1408,22 +1782,8 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private pendingRepairNeedsRetry(): boolean {
-    // Cache the curate-state read to avoid per-request disk I/O.
-    // Invalidated when curate-state.json mtime changes (any repair/curate write).
-    const curateStatePath = this.curateStatePath();
-    let curateStateMtime: number;
-    try {
-      curateStateMtime = statSync(curateStatePath).mtimeMs;
-    } catch {
-      return false;
-    }
-    if (this.pendingRepairCache !== null && this.pendingRepairCache.mtime === curateStateMtime) {
-      return this.pendingRepairCache.result;
-    }
-
     const pendingRepair = readCurateState(this).pendingRepair;
     if (pendingRepair === null) {
-      this.pendingRepairCache = { mtime: curateStateMtime, result: false };
       return false;
     }
 
@@ -1440,7 +1800,6 @@ class KbRuntimeImpl implements KbRuntime {
         return false;
       }
     });
-    this.pendingRepairCache = { mtime: curateStateMtime, result };
     return result;
   }
 
@@ -1456,10 +1815,10 @@ class KbRuntimeImpl implements KbRuntime {
   /** Build a vector text snapshot directly from rebuild output, avoiding N re-reads from disk. */
   private snapshotFromRebuildResult(
     result: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>,
-  ): KbVectorTextSnapshot {
+  ): KbTextArtifactsSnapshot {
     const index = this.readIndex() ?? emptyIndex();
-    const notes: KbVectorTextSnapshot['notes'] = [];
-    const sources: KbVectorTextSnapshot['sources'] = [];
+    const notes: KbTextArtifactsSnapshot['notes'] = [];
+    const sources: KbTextArtifactsSnapshot['sources'] = [];
 
     for (const note of result.notes) {
       const entry = index.entries[noteEntryId(note.note)];
@@ -1480,4 +1839,34 @@ class KbRuntimeImpl implements KbRuntime {
 
 export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {
   return new KbRuntimeImpl(opts);
+}
+
+export function captureKbCorpusSnapshot(kb: KbRuntime): KbCorpusPublication['snapshot'] {
+  const runtime = kb as KbRuntime & {
+    captureCurrentCorpusSnapshot?: () => KbCorpusPublication['snapshot'];
+  };
+  if (typeof runtime.captureCurrentCorpusSnapshot !== 'function') {
+    throw new Error('KB runtime does not expose corpus snapshot capture.');
+  }
+  return runtime.captureCurrentCorpusSnapshot();
+}
+
+export function setMutationLockProjectionDispatchMode(kb: KbRuntime, mode: 'delta' | 'full'): void {
+  const runtime = kb as KbRuntime & {
+    setMutationLockProjectionDispatchMode?: (nextMode: 'delta' | 'full') => void;
+  };
+  if (typeof runtime.setMutationLockProjectionDispatchMode !== 'function') {
+    throw new Error('KB runtime does not expose mutation-lock projection dispatch control.');
+  }
+  runtime.setMutationLockProjectionDispatchMode(mode);
+}
+
+export function writeEntityGraphLocked(kb: KbRuntime, graph: EntityGraph): void {
+  const runtime = kb as KbRuntime & {
+    writeEntityGraphLocked?: (nextGraph: EntityGraph) => void;
+  };
+  if (typeof runtime.writeEntityGraphLocked !== 'function') {
+    throw new Error('KB runtime does not expose lock-held entity graph writes.');
+  }
+  runtime.writeEntityGraphLocked(graph);
 }
