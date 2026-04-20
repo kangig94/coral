@@ -1,6 +1,6 @@
 # Architecture
 
-Coral is a local CLI + HTTP system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. `coral-cli` ensures the backend daemon is running, sends JSON requests over localhost HTTP, and streams job updates over SSE. No bridge or stdio proxy remains in the runtime path.
+Coral is a local CLI + coordinator system. Claude Code reaches Coral through hooks, slash-command instructions, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use `CoralStore` directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 
 Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
 
@@ -20,10 +20,15 @@ bridge/coral-cli.cjs
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
-      ▼  HTTP + SSE (`127.0.0.1`, authenticated)
+      ├── IPC (`coordinator.sock`, authenticated) for mutating/live commands
+      ├── CoralStore library reads for no-coordinator `jobs` / `kb` paths
+      └── HTTP gateway + carveouts (`127.0.0.1`, authenticated)
+            `/health`, `/admin/shutdown`, `/events/stream`
+      │
+      ▼
 bridge/coral-backend.cjs
   ├── Coordinator bootstrap + lifecycle
-  ├── HTTP + SSE transport adapter
+  ├── IPC + HTTP/SSE transport adapters
   ├── Jobs / sessions / workflow / discuss / KB facades
   ├── Live ConsumerDriver freshness + drain path
   ├── Corpus notify seam for KB publication
@@ -98,15 +103,15 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 ### Wait / follow
 
 1. Detached launches print `Job <job> <launchState> (session <session>)`
-2. `coral-cli wait --jobs "<ids>" [--embed]` calls `streamWait()`
-3. `POST /jobs/wait` yields SSE events from the coordinator-owned wait surface, which reads the same job truth used by startup recovery and steady-state launch orchestration
+2. `coral-cli wait --jobs "<ids>" [--embed]` opens the `jobs.wait` IPC subscription
+3. The local IPC stream and the remote `POST /jobs/wait` HTTP gateway both read the same coordinator-owned wait surface, which uses the same job truth as startup recovery and steady-state launch orchestration
 4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 
 ### Job inspection and control
 
-1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `GET /jobs` for the current project and projects job summaries into the CLI surface
-2. `coral-cli abort --jobs "<ids>"` posts directly to `POST /jobs/abort`
-3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through `GET /jobs`, then aborts the resulting job IDs
+1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
+2. `coral-cli abort --jobs "<ids>"` dispatches `jobs.abort` over IPC for local calls
+3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
 ### Workflow
 
@@ -127,9 +132,9 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Area | Role |
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
-| Client | Backend startup, HTTP requests, wait/admin helpers. |
+| Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `CoralStore` read helpers for no-coordinator CLI paths. |
 | Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, provider-host coordination, and cross-domain assembly. `src/coordinator/api.ts` plus `src/coordinator/composition/**` are explicit coordinator glue and may assemble domain shells/contracts. |
-| Transport | HTTP + SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
+| Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
 | Sessions | Session persistence and continuity, including resume/fork identity and atomic storage. |
@@ -146,9 +151,10 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 ```text
 CLI layer
   -> Client layer
-      -> Transport HTTP surface
+      -> Transport IPC/HTTP surface
+  -> CoralStore library reads (read-only no-coordinator commands)
 
-Transport HTTP surface
+Transport IPC/HTTP surface
   -> Coordinator API + control ports
   -> Domain facades/contracts (workflow / discuss / KB / jobs / sessions)
 

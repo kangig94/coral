@@ -156,3 +156,36 @@ Cluster commits:
 - `2c39b59e` — AC1 + AC12 tightening: result-markdown routes through `decodeBody`; invariant #45 catches `decodeEventBody(...) as ...` bypasses.
 - `current cluster commit` — quality/coverage/doc closeout: cached read-context singleton, explicit `ProgressStore` upcasters, `AppServerRuntime` rename, shutdown budget binding, query-count/session v1-v2 coverage, doc sync.
 - Deferred: discuss follow-up agent concurrency (`Promise.all` -> `Promise.allSettled`) stays postponed pending discuss-agent lifecycle design; see `src/__tests__/MIGRATION.md`, `Deferred — post-rewrite-final-polish`.
+
+## Phase 4 — Transport (complete)
+
+Tag: `phase-4-complete` @ rewrite branch.
+
+Phase 4 moved the CLI/backend seam onto the transport split. Local mutating and live-follow commands now use authenticated IPC, remote callers retain the HTTP gateway plus the operational carveouts, and read-only no-coordinator CLI paths read `CoralStore` directly.
+
+**Delivered**:
+
+- GOD amendment: HTTP routing is table-driven from `rpcCatalog` rather than hand-wired per route.
+- GOD amendment: the RPC catalog is the transport invariant shared by HTTP and IPC.
+- GOD amendment: JSON-RPC subscriptions are backed by a generic subscription primitive instead of transport-specific follow loops.
+- GOD amendment: read-only CLI `jobs` / `kb` flows migrated to direct `CoralStore` reads where no coordinator is required.
+- GOD amendment: `src/transport/ipc/ensure.ts` now follows discover-or-launch semantics instead of assuming a warm backend.
+- Tag `phase-4-complete` applied at `477a9ad`.
+- Rollback target: `phase-3-complete`.
+
+**Commit inventory**:
+
+- `f226589` — `phase-4/rpc-catalog: rpc-catalog + rpc-ports + schema relocations (AC1)`
+- `c35c12a` — `phase-4/json-rpc: json-rpc codec + envelope with subscriptionId slot (AC2)`
+- `6e73126` — `phase-4/http-on-catalog: handler rebuilt on rpcCatalog; ops carveout explicit (AC4)`
+- `1a87696` — `phase-4/ipc-coordinator-hosted: ipc server/client/ensure + coordinator lifecycle (AC3)`
+- `f81a403` — `phase-4/coral-store-reads: CoralStore sub-facades + CLI read migration (AC5)`
+- `323ac9d` — `phase-4/subscription-primitive: ipc subscription dispatch + follow.ts IPC switch (AC9)`
+- `cbb00f3` — `phase-4/command-class-dispatch: command-class-map + makeClient split + backend-lifecycle removal (AC6)`
+- `92a5ead` — `phase-4/provider-contract-flip: switch providers to streaming IPC`
+- `32c1087` — `phase-4/provider-contract-flip-followup: move mutate-via-ipc to integration suite`
+- `2e7370a` — `phase-4/closure`
+- `7d3a4ed` — `phase-4/god-amendments`
+- `0b8e48f` — `phase-4/lint-fixes: fix remaining eslint violations`
+- `8d9feec` — `phase-4/discuss-watch-exemption: move discuss watch from mutate class to explicit exemption`
+- `477a9ad` — `phase-4 complete — transport layer + RPC catalog + command-class routing`

@@ -6,17 +6,17 @@ A high-level map of what each area of the codebase is for. This document describ
 
 | Entry | Bundle | Role |
 | --- | --- | --- |
-| Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain facades, lifecycle, and HTTP routes. |
-| CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that talks to the backend over HTTP + SSE. |
+| Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain facades, lifecycle, and IPC/HTTP transport routes. |
+| CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
 | Claude appserver helper | `bridge/coral-claude-appserver.cjs` | Runtime for the Claude appserver-hosted provider lane. |
 
 ## CLI and Client
 
-The CLI parses commands, follows detached launches via SSE, and formats output for humans and machines. The client layer owns backend startup, HTTP dispatch, and wait/admin helpers, and exposes a public barrel for external consumers.
+The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel.
 
 ## Backend
 
-The backend is a composition root, not a domain. Phase 3 splits that root into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, and cross-domain assembly; transport owns HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
+The backend is a composition root, not a domain. Phase 3 splits that root into a coordinator layer and a transport layer: the coordinator owns lifecycle, startup recovery, projection freshness, corpus notify publication, and cross-domain assembly; transport owns IPC plus HTTP/SSE parsing, validation, and wire formatting. New domain logic does not land in either layer; it stays in its owning domain and is reached through an explicit facade.
 
 ## Runtime
 
@@ -58,9 +58,10 @@ Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross
 ```text
 CLI
   -> client helpers
-     -> transport routes
+     -> transport IPC/HTTP routes
+  -> CoralStore library reads (read-only no-coordinator commands)
 
-transport HTTP routes
+transport IPC/HTTP routes
   -> coordinator API + control ports
   -> domain facades (workflow / discuss / KB)
 
