@@ -17,6 +17,8 @@ const LEGACY_HELPERS = new Set([
 const ALLOWLIST = [
   /^src\/coordinator\/api\.ts$/,
   /^src\/coordinator\/execution-service\.ts$/,
+  /^src\/coordinator\/services\/execution-shared\.ts$/,
+  /^src\/coordinator\/services\/recovery-service\.ts$/,
   /^src\/jobs\/reconcile\//,
   /^src\/jobs\/shell\/launch\.ts$/,
   /^src\/providers\//,

@@ -52,6 +52,12 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/log.ts',
   'src/coordinator/paths.ts',
   'src/coordinator/recording/observer.ts',
+  'src/coordinator/services/execution-shared.ts',
+  'src/coordinator/services/job-abort-service.ts',
+  'src/coordinator/services/job-launch-service.ts',
+  'src/coordinator/services/job-wait-service.ts',
+  'src/coordinator/services/recovery-service.ts',
+  'src/coordinator/services/workflow-execution-service.ts',
   'src/coordinator/shutdown/mode.ts',
   'src/coordinator/shutdown/network.ts',
   'src/coordinator/shutdown/sequence.ts',
@@ -81,7 +87,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/workflow-cleanup.ts',
 ]);
 
-const BROAD_IMPORT_PREFIXES = ['src/coordinator/composition/'] as const;
+const BROAD_IMPORT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
 const FORBIDDEN_PREFIXES = [
   'src/execution/',
   'src/jobs/shell/',
