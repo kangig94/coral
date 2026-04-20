@@ -110,6 +110,13 @@ function jobResultPath(jobId: string): string {
   return join(JOBS_DIR, jobId, 'result.md');
 }
 
+function createProgressStore(
+  namespace = 'test-ns',
+  runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time'> = runtime,
+): ProgressStore {
+  return new ProgressStore(namespace, runtimeArg, createDefaultUpcasterRegistry());
+}
+
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
   return {
@@ -712,7 +719,7 @@ describe('execution backend server', () => {
       import('../../../providers/claude/request-mapping.js'),
       import('../../../providers/codex/request-mapping.js'),
     ]);
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const projectRootA = createProjectRoot('provider-host-project-a');
     const projectRootB = createProjectRoot('provider-host-project-b');
     const jobIdA = 'provider-host-job-a';
@@ -853,7 +860,7 @@ describe('execution backend server', () => {
   });
 
   it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const backend = await startBackendServer({
       progressStore,
     });
@@ -1248,7 +1255,7 @@ describe('execution backend server', () => {
       });
       const executionService = options.executionService ?? createFakeExecutionService();
       const idleTimer = createFakeIdleTimer();
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore('test-ns', runtime);
       const coralEnvSnapshot = currentCoralEnvSnapshot();
       const getDiscussContext = () => ({}) as never;
       const requestDrain = vi.fn();
@@ -3381,7 +3388,7 @@ describe('execution backend server', () => {
 
   it('defaults an absent /jobs/wait cursor to an empty replay state', async () => {
     const fakeService = createFakeExecutionService();
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     createdJobIds.add('job-1');
     progressStore.initJob({
       jobId: 'job-1',
@@ -3435,7 +3442,7 @@ describe('execution backend server', () => {
 
   it('honors the /jobs/wait Last-Event-ID header cursor', async () => {
     const fakeService = createFakeExecutionService();
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     createdJobIds.add('job-1');
     progressStore.initJob({
       jobId: 'job-1',
@@ -3533,7 +3540,7 @@ describe('execution backend server', () => {
   });
 
   it('lists jobs and returns replayed job detail', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const backend = await startBackendServer({
       progressStore,
     });
@@ -3643,7 +3650,7 @@ describe('execution backend server', () => {
   describe('GET /jobs query filters', () => {
     it('filters collection responses by projectRoot, phase, all, and provider and sorts by updatedAt descending', async () => {
       const fakeService = createFakeExecutionService();
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const backend = await startBackendServer({
         createExecutionService: () => fakeService as never,
         progressStore,
@@ -3836,7 +3843,7 @@ describe('execution backend server', () => {
   });
 
   it('maps provider-less continuation errors on the new session routes', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('continuation-project');
     const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
     const foreign = new SessionManager(foreignProjectRoot, runtime).allocate({
@@ -3979,7 +3986,7 @@ describe('execution backend server', () => {
 
   it('returns 403 before streaming when /jobs/wait includes cross-project jobs', async () => {
     const fakeService = createFakeExecutionService();
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     createdJobIds.add('job-foreign');
     progressStore.initJob({
       jobId: 'job-foreign',
@@ -4045,7 +4052,7 @@ describe('execution backend server', () => {
   });
 
   it('clears orphaned session claims across shards when the job dir is missing', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const projectA = createProjectRoot('project-a');
     const projectB = createProjectRoot('project-b');
     const sessionA = new SessionManager(projectA, runtime).allocate('codex', 'alpha', 'gpt-5', projectA);
@@ -4082,7 +4089,7 @@ describe('execution backend server', () => {
   });
 
   it('releases terminal session claims even when the referenced job dir exists', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('project-existing-job');
     const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
     const jobId = 'completed-job';
@@ -4113,7 +4120,7 @@ describe('execution backend server', () => {
   });
 
   it('recovers orphaned workflow jobs with an empty artifact, workflow marker, and released session claim', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
     const session = new SessionManager(projectRoot, runtime).allocate(
@@ -4206,7 +4213,7 @@ describe('execution backend server', () => {
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
-    const progressStore = new ProgressStore('test-ns', runtime);
+    const progressStore = createProgressStore();
     const pluginRoot = createProjectRoot('plugin-root-foreign-drain');
     const localNamespace = pluginRootNamespace(pluginRoot);
     const foreignJobId = 'job-foreign-drain';
@@ -4341,7 +4348,7 @@ describe('execution backend server', () => {
       const { lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('handoff-app-server-finalization');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'handoff-app-server-job';
       createdJobIds.add(jobId);
 
@@ -4616,7 +4623,7 @@ describe('execution backend server', () => {
       const { backendInfo, lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('lifecycle-publish-order');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'queued-adoption-before-publish';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -4727,7 +4734,7 @@ describe('execution backend server', () => {
       const { lifecycleModule } = await loadExecutionModules();
       const pluginRoot = createProjectRoot('startup-app-server-recovery');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'startup-app-server-job';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -4849,7 +4856,7 @@ describe('execution backend server', () => {
       const resumeLoopSpy = vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
       const pluginRoot = createProjectRoot('startup-interrupted-during-adoption');
       const namespace = pluginRootNamespace(pluginRoot);
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'running-adoption-job';
       createdJobIds.add(jobId);
       progressStore.initJob({
@@ -4997,7 +5004,7 @@ describe('execution backend server', () => {
       const namespace = pluginRootNamespace(pluginRoot);
       const recoveryPollMs = 500;
       const runtime = new SimulationRuntime();
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'running-adoption-poller-job';
       const pid = 41_424;
       createdJobIds.add(jobId);
@@ -5338,7 +5345,7 @@ describe('execution backend server', () => {
 
   describe('recovery scan', () => {
     it('classifies old-format jobs as incompatible', async () => {
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'old-format-job';
       const projectRoot = createProjectRoot('old-format-project');
       const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
@@ -5376,7 +5383,7 @@ describe('execution backend server', () => {
     });
 
     it('marks ghost launch jobs as error when runtime.json was never written', async () => {
-      const progressStore = new ProgressStore('test-ns', runtime);
+      const progressStore = createProgressStore();
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');
       const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);

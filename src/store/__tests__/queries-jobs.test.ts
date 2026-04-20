@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { appendEvents, type AppendInput } from '../append.js';
 import type { StoreReadContext } from '../body-codec.js';
@@ -189,7 +189,9 @@ describe('jobs queries', () => {
 
   it('hydrates batched projection details without narrowing status, runtime, or terminal fields', () => {
     const jobIds = ['job-completed', 'job-rejected', 'job-queued', 'job-missing', 'job-completed'];
+    const prepareSpy = vi.spyOn(db, 'prepare');
     const detailsByJob = loadJobProjectionDetails(db, jobIds, readCtx);
+    const prepareCallCount = prepareSpy.mock.calls.length;
 
     expect(detailsByJob.size).toBe(4);
 
@@ -243,5 +245,7 @@ describe('jobs queries', () => {
       runtime: null,
       exit: null,
     });
+
+    expect(prepareCallCount).toBeLessThanOrEqual(4);
   });
 });

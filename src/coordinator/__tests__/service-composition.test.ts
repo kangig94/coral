@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
 import { createDeferred } from '../../shared/test-deferred.js';
-import type { AppServerRuntimeRecord, JobLaunch, JobStatus } from '../../jobs/views.js';
+import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
@@ -31,6 +31,7 @@ import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -74,6 +75,10 @@ let launchCoordinator: LaunchCoordinator;
 let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
+
+function createProgressStore(namespace = 'test-ns'): ProgressStore {
+  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+}
 
 function jobResultPath(jobId: string): string {
   return join(JOBS_DIR, jobId, 'result.md');
@@ -120,7 +125,7 @@ function createService(
   const resolveProvider = (name: string) => mockState.getNewProvider(name);
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
+    progressStore: options.progressStore ?? createProgressStore(),
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -1728,8 +1733,8 @@ describe('ExecutionService', () => {
     }
 
     function makeAppServerRuntimeRecord(
-      overrides?: Partial<AppServerRuntimeRecord['providerMeta']>,
-    ): AppServerRuntimeRecord {
+      overrides?: Partial<AppServerRuntime['providerMeta']>,
+    ): AppServerRuntime {
       return {
         transport: 'app-server',
         startTime: new Date().toISOString(),

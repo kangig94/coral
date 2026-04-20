@@ -16,6 +16,7 @@ import type { Provider } from '../../../providers/provider-contracts.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import type { ProviderInstruction, ProviderRequest } from '../../../providers/protocol.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -84,7 +85,7 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(stubProvider);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new ProgressStore('test-ns', runtime, eventBus);
+      const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
       const executionSvc = new ExecutionService(
         { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
         {

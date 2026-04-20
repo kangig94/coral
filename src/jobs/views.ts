@@ -158,7 +158,7 @@ export interface JobLaunch {
   createdAt: string;
 }
 
-export interface AppServerRuntimeRecord {
+export interface AppServerRuntime {
   transport: 'app-server';
   startTime: string;
   providerMeta: {
@@ -170,11 +170,11 @@ export interface AppServerRuntimeRecord {
   };
 }
 
-export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntimeRecord;
+export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime;
 
 export function isAppServerRuntime(
   record: JobRuntime | null | undefined,
-): record is AppServerRuntimeRecord {
+): record is AppServerRuntime {
   return record?.transport === 'app-server';
 }
 

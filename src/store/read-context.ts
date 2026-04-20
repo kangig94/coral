@@ -7,10 +7,12 @@ import { composeReducers } from './reducers.js';
 import { createDefaultUpcasterRegistry } from './upcasters.js';
 
 const defaultReducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+let defaultReadCtx: StoreReadContext | null = null;
 
 export function createDefaultStoreReadContext(): StoreReadContext {
-  return {
+  defaultReadCtx ??= {
     schemas: defaultReducers.schemas,
     upcasters: createDefaultUpcasterRegistry(),
   };
+  return defaultReadCtx;
 }

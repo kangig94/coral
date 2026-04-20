@@ -11,6 +11,7 @@ import type { CallerContext } from '../../shared/request-context.js';
 import type { JobTerminal } from '../../jobs/views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import { applyMigrations } from '../../store/migrations.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { parseExpression } from '../parser.js';
 import { workflowPlanDeclaredEvent } from '../events.js';
 import { buildWorkflowPlan, replacePlanSlot, type WorkflowPlan } from '../plan.js';
@@ -75,7 +76,7 @@ function createHarness(options: {
   applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
 
   const runtime = new SimulationRuntime();
-  const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime);
+  const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry());
   const plan = createWorkflowPlan();
   appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)]);
 

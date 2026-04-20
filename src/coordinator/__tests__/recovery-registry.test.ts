@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RecoveryRegistry } from '../composition/recovery-registry.js';
-import type { AppServerRuntimeRecord, JobLaunch } from '../../jobs/views.js';
+import type { AppServerRuntime, JobLaunch } from '../../jobs/views.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 
 function makeLaunchRecord(overrides: Partial<JobLaunch> = {}): JobLaunch {
@@ -30,7 +30,7 @@ function makeRuntimeRecord(overrides: Partial<DurableCliRuntimeRecord> = {}): Du
   };
 }
 
-function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntimeRecord['providerMeta']> = {}): AppServerRuntimeRecord {
+function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntime['providerMeta']> = {}): AppServerRuntime {
   return {
     transport: 'app-server',
     startTime: new Date().toISOString(),

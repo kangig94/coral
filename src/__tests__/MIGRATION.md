@@ -162,3 +162,21 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - Wait-stream / wait-once / replay cursor behavior → `src/jobs/shell/__tests__/wait.test.ts` plus `src/transport/http/__tests__/server.test.ts` for wire-level SSE assertions.
 - Startup recovery, orphan adoption, ghost launch, wrapper-loss, and interrupted app-server recovery → `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts`.
 - Cross-domain coordinator residue (resume/fork composition, workflow dispatch, provider-host composition, interrupted app-server finalization) → `src/coordinator/__tests__/service-composition.test.ts`.
+
+## Final Polish (AC1-AC12)
+
+Baseline before final-polish landing: `npm test` `1619 passed | 30 skipped | 3 todo`; integration suite `18/18` green.
+
+Commit ledger:
+
+- `82f0c782` — AC2 jobs replay-identity coverage and denormalized projection assertions.
+- `7490d463` — AC9 projection-only session lookup and `projection_sessions.shard_dir` contract.
+- `802f27a2` — AC5 leaf-import cleanup for coordinator/jobs boundaries.
+- `2c39b59e` — AC1 + AC12 upcast-routing tightening and invariant expansion.
+- `current cluster commit` — quality/coverage/doc closeout for cached read contexts, explicit upcasters, runtime rename, shutdown budgeting, and reducer/query proof additions.
+
+Migration notes:
+
+- AC3 rename pass: `AppServerRuntimeRecord` normalized to `AppServerRuntime`; downstream imports now point at the renamed jobs view type.
+- AC4 deletion pass: workflow-cleanup claims remain closed; no deleted workflow/checkpoint types were reintroduced during final polish.
+- AC9 schema additions: `projection_sessions.shard_dir` is authoritative, seeded by `session.opened`, and no empty-string fallback remains in reducer paths.

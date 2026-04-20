@@ -7,7 +7,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
 import { createDeferred } from '../../../shared/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
-import type { AppServerRuntimeRecord, JobLaunch, JobProgress, JobStatus } from '../../views.js';
+import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '../../views.js';
 import type { WaitStreamEvent } from '../../wait.js';
 import type { ProviderRequest, ProviderTurnResult } from '../../../providers/protocol.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -37,6 +37,7 @@ import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -80,6 +81,10 @@ let launchCoordinator: LaunchCoordinator;
 let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
+
+function createProgressStore(namespace = 'test-ns'): ProgressStore {
+  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+}
 
 function _jobResultPath(jobId: string): string {
   return join(JOBS_DIR, jobId, 'result.md');
@@ -126,7 +131,7 @@ function createService(
   const resolveProvider = (name: string) => mockState.getNewProvider(name);
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
+    progressStore: options.progressStore ?? createProgressStore(),
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -737,7 +742,7 @@ describe('ExecutionService launch', () => {
     });
 
     const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
-    const firstRuntime = progressStore.readRuntimeRecord(jobId1) as AppServerRuntimeRecord;
+    const firstRuntime = progressStore.readRuntimeRecord(jobId1) as AppServerRuntime;
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -758,7 +763,7 @@ describe('ExecutionService launch', () => {
 
     await Promise.resolve();
 
-    const waitingRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    const waitingRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
     expect(waitingRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -775,7 +780,7 @@ describe('ExecutionService launch', () => {
     firstLease.release();
     const secondLease = await secondLeasePromise;
 
-    const acquiredRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    const acquiredRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
     expect(acquiredRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -885,7 +890,7 @@ describe('ExecutionService launch', () => {
     });
     const secondLease = await secondLeasePromise;
 
-    const secondRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntimeRecord;
+    const secondRuntime = progressStore.readRuntimeRecord(jobId2) as AppServerRuntime;
     expect(secondRuntime).toMatchObject({
       transport: 'app-server',
       providerMeta: {
@@ -1017,7 +1022,7 @@ describe('ExecutionService launch', () => {
       },
       createdAt: new Date().toISOString(),
     };
-    const runtimeRecord: AppServerRuntimeRecord = {
+    const runtimeRecord: AppServerRuntime = {
       transport: 'app-server',
       startTime: new Date().toISOString(),
       providerMeta: {

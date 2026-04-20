@@ -23,6 +23,7 @@ import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
 import type { ProviderInstruction, ProviderRequest } from '../../providers/protocol.js';
 import type { LifecycleState } from '../../coordinator/control.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 
 function assertNotMocked(name: string, value: unknown): void {
   if (vi.isMockFunction(value)) {
@@ -220,7 +221,7 @@ describe('agent wire contract', () => {
     const runtime = createRealRuntime();
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('test-ns', runtime, eventBus);
+    const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
     const pluginRegistry = createPluginRegistry({
       storage: runtime.storage,
       env: runtime.env,

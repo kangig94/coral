@@ -66,13 +66,6 @@ type StartupRecoveryContext = {
 };
 
 type RecoveryAdoptionContext = {
-  progressStore: ProgressStore;
-  runtime: Runtime;
-  runtimeState: MutableRuntimeState;
-  providerRegistry: ProviderRegistry;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  createCallerContext: (projectRoot: string) => CallerContext;
-  log: (message: string) => void;
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
   assertStartupStillActive: () => void;
@@ -343,13 +336,6 @@ export function createRecoveryCoordinator({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
           assertStartupStillActive,
-          progressStore,
-          runtime,
-          runtimeState,
-          providerRegistry,
-          getRecoveryService,
-          createCallerContext,
-          log,
         });
       } catch (error: unknown) {
         if (error instanceof StartupInterruptedError) {

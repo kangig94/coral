@@ -122,7 +122,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 - **Dev-flavor invocation**:
   - `npm run dev` sets `CORAL_FLAVOR=dev` via package.json script.
-  - `CORAL_FLAVOR` checked by `src/infra/paths.ts` — hard-fail if unset when code requires flavor; default to `prod` at install time.
+  - `CORAL_FLAVOR` read by `src/runtime/flavor.ts` (`resolveBuildFlavor`); `src/infra/paths.ts` exposes `setBuildFlavor` for settlement at coordinator startup.
   - `flavor-coexistence.test.ts` in `src/__tests__/integration/` exercises both flavors side-by-side.
 
 - **Invariants test scaffolding**: architecture-boundary test + type-ownership test present, failing initially. Each phase closes more invariants; cleanup passes all.
@@ -301,7 +301,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - Per-resource route files: `jobs-routes.ts`, `discuss-routes.ts`, `kb-routes.ts`, `workflow-routes.ts`.
 - `src/transport/json-rpc.ts`.
 - CLI switched: read-only (`jobs list`, `kb read`, `kb search`) → `CoralStore` library-direct; mutating (`codex`, `claude`, `workflow`, `abort`, `wait`) → IPC.
-- `src/client/` DELETED (replaced by store queries + transport clients).
+- `src/client/` cleanup deferred: `readers.ts` remains as a transport-adapter bridge and retires in Phase 6 / Cleanup after the last importer moves to store queries + transport clients.
 
 **Acceptance criteria**:
 
@@ -558,7 +558,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 | Equipment install | `~/.coral/data/equipment/<name>/` | `~/.coral/data-dev/equipment/<name>/` |
 | Durable job artifact | `<os-tmpdir>/coral-jobs/<id>/result.md` | `<os-tmpdir>/coral-jobs/<id>/result.md` |
 
-All paths resolved via `src/infra/paths.ts`. Dev paths enable safe testing without corrupting user's live KB workflow.
+All paths resolved via `src/infra/paths.ts` after `src/runtime/flavor.ts` (`resolveBuildFlavor`) settles the flavor and coordinator startup calls `setBuildFlavor`. Dev paths enable safe testing without corrupting user's live KB workflow.
 
 `CORAL_FLAVOR=dev` is set by `npm run dev` (added in Phase 0).
 

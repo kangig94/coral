@@ -520,7 +520,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
     const service = createActualRecoveryService(modules, {
@@ -594,7 +599,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
     const service = createActualRecoveryService(modules, {
@@ -665,7 +675,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-ghost-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -716,7 +731,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-foreign-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
     const jobId = `foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`;
     const foreignNamespace = 'foreign-namespace';
@@ -777,7 +797,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -820,7 +845,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-dead-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
     const service = createActualRecoveryService(modules, {
@@ -882,7 +912,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-terminal-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
     const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
@@ -946,7 +981,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-orphan-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
     const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
@@ -986,7 +1026,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1032,7 +1077,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running-stays-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const launchCoordinator = createLaunchCoordinator(modules);
     const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
     const service = createActualRecoveryService(modules, {
@@ -1087,7 +1137,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-terminal');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1139,7 +1194,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-history');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1187,7 +1247,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-namespace-preserved');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1228,7 +1293,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued-stays-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1270,7 +1340,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-ghost-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1310,7 +1385,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1351,7 +1431,12 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-adopt');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(currentNamespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      currentNamespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -1395,7 +1480,12 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-fence');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
+    const progressStore = new modules.progressStoreModule.ProgressStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      { eventBus },
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({

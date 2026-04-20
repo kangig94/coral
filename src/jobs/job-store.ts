@@ -5,7 +5,6 @@ import { TypedEventBus } from '../coordinator/event-bus.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
-import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
@@ -28,6 +27,13 @@ import type {
 
 export type ReplayCursor = {
   lastEventId: number;
+};
+
+export type ProgressStoreOptions = {
+  eventBus?: TypedEventBus;
+  db?: Database;
+  appendEvents?: AppendEventsFn;
+  reducers?: ComposedReducers;
 };
 
 export type InitJobOptions = {
@@ -92,12 +98,16 @@ export class JobStore {
   constructor(
     private readonly namespace: string,
     private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>,
-    eventBus: TypedEventBus = new TypedEventBus(),
-    db?: Database,
-    appendEvents?: AppendEventsFn,
-    reducers: ComposedReducers = composeReducers(jobsRegistry),
-    upcasters: UpcasterRegistry = createDefaultUpcasterRegistry(),
+    upcasters: UpcasterRegistry,
+    options: ProgressStoreOptions = {},
   ) {
+    const {
+      eventBus = new TypedEventBus(),
+      db,
+      appendEvents,
+      reducers = composeReducers(jobsRegistry),
+    } = options;
+
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;

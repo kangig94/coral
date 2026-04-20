@@ -128,3 +128,30 @@ Phase 3 finishes the backend split. The daemon now composes a coordinator seam f
 - Post-tag review fixes tightened the coordinator seam without reopening the large refactor: `src/coordinator/api.ts` is now documented and invariant-tested as explicit coordinator glue, its local `*RequestPort` interfaces were renamed to avoid collisions with transport contracts, and `src/coordinator/bootstrap.ts` absorbed the `--smoke-open-store` path so `src/coordinator/smoke-open-store.ts` could be deleted.
 - Journal consumer registration is now factory-backed (`src/store/projection-consumer.ts`) instead of four copy-pasted `consumer.ts` implementations, backend-lock compat helpers are deduplicated in `src/coordinator/lock.ts`, and workflow result artifact writes are atomic again.
 - Follow-up tests/docs now cover the release-before-acquire lease clamp, explicit cold-start liveness, a tighter warm-start handoff expectation, current runtime-state paths, and the coordinator-glue allowance in the design philosophy / topology docs.
+
+## Final Polish (AC1-AC12)
+
+Baseline before final-polish landing: `npm test` `1619 passed | 30 skipped | 3 todo` at `phase-3-complete`; integration suite `18/18` green.
+
+AC scope ledger:
+
+- AC1 upcast-routing enforcement.
+- AC2 jobs denormalization / replay identity coverage.
+- AC3 rename pass cleanup.
+- AC4 deletion-pass cleanup.
+- AC5 leaf-import tightening.
+- AC6 composition cleanup carry-through.
+- AC7 legacy-boundary carry-through.
+- AC8 jobs shell/reconcile contract closure.
+- AC9 projection-only session lookup + `shard_dir` contract.
+- AC10 hook-stub carry-through.
+- AC11 event-backed launch/runtime/terminal payload discipline.
+- AC12 invariant enforcement expansion.
+
+Cluster commits:
+
+- `82f0c782` — AC2 completion: jobKind upcaster, reducer-equivalence identity coverage, indexed projection reads.
+- `7490d463` — AC9 completion: projection-only session lookup, deterministic sessions upcasters, shard-dir contract.
+- `802f27a2` — AC5 leaf tightening: coordinator contracts stop importing shell modules; jobs store imports the event-bus leaf.
+- `2c39b59e` — AC1 + AC12 tightening: result-markdown routes through `decodeBody`; invariant #45 catches `decodeEventBody(...) as ...` bypasses.
+- `current cluster commit` — quality/coverage/doc closeout: cached read-context singleton, explicit `ProgressStore` upcasters, `AppServerRuntime` rename, shutdown budget binding, query-count/session v1-v2 coverage, doc sync.

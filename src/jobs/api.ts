@@ -18,10 +18,7 @@ import {
   loadJobProjectionDetail as loadJobProjectionDetailQuery,
   readJobProgress as readJobProgressQuery,
 } from '../store/queries/jobs.js';
-import type { StoreReadContext } from '../store/body-codec.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
-
-export type { ProgressStore } from './job-store.js';
 
 export type JobsStartupDeps = {
   recoveryCoordinator: RecoveryCoordinator;
@@ -66,20 +63,14 @@ function queryJobDetail(
   if (hasJournalQuerySurface(source)) {
     return source.loadJobProjectionDetail(jobId);
   }
-  return loadJobProjectionDetailQuery(source, jobId, defaultCtx());
+  return loadJobProjectionDetailQuery(source, jobId, createDefaultStoreReadContext());
 }
 
 function queryJobProgress(source: JobQuerySource, jobId: string): JobProgress[] {
   if (hasJournalQuerySurface(source)) {
     return source.readJobProgress(jobId);
   }
-  return readJobProgressQuery(source, jobId, defaultCtx());
-}
-
-let cachedDefaultCtx: StoreReadContext | null = null;
-function defaultCtx(): StoreReadContext {
-  cachedDefaultCtx ??= createDefaultStoreReadContext();
-  return cachedDefaultCtx;
+  return readJobProgressQuery(source, jobId, createDefaultStoreReadContext());
 }
 
 export const jobsCommands = {
@@ -119,7 +110,7 @@ export const jobsQueries = {
       return source.listJobProjections();
     }
     if (isDatabase(source)) {
-      return listJobProjectionsQuery(source, defaultCtx());
+      return listJobProjectionsQuery(source, createDefaultStoreReadContext());
     }
     return [];
   },
@@ -194,7 +185,7 @@ export type { JobProjectionDetail } from './read-contracts.js';
 export type { JobLaunchRequest, JobResumeRequest, JobForkRequest, LaunchDecision } from './launch.js';
 export type { JobPhase } from './phase.js';
 export type {
-  AppServerRuntimeRecord,
+  AppServerRuntime,
   JobExit,
   JobLaunch,
   JobProgress,

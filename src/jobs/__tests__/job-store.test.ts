@@ -7,6 +7,7 @@ import { TypedEventBus } from '../../coordinator/control.js';
 import { type StoragePort } from '../../runtime/ports.js';
 import { SimulationRuntime } from '../../simulation/runtime.js';
 import { applyMigrations } from '../../store/migrations.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { isLivePhase } from '../phase.js';
 import { JobStore } from '../job-store.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
@@ -61,7 +62,7 @@ function createStore(db: InstanceType<typeof Database> = createDb()): {
   const runtime = new SimulationRuntime();
   return {
     runtime,
-    store: new JobStore('test-ns', runtime, new TypedEventBus(), db),
+    store: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus: new TypedEventBus(), db }),
   };
 }
 

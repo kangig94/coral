@@ -2,7 +2,7 @@ import type { LaunchDecision } from '../jobs/launch.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type {
-  AppServerRuntimeRecord,
+  AppServerRuntime,
   JobLaunch,
   JobProgress,
   JobRuntime,
@@ -174,12 +174,12 @@ export type ExecutionServiceDeps = {
 export interface RecoveryCapableService {
   finalizeInterruptedAppServerJob(
     launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntimeRecord,
+    runtimeRecord: AppServerRuntime,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void>;
   adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void };
   recoverQueuedJob(launchRecord: JobLaunch): string;
-  interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntimeRecord): Promise<void>;
+  interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,

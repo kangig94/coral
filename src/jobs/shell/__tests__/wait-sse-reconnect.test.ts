@@ -54,7 +54,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new ProgressStore('wait-sse-ns', runtime, eventBus);
+    const progressStore = new ProgressStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
     const launchCoordinator = new LaunchCoordinator({ runtime });
     const append = createJournalAppender(db);
     const jobId = 'wait-sse-job';

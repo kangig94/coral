@@ -15,7 +15,6 @@ import type * as AgentResolutionMod from '../agent-resolution.js';
 import { createDeferred as _createDeferred } from '../../../shared/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type {
-  AppServerRuntimeRecord as _AppServerRuntimeRecord,
   JobLaunch as _JobLaunch,
   JobProgress,
   JobStatus,
@@ -49,6 +48,7 @@ import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -92,6 +92,10 @@ let launchCoordinator: LaunchCoordinator;
 let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
+
+function createProgressStore(namespace = 'test-ns'): ProgressStore {
+  return new ProgressStore(namespace, runtime, createDefaultUpcasterRegistry(), { eventBus });
+}
 
 function _jobResultPath(jobId: string): string {
   return join(JOBS_DIR, jobId, 'result.md');
@@ -138,7 +142,7 @@ function createService(
   const resolveProvider = (name: string) => mockState.getNewProvider(name);
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? new ProgressStore('test-ns', runtime, eventBus),
+    progressStore: options.progressStore ?? createProgressStore(),
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),

@@ -144,8 +144,13 @@ export async function runShutdownSequence({
     });
   }
 
-  await Promise.race([runtimeState.getKbSubsystem()?.curateScheduler.stop?.(), runtime.time.sleep(5_000)]);
-  await runtimeState.getKbSubsystem()?.kb.closeVectorStores().catch((error: unknown) => {
+  const kbSubsystem = runtimeState.getKbSubsystem();
+  const curateSchedulerStop = kbSubsystem?.curateScheduler.stop?.bind(kbSubsystem.curateScheduler);
+  const kbStopBudgetMs = remainingDrain();
+  if (curateSchedulerStop && kbStopBudgetMs >= 500) {
+    await Promise.race([curateSchedulerStop(), runtime.time.sleep(kbStopBudgetMs)]);
+  }
+  await kbSubsystem?.kb.closeVectorStores().catch((error: unknown) => {
     backendLog.warn(`closeVectorStores failed during shutdown: ${errorMessage(error)}`);
   });
   await hooks.onShutdown(mode);

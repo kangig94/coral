@@ -470,20 +470,23 @@ export function loadJobProjectionDetails(
 
   const projectionsByJob = readProjectionRows(db, uniqueJobIds);
   const requestedByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.launch.requested');
-  const rejectedByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.launch.rejected');
-  const runtimeByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.runtime.started');
-  const terminalByJob = readLatestEventsForJobs(db, uniqueJobIds, 'job.terminal.recorded');
+  const statusEventsByJob = readLatestProjectionStatusEvents(db, uniqueJobIds);
 
   for (const jobId of uniqueJobIds) {
+    const statusEvents = statusEventsByJob.get(jobId) ?? {
+      rejected: null,
+      runtime: null,
+      terminal: null,
+    };
     details.set(
       jobId,
       hydrateJobProjectionDetail(
         jobId,
         projectionsByJob.get(jobId) ?? null,
         requestedByJob.get(jobId) ?? null,
-        rejectedByJob.get(jobId) ?? null,
-        runtimeByJob.get(jobId) ?? null,
-        terminalByJob.get(jobId) ?? null,
+        statusEvents.rejected,
+        statusEvents.runtime,
+        statusEvents.terminal,
         ctx,
       ),
     );

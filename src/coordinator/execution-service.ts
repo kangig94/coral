@@ -24,7 +24,7 @@ import {
   resolveAgent,
   stripAgentMetadata,
   type AgentResolutionContext,
-  type AppServerRuntimeRecord,
+  type AppServerRuntime,
   type JobLaunch,
   type JobProgress,
   type JobPhase,
@@ -466,9 +466,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     if (!isAppServerRuntime(runtimeRecord)) {
       throw new Error(`checkpointRecovery(${jobId}) requires an app-server runtime record`);
     }
-    const providerMetaUpdate = update.providerMeta as Partial<AppServerRuntimeRecord['providerMeta']>;
+    const providerMetaUpdate = update.providerMeta as Partial<AppServerRuntime['providerMeta']>;
 
-    const nextRecord: AppServerRuntimeRecord = {
+    const nextRecord: AppServerRuntime = {
       ...runtimeRecord,
       providerMeta: {
         ...runtimeRecord.providerMeta,
@@ -494,7 +494,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async interruptAppServerJob(
     launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntimeRecord,
+    runtimeRecord: AppServerRuntime,
   ): Promise<void> {
     const appServerLifecycle = this.providerRegistry.getAppServerLifecycle(launchRecord.provider);
     if (!appServerLifecycle) {
@@ -527,7 +527,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async finalizeInterruptedAppServerJob(
     launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntimeRecord,
+    runtimeRecord: AppServerRuntime,
     options: { reason: InterruptedAppServerReason },
   ): Promise<void> {
     const status = this.progressStore.readStatus(launchRecord.jobId);
@@ -729,7 +729,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   private resolveAppServerContinuity(
     providerName: string,
-    runtimeRecord: AppServerRuntimeRecord,
+    runtimeRecord: AppServerRuntime,
     session?: Pick<SessionEntry, 'providerContinuity'> | null,
   ): ProviderContinuityBlob | undefined {
     if (isProviderContinuityBlob(runtimeRecord.providerMeta.providerContinuity)) {
@@ -747,11 +747,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   private writeAppServerRuntimeRecord(
     jobId: string,
     providerName: string,
-    update: Partial<AppServerRuntimeRecord['providerMeta']>,
+    update: Partial<AppServerRuntime['providerMeta']>,
   ): void {
     const current = this.progressStore.readRuntimeRecord(jobId);
     const appRuntime = isAppServerRuntime(current) ? current : null;
-    const record: AppServerRuntimeRecord = {
+    const record: AppServerRuntime = {
       transport: 'app-server',
       startTime: appRuntime?.startTime ?? nowIsoString(this.runtime.time),
       providerMeta: {

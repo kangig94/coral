@@ -26,6 +26,7 @@ import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/execution-service.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { openBackendStoreDb } from '../../store/db.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { createProjectionSessionLookup } from '../../store/queries/sessions.js';
 import { createFilesystemSessionLookup, mergeSessionLookups } from '../../sessions/lookup.js';
 import { workflowRecover } from '../../workflow/api.js';
@@ -341,8 +342,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const progressStore = new ProgressStore(
     namespace,
     runtime,
-    eventBus,
-    storeDb,
+    createDefaultUpcasterRegistry(),
+    {
+      eventBus,
+      db: storeDb,
+    },
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();

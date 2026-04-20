@@ -454,6 +454,7 @@ This is the endpoint's evolution story. "Clean-slate rewrite" starts every event
 Projection tables carry materialized read-model columns for stable-at-launch identity fields + lifecycle summary.
 
 Event body is authoritative; each projection row is derived via reducer dispatch keyed by replay identity (`stream.kind`, `stream.id`, `seq`).
+Richer launch/runtime/terminal payloads remain event-backed; projection is derived via reducer + replay identity, never by mutating historical event bodies.
 
 ---
 

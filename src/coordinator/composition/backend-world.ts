@@ -21,6 +21,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { BackendDefaultsPlan } from './backend-defaults.js';
 import { composeReducers } from '../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { sessionsRegistry } from '../../sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../discuss/store-registry.js';
@@ -91,10 +92,11 @@ export function createBackendWorld(
     new ProgressStore(
       namespace,
       runtime,
-      eventBus,
-      undefined,
-      undefined,
-      composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+      createDefaultUpcasterRegistry(),
+      {
+        eventBus,
+        reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+      },
     );
   const providerHostManager =
     options.providerHostManager ??
