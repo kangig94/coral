@@ -5,7 +5,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionEntry } from '../entry.js';
 import { SessionManager } from './store.js';
 import { noopAppendEvents } from '../../store/append.js';
-import { createFilesystemSessionLookup, type SessionLookup } from '../lookup.js';
+import type { SessionLookup } from '../lookup.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 
@@ -58,7 +58,7 @@ export function readSessionRefs(
 export function resolveSession(
   ref: SessionResolveRef,
   runtime: SessionRuntime,
-  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'> = createFilesystemSessionLookup(runtime),
+  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>,
 ): SessionEntry | null {
   const target = typeof ref === 'string' ? { sessionId: ref } : ref;
   const shardLookup = target.shardDir
@@ -86,7 +86,7 @@ export function resolveSession(
 export function getSessionById(
   sessionId: string,
   runtime: SessionRuntime,
-  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'> = createFilesystemSessionLookup(runtime),
+  sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>,
 ): SessionEntry | null {
   return resolveSession({ sessionId }, runtime, sessionLookup);
 }

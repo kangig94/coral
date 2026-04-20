@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3';
 
+import { CoralSetupError } from '../runtime/errors.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import { DEFAULT_SESSION_CONTROLLER } from './entry.js';
@@ -75,18 +76,31 @@ function hasConversationRefPatch(patch: SessionProjectionPatch): patch is Sessio
   return Object.prototype.hasOwnProperty.call(patch, 'conversationRef');
 }
 
+function prematureProjectionSessionEvent(sessionId: string): CoralSetupError {
+  return new CoralSetupError({
+    code: 'projection_sessions_premature_event',
+    userMessage: `Session projection received a non-opened event before session.opened for ${sessionId}.`,
+    remediation: 'Append session.opened before any continuity, provider_failed, adapter_unparseable, interrupted, or closed events for a session stream.',
+    context: { sessionId },
+  });
+}
+
 function upsertProjectionSession(
   db: Database,
   event: { stream: { id: string }; seq: number },
   patch: SessionProjectionPatch,
 ): void {
   const previous = readProjectionSession(db, event.stream.id);
+  const shardDir = patch.shardDir ?? previous?.shardDir;
+  if (shardDir === undefined) {
+    throw prematureProjectionSessionEvent(event.stream.id);
+  }
   const next = {
     controller: patch.controller ?? previous?.controller ?? DEFAULT_SESSION_CONTROLLER,
     provider: patch.provider ?? previous?.provider ?? 'unknown',
     resumable: patch.resumable ?? previous?.resumable ?? false,
     conversationRef: hasConversationRefPatch(patch) ? patch.conversationRef : (previous?.conversationRef ?? null),
-    shardDir: patch.shardDir ?? previous?.shardDir ?? '',
+    shardDir,
   };
 
   upsertProjection(db, {

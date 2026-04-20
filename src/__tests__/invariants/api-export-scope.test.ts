@@ -1,8 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { listProductionSourceFiles, toCanonicalSrcPath } from '../__helpers__/ts-import-scanner.js';
 
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const SRC_ROOT = join(REPO_ROOT, 'src');
 const API_PATH = fileURLToPath(new URL('../../coordinator/api.ts', import.meta.url));
 const CONTRACTS_PATH = fileURLToPath(new URL('../../coordinator/contracts.ts', import.meta.url));
 const FORBIDDEN_REEXPORTS = new Set(['AbortRegistry', 'parseAgentMeta', 'parseAgentRef', 'resolveAgent']);
@@ -12,6 +16,7 @@ const FORBIDDEN_CONTRACT_IMPORTS = [
   '../transport/http/contracts.js',
   './transport/http/contracts.js',
 ];
+const OPEN_SHARD_ALLOWLIST = new Set(['src/sessions/shell/resolve.ts', 'src/jobs/reconcile/snapshot.ts']);
 
 function hasExportModifier(node: ts.Node): boolean {
   return ts.canHaveModifiers(node)
@@ -116,6 +121,46 @@ describe('coordinator api export scope invariant (AC12)', () => {
     expect(
       forbidden,
       'src/coordinator/contracts.ts must remain a leaf and avoid control, execution-service, live, shell, and transport/http/contracts imports',
+    ).toEqual([]);
+  });
+
+  it('keeps SessionManager.openShard usage inside the recovery/read allowlist', () => {
+    const violations: string[] = [];
+
+    for (const filePath of listProductionSourceFiles(SRC_ROOT)) {
+      const canonicalPath = toCanonicalSrcPath(REPO_ROOT, filePath);
+      const sourceFile = ts.createSourceFile(
+        filePath,
+        readFileSync(filePath, 'utf-8'),
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+
+      let hasOpenShardCall = false;
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isCallExpression(node)
+          && ts.isPropertyAccessExpression(node.expression)
+          && ts.isIdentifier(node.expression.expression)
+          && ts.isIdentifier(node.expression.name)
+          && node.expression.expression.text === 'SessionManager'
+          && node.expression.name.text === 'openShard'
+        ) {
+          hasOpenShardCall = true;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+
+      if (hasOpenShardCall && !OPEN_SHARD_ALLOWLIST.has(canonicalPath)) {
+        violations.push(canonicalPath);
+      }
+    }
+
+    expect(
+      violations,
+      'Production SessionManager.openShard sites must stay confined to the allowlist.',
     ).toEqual([]);
   });
 });

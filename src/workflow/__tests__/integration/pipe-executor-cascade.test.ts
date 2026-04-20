@@ -10,6 +10,7 @@ import { ProgressStore } from '../../../jobs/job-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';
+import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/provider-contracts.js';
 import type { CallerContext } from '../../../shared/request-context.js';
@@ -101,6 +102,7 @@ describe('pipe executor coral cascade invariant', () => {
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
+          sessionLookup: createFilesystemSessionLookup(runtime),
         },
       );
 

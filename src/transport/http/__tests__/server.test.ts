@@ -24,7 +24,12 @@ import { decideSessionCreate } from '../../../discuss/state-machine.js';
 import { createDiscussContextRegistry, getOrCreate as getOrCreateDiscussContext } from '../../../discuss/shell/live-registry.js';
 import { DiscussSessionStore } from '../../../discuss/shell/session-store.js';
 import { ProgressStore } from '../../../jobs/job-store.js';
+import { appendEvents } from '../../../store/append.js';
+import { composeReducers } from '../../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
+import { sessionsRegistry } from '../../../sessions/events.js';
+import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import {
   discussEventLogPath,
   discussSourcesPath,
@@ -404,6 +409,45 @@ function stubRuntimeRecord(
     stderrPath: overrides.stderrPath ?? join(JOBS_DIR, overrides.jobId, 'stderr.log'),
     startTime: overrides.startTime ?? new Date().toISOString(),
   });
+}
+
+function stubSessionProjection(
+  progressStore: ProgressStore,
+  overrides: {
+    sessionId: string;
+    provider: string;
+    projectRoot: string;
+    backendNamespace: string;
+  },
+): void {
+  const shard = createFilesystemSessionLookup(runtime).lookupSessionShard(overrides.sessionId);
+  if (!shard) {
+    throw new Error(`Missing shard for ${overrides.sessionId}`);
+  }
+
+  appendEvents(
+    progressStore.getDb(),
+    [
+      {
+        type: 'session.opened',
+        stream: { kind: 'session', id: overrides.sessionId },
+        namespace: overrides.backendNamespace,
+        project: overrides.projectRoot,
+        refs: { sessionId: overrides.sessionId },
+        bodyVersion: 2,
+        body: {
+          controller: 'default',
+          provider: overrides.provider,
+          shard_dir: shard.shardDir,
+        },
+      },
+    ],
+    {
+      now: () => new Date(runtime.time.now()),
+      reducers: composeReducers(sessionsRegistry),
+      upcasters: createDefaultUpcasterRegistry(),
+    },
+  );
 }
 
 function parseToolData(result: ToolDomainResult): unknown {
@@ -3792,6 +3836,7 @@ describe('execution backend server', () => {
   });
 
   it('maps provider-less continuation errors on the new session routes', async () => {
+    const progressStore = new ProgressStore('test-ns', runtime);
     const projectRoot = createProjectRoot('continuation-project');
     const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
     const foreign = new SessionManager(foreignProjectRoot, runtime).allocate({
@@ -3809,8 +3854,20 @@ describe('execution backend server', () => {
       projectRoot,
       projectRoot,
     );
+    stubSessionProjection(progressStore, {
+      sessionId: foreign.sessionId,
+      provider: 'codex',
+      projectRoot: foreignProjectRoot,
+      backendNamespace: testBackendNamespace,
+    });
+    stubSessionProjection(progressStore, {
+      sessionId: legacy.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+    });
 
-    const backend = await startBackendServer();
+    const backend = await startBackendServer({ progressStore });
     const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
       fetch(`${backend.baseUrl}/sessions/missing-session/messages`, {
         method: 'POST',
@@ -3988,15 +4045,28 @@ describe('execution backend server', () => {
   });
 
   it('clears orphaned session claims across shards when the job dir is missing', async () => {
+    const progressStore = new ProgressStore('test-ns', runtime);
     const projectA = createProjectRoot('project-a');
     const projectB = createProjectRoot('project-b');
     const sessionA = new SessionManager(projectA, runtime).allocate('codex', 'alpha', 'gpt-5', projectA);
     const sessionB = new SessionManager(projectB, runtime).allocate('codex', 'beta', 'gpt-5', projectB);
+    stubSessionProjection(progressStore, {
+      sessionId: sessionA.sessionId,
+      provider: 'codex',
+      projectRoot: projectA,
+      backendNamespace: testBackendNamespace,
+    });
+    stubSessionProjection(progressStore, {
+      sessionId: sessionB.sessionId,
+      provider: 'codex',
+      projectRoot: projectB,
+      backendNamespace: testBackendNamespace,
+    });
 
     new SessionManager(projectA, runtime).claimForJobSync(sessionA.sessionId, 'missing-job-a');
     new SessionManager(projectB, runtime).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
-    await startBackendServer();
+    await startBackendServer({ progressStore });
 
     expect(new SessionManager(projectA, runtime).get('codex', sessionA.sessionId)).toMatchObject({
       sessionId: sessionA.sessionId,
@@ -4016,6 +4086,12 @@ describe('execution backend server', () => {
     const projectRoot = createProjectRoot('project-existing-job');
     const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
     const jobId = 'completed-job';
+    stubSessionProjection(progressStore, {
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+    });
 
     createdJobIds.add(jobId);
     progressStore.initJob({

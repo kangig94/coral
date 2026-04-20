@@ -102,7 +102,8 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
     case 'releaseSessionClaim': {
       const shard = sessionLookup.lookupSessionShard(action.sessionId);
       if (!shard) {
-        throw new Error(`Session shard not found for ${action.sessionId}`);
+        log(`Skipped releasing session claim for ${action.sessionId}: shard lookup missing\n`);
+        return;
       }
 
       SessionManager.forProduction(

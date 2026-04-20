@@ -770,6 +770,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     ctx: CallerContext,
     expectedProvider?: string,
   ): { providerName: string; session: SessionEntry } | LaunchDecision {
+    if (!this.sessionLookup) {
+      throw new Error('ExecutionService requires sessionLookup for session-id continuation.');
+    }
     const session = getSessionById(sessionId, this.runtime, this.sessionLookup);
     if (!session) {
       return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);

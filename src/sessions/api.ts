@@ -49,7 +49,7 @@ export const sessionsQueries = {
   resolve(
     runtime: SessionRuntime,
     ref: SessionResolveRef,
-    sessionLookup?: Pick<SessionLookup, 'lookupSessionShard'>,
+    sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>,
   ): SessionEntry | undefined {
     return resolveSession(ref, runtime, sessionLookup) ?? undefined;
   },

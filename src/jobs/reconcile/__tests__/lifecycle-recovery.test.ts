@@ -6,6 +6,10 @@ import { join } from 'node:path';
 
 import type { JobLaunch } from '../../views.js';
 import { createRealRuntime } from '../../../runtime/real.js';
+import { appendEvents } from '../../../store/append.js';
+import { composeReducers } from '../../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { sessionsRegistry } from '../../../sessions/events.js';
 
 const runtime = createRealRuntime();
 
@@ -37,6 +41,7 @@ async function loadModules() {
     eventBusModule,
     pathsModule,
     sessionLookupModule,
+    sessionQueriesModule,
     providerRegistryModule,
   ] = await Promise.all([
     import('../../job-store.js'),
@@ -47,6 +52,7 @@ async function loadModules() {
     import('../../../coordinator/event-bus.js'),
     import('../../../infra/paths.js'),
     import('../../../sessions/lookup.js'),
+    import('../../../store/queries/sessions.js'),
     import('../../../providers/registry.js'),
   ]);
 
@@ -59,6 +65,7 @@ async function loadModules() {
     eventBusModule,
     pathsModule,
     sessionLookupModule,
+    sessionQueriesModule,
     providerRegistryModule,
   };
 }
@@ -255,6 +262,41 @@ function stubAppServerRuntime(
   });
 }
 
+function appendSessionOpenedEvent(
+  progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
+  overrides: {
+    sessionId: string;
+    provider: string;
+    backendNamespace: string;
+    projectRoot: string;
+    shardDir: string;
+  },
+): void {
+  appendEvents(
+    progressStore.getDb(),
+    [
+      {
+        type: 'session.opened',
+        stream: { kind: 'session', id: overrides.sessionId },
+        namespace: overrides.backendNamespace,
+        project: overrides.projectRoot,
+        refs: { sessionId: overrides.sessionId },
+        bodyVersion: 2,
+        body: {
+          controller: 'default',
+          provider: overrides.provider,
+          shard_dir: overrides.shardDir,
+        },
+      },
+    ],
+    {
+      now: () => new Date(runtime.time.now()),
+      reducers: composeReducers(sessionsRegistry),
+      upcasters: createDefaultUpcasterRegistry(),
+    },
+  );
+}
+
 function appendTerminalEvent(
   progressStore: InstanceType<LoadedModules['progressStoreModule']['ProgressStore']>,
   overrides: {
@@ -377,7 +419,7 @@ function createLifecycleHarness(
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
-        sessionLookup: modules.sessionLookupModule.createFilesystemSessionLookup(runtime),
+        sessionLookup: modules.sessionQueriesModule.createProjectionSessionLookup(options.progressStore.getDb()),
       });
       return [];
     },
@@ -843,7 +885,12 @@ describe('lifecycle recovery', () => {
     const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
+    const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
     const fakeService = createFakeExecutionAndRecoveryService();
+
+    if (!shard) {
+      throw new Error(`Missing shard for ${session.sessionId}`);
+    }
 
     progressStore.initJob({
       jobId: 'terminal-job',
@@ -860,6 +907,13 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: namespace,
     });
+    appendSessionOpenedEvent(progressStore, {
+      sessionId: session.sessionId,
+      provider: 'fakeprovider',
+      backendNamespace: namespace,
+      projectRoot,
+      shardDir: shard.shardDir,
+    });
     appendTerminalEvent(progressStore, {
       jobId: 'terminal-job',
       sessionId: session.sessionId,
@@ -875,9 +929,11 @@ describe('lifecycle recovery', () => {
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
     });
+    const filesystemLookupSpy = vi.spyOn(modules.sessionLookupModule, 'createFilesystemSessionLookup');
 
     try {
       await controller.start();
+      expect(filesystemLookupSpy).not.toHaveBeenCalled();
       expect(new modules.sessionManagerModule.SessionManager(projectRoot, runtime).get('fakeprovider', session.sessionId)?.activeJobId).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -893,8 +949,20 @@ describe('lifecycle recovery', () => {
     const progressStore = new modules.progressStoreModule.ProgressStore(namespace, runtime, eventBus);
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
+    const shard = modules.sessionLookupModule.createFilesystemSessionLookup(runtime).lookupSessionShard(session.sessionId);
     const fakeService = createFakeExecutionAndRecoveryService();
 
+    if (!shard) {
+      throw new Error(`Missing shard for ${session.sessionId}`);
+    }
+
+    appendSessionOpenedEvent(progressStore, {
+      sessionId: session.sessionId,
+      provider: 'fakeprovider',
+      backendNamespace: namespace,
+      projectRoot,
+      shardDir: shard.shardDir,
+    });
     sessionManager.claimForJobSync(session.sessionId, 'missing-job');
 
     const { controller } = createLifecycleHarness(modules, {

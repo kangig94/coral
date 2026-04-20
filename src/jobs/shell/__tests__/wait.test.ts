@@ -45,6 +45,7 @@ import { TypedEventBus } from '../../../coordinator/control.js';
 import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../../runtime/real.js';
+import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
@@ -152,6 +153,7 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
+    sessionLookup: createFilesystemSessionLookup(runtime),
   });
 }
 

@@ -15,6 +15,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { ExecutionService } from '../../coordinator/execution-service.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
+import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/provider-contracts.js';
@@ -252,6 +253,7 @@ describe('agent wire contract', () => {
         eventBus,
         providerRegistry,
         pluginRegistry,
+        sessionLookup: createFilesystemSessionLookup(runtime),
       });
       services.set(ctx.projectRoot, created);
       return created;

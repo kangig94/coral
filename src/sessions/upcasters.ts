@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { sessionBase } from '../infra/paths.js';
@@ -12,25 +12,11 @@ type SessionOpenedBodyV1 = {
 
 function deriveLegacySessionShardDir(sessionId?: string): string {
   const baseDir = sessionBase();
-
-  if (typeof sessionId === 'string' && sessionId.length > 0) {
-    try {
-      for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) {
-          continue;
-        }
-
-        const shardDir = join(baseDir, entry.name);
-        if (existsSync(join(shardDir, `${sessionId}.json`))) {
-          return shardDir;
-        }
-      }
-    } catch {
-      // best effort
-    }
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    return join(baseDir, 'legacy');
   }
 
-  return join(baseDir, 'legacy');
+  return join(baseDir, createHash('sha1').update(sessionId).digest('hex').slice(0, 12));
 }
 
 export function registerSessionsUpcasters(registry: UpcasterRegistry): void {

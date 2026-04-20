@@ -400,7 +400,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       bindHost: listenHost,
       advertiseHost: listenHost,
     },
-    createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
+    createExecutionService: (ctx, deps) =>
+      new ExecutionService(ctx, {
+        ...deps,
+        sessionLookup: createFilesystemSessionLookup(runtime),
+      }),
     createServerFn,
     fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
     listenFn: async () => {

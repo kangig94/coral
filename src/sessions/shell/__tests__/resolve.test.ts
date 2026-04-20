@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,6 +24,7 @@ import { composeReducers } from '../../../store/reducers.js';
 import { currentBuildFlavor } from '../../../infra/paths.js';
 import { storePaths } from '../../../store/paths.js';
 import { createProjectionSessionLookup } from '../../../store/queries/sessions.js';
+import { createFilesystemSessionLookup } from '../../lookup.js';
 import { jobsRegistry } from '../../../jobs/events.js';
 import { discussRegistry } from '../../../discuss/store-registry.js';
 import { sessionsRegistry } from '../../events.js';
@@ -81,6 +83,7 @@ describe('sessions shell resolve', () => {
   it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
+    const sessionLookup = createFilesystemSessionLookup(runtime);
     const sessionA = alpha.mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -98,12 +101,12 @@ describe('sessions shell resolve', () => {
       backendNamespace: 'ns-b',
     });
 
-    expect(getSessionById(sessionA.sessionId, runtime)).toMatchObject({
+    expect(getSessionById(sessionA.sessionId, runtime, sessionLookup)).toMatchObject({
       sessionId: sessionA.sessionId,
       provider: 'codex',
       backendNamespace: 'ns-a',
     });
-    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, runtime, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
       provider: 'claude',
       backendNamespace: 'ns-b',
@@ -111,17 +114,18 @@ describe('sessions shell resolve', () => {
 
     beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
 
-    expect(getSessionById(sessionB.sessionId, runtime)).toMatchObject({
+    expect(getSessionById(sessionB.sessionId, runtime, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
       state: 'ready',
       conversationRef: 'thread-2',
     });
-    expect(getSessionById('missing-session-id', runtime)).toBeNull();
+    expect(getSessionById('missing-session-id', runtime, sessionLookup)).toBeNull();
   });
 
   it('resolveSession supports direct shard references and provider filtering', () => {
     const alpha = setup('resolve-shard-a');
     const beta = setup('resolve-shard-b');
+    const sessionLookup = createFilesystemSessionLookup(runtime);
     const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
     const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
     const shardA = listSessionShards(runtime).find(
@@ -140,6 +144,7 @@ describe('sessions shell resolve', () => {
           provider: 'codex',
         },
         runtime,
+        sessionLookup,
       ),
     ).toMatchObject({
       sessionId: sessionA.sessionId,
@@ -153,6 +158,7 @@ describe('sessions shell resolve', () => {
           provider: 'claude',
         },
         runtime,
+        sessionLookup,
       ),
     ).toBeNull();
     expect(
@@ -162,6 +168,7 @@ describe('sessions shell resolve', () => {
           provider: 'claude',
         },
         runtime,
+        sessionLookup,
       ),
     ).toMatchObject({
       sessionId: sessionB.sessionId,
@@ -169,7 +176,7 @@ describe('sessions shell resolve', () => {
     });
   });
 
-  it('projection lookup resolves a legacy v1 session.opened shard mapping', () => {
+  it('projection lookup upcasts a legacy v1 session.opened shard mapping deterministically', () => {
     const { mgr, workDir } = setup('legacy-lookup');
     const entry = mgr.allocate({
       provider: 'codex',
@@ -179,7 +186,6 @@ describe('sessions shell resolve', () => {
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
-    const shardDir = resolveSessionDir(tmpHome);
     const db = createSessionDb();
 
     try {
@@ -207,13 +213,8 @@ describe('sessions shell resolve', () => {
 
       const sessionLookup = createProjectionSessionLookup(db);
       expect(sessionLookup.lookupSessionShard(entry.sessionId)).toEqual({
-        shardDir,
+        shardDir: join(runtime.paths.sessionBase(), createHash('sha1').update(entry.sessionId).digest('hex').slice(0, 12)),
         provider: 'codex',
-      });
-      expect(getSessionById(entry.sessionId, runtime, sessionLookup)).toMatchObject({
-        sessionId: entry.sessionId,
-        provider: 'codex',
-        backendNamespace: 'ns-a',
       });
     } finally {
       db.close();

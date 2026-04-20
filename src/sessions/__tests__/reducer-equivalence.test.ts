@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -123,7 +124,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
-        shard_dir: join(sessionBase(), 'legacy'),
+        shard_dir: join(sessionBase(), createHash('sha1').update('session-1').digest('hex').slice(0, 12)),
         last_seq: appended.at(-1)?.seq,
       });
 
