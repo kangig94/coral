@@ -183,11 +183,6 @@ export const cycleStepSchema = z.object({
   type: z.literal('cycle'),
 });
 
-/** @deprecated Use cycleStepSchema. */
-export const restartStepSchema = z.object({
-  type: z.literal('restart'),
-});
-
 const shutdownStepSchema = z.object({
   type: z.literal('shutdown'),
   reason: z.string().optional(),
@@ -253,7 +248,6 @@ const stepSchema = z
     abortStepSchema,
     killStepObjectSchema,
     cycleStepSchema,
-    restartStepSchema,
     shutdownStepSchema,
     expectStepObjectSchema,
     hangStepSchema,

@@ -429,8 +429,7 @@ async function executeStep(
         );
       }
 
-      case 'cycle':
-      case 'restart': {
+      case 'cycle': {
         const info = await world.cycle();
         resetCursor(cursor);
         return buildStepResult(world, step, stepIndex, startedAt, {

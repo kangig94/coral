@@ -296,12 +296,12 @@ describe('scenario runner', () => {
     });
   });
 
-  it('treats restart as a deprecated alias for the cycle step', async () => {
+  it('cycles the simulation world to the next generation', async () => {
     const run = await runScenario({
       world: {},
       steps: [
         { type: 'boot' },
-        { type: 'restart' },
+        { type: 'cycle' },
       ],
     });
     worlds.push(run.world);
@@ -309,7 +309,7 @@ describe('scenario runner', () => {
     expect(run.result.passed).toBe(true);
     expect(run.result.steps[1]).toMatchObject({
       ok: true,
-      type: 'restart',
+      type: 'cycle',
       detail: {
         generation: 1,
       },

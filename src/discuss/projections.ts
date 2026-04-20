@@ -64,7 +64,7 @@ function topicForEvent(
   return '';
 }
 
-function toLegacyEvent(
+function toDiscussDomainEvent(
   event: CoralEvent<DiscussProjectionBody>,
   previous: PersistedDiscussSnapshot | null,
 ): DiscussDomainEvent {
@@ -85,7 +85,7 @@ function toLegacyEvent(
 export const reduceDiscussProjection: Reducer<DiscussProjectionBody> = (db, event) => {
   const previous = readProjectionDiscuss(db, event.stream.id)?.state ?? null;
   const seed = previous ?? makeEmptySnapshot(event.stream.id, event.project ?? '');
-  const next = reduceDiscussEvent(seed, toLegacyEvent(event, previous));
+  const next = reduceDiscussEvent(seed, toDiscussDomainEvent(event, previous));
 
   upsertProjection(db, {
     table: 'projection_discuss',
