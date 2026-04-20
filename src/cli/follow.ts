@@ -3,7 +3,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { BackendToolHttpError, type AcceptedLaunchResponse } from '../client/http-client.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
-import { createRealRuntime } from '../runtime/real.js';
 import type { JobTerminal } from '../jobs/views.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
@@ -13,12 +12,9 @@ import {
   assertNever,
   isRecord,
   isTransientStreamError,
-  readBuildFlavor,
 } from '../shared/utils.js';
-import { CoralStore, openStoreDatabase } from '../store/index.js';
-import { storePaths } from '../store/paths.js';
-import { createDefaultStoreReadContext } from '../store/read-context.js';
 import { ensure } from '../transport/ipc/ensure.js';
+import { getSharedReadCoralStore } from './read-coral-store.js';
 import {
   formatLaunch,
   formatWaitProgress,
@@ -115,21 +111,15 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
   return exitCode;
 }
 
-function openCauseRenderer(pluginRoot: string): {
+function openCauseRenderer(projectRoot: string): {
   readonly render?: (ref: CauseRef, fallbackOutcome?: TerminalOutcome) => string;
   close(): void;
 } {
   try {
-    const runtime = createRealRuntime();
-    const db = openStoreDatabase({
-      path: storePaths(readBuildFlavor(pluginRoot)).dbFile,
-      storage: runtime.storage,
-      readonly: true,
-    });
-    const store = new CoralStore(db, createDefaultStoreReadContext());
+    const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
     return {
       render: (ref, fallbackOutcome) => describeCauseRef(ref, store, fallbackOutcome),
-      close: () => db.close(),
+      close: () => {},
     };
   } catch {
     return {
@@ -188,7 +178,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
   let localAbortRequested = false;
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
-  const causeRenderer = openCauseRenderer(options.pluginRoot);
+  const causeRenderer = openCauseRenderer(options.projectRoot);
 
   const onSigint = () => {
     sigintCount += 1;

@@ -22,7 +22,6 @@ import {
 } from '../client/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
-import { pluginRootNamespace } from '../infra/paths.js';
 import type { JobStatus } from '../jobs/views.js';
 import type {
   KbDeleteInput,
@@ -48,11 +47,15 @@ import type {
   ReindexResult,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import { createRealRuntime } from '../runtime/real.js';
+import {
+  clearPendingReadStoreNote,
+  flushPendingReadStoreNote,
+  getSharedReadCoralStore,
+} from './read-coral-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../shared/controller-profile.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
-import { collectCoralEnv, readBuildFlavor } from '../shared/utils.js';
+import { collectCoralEnv } from '../shared/utils.js';
 import { buildErrorEnvelope, UsageError } from './errors.js';
 import {
   formatErrorEnvelope,
@@ -63,17 +66,8 @@ import { isJsonObject } from './parse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { classifyCommand, commandPath } from './command-class-map.js';
-import { CoralStore, openStoreDatabase } from '../store/index.js';
-import { createDefaultStoreReadContext } from '../store/read-context.js';
-import { ensureStoreMigrationsDir } from '../store/migrations.js';
-import { storePaths } from '../store/paths.js';
-
 type CliOutputFormat = 'text' | 'json';
-
-export type ReadCoralStoreHandle = {
-  store: CoralStore;
-  close(): void;
-};
+export { flushPendingReadStoreNote, openReadCoralStore, withReadCoralStore, type ReadCoralStoreHandle } from './read-coral-store.js';
 
 type SessionRequestOptions = {
   provider?: string;
@@ -317,15 +311,6 @@ export function resolveInput(values: string[]): string {
     .join(' ');
 }
 
-type CachedReadStore = {
-  key: string;
-  handle: ReadCoralStoreHandle;
-};
-
-let cachedReadStore: CachedReadStore | null = null;
-let readStoreCleanupRegistered = false;
-let pendingReadStoreNote: string | null = null;
-
 function createDefaultCallerContext(projectRoot: string): CallerContext {
   return {
     pluginRoot,
@@ -373,62 +358,8 @@ function resolveMemoOwner(owner: string | undefined, context: CallerContext): st
   return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
 }
 
-function closeCachedReadStore(): void {
-  if (!cachedReadStore) {
-    return;
-  }
-
-  cachedReadStore.handle.close();
-  cachedReadStore = null;
-}
-
-function registerReadStoreCleanup(): void {
-  if (readStoreCleanupRegistered) {
-    return;
-  }
-
-  readStoreCleanupRegistered = true;
-  process.once('exit', closeCachedReadStore);
-  process.once('beforeExit', closeCachedReadStore);
-}
-
-function readStoreCacheKey(projectRoot: string): string {
-  return JSON.stringify({
-    pluginRoot,
-    projectRoot,
-    flavor: readBuildFlavor(pluginRoot || projectRoot),
-  });
-}
-
-function getSharedReadCoralStore(projectRoot: string): CoralStore {
-  const key = readStoreCacheKey(projectRoot);
-  if (cachedReadStore?.key === key) {
-    return cachedReadStore.handle.store;
-  }
-
-  closeCachedReadStore();
-  cachedReadStore = {
-    key,
-    handle: openReadCoralStore(projectRoot),
-  };
-  registerReadStoreCleanup();
-  return cachedReadStore.handle.store;
-}
-
 function remoteDispatchUnavailable(commandName: string): never {
   throw new UsageError(`Command "${commandName}" is not yet supported in this phase.`);
-}
-
-function clearPendingReadStoreNote(): void {
-  pendingReadStoreNote = null;
-}
-
-export function flushPendingReadStoreNote(outputFormat: CliOutputFormat): void {
-  const note = pendingReadStoreNote;
-  pendingReadStoreNote = null;
-  if (outputFormat === 'text' && note) {
-    process.stdout.write(note + '\n');
-  }
 }
 
 export function makeClient(projectRoot: string, command: Command): CliCommandClient {
@@ -642,60 +573,6 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       await request<ReindexResult>('kb.reindex', buildTransportContextBody({}, defaultContext)),
     subscribe,
   };
-}
-
-export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
-  const runtime = createRealRuntime();
-  const flavor = readBuildFlavor(pluginRoot || projectRoot);
-  const dbPath = storePaths(flavor).dbFile;
-  const hasStore = existsSync(dbPath);
-  const namespace = pluginRoot
-    ? (() => {
-        try {
-          return pluginRootNamespace(pluginRoot);
-        } catch {
-          return undefined;
-        }
-      })()
-    : undefined;
-
-  const db = hasStore
-    ? openStoreDatabase({
-        path: dbPath,
-        storage: runtime.storage,
-        readonly: true,
-      })
-    : openStoreDatabase({
-        path: ':memory:',
-        storage: runtime.storage,
-        migrationsDir: ensureStoreMigrationsDir(runtime.storage),
-      });
-
-  if (!hasStore) {
-    pendingReadStoreNote = `(no store at ${dbPath} — showing empty results)`;
-  }
-
-  return {
-    store: new CoralStore(db, createDefaultStoreReadContext(), {
-      namespace,
-      projectRoot,
-      ...(pluginRoot ? { pluginRoot } : {}),
-    }),
-    close: () => db.close(),
-  };
-}
-
-export async function withReadCoralStore<T>(
-  projectRoot: string,
-  read: (store: CoralStore) => Promise<T> | T,
-): Promise<T> {
-  const handle = openReadCoralStore(projectRoot);
-
-  try {
-    return await read(handle.store);
-  } finally {
-    handle.close();
-  }
 }
 
 export function getOutputFormat(command: Command): CliOutputFormat {
