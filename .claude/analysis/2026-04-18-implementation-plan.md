@@ -572,7 +572,7 @@ Each phase gate verifies:
 2. `npm test` — zero failures, zero `.only`.
 3. `grep -rn "@ts-expect-error\|TODO rewrite\|FIXME" src/` — zero matches.
 4. Architecture-boundary test runs; all invariants **in scope for that phase** hold.
-5. **Invariant coverage not lost**: architecture `§16` enumerates 44 invariants. Each invariant has a test that demonstrates it. Phase boundary requires: for every invariant marked `in-scope-as-of-phase-N`, the test exists and passes. Deletion of a test is allowed only if its invariant is also removed (which should never happen for architecture invariants).
+5. **Invariant coverage not lost**: architecture `§16` enumerates 46 invariants. Each invariant has a test that demonstrates it. Phase boundary requires: for every invariant marked `in-scope-as-of-phase-N`, the test exists and passes. Deletion of a test is allowed only if its invariant is also removed (which should never happen for architecture invariants).
 6. Phase-specific acceptance criteria (per phase §2).
 
 Raw test-count deltas are not a guardrail — rewriting a phase may legitimately delete many tests while adding equivalent-coverage new tests. Coverage is measured against the invariant list.
@@ -602,6 +602,8 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 
 - `contentHash = sha256(markdown_body_after_frontmatter)`. Metadata-only edits don't invalidate contentHash.
 - Upcaster composition produces output that re-validates against current Zod schema.
+- Read-side event bodies route through upcast-aware decode helpers; raw `schema.parse(decodeEventBody(...))` and one-arg `rowToCoralEvent(row)` are forbidden outside `store/body-codec`, `store/append`, and `store/rebuild`.
+- `coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
 - Singleton rows seeded in `001_initial.sql` (corpus_state.id=1, curate_scheduler.id=1).
 - `meta.coordinator_id` stable per install, regenerated only on explicit `/reset`.
 - `projection_kb.content` capped at 1 MB; oversize stored with `content IS NULL` + size metadata.

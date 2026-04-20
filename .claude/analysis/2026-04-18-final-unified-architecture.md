@@ -200,16 +200,28 @@ CREATE INDEX events_type   ON events(type, seq);
 CREATE INDEX events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
 
 -- Projection tables (read models). Rebuildable from events.
+-- projection_jobs materializes stable-at-launch identity fields plus lifecycle
+-- summary so list/filter queries are single-query operations. Event bodies stay
+-- authoritative; the projection is derived via reducer dispatch + replay identity.
 CREATE TABLE projection_jobs (
-  job_id         TEXT PRIMARY KEY,
-  phase          TEXT NOT NULL,
-  terminal       TEXT,            -- JSON { outcome, durationMs } or NULL
-  diagnostics    TEXT,
-  parent_job_id  TEXT,
-  workflow_slot  TEXT,            -- slotId on parent's plan
-  last_seq       INTEGER NOT NULL
+  job_id                  TEXT PRIMARY KEY,
+  phase                   TEXT NOT NULL,
+  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
+  diagnostics             TEXT,
+  session_id              TEXT NOT NULL,
+  provider                TEXT NOT NULL,
+  project_root            TEXT NOT NULL,
+  backend_namespace       TEXT NOT NULL,
+  bundle_hash             TEXT,
+  job_kind                TEXT NOT NULL,
+  parent_workflow_job_id  TEXT,            -- workflow-slot parent (jobs launched by a workflow plan)
+  workflow_slot           TEXT,            -- slotId on parent's plan
+  created_at              TEXT NOT NULL,
+  last_seq                INTEGER NOT NULL
 );
-CREATE INDEX projection_jobs_parent ON projection_jobs(parent_job_id);
+CREATE INDEX projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
+CREATE INDEX projection_jobs_session ON projection_jobs(session_id);
+CREATE INDEX projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
 
 CREATE TABLE projection_sessions (
   session_id       TEXT PRIMARY KEY,
@@ -217,6 +229,7 @@ CREATE TABLE projection_sessions (
   provider         TEXT NOT NULL,
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
+  shard_dir        TEXT NOT NULL,
   last_seq         INTEGER NOT NULL
 );
 
@@ -427,12 +440,20 @@ function parseBody<T>(type: string, bodyVersion: number, body: unknown): T {
 
 Upcasters are pure functions. Old events are never rewritten; only the in-memory interpretation evolves. Writing a new event always uses the current `bodyVersion`.
 
+All read-side event body decode routes through `UpcasterRegistry.parseBody`; direct `schema.parse` at read call sites is forbidden (invariant #45).
+
 Rules:
 - Additive fields (new optional field): no version bump; keep schema backward-compatible.
 - Structural changes (removed field, renamed field, type narrowed): version bump + upcaster.
 - Upcasters are kept forever — the store may contain any historical version.
 
 This is the endpoint's evolution story. "Clean-slate rewrite" starts every event at `v:1`; upcasters are zero on day one. But the **mechanism** exists, so the first real evolution is cheap.
+
+### 4.3 Reducer dispatch
+
+Projection tables carry materialized read-model columns for stable-at-launch identity fields + lifecycle summary.
+
+Event body is authoritative; each projection row is derived via reducer dispatch keyed by replay identity (`stream.kind`, `stream.id`, `seq`).
 
 ---
 
@@ -442,11 +463,13 @@ The Journal authority (§2) carries **four** stream kinds, one per process-like 
 
 ### 5.1 `job/<id>`
 Events about a single job's lifecycle: launch request, queue admission, runtime start, progress ticks, terminal outcome.
-Projection: `JobView` (phase, terminal, diagnostics, parent, workflowSlotId, lastSeq).
+Projection: `JobView` / `projection_jobs` materializes stable launch identity (`session_id`, `provider`, `project_root`, `backend_namespace`, `bundle_hash`, `job_kind`, `parent_workflow_job_id`, `workflow_slot`, `created_at`) plus lifecycle summary (`phase`, `terminal`, `diagnostics`, `last_seq`).
+
+Terminal wait is event-driven via `session:released` + `job.terminal.recorded` subscription; no polling fallback.
 
 ### 5.2 `session/<id>`
 Events about a provider session: opened, continuity checkpointed (full snapshots), interrupted, closed.
-Projection: `SessionView` (controller, provider, resumable, conversationRef, lastSeq).
+Projection: `SessionView` / `projection_sessions` (controller, provider, resumable, conversationRef, shardDir, lastSeq).
 
 ### 5.3 `discuss/<id>`
 Events about a multi-agent discussion: existing vocabulary preserved (seed, speak, bid, synthesis, etc.).
@@ -496,7 +519,7 @@ The child launch event's **body** is identical to any other job launch (`{ instr
 ### 6.2 Sessions (`stream.kind = 'session'`)
 
 ```ts
-session.opened                   { controller, provider }
+session.opened                   { controller, provider, shard_dir }
 session.continuity.checkpointed  { conversationRef, resumable, providerContinuity }
 session.closed                   { reason }
 ```
@@ -507,9 +530,11 @@ Today's design would have us emit "conversationRef changed from X to Y". A futur
 **What `providerContinuity: unknown` is**:
 Each provider stores opaque continuation data — Codex stores a `threadId`, Claude stores an `appServerSessionId` and control cursor. The coordinator does not interpret this; it round-trips it. The `unknown` type is intentional: it is the provider's private state.
 
+Session shard lookup is O(1) via `projection_sessions`, populated by the reducer.
+
 ### 6.3 Discuss (`stream.kind = 'discuss'`)
 
-Preserves the existing discuss event vocabulary (`discuss.seeded`, `discuss.speech.posted`, `discuss.synthesis.recorded`, etc.). The reducer and projections in `src/discuss/` are already correct; only the envelope wraps them now.
+Preserves the existing discuss event vocabulary (`discuss.seeded`, `discuss.speech.posted`, `discuss.synthesis.recorded`, etc.). The reducer and projections in `src/discuss/` are already correct; only the envelope wraps them now. Follow-up answer collection is `Promise.all` across independent agents; any per-flow deviation must be explicitly documented.
 
 ### 6.4 KB Corpus (not a Journal stream)
 
@@ -927,17 +952,25 @@ interface JournalConsumer {
 }
 ```
 
+Projection tables carry materialized read-model columns for stable-at-launch identity fields + lifecycle summary. Event body is authoritative; projection is derived via reducer + replay identity.
+
 Projection types (all maintained in SQLite):
 
 ```ts
 type JobView = {
   jobId: string;
+  sessionId: string;
+  provider: string;
+  projectRoot: string;
+  backendNamespace: string;
+  bundleHash: string | null;
+  jobKind: 'provider' | 'workflow';
   phase: 'queued' | 'running' | 'completed' | 'error' | 'aborted';
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics | null;
-  parentJobId: string | null;
-  workflowId: string | null;
-  workflowSlotId: string | null;   // points into the parent workflow's plan
+  parentWorkflowJobId: string | null;
+  workflowSlot: string | null;     // points into the parent workflow's plan
+  createdAt: string;
   lastSeq: number;
 };
 
@@ -962,7 +995,7 @@ type SessionView = {
   provider: 'claude' | 'codex';
   resumable: boolean;
   conversationRef: string | null;
-  providerContinuity: unknown;
+  shardDir: string;
   lastSeq: number;
 };
 
@@ -1018,7 +1051,7 @@ No stored "is complete" boolean anywhere. Projections compute it from event pres
 `JobView` does NOT carry a `children` array. Child jobs are discovered by SQL query:
 
 ```sql
-SELECT job_id, phase, workflow_slot FROM projection_jobs WHERE parent_job_id = ?
+SELECT job_id, phase, workflow_slot FROM projection_jobs WHERE parent_workflow_job_id = ?
 ```
 
 `WorkflowView.slotOutcomes` is built by the projection reducer from child job events + the workflow plan. No denormalization onto the parent.
@@ -1040,8 +1073,13 @@ src/
   coordinator/                       ← single-writer daemon; owns live state
     bootstrap.ts                     — bundle entrypoint; argv parsing + `--smoke-open-store` bootstrap
     coordinator.ts                   — composition root (factory + world + state + lifecycle)
-    api.ts                           — request-scoped coordinator glue; explicit broad-import exemption for
-                                       domain shells/contracts used in launch/resume/fork/workflow assembly
+    api.ts                           — thin public seam (7 lines); exports `ExecutionService` +
+                                       public coordinator contracts only
+    contracts.ts                     — coordinator request/launch/wait/recovery port types
+    execution-service.ts             — request-scoped launch/resume/fork/workflow orchestration
+    workflow-cleanup.ts              — workflow-session artifact cleanup dispatch
+    event-bus.ts                     — typed in-process event bus (`job:*`, `session:released`,
+                                       `discuss:updated`)
     control.ts                       — control-plane commands (shutdown, drain)
     lock.ts                          — coordinator singleton lock. Implements warm-start handoff between
                                        plugin-install versions: STARTUP_DEADLINE (30s), CONTENDER_BUDGET (90s),
@@ -1098,15 +1136,12 @@ src/
       client.ts                      — Unix socket client
       ensure.ts                      — "start coordinator if needed" bootstrap helper (CLI-side)
     http/
-      server.ts                      — HTTP gateway server
-      gateway.ts                     — gateway adapter onto coordinator RPC
-      client.ts                      — HTTP client
-      sse.ts                         — SSE encoding/decoding
-      query.ts                       — query-param coercion
       contracts.ts                   — HTTP wire schemas
+      handler.ts                     — HTTP gateway handler; table-driven route array, auth gate, SSE endpoints
+      index.ts                       — public barrel
+      query-coerce.ts                — query-param coercion
+      sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
       tool-response.ts               — MCP-style response wrapper
-      errors.ts                      — HTTP error mapping
-      health.ts                      — /health endpoint
 
   runtime/                           ← 6-subport Runtime; simulation substrate
     ports.ts                         — time, storage, paths, process, ids, env
@@ -1293,8 +1328,8 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 
 | Current | Size | Decomposed destinations |
 |---|---|---|
-| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/abort.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/api.ts` (service composition). The god-class dissolves into seven domain-shell modules. |
-| `src/execution/http-handler.ts` | 51K | `transport/http/server.ts` (route table only), `transport/http/query.ts`, `transport/http/contracts.ts`, `transport/http/tool-response.ts`, `transport/http/errors.ts`, `transport/http/sse.ts` + per-resource route files (`jobs-routes.ts`, `discuss-routes.ts`, `kb-routes.ts`, `workflow-routes.ts`). |
+| `src/execution/service.ts` | 56K | `jobs/shell/launch.ts`, `jobs/shell/wait.ts`, `jobs/shell/abort.ts`, `jobs/shell/workflow.ts` (via `workflow/executor.ts`), `sessions/shell/store.ts`, `sessions/shell/resolve.ts`, `coordinator/execution-service.ts`, `coordinator/workflow-cleanup.ts`, `coordinator/contracts.ts`, `coordinator/api.ts` (thin public seam). The god-class dissolves into coordinator service helpers plus domain-shell modules. |
+| `src/execution/http-handler.ts` | 51K | `transport/http/handler.ts` (table-driven route dispatch), `transport/http/query-coerce.ts`, `transport/http/contracts.ts`, `transport/http/tool-response.ts`, `transport/http/sse-subscribe.ts`. |
 | `src/execution/engine.ts` | 34K | `coordinator/live/admission.ts` (launch admission + queue), `coordinator/live/durable-transport.ts` (DurableExecutionTransport seam), `coordinator/live/worker-limits.ts` (MAX_WORKERS / DISCUSS_MAX_WORKERS policy). |
 | `src/execution/host-manager.ts` | 16K | `coordinator/live/provider-hosts/` subtree — `pool.ts`, `lease.ts`, `idle.ts`, `drain.ts`, `recovery.ts` (see §10 coordinator entry). |
 | `src/execution/progress-store.ts` | 24K | REMOVED — job lifecycle events replace six-file progress. `jobs/shell/wait.ts` owns live-tail + SSE. `jobs/reconcile/` owns startup classification. |
@@ -1362,6 +1397,8 @@ Direct readers observe projections at `seq N`. Coordinated calls acknowledge aft
 ### 11.3 HTTP is a gateway
 
 `http://127.0.0.1:<port>` is not the architectural boundary — it is a *carriage* for coordinator RPC. IPC and HTTP share identical command semantics; only wire format differs. Local security is filesystem ownership on the socket; HTTP auth applies to network gateways.
+
+Route dispatch is table-driven (array at `src/transport/http/handler.ts`). SSE subscription fan-out uses the shared `subscribeAll` helper at `src/transport/http/sse-subscribe.ts`. CORS is conditional: only auth-success HTTP paths emit the headers; local IPC has no CORS surface.
 
 ---
 
@@ -1557,9 +1594,10 @@ terminal: {
   durationMs: 48_123
 }
 diagnostics: { warnings: [], ... }
-parentJobId: null
-workflowId: null
-workflowSlotId: null
+// stable launch identity omitted for brevity: sessionId, provider, projectRoot,
+// backendNamespace, bundleHash, jobKind, createdAt
+parentWorkflowJobId: null
+workflowSlot: null
 lastSeq: 58
 ```
 
@@ -1634,7 +1672,7 @@ This section documents the **design delta** between today's codebase and the end
 | `TerminalResult.workflow` | `WorkflowView.slotOutcomes` (plan + children join) |
 | `workflow_atom_failed` with `step`/`atom` labels | `failed { causeRef }` + plan-owned labels via `slotId` |
 | Multi-variant `CoralFault` union across domains | Three-variant `JobLifecycleFault` + `causeRef` pointers to domain events |
-| `composition.childJobIds` on parent | SQL query on `projection_jobs WHERE parent_job_id = ?` |
+| `composition.childJobIds` on parent | SQL query on `projection_jobs WHERE parent_workflow_job_id = ?` |
 | `SessionContinuityPatch` | Full `session.continuity.checkpointed` snapshot event |
 | `WaitCursor.jobs[jobId → eventId]` | `WaitCursor { afterSeq }` |
 | `recovery-core.ts` classifier (10+ rows) | Projection rebuild + reconciliation appends |
@@ -1672,6 +1710,10 @@ Concrete pathologies in today's codebase that disappear structurally when this a
 - Recovery = pure `replay()` over the single global journal. There is no "other backend's jobs" category to adopt — there is only the journal.
 - Reconciliation compares projected running state to the process table and appends new facts (e.g., `wrapper_lost`) when reality disagrees. No classifier over file-presence matrices.
 - If the bundle-swap handoff is desired (old coordinator shuts down, new one takes over), the sequence is: old coordinator closes → releases `writer.lock` → new coordinator acquires lock → replays journal → reconciles against process table. Jobs never become invisible.
+
+Lifecycle clarifications:
+- Lock probe result is cached per `(pid, snapshot.processStartedAt)` within the acquire loop; cache invalidates when the observed snapshot key changes.
+- Shutdown drain budget is a shared deadline: the first phase consumes from the remaining budget, and the second phase must finish within the remainder.
 
 Tag for future reference: resolves during step 5 of derivation order (see §15) when `jobs/reconcile/` replaces the current lifecycle classifier.
 
@@ -1824,6 +1866,8 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap.
 43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to `/unequip Y` first.
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
+45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, and `src/store/rebuild.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
+46. `src/coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
 
 ---
 
@@ -1848,7 +1892,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Projection rebuild**: `DROP` + repopulate `projection_*` tables from the events table. Pure, deterministic, bounded by events count.
 - **Reconciliation**: imperative post-startup phase that compares projected state to observed world (processes, DB state) and appends new events when they disagree.
 - **Export**: a materialized file outside the database (`result.md`, KB markdown). Rebuildable from events.
-- **JobView**: the projected read shape for a job — phase, terminal, diagnostics, parentJobId, workflowId, workflowSlotId, lastSeq. Children derived by SQL query, not embedded.
+- **JobView**: the projected read shape for a job — stable launch identity (`sessionId`, `provider`, `projectRoot`, `backendNamespace`, `bundleHash`, `jobKind`), lifecycle summary (`phase`, `terminal`, `diagnostics`), workflow linkage (`parentWorkflowJobId`, `workflowSlot`), `createdAt`, `lastSeq`. Children derived by SQL query, not embedded.
 - **WorkflowView**: the projected read shape for a workflow — plan, slot outcomes, overall outcome, causeRef, lastSeq.
 - **WorkflowPlan**: `{ slots: WorkflowSlot[], labels: Record<slotId, label> }`. Declared once per workflow via `workflow.plan.declared`.
 - **WorkflowSlot**: `{ slotId, dependencies, provider, instruction, agent? }`. The durable unit of work composition.
@@ -1911,7 +1955,7 @@ Tracked deviations from the original design adopted during implementation. Each 
 - **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). The original §10 topology named this module `info.ts` with the comment "coordinator discovery record I/O". Phase 3 implementation renamed it to `discovery.ts` so the filename matches the responsibility, satisfying invariant #31 (no generic filenames at any domain root) and the §10.3 type-ownership / intent-revealing principle. Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over the implementation-plan's `types.ts`. Responsibility is unchanged: read/write `~/.coral/run{,-dev}/coordinator.json` plus the process-identity probe.
 - **`coordinator/bootstrap.ts` introduced as the main-process entry sibling of `coordinator.ts`** (Phase 3). The original §10 topology folded main-process startup, argv parsing, and `--smoke-open-store` into `coordinator.ts`. Phase 3 split these into a separate `bootstrap.ts` so `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh`.
 - **`coordinator/smoke-open-store.ts` absorbed into `coordinator/bootstrap.ts`** (Phase 3 follow-up review fixes). The original Phase 3 implementation kept the smoke path in a separate helper file. The follow-up collapsed it into `bootstrap.ts` because the behavior is strictly entrypoint-local and does not belong in the durable coordinator module set.
-- **`coordinator/api.ts` is explicit coordinator glue** (Phase 3 follow-up review fixes). The original layering prose treated only `coordinator.ts`/`bootstrap.ts` as broad-import seams, but the implemented request-scoped orchestration in `api.ts` still legitimately composes jobs/session/workflow shells. Invariants and docs now state that explicitly instead of implying a narrower seam than the code actually has.
+- **`coordinator/api.ts` narrowed back to a thin export seam** (AC11 topology sync). Phase 3 temporarily used `api.ts` as request-scoped coordinator glue; the landed split moved that orchestration into `execution-service.ts` / `workflow-cleanup.ts` and left `api.ts` as a 7-line public seam. §10 and invariant #46 now capture the intended steady state directly, so no standing broad-import exception remains on `api.ts`.
 - **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
 - **Amendment #5**: Phase 0 schema deliverable split into `src/store/schema.sql` (canonical DDL reference only) + `src/store/migrations/001_initial.sql` (first applied migration). Applied via `applyMigrations` through Runtime.storage.
 - **Amendment #6**: `sessions/types.ts` → `sessions/entry.ts` (Phase 2). Same intent-revealing rule as `coordinator/discovery.ts` — generic `types.ts` at a domain root is banned by invariant #31.
