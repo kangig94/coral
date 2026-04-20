@@ -191,4 +191,28 @@ describe('subscription primitive', () => {
     await expect(nextPromise).rejects.toThrow('terminated');
     await socketClosed.promise;
   });
+
+  it('rejects when the server responds with an error envelope instead of a subscription ack', async () => {
+    const socketPath = makeSocketPath('error-ack');
+
+    await startSubscriptionServer(socketPath, async (socket, request) => {
+      writeFrame(socket, {
+        kind: 'error',
+        id: request.id,
+        error: {
+          code: -32_602,
+          message: 'Invalid params',
+          data: { issues: [{ path: ['jobIds'], message: 'At least one job is required' }] },
+        },
+      });
+      socket.end();
+    });
+
+    await expect(
+      subscribeIpcMethod(socketPath, 'jobs.wait', {
+        jobIds: [],
+        projectRoot: '/tmp/project',
+      }),
+    ).rejects.toThrow('Invalid params');
+  });
 });

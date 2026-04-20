@@ -163,7 +163,7 @@ describe('http/ipc parity', () => {
       const httpBody = await httpResponse.json();
       const ipcBody = await requestIpcMethod(socketPath, 'discuss.session.list', {});
 
-      expect(JSON.stringify(httpBody)).toBe(JSON.stringify(ipcBody));
+      expect(httpBody).toEqual(ipcBody);
     } finally {
       await closeIpcServer(ipcListener);
     }

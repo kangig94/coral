@@ -13,6 +13,7 @@ import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';
 
 const REPO_ROOT = process.cwd();
+// Keep this fixed clock aligned with the snapshot's relative-time offsets vs. seeded `created_at` values.
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
 
 type MainModule = typeof MainMod;

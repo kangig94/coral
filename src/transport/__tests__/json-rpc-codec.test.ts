@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   decode,
   encode,
-  type JsonRpcEnvelope,
   type JsonRpcError,
   type JsonRpcNotification,
   type JsonRpcRequest,
@@ -11,7 +10,7 @@ import {
 } from '../json-rpc.js';
 
 describe('transport/json-rpc codec', () => {
-  it('round-trips requests, responses, notifications, and errors', () => {
+  it('round-trips requests', () => {
     const request: JsonRpcRequest<{ projectRoot: string; all: boolean }> = {
       kind: 'request',
       id: 'req-1',
@@ -22,6 +21,10 @@ describe('transport/json-rpc codec', () => {
       },
     };
 
+    expect(decode(encode(request))).toEqual(request);
+  });
+
+  it('round-trips responses', () => {
     const response: JsonRpcResponse<{ jobs: Array<{ jobId: string; status: string }> }> = {
       kind: 'response',
       id: 'req-1',
@@ -30,6 +33,10 @@ describe('transport/json-rpc codec', () => {
       },
     };
 
+    expect(decode(encode(response))).toEqual(response);
+  });
+
+  it('round-trips notifications', () => {
     const notification: JsonRpcNotification<{ jobId: string; message: string }> = {
       kind: 'notification',
       method: 'jobs.wait.progress',
@@ -39,6 +46,10 @@ describe('transport/json-rpc codec', () => {
       },
     };
 
+    expect(decode(encode(notification))).toEqual(notification);
+  });
+
+  it('round-trips errors', () => {
     const error: JsonRpcError = {
       kind: 'error',
       id: 'req-2',
@@ -51,11 +62,7 @@ describe('transport/json-rpc codec', () => {
       },
     };
 
-    const cases: JsonRpcEnvelope[] = [request, response, notification, error];
-
-    for (const envelope of cases) {
-      expect(decode(encode(envelope))).toEqual(envelope);
-    }
+    expect(decode(encode(error))).toEqual(error);
   });
 
   it('rejects unknown envelope fields during decode', () => {

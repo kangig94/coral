@@ -23,6 +23,7 @@ import { CoralStore, openStoreDatabase } from '../../../store/index.js';
 import { createDefaultStoreReadContext } from '../../../store/read-context.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { storePaths } from '../../../store/paths.js';
+import { resultPathFor } from '../../../jobs/shell/result-artifact.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');
@@ -165,22 +166,12 @@ describe('mutating commands via IPC', () => {
       const resultPathMatch = result.stdout.match(/^Result path: (.+)$/m);
       expect(resultPathMatch).not.toBeNull();
 
-      const jobId = launchMatch?.[1];
-      const sessionId = launchMatch?.[3];
-      const resultPath = resultPathMatch?.[1];
-
-      expect(terminalMatch?.[1]).toBe(jobId);
-      expect(resultPath).toBeDefined();
-
       await waitForCondition(() => readDiscoveryRecord(fixture.home, fixture.flavor) !== null, 10_000);
       discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
 
       expect(discoveryRecord).not.toBeNull();
       expect(discoveryRecord && isProcessAlive(discoveryRecord.pid)).toBe(true);
       expect(discoveryRecord?.socketPath).toContain('.sock');
-
-      expect(resultPath && existsSync(resultPath)).toBe(true);
-      expect(readFileSync(resultPath!, 'utf-8')).toBe('scripted terminal output');
 
       const runtime = createRealRuntime();
       const db = openStoreDatabase({
@@ -191,10 +182,25 @@ describe('mutating commands via IPC', () => {
 
       try {
         const store = new CoralStore(db, createDefaultStoreReadContext());
+        const jobs = store.jobs.list({ projectRoot: fixture.projectRoot, all: true });
+        expect(jobs).toHaveLength(1);
+
+        const jobId = jobs[0]?.jobId;
         const detail = jobId ? store.jobs.detail(jobId) : null;
+        const sessionId = detail?.status.sessionId;
+        const resultPath = jobId ? resultPathFor(jobId) : null;
+
         expect(detail?.status.phase).toBe('completed');
         expect(detail?.status.sessionId).toBe(sessionId);
         expect(detail?.status.result?.content).toBe('scripted terminal output');
+        expect(resultPath).toBeDefined();
+        expect(resultPath && existsSync(resultPath)).toBe(true);
+        expect(resultPath && readFileSync(resultPath, 'utf-8')).toBe('scripted terminal output');
+
+        expect(launchMatch?.[1]).toBe(jobId);
+        expect(launchMatch?.[3]).toBe(sessionId);
+        expect(terminalMatch?.[1]).toBe(jobId);
+        expect(resultPathMatch?.[1]).toBe(resultPath);
       } finally {
         db.close();
       }
