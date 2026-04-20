@@ -246,5 +246,6 @@ export type {
   LaunchState,
   WorkflowResultMeta,
 } from './views.js';
+export { parseSerializedWaitCursor, serializeWaitCursor } from './wait.js';
 export type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
 export type { AbortReason, TerminalOutcome } from './outcome.js';

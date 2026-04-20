@@ -25,8 +25,6 @@ const ALLOWLIST = [
   /^src\/coordinator\/services\/execution-shared\.ts$/,
   /^src\/coordinator\/services\/recovery-service\.ts$/,
   /^src\/providers\/app-server\/driver\.ts$/,
-  /^src\/providers\/provider-contracts\.ts$/,
-  /^src\/providers\/codex\/adapter\.ts$/,
 ];
 
 function scanForbiddenBoundaryIdentifiers(filePath: string): string[] {

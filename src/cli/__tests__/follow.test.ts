@@ -1,9 +1,17 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
+import { createRealRuntime } from '../../runtime/real.js';
 import { createDeferred } from '../../shared/test-deferred.js';
+import { openStoreDatabase } from '../../store/index.js';
+import { ensureStoreMigrationsDir } from '../../store/migrations.js';
+import { storePaths } from '../../store/paths.js';
 import type * as FollowMod from '../follow.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '../format.js';
 
@@ -121,6 +129,53 @@ function makeSubscription(generatorFactory: () => AsyncGenerator<WaitStreamEvent
   return {
     close: vi.fn().mockResolvedValue(undefined),
     [Symbol.asyncIterator]: generatorFactory,
+  };
+}
+
+function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup(): void } {
+  const home = mkdtempSync(join(tmpdir(), 'coral-follow-home-'));
+  const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-follow-plugin-'));
+
+  mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+  writeFileSync(
+    join(pluginRoot, 'bridge', 'manifest.json'),
+    JSON.stringify({ bundleHash: 'test-hash', flavor: 'prod' }),
+    'utf-8',
+  );
+
+  const runtime = createRealRuntime();
+  const db = openStoreDatabase({
+    path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
+    storage: runtime.storage,
+    migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+  });
+
+  try {
+    const insertEvent = db.prepare(
+      `INSERT INTO events (
+        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    );
+    insertEvent.run(
+      1,
+      '2026-03-21T00:00:00.000Z',
+      'workflow.completed',
+      'workflow',
+      'workflow-1',
+      1,
+      Buffer.from(JSON.stringify({ outcome: 'failed' }), 'utf-8'),
+    );
+  } finally {
+    db.close();
+  }
+
+  return {
+    home,
+    pluginRoot,
+    cleanup: () => {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(pluginRoot, { recursive: true, force: true });
+    },
   };
 }
 
@@ -418,5 +473,52 @@ describe('cli follow', () => {
     );
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
+  });
+
+  it('renders local cause chains from the store for failed terminal outcomes', async () => {
+    const { launchAndFollow } = await loadFollowModule();
+    const fixture = createCauseRenderFixture();
+    const originalHome = process.env.HOME;
+    const originalTmpdir = process.env.TMPDIR;
+
+    try {
+      process.env.HOME = fixture.home;
+      process.env.TMPDIR = fixture.home;
+
+      mockState.ensure.mockResolvedValueOnce(makeBackend());
+      mockState.subscribe.mockResolvedValueOnce(
+        makeSubscription(async function* () {
+          yield makeTerminalEvent({
+            content: '',
+            outcome: {
+              kind: 'failed',
+              causeRef: {
+                stream: { kind: 'workflow', id: 'workflow-1' },
+                seq: 1,
+              },
+            },
+          });
+        }),
+      );
+
+      await expect(launchAndFollow(makeOptions({ pluginRoot: fixture.pluginRoot }))).resolves.toBe(1);
+
+      expect(stdout).toContain('Job job-1 failed: Failed: Workflow failed.');
+      expect(stdout).not.toContain('workflow/workflow-1#1');
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      if (originalTmpdir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpdir;
+      }
+
+      fixture.cleanup();
+    }
   });
 });

@@ -182,6 +182,12 @@ Migration notes:
 - AC4 deletion pass: workflow-cleanup claims remain closed; no deleted workflow/checkpoint types were reintroduced during final polish.
 - AC9 schema additions: `projection_sessions.shard_dir` is authoritative, seeded by `session.opened`, and no empty-string fallback remains in reducer paths.
 
+## Phase 4 additions
+
+- New transport tests: `rpc-catalog-source-of-truth`, `json-rpc-codec`, `http-ipc-parity`, `subscription-primitive`, `subscription-carriage`, `ensure`, `server`, `client`.
+- New CLI tests: `coral-store-read-parity`, `command-class-coverage`, `library-direct-reads`, `mutate-via-ipc`.
+- Retained CLI tests: `follow.test.ts`, `main-routing.test.ts` (`vi.mock` reshaped).
+
 ## Deferred — post-rewrite-final-polish
 
 - **Discuss follow-up agent concurrency (plan AC9)**: `src/discuss/shell/followup-flow.ts collectFollowUpAnswer` uses `Promise.all` (fail-fast). Switching to `Promise.allSettled` for agent-level independence requires full discuss agent lifecycle work: fault classification (permanent exit vs transient), `agents[*].banned` reducer integration across bid/speech/follow-up flows, replay-identity-preserving ban event, bid round invalidation semantics, and retry policy interaction. Current fail-fast behavior is safer until this lifecycle is designed. Track on future discuss-agent-lifecycle phase.

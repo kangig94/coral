@@ -8,11 +8,11 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
-import type { WaitStreamEvent } from '../../jobs/wait.js';
 import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
-} from '../../jobs/wait.js';
+  type WaitStreamEvent,
+} from '../../jobs/api.js';
 import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc-catalog.js';
 import {
   buildCallerContextFromQuery,

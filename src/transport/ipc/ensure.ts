@@ -6,10 +6,9 @@ import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, unlinkSync, wr
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from '../../infra/paths.js';
-import { probeProcessStartedAtSeconds, type BackendInfo } from '../../coordinator/discovery.js';
-import { coordinatorPaths } from '../../coordinator/paths.js';
+import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { type LockRecord } from '../../shared/lock-types.js';
-import { isProcessAlive } from '../../shared/node-process.js';
+import { isProcessAlive, probeProcessStartedAtSeconds } from '../../shared/node-process.js';
 import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../../shared/sse-parser.js';
 import {
   BackendUnreachableError,
@@ -42,6 +41,21 @@ type RawCoordinatorHealth = {
   flavor: 'prod' | 'dev';
   instanceId: string;
   namespace: string;
+};
+
+type BackendInfo = {
+  pid: number;
+  port: number;
+  socketPath: string;
+  bundleHash: string;
+  flavor: 'prod' | 'dev';
+  namespace: string;
+  startedAt: number;
+  token: string;
+  host: string;
+  version: string;
+  instanceId: string;
+  processStartedAt?: number;
 };
 
 type DiscoverySnapshot = {

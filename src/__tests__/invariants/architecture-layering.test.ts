@@ -25,14 +25,11 @@ const DOMAIN_ROOTS = [
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
   'src/jobs/api.ts',
-  'src/jobs/wait.ts',
   'src/sessions/api.ts',
   'src/discuss/api.ts',
   'src/workflow/api.ts',
   'src/kb/api.ts',
   'src/store/index.ts',
-  'src/coordinator/discovery.ts',
-  'src/coordinator/paths.ts',
   'src/coordinator/event-bus.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
@@ -77,7 +74,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#28: transport imports only transport-local helpers, domain contract entrypoints, and the event-bus leaf', () => {
+  it('#28: transport imports only transport-local helpers, named domain public contracts, and the event-bus leaf carveout', () => {
     const violations = collectViolations((source, target) => {
       if (!source.startsWith('src/transport/')) {
         return false;
