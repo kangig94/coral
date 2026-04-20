@@ -168,11 +168,6 @@ export class SimulationWorld {
     return this.boot();
   }
 
-  /** @deprecated Use cycle(). */
-  async restart(): Promise<BackendServerInfo> {
-    return this.cycle();
-  }
-
   async shutdown(reason = 'simulation-shutdown'): Promise<void> {
     this.assertUsable();
     await this.current.backend.backend.shutdown(reason);

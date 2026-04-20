@@ -380,7 +380,7 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(cycledGeneration.backend).not.toBe(initialBackend);
 
     const cycledBackend = cycledGeneration.backend;
-    const restartedInfo = await world.restart();
+    const restartedInfo = await world.cycle();
     expect(world.generation()).toMatchObject({
       index: 2,
       startedInfo: restartedInfo,
