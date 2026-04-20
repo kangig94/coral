@@ -15,7 +15,7 @@ import {
 } from '../http/contracts.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc-catalog.js';
-import type { WaitStreamEvent } from '../../jobs/api.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/api.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { buildJsonRpcError, formatError, isNoEntryError } from '../../shared/utils.js';
 
@@ -45,7 +45,7 @@ type IpcInvocation =
 export type IpcDispatchEntry = {
   readonly method: string;
   readonly spec: RpcMethodSpec<unknown, unknown>;
-  dispatch(request: unknown, rpcPorts: HttpHandlerPorts): Promise<IpcInvocation>;
+  dispatch(request: unknown, rpcPorts: HttpHandlerPorts, abortSignal?: AbortSignal): Promise<IpcInvocation>;
 };
 
 function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
@@ -549,10 +549,16 @@ async function handleCatalogSubscriptionRequest(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
   rpcPorts: HttpHandlerPorts,
+  abortSignal?: AbortSignal,
 ): Promise<IpcInvocation> {
   switch (spec.name) {
     case 'jobs.wait': {
-      const parsed = request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number };
+      const parsed = request as {
+        jobIds: string[];
+        projectRoot: string;
+        timeoutSeconds?: number;
+        cursor?: { jobs: Record<string, number> };
+      };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
       if (scopeCheck.mismatch.length > 0) {
         return {
@@ -573,9 +579,18 @@ async function handleCatalogSubscriptionRequest(
         };
       }
 
+      const waitRequest: WaitStreamRequest = { ...parsed };
+      if (abortSignal) {
+        Object.defineProperty(waitRequest, 'abortSignal', {
+          value: abortSignal,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+
       return {
         kind: 'subscription',
-        notifications: rpcPorts.jobs.waitStream(parsed) as AsyncIterable<WaitStreamEvent>,
+        notifications: rpcPorts.jobs.waitStream(waitRequest) as AsyncIterable<WaitStreamEvent>,
       };
     }
     default:
@@ -590,9 +605,9 @@ export function ipcAdapter(
   return {
     method: spec.name,
     spec,
-    dispatch: async (request) => {
+    dispatch: async (request, _rpcPorts, abortSignal) => {
       if (spec.kind === 'subscription') {
-        return handleCatalogSubscriptionRequest(spec, request, rpcPorts);
+        return handleCatalogSubscriptionRequest(spec, request, rpcPorts, abortSignal);
       }
 
       return {
@@ -819,34 +834,60 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
           rpcPorts.admin.beginRequest();
           inflightRequest = true;
 
+          let subscriptionController: AbortController | null = null;
           try {
-            const invocation = await entry.dispatch(parsed.data, rpcPorts);
+            subscriptionController = new AbortController();
+            const abortSignal = subscriptionController.signal;
+            const invocation = await entry.dispatch(parsed.data, rpcPorts, abortSignal);
             if (invocation.kind === 'unary') {
               writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.value } as JsonRpcResponse);
               socket.end();
               return;
             }
 
+            const iterator = invocation.notifications[Symbol.asyncIterator]();
+            const controller = subscriptionController;
+            let released = false;
+            const releaseSubscription = () => {
+              if (released) {
+                return;
+              }
+              released = true;
+              controller.abort();
+              socket.off('close', releaseSubscription);
+              void iterator.return?.().catch(() => undefined);
+            };
+            socket.once('close', releaseSubscription);
+
             writeEnvelope(socket, {
               kind: 'response',
               id: request.id,
               result: { status: 'subscribed', method: entry.method },
             });
-            for await (const notification of invocation.notifications) {
-              if (socket.destroyed || socket.writableEnded) {
+            while (true) {
+              const next = await iterator.next();
+              if (next.done || socket.destroyed || socket.writableEnded) {
                 break;
               }
+
+              const notification = next.value;
               writeEnvelope(socket, {
                 kind: 'notification',
                 method: entry.method,
                 params: notification,
               });
             }
+            releaseSubscription();
             socket.end();
           } catch (error: unknown) {
+            if (subscriptionController?.signal.aborted || socket.destroyed) {
+              return;
+            }
             rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
-            writeEnvelope(socket, requestErrorResponse(request.id, 'Internal error'));
-            socket.end();
+            if (!socket.destroyed && !socket.writableEnded) {
+              writeEnvelope(socket, requestErrorResponse(request.id, 'Internal error'));
+              socket.end();
+            }
           } finally {
             finishRequest();
           }

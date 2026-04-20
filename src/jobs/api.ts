@@ -8,7 +8,7 @@ import type { RecoveryRegistry } from '../coordinator/composition/recovery-regis
 import type { CallerContext } from '../shared/request-context.js';
 import { providerIdentPattern } from '../shared/identifiers.js';
 import type { JobProgress, JobStatus } from './views.js';
-import type { WaitStreamEvent, WaitStreamRequest } from './wait.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
@@ -16,6 +16,7 @@ import { jobPhaseSchema } from './phase.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
 import type { JobProjectionDetail } from './read-contracts.js';
 import type { SessionLookup } from '../sessions/lookup.js';
+import { isWaitCursor } from './wait.js';
 import {
   listJobProjections as listJobProjectionsQuery,
   loadJobProjectionDetail as loadJobProjectionDetailQuery,
@@ -25,6 +26,9 @@ import { createDefaultStoreReadContext } from '../store/read-context.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
+const waitCursorSchema = z.custom<WaitCursor>(isWaitCursor, {
+  message: 'cursor must be a valid wait cursor',
+});
 const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
@@ -41,6 +45,7 @@ export const jobWaitSchema = z
     jobIds: z.array(z.string().min(1)).min(1, 'At least one job required'),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
+    cursor: waitCursorSchema.optional(),
   })
   .strict();
 

@@ -1,17 +1,24 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { streamWait, type WaitCursorRef } from '../client/backend-helpers.js';
-import type { AcceptedLaunchResponse } from '../client/http-client.js';
-import { ensureBackend } from './backend-lifecycle.js';
+import { BackendToolHttpError, type AcceptedLaunchResponse } from '../client/http-client.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { JobTerminal } from '../jobs/views.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
-import { readBuildFlavor } from '../shared/utils.js';
+import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
+import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
+import {
+  TransientHttpError,
+  assertNever,
+  isRecord,
+  isTransientStreamError,
+  readBuildFlavor,
+} from '../shared/utils.js';
 import { CoralStore, openStoreDatabase } from '../store/index.js';
 import { storePaths } from '../store/paths.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
+import { ensure } from '../transport/ipc/ensure.js';
 import {
   formatLaunch,
   formatWaitProgress,
@@ -21,13 +28,13 @@ import {
   renderWaitLine,
   type WaitRenderContext,
 } from './format.js';
-import { assertNever, isTransientStreamError } from '../shared/utils.js';
 
 const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
 type FollowLaunchDecision = AcceptedLaunchResponse;
+type WaitCursorRef = { lastEventId?: string };
 
 type LaunchAndFollowOptions = {
   launchResult: FollowLaunchDecision;
@@ -140,6 +147,36 @@ async function waitForRetry(signal: AbortSignal): Promise<boolean> {
   }
 }
 
+function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
+  switch (body.code) {
+    case 'scope_mismatch':
+      return 403;
+    case 'jobs_not_found':
+      return 404;
+    case 'backend_recovering':
+    case 'backend_shutting_down':
+      return 503;
+    default:
+      return 400;
+  }
+}
+
+function mapWaitSubscriptionError(error: unknown): unknown {
+  if (!(error instanceof Error) || !isRecord(error.cause) || typeof error.cause.message !== 'string') {
+    return error;
+  }
+
+  if (error.cause.code === 'backend_recovering' || error.cause.code === 'backend_shutting_down') {
+    return new TransientHttpError(503, error.cause.message);
+  }
+
+  return new BackendToolHttpError(
+    error.cause.message,
+    waitSubscriptionStatusCode(error.cause),
+    error.cause,
+  );
+}
+
 export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<number> {
   const renderContext: WaitRenderContext = {
     isTTY: options.isTTY,
@@ -184,7 +221,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
 
       let backend;
       try {
-        backend = await ensureBackend(options.pluginRoot);
+        backend = await ensure(options.pluginRoot);
       } catch (error) {
         if (localAbortRequested) {
           return 1;
@@ -200,27 +237,52 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
 
       try {
         let reconnect = false;
+        const inputCursor = parseSerializedWaitCursor(cursorRef.lastEventId);
+        if (cursorRef.lastEventId && !inputCursor) {
+          throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
+            code: 'invalid_request',
+            message: 'Invalid Last-Event-ID cursor',
+          });
+        }
 
-        for await (const event of streamWait(
-          [options.launchResult.job],
-          FOLLOW_TIMEOUT_SECONDS,
-          backend,
-          cursorRef.lastEventId,
-          controller.signal,
-          options.projectRoot,
-          cursorRef,
-        )) {
-          const cursor = cursorRef.lastEventId ?? null;
-          emitWaitEvent(event, cursor, renderContext, causeRenderer.render);
+        const subscription = await backend.subscribe<WaitStreamEvent>(
+          'jobs.wait',
+          {
+            jobIds: [options.launchResult.job],
+            timeoutSeconds: FOLLOW_TIMEOUT_SECONDS,
+            projectRoot: options.projectRoot,
+            ...(inputCursor ? { cursor: inputCursor } : {}),
+          },
+          {
+            timeoutMs: HEALTH_TIMEOUT_MS,
+            signal: controller.signal,
+          },
+        );
 
-          if (event.type === 'waiting') {
-            reconnect = true;
-            break;
+        try {
+          const currentCursor = { jobs: { ...(inputCursor?.jobs ?? {}) } };
+          for await (const event of subscription) {
+            if (event.type === 'progress') {
+              currentCursor.jobs[event.jobId] = event.eventId;
+              cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+            } else if (event.type === 'terminal') {
+              cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+            }
+
+            const cursor = cursorRef.lastEventId ?? null;
+            emitWaitEvent(event, cursor, renderContext, causeRenderer.render);
+
+            if (event.type === 'waiting') {
+              reconnect = true;
+              break;
+            }
+
+            if (event.type === 'terminal') {
+              return toExitCode(event.result);
+            }
           }
-
-          if (event.type === 'terminal') {
-            return toExitCode(event.result);
-          }
+        } finally {
+          await subscription.close();
         }
 
         if (reconnect) {
@@ -234,8 +296,9 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
           return 1;
         }
 
-        if (!isTransientStreamError(error) || retriesLeft === 0) {
-          options.emitError(error);
+        const handledError = mapWaitSubscriptionError(error);
+        if (!isTransientStreamError(handledError) || retriesLeft === 0) {
+          options.emitError(handledError);
           return typeof process.exitCode === 'number' ? process.exitCode : 1;
         }
 

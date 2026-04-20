@@ -4,24 +4,29 @@ import { BackendToolHttpError } from '../http-client.js';
 import { streamWait, throwBackendCommunicationError } from '../backend-helpers.js';
 import { BackendUnreachableError } from '../../shared/utils.js';
 
-function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    statusText,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
+const mockState = vi.hoisted(() => ({
+  createIpcClient: vi.fn(),
+  subscribe: vi.fn(),
+}));
+
+vi.mock('../../transport/ipc/client.js', () => ({
+  createIpcClient: mockState.createIpcClient,
+}));
 
 describe('client backend helpers', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-
   beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
+    mockState.createIpcClient.mockReset();
+    mockState.subscribe.mockReset();
+    mockState.createIpcClient.mockReturnValue({
+      socketPath: '/tmp/coordinator.sock',
+      request: vi.fn(),
+      subscribe: mockState.subscribe,
+      health: vi.fn(),
+      shutdown: vi.fn(),
+    });
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -33,12 +38,13 @@ describe('client backend helpers', () => {
         issues: [{ code: 'too_big', path: ['timeoutSeconds'], message: 'Number must be less than or equal to 1200' }],
       },
     };
-    fetchMock.mockResolvedValueOnce(jsonResponse(errorBody, 400, 'Bad Request'));
+    mockState.subscribe.mockRejectedValueOnce(new Error('Subscription open failed for jobs.wait', { cause: errorBody }));
 
     const iterator = streamWait(['job-1'], 30, {
       host: '127.0.0.1',
       port: 4100,
       token: 'backend-token',
+      socketPath: '/tmp/coordinator.sock',
     });
 
     let caught: unknown;

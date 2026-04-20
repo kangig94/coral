@@ -1,3 +1,5 @@
+declare const __PLUGIN_ROOT__: string;
+
 import { withAbortTimeout } from './backend-handle.js';
 import { isBackendHealth } from './backend-health.js';
 import { BackendToolHttpError } from './http-client.js';
@@ -7,18 +9,16 @@ import {
   TransientHttpError,
   errorMessage,
   isRecord,
+  readBuildFlavor,
 } from '../shared/utils.js';
 import { isProcessAlive } from '../shared/node-process.js';
 import {
-  describeHttpError,
   HEALTH_TIMEOUT_MS,
-  MAX_WAIT_FETCH_TIMEOUT_MS,
   parseJsonResponse,
-  parseSseBlock,
-  parseWaitStreamEvent,
-  WAIT_FETCH_MARGIN_MS,
 } from '../shared/sse-parser.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
+import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
+import { createIpcClient } from '../transport/ipc/client.js';
 
 export type BackendStatus = {
   status: 'ok';
@@ -42,6 +42,46 @@ export type ShutdownResult =
   | { ok: false; reason: string };
 
 export type WaitCursorRef = { lastEventId?: string };
+
+function resolvePluginRoot(): string {
+  if (typeof __PLUGIN_ROOT__ === 'string') {
+    return __PLUGIN_ROOT__;
+  }
+  if (typeof process.env.CLAUDE_PLUGIN_ROOT === 'string' && process.env.CLAUDE_PLUGIN_ROOT.length > 0) {
+    return process.env.CLAUDE_PLUGIN_ROOT;
+  }
+  return process.cwd();
+}
+
+function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
+  switch (body.code) {
+    case 'scope_mismatch':
+      return 403;
+    case 'jobs_not_found':
+      return 404;
+    case 'backend_recovering':
+    case 'backend_shutting_down':
+      return 503;
+    default:
+      return 400;
+  }
+}
+
+function mapWaitSubscriptionError(error: unknown): unknown {
+  if (!(error instanceof Error) || !isRecord(error.cause) || typeof error.cause.message !== 'string') {
+    return error;
+  }
+
+  if (error.cause.code === 'backend_recovering' || error.cause.code === 'backend_shutting_down') {
+    return new TransientHttpError(503, error.cause.message);
+  }
+
+  return new BackendToolHttpError(
+    error.cause.message,
+    waitSubscriptionStatusCode(error.cause),
+    error.cause,
+  );
+}
 
 function isBackendUnreachableCause(error: unknown): boolean {
   let current: unknown = error;
@@ -154,83 +194,62 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
 export async function* streamWait(
   jobIds: string[],
   timeoutSeconds: number | undefined,
-  backendInfo: { host: string; port: number; token: string },
+  backendInfo: { host: string; port: number; token: string; socketPath?: string },
   lastEventId?: string,
   signal?: AbortSignal,
   projectRoot?: string,
   cursorRef?: WaitCursorRef,
 ): AsyncGenerator<WaitStreamEvent> {
-  const fetchTimeoutMs = Math.min(
-    (timeoutSeconds ?? 600) * 1000 + WAIT_FETCH_MARGIN_MS,
-    MAX_WAIT_FETCH_TIMEOUT_MS,
-  );
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
-  const onExternalAbort = () => controller.abort();
-  if (signal?.aborted) {
-    controller.abort();
-  } else {
-    signal?.addEventListener('abort', onExternalAbort);
+  const inputCursor = parseSerializedWaitCursor(lastEventId);
+  if (lastEventId && !inputCursor) {
+    throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
+      code: 'invalid_request',
+      message: 'Invalid Last-Event-ID cursor',
+    });
   }
 
   try {
-    const response = await fetch(`http://${backendInfo.host}:${backendInfo.port}/jobs/wait`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backendInfo.token,
-        ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
+    const pluginRoot = resolvePluginRoot();
+    const socketPath = backendInfo.socketPath ?? readBackendInfo(pluginRoot)?.socketPath;
+    if (!socketPath) {
+      throw new BackendUnreachableError(
+        `Coral coordinator IPC discovery is unavailable for ${readBuildFlavor(pluginRoot)} mode.`,
+      );
+    }
+
+    const client = createIpcClient(socketPath);
+    const subscription = await client.subscribe<WaitStreamEvent>(
+      'jobs.wait',
+      {
+        jobIds,
+        timeoutSeconds,
+        projectRoot,
+        ...(inputCursor ? { cursor: inputCursor } : {}),
       },
-      body: JSON.stringify({ jobIds, timeoutSeconds, projectRoot }),
-      signal: controller.signal,
-    });
+      {
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        signal,
+      },
+    );
 
-    if (!response.ok) {
-      const body = await parseJsonResponse(response);
-      if (TransientHttpError.isTransientStatus(response.status)) {
-        const message = isRecord(body) && typeof body.message === 'string'
-          ? body.message
-          : describeHttpError(response.status, response.statusText);
-        throw new TransientHttpError(response.status, message);
+    try {
+      const currentCursor = { jobs: { ...(inputCursor?.jobs ?? {}) } };
+      for await (const event of subscription) {
+        if (event.type === 'progress') {
+          currentCursor.jobs[event.jobId] = event.eventId;
+          if (cursorRef) {
+            cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+          }
+        } else if (event.type === 'terminal' && cursorRef) {
+          cursorRef.lastEventId = serializeWaitCursor(currentCursor);
+        }
+
+        yield event;
       }
-      const message = isRecord(body) && typeof body.message === 'string'
-        ? body.message
-        : describeHttpError(response.status, response.statusText);
-      throw new BackendToolHttpError(message, response.status, body);
+    } finally {
+      await subscription.close();
     }
-
-    if (!response.body) {
-      throw new Error('Backend wait stream returned no response body');
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    for await (const chunk of response.body) {
-      const decoded = decoder.decode(chunk, { stream: true });
-      buffer += decoded;
-      const blocks = buffer.split('\n\n');
-      buffer = blocks.pop() ?? '';
-
-      for (const block of blocks) {
-        const parsed = parseSseBlock(block);
-        if (!parsed) continue;
-        if (cursorRef && parsed.id) cursorRef.lastEventId = parsed.id;
-        const event = parseWaitStreamEvent(parsed.event, parsed.data);
-        if (event) yield event;
-      }
-    }
-
-    buffer += decoder.decode();
-    const finalBlock = parseSseBlock(buffer);
-    if (!finalBlock) return;
-    if (cursorRef && finalBlock.id) cursorRef.lastEventId = finalBlock.id;
-    const finalEvent = parseWaitStreamEvent(finalBlock.event, finalBlock.data);
-    if (finalEvent) yield finalEvent;
   } catch (error) {
-    throwBackendCommunicationError(error);
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener('abort', onExternalAbort);
+    throwBackendCommunicationError(mapWaitSubscriptionError(error));
   }
 }

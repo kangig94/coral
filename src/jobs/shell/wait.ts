@@ -13,6 +13,43 @@ import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import { resultPathFor } from './result-artifact.js';
 
+const ABORTED = Symbol('wait-aborted');
+
+function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
+  if (!signal) {
+    return null;
+  }
+
+  if (signal.aborted) {
+    return {
+      promise: Promise.resolve(ABORTED),
+      dispose: () => {},
+    };
+  }
+
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    signal.removeEventListener('abort', onAbort);
+  };
+  const onAbort = () => {
+    dispose();
+    resolveAbort(ABORTED);
+  };
+  let resolveAbort: (value: typeof ABORTED) => void = () => {};
+
+  return {
+    promise: new Promise<typeof ABORTED>((resolve) => {
+      resolveAbort = resolve;
+      signal.addEventListener('abort', onAbort, { once: true });
+    }),
+    dispose,
+  };
+}
+
 export interface WaitCoordinatorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
@@ -140,7 +177,7 @@ export class WaitCoordinator {
     }
 
     const { progressStore, launchCoordinator, jobPools } = this.deps;
-    const { jobIds, timeoutSeconds = 600, cursor } = req;
+    const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
@@ -151,6 +188,10 @@ export class WaitCoordinator {
     const pending = new Set(jobIds);
 
     while (pending.size > 0) {
+      if (abortSignal?.aborted) {
+        return;
+      }
+
       const seq = progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
@@ -241,10 +282,16 @@ export class WaitCoordinator {
       }
 
       const remainingMs = deadlineMs - now;
-      await Promise.race([
+      const abortWaiter = createAbortWaiter(abortSignal);
+      const next = await Promise.race([
         progressStore.waitForChange(seq),
         this.deps.time.sleep(remainingMs),
+        ...(abortWaiter ? [abortWaiter.promise] : []),
       ]);
+      abortWaiter?.dispose();
+      if (next === ABORTED) {
+        return;
+      }
     }
   }
 
@@ -254,7 +301,7 @@ export class WaitCoordinator {
       return;
     }
 
-    const { jobIds, timeoutSeconds = 600, cursor } = req;
+    const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
@@ -319,6 +366,14 @@ export class WaitCoordinator {
     }
 
     const controller = new AbortController();
+    const onExternalAbort = () => {
+      controller.abort();
+    };
+    if (abortSignal?.aborted) {
+      controller.abort();
+    } else {
+      abortSignal?.addEventListener('abort', onExternalAbort, { once: true });
+    }
     const iterator = subscribeJobEvents({
       afterSeq: currentMaxSeq,
       jobIds,
@@ -334,10 +389,17 @@ export class WaitCoordinator {
         }
 
         const remainingMs = deadlineMs - now;
+        const abortWaiter = createAbortWaiter(abortSignal);
         const next = await Promise.race([
           iterator.next(),
           this.deps.time.sleep(remainingMs).then(() => ({ done: true, value: null as JobProgress | null })),
+          ...(abortWaiter ? [abortWaiter.promise] : []),
         ]);
+        abortWaiter?.dispose();
+
+        if (next === ABORTED) {
+          return;
+        }
 
         if (next.done || !next.value) {
           yield { type: 'waiting', waitingJobIds: [...pending] };
@@ -367,6 +429,7 @@ export class WaitCoordinator {
         return;
       }
     } finally {
+      abortSignal?.removeEventListener('abort', onExternalAbort);
       controller.abort();
       await iterator.return?.();
     }

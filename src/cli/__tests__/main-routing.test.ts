@@ -104,6 +104,31 @@ vi.mock('../follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
 }));
 
+vi.mock('../command-helpers.js', async () => {
+  const actual = await vi.importActual<typeof import('../command-helpers.js')>('../command-helpers.js');
+
+  return {
+    ...actual,
+    withReadCoralStore: async (_projectRoot: string, read: (store: unknown) => unknown) =>
+      read({
+        jobs: {
+          list: async (filters: unknown) => {
+            const result = await mockState.listJobs(filters);
+            return result.jobs;
+          },
+          detail: vi.fn(),
+        },
+        kb: {
+          search: mockState.kbSearch,
+          listPrinciples: mockState.kbPrinciples,
+          read: mockState.kbRead,
+        },
+        discuss: {},
+        sessions: {},
+      }),
+  };
+});
+
 type MainModule = typeof MainMod;
 
 function toText(chunk: string | Uint8Array): string {

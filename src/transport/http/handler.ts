@@ -8,6 +8,11 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
+import {
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+} from '../../jobs/wait.js';
 import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc-catalog.js';
 import {
   buildCallerContextFromQuery,
@@ -18,10 +23,10 @@ import {
   type EventStreamHandlers,
   type HttpHandlerPorts,
   type JobListFilters,
+  type WaitCursor,
   launchToHttp,
   queryParamsToObject,
   type ToolDomainResult,
-  type WaitCursor,
   type WaitStreamRequest,
   type WorkflowPortInput,
 } from './contracts.js';
@@ -161,31 +166,6 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
 
   res.once('finish', run);
   res.once('close', run);
-}
-
-// ---------------------------------------------------------------------------
-// Request parsers
-// ---------------------------------------------------------------------------
-
-function isWaitCursor(value: unknown): value is WaitCursor {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const jobs = (value as { jobs?: unknown }).jobs;
-  if (jobs === null || typeof jobs !== 'object' || Array.isArray(jobs)) return false;
-  return Object.values(jobs).every((eventId) => Number.isInteger(eventId) && (eventId as number) >= 0);
-}
-
-function parseLastEventIdCursor(raw: string | undefined): WaitCursor | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf-8')) as unknown;
-    return isWaitCursor(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function serializeWaitCursor(cursor: WaitCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
 }
 
 export function parseEventStreamFilter(url: string): string | null {
@@ -869,12 +849,17 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number },
+  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } },
 ): Promise<void> {
+  if (request.cursor !== undefined) {
+    sendJson(res, 400, { code: 'invalid_request', message: 'Request body cursor is not supported for /jobs/wait' });
+    return;
+  }
+
   const lastEventIdHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
-  const headerCursor = parseLastEventIdCursor(lastEventIdHeader);
+  const headerCursor = parseSerializedWaitCursor(lastEventIdHeader);
   if (lastEventIdHeader && !headerCursor) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Invalid Last-Event-ID cursor' });
     return;
@@ -898,16 +883,24 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const inputCursor: WaitCursor = {
-    jobs: { ...(headerCursor ?? { jobs: {} }).jobs },
+  const inputCursor = {
+    jobs: {
+      ...(headerCursor?.jobs ?? {}),
+    },
   };
-  const currentCursor: WaitCursor = {
+  const currentCursor = {
     jobs: { ...inputCursor.jobs },
   };
+  const controller = new AbortController();
   const waitRequest: WaitStreamRequest = {
     ...request,
     cursor: inputCursor,
   };
+  Object.defineProperty(waitRequest, 'abortSignal', {
+    value: controller.signal,
+    enumerable: false,
+    configurable: true,
+  });
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream');
@@ -918,41 +911,57 @@ async function handleJobsWaitSubscription(
   deps.events.addResponse(res);
 
   let closed = false;
-  const onClose = () => {
+  const iterator = deps.jobs.waitStream(waitRequest)[Symbol.asyncIterator]();
+  const close = () => {
+    if (closed) {
+      return;
+    }
     closed = true;
+    controller.abort();
     deps.events.removeResponse(res);
-    req.off('close', onClose);
-    res.off('close', onClose);
+    req.off('close', close);
+    void iterator.return?.(undefined).catch(() => undefined);
   };
-  req.once('close', onClose);
-  res.once('close', onClose);
+  req.once('close', close);
+  runOnResponseDone(res, close);
 
-  for await (const event of deps.jobs.waitStream(waitRequest)) {
-    if (closed || res.writableEnded || res.destroyed) break;
+  try {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done || closed || res.writableEnded || res.destroyed) {
+        break;
+      }
 
-    if (event.type === 'progress') {
-      currentCursor.jobs[event.jobId] = event.eventId;
-      writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
-      continue;
+      const event: WaitStreamEvent = next.value;
+      if (event.type === 'progress') {
+        currentCursor.jobs[event.jobId] = event.eventId;
+        writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
+        continue;
+      }
+
+      if (event.type === 'terminal') {
+        writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
+        continue;
+      }
+
+      if (event.type === 'queued') {
+        // No cursor update: queued events are synthetic (not persisted in JSONL)
+        // and must not advance the replay cursor position.
+        writeSseEvent(res, 'queued', event);
+        continue;
+      }
+
+      writeSseEvent(res, 'waiting', event);
     }
-
-    if (event.type === 'terminal') {
-      writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
-      continue;
+  } catch (error) {
+    if (!closed && !controller.signal.aborted) {
+      throw error;
     }
-
-    if (event.type === 'queued') {
-      // No cursor update: queued events are synthetic (not persisted in JSONL)
-      // and must not advance the replay cursor position.
-      writeSseEvent(res, 'queued', event);
-      continue;
+  } finally {
+    close();
+    if (!res.writableEnded && !res.destroyed) {
+      res.end();
     }
-
-    writeSseEvent(res, 'waiting', event);
-  }
-
-  if (!closed && !res.writableEnded) {
-    res.end();
   }
 }
 
@@ -965,7 +974,7 @@ async function handleCatalogSubscriptionRoute(
 ): Promise<void> {
   switch (spec.name) {
     case 'jobs.wait':
-      await handleJobsWaitSubscription(req, res, deps, request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number });
+      await handleJobsWaitSubscription(req, res, deps, request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } });
       return;
     default:
       throw new Error(`Unhandled HTTP subscription route: ${spec.name}`);

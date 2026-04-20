@@ -1,23 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '../../client/http-client.js';
-import type { JobTerminal } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
-import type * as FollowMod from '../follow.js';
+import { serializeWaitCursor } from '../../jobs/wait.js';
 import { createDeferred } from '../../shared/test-deferred.js';
+import type * as FollowMod from '../follow.js';
 import { formatLaunch, formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '../format.js';
 
 const mockState = vi.hoisted(() => ({
-  ensureBackend: vi.fn(),
-  streamWait: vi.fn(),
+  ensure: vi.fn(),
+  subscribe: vi.fn(),
 }));
 
-vi.mock('../backend-lifecycle.js', () => ({
-  ensureBackend: mockState.ensureBackend,
-}));
-
-vi.mock('../../client/backend-helpers.js', () => ({
-  streamWait: mockState.streamWait,
+vi.mock('../../transport/ipc/ensure.js', () => ({
+  ensure: mockState.ensure,
 }));
 
 type FollowModule = typeof FollowMod;
@@ -28,10 +24,19 @@ function toText(chunk: string | Uint8Array): string {
 
 function makeBackend(instanceId = 'backend-1') {
   return {
+    socketPath: '/tmp/coordinator.sock',
+    instanceId,
+    bundleHash: 'test-hash',
+    flavor: 'prod' as const,
+    namespace: 'test-namespace',
     host: '127.0.0.1',
     port: 4100,
     token: 'backend-token',
-    instanceId,
+    version: '0.5.2',
+    request: vi.fn(),
+    subscribe: mockState.subscribe,
+    health: vi.fn(),
+    shutdown: vi.fn(),
   };
 }
 
@@ -62,7 +67,7 @@ function makeRunningEvent(): Extract<WaitStreamEvent, { type: 'waiting' }> {
 }
 
 function makeTerminalEvent(
-  result: Partial<JobTerminal> = {},
+  result: Record<string, unknown> = {},
   overrides: Partial<Extract<WaitStreamEvent, { type: 'terminal' }>> = {},
 ): Extract<WaitStreamEvent, { type: 'terminal' }> {
   return {
@@ -74,7 +79,7 @@ function makeTerminalEvent(
       content: 'done',
       outcome: { kind: 'completed' },
       ...result,
-    },
+    } as Extract<WaitStreamEvent, { type: 'terminal' }>['result'],
     ...overrides,
   };
 }
@@ -112,6 +117,13 @@ function makeOptions(
   };
 }
 
+function makeSubscription(generatorFactory: () => AsyncGenerator<WaitStreamEvent>) {
+  return {
+    close: vi.fn().mockResolvedValue(undefined),
+    [Symbol.asyncIterator]: generatorFactory,
+  };
+}
+
 async function loadFollowModule(): Promise<FollowModule> {
   vi.resetModules();
   return import('../follow.js');
@@ -127,8 +139,8 @@ describe('cli follow', () => {
     stderr = '';
     sigintHandler = null;
     process.exitCode = undefined;
-    mockState.ensureBackend.mockReset();
-    mockState.streamWait.mockReset();
+    mockState.ensure.mockReset();
+    mockState.subscribe.mockReset();
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       stdout += toText(chunk);
@@ -166,29 +178,38 @@ describe('cli follow', () => {
     const { launchAndFollow } = await loadFollowModule();
     const backend = makeBackend();
     const options = makeOptions();
+    const terminalEvent = makeTerminalEvent();
+    const terminalCursor = serializeWaitCursor({ jobs: {} });
 
-    mockState.ensureBackend.mockResolvedValueOnce(backend);
-    mockState.streamWait.mockImplementationOnce(async function* () {
-      yield makeTerminalEvent();
-    });
+    mockState.ensure.mockResolvedValueOnce(backend);
+    mockState.subscribe.mockResolvedValueOnce(
+      makeSubscription(async function* () {
+        yield terminalEvent;
+      }),
+    );
 
     await expect(launchAndFollow(options)).resolves.toBe(0);
 
-    expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n${formatWaitTerminal(makeTerminalEvent(), null, false)}\n`);
+    expect(stdout).toBe(
+      `${formatLaunch(options.launchResult)}\n${formatWaitTerminal(terminalEvent, terminalCursor, false)}\n`,
+    );
     expect(stderr).toBe('');
-    expect(mockState.ensureBackend).toHaveBeenCalledWith('/plugin/root');
-    expect(mockState.streamWait).toHaveBeenCalledWith(
-      ['job-1'],
-      600,
-      backend,
-      undefined,
-      expect.any(AbortSignal),
-      '/project/root',
-      expect.any(Object),
+    expect(mockState.ensure).toHaveBeenCalledWith('/plugin/root');
+    expect(mockState.subscribe).toHaveBeenCalledWith(
+      'jobs.wait',
+      {
+        jobIds: ['job-1'],
+        timeoutSeconds: 600,
+        projectRoot: '/project/root',
+      },
+      {
+        timeoutMs: 3_000,
+        signal: expect.any(AbortSignal),
+      },
     );
   });
 
-  it('emits launch, running, and terminal text output with cursor resume', async () => {
+  it('emits launch, queued, progress, waiting, and terminal text output with cursor resume', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const launchResult = {
       launchState: 'queued',
@@ -196,8 +217,8 @@ describe('cli follow', () => {
       session: 'session-1',
     } satisfies AcceptedLaunchResponse;
     const queuedEvent = makeQueuedEvent();
-    const waitingEvent = makeRunningEvent();
     const progressEvent = makeProgressEvent('Halfway there');
+    const waitingEvent = makeRunningEvent();
     const terminalEvent = makeTerminalEvent({
       content: 'secret result body',
       warnings: ['be careful'],
@@ -215,48 +236,25 @@ describe('cli follow', () => {
         ],
       },
     });
+    const cursorAfterProgress = serializeWaitCursor({ jobs: { 'job-1': 1 } });
 
-    mockState.ensureBackend
+    mockState.ensure
       .mockResolvedValueOnce(makeBackend('backend-1'))
       .mockResolvedValueOnce(makeBackend('backend-2'));
-    mockState.streamWait
-      .mockImplementationOnce(async function* (
-        _jobIds: string[],
-        _timeoutSeconds: number,
-        _backend: unknown,
-        lastEventId: string | undefined,
-        _signal: AbortSignal | undefined,
-        _projectRoot: string | undefined,
-        cursorRef: { lastEventId?: string } | undefined,
-      ) {
-        expect(lastEventId).toBeUndefined();
-        if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-queued';
-        }
-        yield queuedEvent;
-        if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-running';
-        }
-        yield waitingEvent;
+    mockState.subscribe
+      .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
+        expect(params.cursor).toBeUndefined();
+        return makeSubscription(async function* () {
+          yield queuedEvent;
+          yield progressEvent;
+          yield waitingEvent;
+        });
       })
-      .mockImplementationOnce(async function* (
-        _jobIds: string[],
-        _timeoutSeconds: number,
-        _backend: unknown,
-        lastEventId: string | undefined,
-        _signal: AbortSignal | undefined,
-        _projectRoot: string | undefined,
-        cursorRef: { lastEventId?: string } | undefined,
-      ) {
-        expect(lastEventId).toBe('cursor-running');
-        if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-progress';
-        }
-        yield progressEvent;
-        if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-terminal';
-        }
-        yield terminalEvent;
+      .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
+        expect(params.cursor).toEqual({ jobs: { 'job-1': 1 } });
+        return makeSubscription(async function* () {
+          yield terminalEvent;
+        });
       });
 
     await expect(launchAndFollow(makeOptions({ launchResult }))).resolves.toBe(0);
@@ -264,12 +262,11 @@ describe('cli follow', () => {
     expect(stdout).toBe(
       `${formatLaunch(launchResult)}\n` +
         `${formatWaitQueued(queuedEvent)}\n` +
-        `${formatWaitWaiting(waitingEvent, 'cursor-running')}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
-        `${formatWaitTerminal(terminalEvent, 'cursor-terminal', false)}\n`,
+        `${formatWaitWaiting(waitingEvent, cursorAfterProgress)}\n` +
+        `${formatWaitTerminal(terminalEvent, cursorAfterProgress, false)}\n`,
     );
-    expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
-    expect(mockState.streamWait.mock.calls[1]?.[3]).toBe('cursor-running');
+    expect(mockState.ensure).toHaveBeenCalledTimes(2);
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
@@ -277,34 +274,25 @@ describe('cli follow', () => {
 
     const { launchAndFollow } = await loadFollowModule();
     const options = makeOptions();
+    const progressEvent = makeProgressEvent('Booting');
+    const cursorAfterProgress = serializeWaitCursor({ jobs: { 'job-1': 1 } });
 
-    mockState.ensureBackend
+    mockState.ensure
       .mockResolvedValueOnce(makeBackend('backend-1'))
       .mockResolvedValueOnce(makeBackend('backend-2'));
-    mockState.streamWait
-      .mockImplementationOnce(async function* (
-        _jobIds: string[],
-        _timeoutSeconds: number,
-        _backend: unknown,
-        _lastEventId: string | undefined,
-        _signal: AbortSignal | undefined,
-        _projectRoot: string | undefined,
-        cursorRef: { lastEventId?: string } | undefined,
-      ) {
-        if (cursorRef) {
-          cursorRef.lastEventId = 'cursor-progress';
-        }
-        yield makeProgressEvent('Booting');
-        throw new TypeError('terminated');
+    mockState.subscribe
+      .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
+        expect(params.cursor).toBeUndefined();
+        return makeSubscription(async function* () {
+          yield progressEvent;
+          throw new TypeError('terminated');
+        });
       })
-      .mockImplementationOnce(async function* (
-        _jobIds: string[],
-        _timeoutSeconds: number,
-        _backend: unknown,
-        lastEventId: string | undefined,
-      ) {
-        expect(lastEventId).toBe('cursor-progress');
-        yield makeTerminalEvent({ exitCode: 7 });
+      .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
+        expect(params.cursor).toEqual({ jobs: { 'job-1': 1 } });
+        return makeSubscription(async function* () {
+          yield makeTerminalEvent({ exitCode: 7 });
+        });
       });
 
     const followPromise = launchAndFollow(options);
@@ -317,52 +305,48 @@ describe('cli follow', () => {
 
     expect(stdout).toBe(
       `${formatLaunch(options.launchResult)}\n` +
-        `${formatWaitProgress(makeProgressEvent('Booting'))}\n` +
-        `${formatWaitTerminal(makeTerminalEvent({ exitCode: 7 }), 'cursor-progress', false)}\n`,
+        `${formatWaitProgress(progressEvent)}\n` +
+        `${formatWaitTerminal(makeTerminalEvent({ exitCode: 7 }), cursorAfterProgress, false)}\n`,
     );
     expect(stderr).toBe('');
-    expect(mockState.ensureBackend).toHaveBeenCalledTimes(2);
-    expect(mockState.streamWait).toHaveBeenCalledTimes(2);
+    expect(mockState.ensure).toHaveBeenCalledTimes(2);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(2);
   });
 
   it('returns the emitted envelope exit code on non-transient stream failures without retrying', async () => {
     const { launchAndFollow } = await loadFollowModule();
 
-    mockState.ensureBackend.mockResolvedValueOnce(makeBackend());
-    mockState.streamWait.mockImplementationOnce(async function* () {
-      throw new Error('fatal wait failure');
-    });
+    mockState.ensure.mockResolvedValueOnce(makeBackend());
+    mockState.subscribe.mockResolvedValueOnce(
+      makeSubscription(async function* () {
+        throw new Error('fatal wait failure');
+      }),
+    );
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
     expect(stdout).toBe('Job job-1 running (session session-1)\n');
     expect(stderr).toBe('fatal wait failure\n');
     expect(process.exitCode).toBe(70);
-    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
-    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(mockState.ensure).toHaveBeenCalledTimes(1);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
 
   it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
     vi.useFakeTimers();
 
     const { launchAndFollow } = await loadFollowModule();
-    const { BackendUnreachableError: FreshBackendUnreachableError } = await import('../../shared/utils.js');
+    const { BackendUnreachableError } = await import('../../shared/utils.js');
 
-    mockState.ensureBackend.mockResolvedValue(makeBackend());
-    mockState.streamWait
-      .mockImplementationOnce(async function* () {
-        throw new FreshBackendUnreachableError('fetch failed');
-      })
-      .mockImplementationOnce(async function* () {
-        throw new FreshBackendUnreachableError('fetch failed');
-      })
-      .mockImplementationOnce(async function* () {
-        throw new FreshBackendUnreachableError('fetch failed');
-      });
+    mockState.ensure.mockResolvedValue(makeBackend());
+    mockState.subscribe
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
 
     const options = makeOptions({
       emitError: (error: unknown) => {
-        expect(error).toBeInstanceOf(FreshBackendUnreachableError);
+        expect(error).toBeInstanceOf(BackendUnreachableError);
         process.stderr.write('fetch failed [code=backend_unreachable]\n');
         process.exitCode = 69;
       },
@@ -379,8 +363,8 @@ describe('cli follow', () => {
 
     expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
     expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
-    expect(mockState.ensureBackend).toHaveBeenCalledTimes(3);
-    expect(mockState.streamWait).toHaveBeenCalledTimes(3);
+    expect(mockState.ensure).toHaveBeenCalledTimes(3);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(3);
   });
 
   it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
@@ -388,21 +372,16 @@ describe('cli follow', () => {
     const started = createDeferred<void>();
     const abortJob = vi.fn().mockResolvedValue(undefined);
 
-    mockState.ensureBackend.mockResolvedValueOnce(makeBackend());
-    mockState.streamWait.mockImplementationOnce(
-      (
-        _jobIds: string[],
-        _timeoutSeconds: number,
-        _backend: unknown,
-        _lastEventId: string | undefined,
-        signal: AbortSignal | undefined,
-      ) =>
-        (async function* () {
+    mockState.ensure.mockResolvedValueOnce(makeBackend());
+    mockState.subscribe.mockImplementationOnce(async (_method: string, _params: unknown, options?: { signal?: AbortSignal }) =>
+      makeSubscription(
+        async function* () {
           started.resolve();
           await new Promise<never>((_resolve, reject) => {
-            signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+            options?.signal?.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
           });
-        })(),
+        },
+      ),
     );
 
     const followPromise = launchAndFollow(makeOptions({ abortJob }));
@@ -418,8 +397,8 @@ describe('cli follow', () => {
     expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
     expect(abortJob).toHaveBeenCalledTimes(1);
     expect(abortJob).toHaveBeenCalledWith('job-1');
-    expect(mockState.ensureBackend).toHaveBeenCalledTimes(1);
-    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(mockState.ensure).toHaveBeenCalledTimes(1);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(1);
     expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   });
 
@@ -431,10 +410,12 @@ describe('cli follow', () => {
   ])('maps terminal result %j to exit code %i', async (result, expected) => {
     const { launchAndFollow } = await loadFollowModule();
 
-    mockState.ensureBackend.mockResolvedValueOnce(makeBackend());
-    mockState.streamWait.mockImplementationOnce(async function* () {
-      yield makeTerminalEvent(result);
-    });
+    mockState.ensure.mockResolvedValueOnce(makeBackend());
+    mockState.subscribe.mockResolvedValueOnce(
+      makeSubscription(async function* () {
+        yield makeTerminalEvent(result);
+      }),
+    );
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
   });
