@@ -1,4 +1,9 @@
-import type { LaunchDecision } from '../jobs/launch.js';
+import type {
+  JobForkRequest,
+  JobLaunchRequest,
+  JobResumeRequest,
+  LaunchDecision,
+} from '../jobs/launch.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type {
@@ -10,7 +15,6 @@ import type {
   LaunchState,
 } from '../jobs/views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { ProviderInstruction } from '../providers/protocol.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { EffortLevel } from '../shared/schemas.js';
@@ -27,32 +31,9 @@ import type { TypedEventBus } from './event-bus.js';
 
 export type ExecutionLaunchPool = 'default' | 'discuss' | 'curate';
 
-type LaunchIntentBase = {
-  prompt: string;
-  name?: string;
-  model?: string;
-  cwd?: string;
-  jobId?: string;
-  workflowSlotId?: string;
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  instruction?: ProviderInstruction;
-  parentWorkflowJobId?: string;
-};
-
-type ExecIntent = LaunchIntentBase & { agent?: string; pool?: ExecutionLaunchPool };
-type ResumeIntent = LaunchIntentBase & {
-  sessionId: string;
-  provider?: string;
-  agent?: string;
-  pool?: ExecutionLaunchPool;
-};
-type ForkIntent = Omit<LaunchIntentBase, 'prompt'> & {
-  sessionId: string;
-  provider?: string;
-  prompt?: string;
-};
+type ExecIntent = JobLaunchRequest;
+type ResumeIntent = JobResumeRequest;
+type ForkIntent = JobForkRequest;
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision>;

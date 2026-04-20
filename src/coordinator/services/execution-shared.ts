@@ -5,6 +5,7 @@ import type {
 } from '../../providers/provider-contracts.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { EffortLevel } from '../../shared/schemas.js';
+import type { JobLaunchRequest } from '../../jobs/launch.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -36,24 +37,13 @@ import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
 import { materializeLegacyOutcome } from '../../jobs/reconcile/job-helpers.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../shared/controller-profile.js';
 
-interface LaunchIntentBase {
-  prompt: string;
-  name?: string;
-  model?: string;
-  cwd?: string;
-  jobId?: string;
-  workflowSlotId?: string;
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-  instruction?: ProviderInstruction;
-  parentWorkflowJobId?: string;
-}
-
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
 export type ResumeIntent = Parameters<ProjectRequestPort['resumeBySessionId']>[0];
 export type ForkIntent = Parameters<ProjectRequestPort['forkBySessionId']>[0];
-export type CoralIntent = Omit<LaunchIntentBase, 'effort'> & { sessionId?: string; effort?: EffortLevel };
+export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool'> & {
+  sessionId?: string;
+  effort?: EffortLevel;
+};
 
 export const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
 export const APP_SERVER_RECOVERY_POLICY = 'session_continuity_only' as const;

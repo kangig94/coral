@@ -1,7 +1,10 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/api.js';
 import type {
+  JobForkRequest,
+  JobLaunchRequest,
   JobPhase,
   JobProgress,
+  JobResumeRequest,
   JobStatus,
   LaunchDecision,
   WaitStreamEvent,
@@ -11,37 +14,20 @@ import type { CallerContext } from '../shared/request-context.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ToolDomainResult } from '../shared/tool-domain-result.js';
 
-export type SessionStartInput = {
-  prompt: string;
-  agent?: string;
-  model?: string;
-  cwd?: string;
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-};
+export type SessionStartInput = Pick<
+  JobLaunchRequest,
+  'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
+>;
 
-export type SessionResumeInput = {
-  sessionId: string;
-  prompt: string;
-  provider?: string;
-  model?: string;
-  cwd?: string;
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-};
+export type SessionResumeInput = Pick<
+  JobResumeRequest,
+  'sessionId' | 'prompt' | 'provider' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
+>;
 
-export type SessionForkInput = {
-  sessionId: string;
-  prompt?: string;
-  provider?: string;
-  model?: string;
-  cwd?: string;
-  effort?: string;
-  bypassPermissions?: boolean;
-  systemPrompt?: string;
-};
+export type SessionForkInput = Pick<
+  JobForkRequest,
+  'sessionId' | 'prompt' | 'provider' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
+>;
 
 export type WorkflowPortInput = {
   expression: string;

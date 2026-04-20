@@ -19,6 +19,7 @@ import {
   buildEffectiveCoralEnv,
   buildSessionControllerProfile,
   claimJobAtomic,
+  type CoralIntent,
   type EffectiveContinuationProfile,
   type ExecIntent,
   type ForkIntent,
@@ -194,7 +195,7 @@ export class JobLaunchService {
   async coralDispatch(
     providerName: string,
     coralName: string,
-    input: Omit<ExecIntent, 'agent' | 'pool'> & { sessionId?: string },
+    input: CoralIntent,
     ctx: CallerContext,
   ): Promise<LaunchDecision> {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
