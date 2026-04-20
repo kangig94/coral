@@ -189,3 +189,51 @@ Phase 4 moved the CLI/backend seam onto the transport split. Local mutating and 
 - `0b8e48f` — `phase-4/lint-fixes: fix remaining eslint violations`
 - `8d9feec` — `phase-4/discuss-watch-exemption: move discuss watch from mutate class to explicit exemption`
 - `477a9ad` — `phase-4 complete — transport layer + RPC catalog + command-class routing`
+
+## Phase 4 — Polish (post-review)
+
+Tier-review (integration-guardian + code-critic + doc-critic + test-critic + ux-critic) surfaced 16 follow-up findings. Docs, duplication, error-message polish, and code quality all addressed in focused commits under `phase-4-polish/`:
+
+- `c5c1012` — `phase-4-polish/docs-changelog-architecture`
+- `a4ce2b8` — `phase-4-polish/transport-shared-context`
+- `fb1c302` — `phase-4-polish/transport-catalog-dispatch-shared`
+- `f73c6f1` — `phase-4-polish/ipc-server-readability`
+- `2764da7` — `phase-4-polish/error-recovery-hints`
+- `f00fa00` — `phase-4-polish/provider-stream-helpers`
+- `64d064d` — `phase-4-polish/test-assertions-polish`
+- `4b8f3ab` — `phase-4-polish/test-assertions-polish-followup`
+
+## Phase 4 — Simplify (second review pass)
+
+A deeper `/simplify` pass (reuse + quality + efficiency agents over the full Phase 4 diff `7531121..HEAD`) found 17 more items: 13 STRONG + 5 MINOR structural and performance cleanups. All 17 addressed in focused commits under `phase-4-simplify/`:
+
+- `37a55d8` — `phase-4-simplify/dedup-helpers` — drop local `isRecord`; delete unreachable `commandClass === 'remote'` guards; dedupe `resolveMemoOwner` calls; remove stale `server.ts` JSDoc; remove `void unused` smells in `jobs/shell/launch.ts`.
+- `3a9b4f4` — `phase-4-simplify/extract-line-framing` — extract `createLineFramer()` helper shared by `transport/ipc/{client,server}.ts` (three copy-pasted newline-framed JSON-RPC parsers).
+- `f246613` — `phase-4-simplify/dispatch-context-cleanup` — introduce `stripTransportContextKeys()` + `buildQueryContext()` helpers; propagate `statusCode` from `domainResultToHttp` instead of re-deriving in `catalogHttpStatus`; co-locate `buildCallerContextFromQuery` with `buildCallerContext` in `shared-context.ts`.
+- `832ef07` — `phase-4-simplify/controller-profile-shared` — extract `TRANSPORT_CONTEXT_FIELDS` + `CONTEXT_ENV_KEY` into a single home; three mapping sites now share one declaration.
+- `477b286` — `phase-4-simplify/cli-read-handle-unification` — route `openCauseRenderer` through `getSharedReadCoralStore` so CLI opens one read-only SQLite handle per invocation instead of two.
+- `d716933` — `phase-4-simplify/jobs-list-sql-filters` — push `namespace/projectRoot/phase/provider` filters to SQL WHERE clauses; `listJobs` no longer loads-all-then-filters.
+- `421215f` — `phase-4-simplify/prepared-statements-cache` — hoist prepared statements in `store/queries/{jobs,events}.ts` via a per-database cache, matching the existing `sessions.ts` pattern.
+- `0f9677f` — `phase-4-simplify/provider-stream-backpressure` — bound the `streamProviderEvents` queue (soft cap) with backpressure so `launch.progress` bursts can't grow memory unboundedly.
+- `538db60` — `phase-4-simplify/socket-buffer-cap-ensure-cache` — cap the IPC server `data` buffer after subscription handshake; cache per-CLI invariants (flavor/bundleHash/namespace) outside the observe tick.
+- `6861368` — `phase-4-simplify/json-rpc-comments` — rewrite "Phase 4" narration in `json-rpc.ts` to describe the current invariant without an implementation-phase marker.
+
+### Intentionally skipped
+
+The following review findings were reviewed and deliberately not applied:
+
+- **rpc-ports.ts session launch types vs `coordinator/contracts.ts` `LaunchIntentBase`** — the duplication is real but the cross-layer refactor is a coordinator-contract reshape, not a transport concern; scoping it inside Phase 4 polish would ripple into the coordinator services layer. Deferred to a future coordinator-contracts consolidation.
+- **`src/transport/json-rpc.ts` vs `src/providers/claude-appserver/protocol.ts` JSON-RPC type divergence** — intentional. The transport's internal JSON-RPC envelope uses a `kind` discriminator tuned for the catalog dispatch; the Claude app-server side speaks the external JSON-RPC 2.0 wire spec. Merging them would force the transport to adopt an external-facing contract or force the app-server adapter to tolerate an internal shape. Documented divergence.
+- **`nextRequestId` module-global counter overflow** — counter reaches `Number.MAX_SAFE_INTEGER` at ~9 × 10¹⁵ requests. Non-issue at realistic scales; no action.
+- **`resolveFilePath`/`resolveInput` TOCTOU pre-check in CLI arg parsing** — tokens are CLI argv strings, not hot-loop I/O. Tolerable per `/simplify` remit §5 guidance.
+- **`compilePathPattern` linear route match** — ~30 routes; <1µs per match. Fine at current scale.
+- **`Last-Event-ID` header read on every `/jobs/wait` HTTP request** — cheap header access; not a hot-path cost.
+
+### Verification (final)
+
+- `npm run lint` clean
+- `npm run build` clean
+- `npm test` — 1694 passed / 7 skipped (158 files)
+- `npx vitest run --config vitest.integration.config.ts` — 26 passed (9 files)
+- `coordinator/api.ts` export count — 5 (invariant #46, ≤10)
+- `phase-4-complete` tag unchanged; rollback target `phase-3-complete`.
