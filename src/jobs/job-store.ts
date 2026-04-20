@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
-import { TypedEventBus } from '../coordinator/control.js';
+import { TypedEventBus } from '../coordinator/event-bus.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';

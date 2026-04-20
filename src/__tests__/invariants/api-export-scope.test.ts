@@ -15,6 +15,8 @@ const FORBIDDEN_CONTRACT_IMPORTS = [
   './execution-service.js',
   '../transport/http/contracts.js',
   './transport/http/contracts.js',
+  '../jobs/job-store.js',
+  '../providers/registry.js',
 ];
 const OPEN_SHARD_ALLOWLIST = new Set(['src/sessions/shell/resolve.ts', 'src/jobs/reconcile/snapshot.ts']);
 

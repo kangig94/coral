@@ -21,6 +21,8 @@ import {
 import type { StoreReadContext } from '../store/body-codec.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
 
+export type { ProgressStore } from './job-store.js';
+
 export type JobsStartupDeps = {
   recoveryCoordinator: RecoveryCoordinator;
   namespace: string;
