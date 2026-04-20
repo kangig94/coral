@@ -13,22 +13,16 @@ import {
   serializeWaitCursor,
   type WaitStreamEvent,
 } from '../../jobs/api.js';
+import { catalogHttpStatus, executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
 import type { RpcMethodSpec } from '../rpc-catalog.js';
-import { buildCallerContext, decodePathSegment } from '../shared-context.js';
 import {
-  buildCallerContextFromQuery,
-  domainError,
   domainResultToHttp,
   formatZodError,
   type EventStreamHandlers,
   type HttpHandlerPorts,
-  type JobListFilters,
-  launchToHttp,
   queryParamsToObject,
-  type ToolDomainResult,
   type WaitStreamRequest,
-  type WorkflowPortInput,
 } from './contracts.js';
 import { subscribeAll } from './sse-subscribe.js';
 
@@ -51,10 +45,6 @@ const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
 const INVALID_JSON_RESPONSE = {
   code: 'invalid_request',
   message: 'Invalid JSON body',
-};
-const BACKEND_RECOVERING_RESPONSE = {
-  code: 'backend_recovering',
-  message: 'recovering — retry after 500ms',
 };
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
 
@@ -150,57 +140,14 @@ export function parseEventStreamFilter(url: string): string | null {
 // Shared response helpers
 // ---------------------------------------------------------------------------
 
-function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
-  return domainError('invalid_request', message, detail);
-}
-
-function sendToolResult(res: ServerResponse, result: ToolDomainResult, successStatusCode = 200): void {
-  const response = domainResultToHttp(result);
-  sendJson(res, result.ok ? successStatusCode : response.statusCode, response.body);
-}
-
 function sendInvalidJson(res: ServerResponse): void {
   sendJson(res, 400, INVALID_JSON_RESPONSE);
 }
 
 function sendValidationFailure(res: ServerResponse, error: ZodError): void {
   const { message, detail } = formatZodError(error);
-  const response = domainResultToHttp(invalidRequestResult(message, detail));
+  const response = domainResultToHttp({ ok: false, code: 'invalid_request', message, detail });
   sendJson(res, response.statusCode, response.body);
-}
-
-function decodePathSegment(segment: string): string | null {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return null;
-  }
-}
-
-function sendInvalidRequestBody(res: ServerResponse): void {
-  const response = domainResultToHttp(invalidRequestResult());
-  sendJson(res, response.statusCode, response.body);
-}
-
-function ensureLaunchFenceInactive(res: ServerResponse, deps: HttpHandlerPorts): boolean {
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return false;
-  }
-  return true;
-}
-
-function buildBodyCallerContext(
-  res: ServerResponse,
-  request: Record<string, unknown>,
-  deps: HttpHandlerPorts,
-) {
-  const ctx = buildCallerContext(request, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    sendInvalidRequestBody(res);
-    return null;
-  }
-  return ctx;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,501 +266,30 @@ async function parseCatalogRequest(
   return parsed.data;
 }
 
+function sendCatalogResponse(
+  res: ServerResponse,
+  spec: RpcMethodSpec<unknown, unknown>,
+  body: unknown,
+): void {
+  sendJson(res, catalogHttpStatus(spec, body), body);
+}
+
 async function handleCatalogUnaryRoute(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
-  switch (spec.name) {
-    case 'sessions.create': {
-      const parsed = request as Record<string, unknown> & {
-        provider: string;
-        prompt: string;
-      };
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const decision = await deps.sessions.start(
-        parsed.provider,
-        {
-          prompt: parsed.prompt,
-          ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
-        },
-        ctx,
-      );
-      const response = launchToHttp(decision, 201);
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-
-    case 'sessions.message': {
-      const parsed = request as Record<string, unknown> & {
-        sessionId: string;
-        prompt: string;
-      };
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const decision = await deps.sessions.resumeBySessionId(
-        {
-          sessionId: parsed.sessionId,
-          prompt: parsed.prompt,
-          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
-        },
-        ctx,
-      );
-      const response = launchToHttp(decision, 202);
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-
-    case 'sessions.fork': {
-      const parsed = request as Record<string, unknown> & {
-        sessionId: string;
-      };
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const decision = await deps.sessions.forkBySessionId(
-        {
-          sessionId: parsed.sessionId,
-          ...(typeof parsed.prompt === 'string' ? { prompt: parsed.prompt } : {}),
-          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
-          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
-          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
-          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
-          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
-        },
-        ctx,
-      );
-      const response = launchToHttp(decision, 201);
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-
-    case 'workflow.run': {
-      const parsed = request as Record<string, unknown>;
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const { projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand } = parsed;
-      const result = await deps.workflows.execute(workflowCommand as WorkflowPortInput, ctx);
-      if (result.kind === 'invalid_request') {
-        const response = domainResultToHttp(invalidRequestResult(result.message, result.detail));
-        sendJson(res, response.statusCode, response.body);
-        return;
-      }
-
-      const response = launchToHttp(result.decision, 202);
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-
-    case 'jobs.abort': {
-      const parsed = request as { jobs: string[]; projectRoot: string };
-      const scopeCheck = deps.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
-      if (scopeCheck.mismatch.length > 0) {
-        const response = domainResultToHttp(
-          domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-        );
-        sendJson(res, response.statusCode, response.body);
-        return;
-      }
-      if (scopeCheck.missing.length === parsed.jobs.length) {
-        sendJson(res, 404, {
-          code: 'jobs_not_found',
-          message: 'Requested jobs were not found',
-          detail: { jobs: parsed.jobs },
-        });
-        return;
-      }
-
-      sendJson(res, 200, deps.jobs.abort(parsed.jobs));
-      return;
-    }
-
-    case 'jobs.list': {
-      const parsed = request as JobListFilters & { provider?: string };
-      const jobs = deps.jobs.list({
-        ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
-        ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
-        ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
-        all: parsed.all === true,
-      });
-      jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
-
-      sendJson(res, 200, { jobs });
-      return;
-    }
-
-    case 'jobs.detail': {
-      const parsed = request as { jobId: string };
-      const detail = deps.jobs.detail(parsed.jobId);
-      if (!detail) {
-        sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${parsed.jobId}` });
-        return;
-      }
-      sendJson(res, 200, detail);
-      return;
-    }
-
-    case 'discuss.persona.generate': {
-      sendToolResult(res, deps.discuss.seed(request), 200);
-      return;
-    }
-
-    case 'discuss.session.create': {
-      const parsed = request as Record<string, unknown>;
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
-        parsed;
-      sendToolResult(res, await deps.discuss.start(args, ctx), 201);
-      return;
-    }
-
-    case 'discuss.session.list': {
-      sendJson(res, 200, { sessions: deps.discuss.listSessions() });
-      return;
-    }
-
-    case 'discuss.session.detail': {
-      const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        deps.identity.pluginRoot,
-        deps.coralEnvSnapshot,
-      );
-      const view = parsed.view ?? 'control';
-      const detail = deps.discuss.loadDetail(context.projectRoot, parsed.sessionId, view);
-      if (!detail) {
-        sendJson(res, 404, { code: 'session_not_found', message: 'Session not found' });
-        return;
-      }
-      if (detail === 'audit_requires_ended_session') {
-        sendJson(res, 409, { code: 'audit_requires_ended_session', message: 'Audit requires ended session' });
-        return;
-      }
-
-      sendJson(res, 200, detail);
-      return;
-    }
-
-    case 'discuss.session.events': {
-      const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        deps.identity.pluginRoot,
-        deps.coralEnvSnapshot,
-      );
-      sendToolResult(
-        res,
-        deps.discuss.watch(
-          {
-            session: parsed.sessionId,
-            ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
-          },
-          context,
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'discuss.session.bid': {
-      const parsed = request as Record<string, unknown> & { sessionId: string };
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const {
-        sessionId,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      sendToolResult(
-        res,
-        await deps.discuss.bid(
-          {
-            ...args,
-            session: sessionId,
-          },
-          ctx,
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'discuss.session.speech': {
-      const parsed = request as Record<string, unknown> & { sessionId: string };
-      if (!ensureLaunchFenceInactive(res, deps)) return;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const {
-        sessionId,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      sendToolResult(
-        res,
-        await deps.discuss.speech(
-          {
-            ...args,
-            session: sessionId,
-          },
-          ctx,
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'discuss.session.delete': {
-      const parsed = request as { sessionId: string; projectRoot: string };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        deps.identity.pluginRoot,
-        deps.coralEnvSnapshot,
-      );
-      sendToolResult(res, await deps.discuss.abort({ session: parsed.sessionId }, context), 200);
-      return;
-    }
-
-    case 'kb.entries.search': {
-      const parsed = request as { q: string; scope?: string; top_k?: number };
-      sendToolResult(
-        res,
-        await deps.kb.readSearch({
-          query: parsed.q,
-          ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
-          ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
-        }),
-        200,
-      );
-      return;
-    }
-
-    case 'kb.note.read': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, deps.kb.readNote(slug), 200);
-      return;
-    }
-
-    case 'kb.note.create': {
-      const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
-        parsed;
-      sendToolResult(res, await deps.kb.createNote(args, ctx), 201);
-      return;
-    }
-
-    case 'kb.note.update': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-
-      const {
-        slug: _slug,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      sendToolResult(res, await deps.kb.updateNote({ ...args, note: slug }), 200);
-      return;
-    }
-
-    case 'kb.note.delete': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, await deps.kb.deleteNote(slug), 200);
-      return;
-    }
-
-    case 'kb.source.list': {
-      sendToolResult(res, await deps.kb.listSources(), 200);
-      return;
-    }
-
-    case 'kb.source.read': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, deps.kb.readSource(slug), 200);
-      return;
-    }
-
-    case 'kb.source.create': {
-      const parsed = request as Record<string, unknown>;
-      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
-        parsed;
-      sendToolResult(res, await deps.kb.createSource(args), 201);
-      return;
-    }
-
-    case 'kb.source.delete': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, await deps.kb.deleteSource(slug), 200);
-      return;
-    }
-
-    case 'kb.community.read': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, deps.kb.readCommunity(slug), 200);
-      return;
-    }
-
-    case 'kb.memo.list': {
-      const parsed = request as { projectRoot: string; owner?: string };
-      sendToolResult(
-        res,
-        deps.kb.listMemos(
-          parsed.owner === undefined ? {} : { owner: parsed.owner },
-          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'kb.memo.read': {
-      const parsed = request as { slug: string; projectRoot: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(
-        res,
-        deps.kb.readMemo(
-          slug,
-          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'kb.memo.create': {
-      const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyCallerContext(res, parsed, deps);
-      if (!ctx) return;
-
-      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
-        parsed;
-      const memoArgs = ctx.coralEnv.CORAL_OWNER === undefined ? args : { ...args, owner: ctx.coralEnv.CORAL_OWNER };
-      sendToolResult(res, deps.kb.createMemo(memoArgs, ctx), 201);
-      return;
-    }
-
-    case 'kb.memo.delete': {
-      const parsed = request as { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
-      sendToolResult(
-        res,
-        deps.kb.deleteMemos(
-          {
-            ...(parsed.pattern === undefined ? {} : { pattern: parsed.pattern }),
-            ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),
-            ...(parsed.all === undefined ? {} : { all: parsed.all }),
-          },
-          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-        ),
-        200,
-      );
-      return;
-    }
-
-    case 'kb.principles.list': {
-      const parsed = request as { q?: string; top_k?: number; verbose?: boolean };
-      sendToolResult(
-        res,
-        await deps.kb.listPrinciples({
-          ...(parsed.q === undefined ? {} : { query: parsed.q }),
-          ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
-          ...(parsed.verbose === undefined ? {} : { verbose: parsed.verbose }),
-        }),
-        200,
-      );
-      return;
-    }
-
-    case 'kb.principle.read': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) {
-        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-        return;
-      }
-      sendToolResult(res, deps.kb.readPrinciple(slug), 200);
-      return;
-    }
-
-    case 'kb.reindex': {
-      sendToolResult(res, await deps.kb.reindex(), 200);
-      return;
-    }
-
-    default:
-      throw new Error(`Unhandled HTTP RPC route: ${spec.name}`);
+  const result = await executeCatalogRequest(spec, request, deps);
+  if (result.kind !== 'unary') {
+    throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
+
+  sendCatalogResponse(res, spec, result.body);
 }
 
 async function handleJobsWaitSubscription(
+  spec: RpcMethodSpec<unknown, unknown>,
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
@@ -833,24 +309,6 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const scopeCheck = deps.jobs.scopeCheck(request.jobIds, request.projectRoot);
-  if (scopeCheck.mismatch.length > 0) {
-    sendJson(res, 403, {
-      code: 'scope_mismatch',
-      message: 'Jobs do not belong to this project',
-      detail: { jobs: scopeCheck.mismatch },
-    });
-    return;
-  }
-  if (scopeCheck.missing.length === request.jobIds.length) {
-    sendJson(res, 404, {
-      code: 'jobs_not_found',
-      message: 'Requested jobs were not found',
-      detail: { jobs: scopeCheck.missing },
-    });
-    return;
-  }
-
   const inputCursor = {
     jobs: {
       ...(headerCursor?.jobs ?? {}),
@@ -864,11 +322,12 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  Object.defineProperty(waitRequest, 'abortSignal', {
-    value: controller.signal,
-    enumerable: false,
-    configurable: true,
-  });
+  const execution = await executeCatalogRequest(spec, waitRequest, deps, controller.signal);
+  if (execution.kind !== 'subscription') {
+    controller.abort();
+    sendCatalogResponse(res, spec, execution.body);
+    return;
+  }
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream');
@@ -879,7 +338,7 @@ async function handleJobsWaitSubscription(
   deps.events.addResponse(res);
 
   let closed = false;
-  const iterator = deps.jobs.waitStream(waitRequest)[Symbol.asyncIterator]();
+  const iterator = execution.notifications[Symbol.asyncIterator]();
   const close = () => {
     if (closed) {
       return;
@@ -900,7 +359,7 @@ async function handleJobsWaitSubscription(
         break;
       }
 
-      const event: WaitStreamEvent = next.value;
+      const event = next.value as WaitStreamEvent;
       if (event.type === 'progress') {
         currentCursor.jobs[event.jobId] = event.eventId;
         writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
@@ -942,7 +401,13 @@ async function handleCatalogSubscriptionRoute(
 ): Promise<void> {
   switch (spec.name) {
     case 'jobs.wait':
-      await handleJobsWaitSubscription(req, res, deps, request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } });
+      await handleJobsWaitSubscription(
+        spec,
+        req,
+        res,
+        deps,
+        request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } },
+      );
       return;
     default:
       throw new Error(`Unhandled HTTP subscription route: ${spec.name}`);
