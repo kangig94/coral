@@ -15,8 +15,8 @@ import {
 } from '../http/contracts.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc-catalog.js';
+import { buildCallerContext, decodePathSegment } from '../shared-context.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/api.js';
-import type { CallerContext } from '../../shared/request-context.js';
 import { buildJsonRpcError, formatError, isNoEntryError } from '../../shared/utils.js';
 
 const INVALID_JSON_RESPONSE = {
@@ -99,48 +99,8 @@ function writeEnvelope(socket: Socket, envelope: JsonRpcEnvelope): void {
   socket.write(`${encode(envelope)}\n`);
 }
 
-function decodePathSegment(segment: string): string | null {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return null;
-  }
-}
-
-function buildControllerEnv(
-  body: Record<string, unknown>,
-  coralEnvSnapshot: Readonly<Record<string, string>>,
-): Record<string, string> {
-  const env = { ...coralEnvSnapshot };
-  if (typeof body.owner === 'string') {
-    env.CORAL_OWNER = body.owner;
-  }
-  if (typeof body.effort === 'string') {
-    env.CORAL_EFFORT = body.effort;
-  }
-  if (typeof body.claudeModelCap === 'string') {
-    env.CORAL_CLAUDE_MODEL_CAP = body.claudeModelCap;
-  }
-  return env;
-}
-
-function buildCallerContext(
-  body: Record<string, unknown>,
-  rpcPorts: HttpHandlerPorts,
-): CallerContext | null {
-  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
-    return null;
-  }
-
-  return {
-    projectRoot: body.projectRoot,
-    pluginRoot: rpcPorts.identity.pluginRoot,
-    coralEnv: buildControllerEnv(body, rpcPorts.coralEnvSnapshot),
-  };
-}
-
-function buildBodyCallerContext(request: Record<string, unknown>, rpcPorts: HttpHandlerPorts): CallerContext | null {
-  return buildCallerContext(request, rpcPorts);
+function buildBodyCallerContext(request: Record<string, unknown>, rpcPorts: HttpHandlerPorts) {
+  return buildCallerContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
 function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): unknown | null {

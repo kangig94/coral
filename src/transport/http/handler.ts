@@ -15,9 +15,9 @@ import {
 } from '../../jobs/api.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
 import type { RpcMethodSpec } from '../rpc-catalog.js';
+import { buildCallerContext, decodePathSegment } from '../shared-context.js';
 import {
   buildCallerContextFromQuery,
-  type CallerContext,
   domainError,
   domainResultToHttp,
   formatZodError,
@@ -103,38 +103,6 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
     req.once('error', onError);
     req.once('end', onEnd);
   });
-}
-
-function buildControllerEnv(
-  body: Record<string, unknown>,
-  coralEnvSnapshot: Readonly<Record<string, string>>,
-): Record<string, string> {
-  const env = { ...coralEnvSnapshot };
-  if (typeof body.owner === 'string') {
-    env.CORAL_OWNER = body.owner;
-  }
-  if (typeof body.effort === 'string') {
-    env.CORAL_EFFORT = body.effort;
-  }
-  if (typeof body.claudeModelCap === 'string') {
-    env.CORAL_CLAUDE_MODEL_CAP = body.claudeModelCap;
-  }
-  return env;
-}
-
-function buildCallerContext(
-  body: Record<string, unknown>,
-  pluginRoot: string,
-  coralEnvSnapshot: Readonly<Record<string, string>>,
-): CallerContext | null {
-  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
-    return null;
-  }
-  return {
-    projectRoot: body.projectRoot,
-    pluginRoot,
-    coralEnv: buildControllerEnv(body, coralEnvSnapshot),
-  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -226,7 +194,7 @@ function buildBodyCallerContext(
   res: ServerResponse,
   request: Record<string, unknown>,
   deps: HttpHandlerPorts,
-): CallerContext | null {
+) {
   const ctx = buildCallerContext(request, deps.identity.pluginRoot, deps.coralEnvSnapshot);
   if (!ctx) {
     sendInvalidRequestBody(res);
