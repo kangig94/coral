@@ -12,6 +12,7 @@ import {
   getTerminalContext,
   makeClient,
   parseJobIds,
+  withReadCoralStore,
   WAIT_TIMEOUT_SECONDS,
   type AbortOptions,
   type WaitOptions,
@@ -159,13 +160,16 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       try {
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
-        const client = makeClient(projectRoot);
-        const result = await client.listJobs({
-          projectRoot,
-          ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
-          ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
-          ...(parsed.all === true ? { all: true } : {}),
-        });
+        const result = await withReadCoralStore(projectRoot, async (store) => ({
+          jobs: await Promise.resolve(
+            store.jobs.list({
+              projectRoot,
+              ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
+              ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
+              ...(parsed.all === true ? { all: true } : {}),
+            }),
+          ),
+        }));
         const rows = formatJobsList(result);
 
         process.stdout.write(

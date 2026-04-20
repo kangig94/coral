@@ -4,18 +4,115 @@ import type { StoreReadContext } from './body-codec.js';
 import type { CoralEvent } from './envelope.js';
 import type { EventsFilter, EventsPage } from './queries/events.js';
 import { getEvent, getEventsSince } from './queries/events.js';
-import { loadJobProjectionDetail, readJobProgress } from './queries/jobs.js';
+import {
+  loadJobDetail,
+  loadJobProjectionDetail,
+  listJobs,
+  readJobProgress,
+  type JobDetail,
+  type JobsListFilters,
+} from './queries/jobs.js';
+import {
+  listKnowledgeBasePrinciples,
+  readKnowledgeBaseEntry,
+  searchKnowledgeBase,
+} from './queries/kb.js';
+import {
+  readDiscussDiscovery,
+  readDiscussEventLog,
+  readDiscussSnapshot,
+  readDiscussSummaryIndex,
+  type DiscussEventLogEntry,
+  type DiscussReadRef,
+  type DiscussSnapshotRow,
+} from './queries/discuss.js';
+import {
+  readSessionEntryById,
+  readSessionEntryLenientById,
+  readSessionProvenanceById,
+} from './queries/sessions.js';
+import type { KbPrinciplesInput, KbPrinciplesResult, KbReadInput, KbReadResult, KbSearchInput, KbSearchResponse } from '../kb/entry-types.js';
+import type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
+import type { SessionEntry } from '../sessions/entry.js';
+import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../shared/persistence-types.js';
+
+export type CoralStoreOptions = {
+  namespace?: string;
+  projectRoot?: string;
+  pluginRoot?: string;
+};
 
 export class CoralStore implements StoreReadContext {
   public readonly schemas: StoreReadContext['schemas'];
   public readonly upcasters: StoreReadContext['upcasters'];
+  private readonly namespace?: string;
+  private readonly projectRoot?: string;
+  private readonly pluginRoot?: string;
+
+  public readonly jobs: {
+    list: (filters: JobsListFilters) => Array<{ jobId: string; status: JobDetail['status'] }>;
+    detail: (jobId: string) => JobDetail | null;
+  };
+  public readonly kb: {
+    search: (args: KbSearchInput) => Promise<KbSearchResponse>;
+    read: (selector: KbReadInput) => KbReadResult;
+    listPrinciples: (args: KbPrinciplesInput) => Promise<KbPrinciplesResult>;
+  };
+  public readonly discuss: {
+    snapshot: (ref: DiscussReadRef) => DiscussSnapshotRow | null;
+    eventLog: (ref: DiscussReadRef) => DiscussEventLogEntry[];
+    discovery: (source: string) => DiscussDiscoveryData | null;
+    summaryIndex: (source: string) => DiscussSummaryIndexData | null;
+  };
+  public readonly sessions: {
+    readEntry: (sessionId: string) => SessionEntry;
+    readEntryLenient: (sessionId: string) => LenientSessionEntry | null;
+    provenance: (sessionId: string) => ProvenanceState | null;
+  };
 
   constructor(
     private readonly db: Database,
     readCtx: StoreReadContext,
+    options: CoralStoreOptions = {},
   ) {
     this.schemas = readCtx.schemas;
     this.upcasters = readCtx.upcasters;
+    this.namespace = options.namespace;
+    this.projectRoot = options.projectRoot;
+    this.pluginRoot = options.pluginRoot;
+
+    this.jobs = {
+      list: (filters) =>
+        listJobs(
+          this.db,
+          {
+            ...filters,
+            ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
+          },
+          this,
+        ),
+      detail: (jobId) =>
+        loadJobDetail(this.db, jobId, this, this.namespace === undefined ? {} : { namespace: this.namespace }),
+    };
+
+    this.kb = {
+      search: (args) => searchKnowledgeBase(args, { pluginRoot: this.pluginRoot }),
+      read: (selector) => readKnowledgeBaseEntry(selector, { projectRoot: this.projectRoot, pluginRoot: this.pluginRoot }),
+      listPrinciples: (args) => listKnowledgeBasePrinciples(args),
+    };
+
+    this.discuss = {
+      snapshot: (ref) => readDiscussSnapshot(ref),
+      eventLog: (ref) => readDiscussEventLog(ref),
+      discovery: (source) => readDiscussDiscovery(source),
+      summaryIndex: (source) => readDiscussSummaryIndex(source),
+    };
+
+    this.sessions = {
+      readEntry: (sessionId) => readSessionEntryById(this.db, sessionId),
+      readEntryLenient: (sessionId) => readSessionEntryLenientById(this.db, sessionId),
+      provenance: (sessionId) => readSessionProvenanceById(this.db, sessionId),
+    };
   }
 
   getEvent(stream: { kind: string; id: string }, seq: number): CoralEvent | undefined {

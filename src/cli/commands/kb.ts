@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Option } from 'commander';
 import type { Command } from 'commander';
 
-import type { BackendClient } from '../../client/http-client.js';
+import type { KbPromoteInput } from '../../kb/entry-types.js';
 import { prepareSourceImport } from '../../kb/ops/source-import.js';
 import { assertSourceSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../shared/utils.js';
@@ -15,6 +15,7 @@ import {
   makeClient,
   parseIntegerFlag,
   resolveFilePath,
+  withReadCoralStore,
   type KbMemoDeleteOptions,
   type KbMemoListOptions,
   type KbMemoPurgeOptions,
@@ -210,8 +211,7 @@ export function registerKbCommands(program: Command): void {
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
         };
-        const client = makeClient(process.cwd());
-        const result = await client.kbSearch(args);
+        const result = await withReadCoralStore(process.cwd(), (store) => store.kb.search(args));
         emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
       } catch (error) {
         emitError(error);
@@ -233,8 +233,7 @@ export function registerKbCommands(program: Command): void {
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.verbose === true ? { verbose: true } : {}),
         };
-        const client = makeClient(process.cwd());
-        const result = await client.kbPrinciples(args);
+        const result = await withReadCoralStore(process.cwd(), (store) => store.kb.listPrinciples(args));
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
       } catch (error) {
         emitError(error);
@@ -255,8 +254,7 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbReadCommand);
 
       try {
-        const client = makeClient(process.cwd());
-        const result = await client.kbRead({ note });
+        const result = await withReadCoralStore(process.cwd(), (store) => Promise.resolve(store.kb.read({ note })));
         emit(result, outputFormat, formatKbRead);
       } catch (error) {
         emitError(error);
@@ -285,7 +283,7 @@ export function registerKbCommands(program: Command): void {
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
         };
         const client = makeClient(process.cwd());
-        const result = await client.kbPromote(args as Parameters<BackendClient['kbPromote']>[0]);
+        const result = await client.kbPromote(args as KbPromoteInput);
         emit(result, outputFormat, formatKbPromote);
       } catch (error) {
         emitError(error);

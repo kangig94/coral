@@ -11,7 +11,9 @@ import {
 } from '../client/http-client.js';
 import { ensureBackend } from './backend-lifecycle.js';
 import { collectCoralEnv } from '../shared/utils.js';
+import { pluginRootNamespace } from '../infra/paths.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { createRealRuntime } from '../runtime/real.js';
 import { buildErrorEnvelope, UsageError } from './errors.js';
 import {
   formatErrorEnvelope,
@@ -19,8 +21,18 @@ import {
 } from './format.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject } from './parse.js';
+import { CoralStore, openStoreDatabase } from '../store/index.js';
+import { createDefaultStoreReadContext } from '../store/read-context.js';
+import { ensureStoreMigrationsDir } from '../store/migrations.js';
+import { storePaths } from '../store/paths.js';
+import { readBuildFlavor } from '../shared/utils.js';
 
 type CliOutputFormat = 'text' | 'json';
+
+export type ReadCoralStoreHandle = {
+  store: CoralStore;
+  close(): void;
+};
 
 export type ProviderRunOptions = {
   input?: string[];
@@ -169,6 +181,55 @@ export function makeClient(projectRoot: string): BackendClient {
     ensureBackend: () => ensureBackend(pluginRoot || undefined),
     defaultContext,
   });
+}
+
+export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
+  const runtime = createRealRuntime();
+  const flavor = readBuildFlavor(pluginRoot || projectRoot);
+  const dbPath = storePaths(flavor).dbFile;
+  const namespace = pluginRoot
+    ? (() => {
+        try {
+          return pluginRootNamespace(pluginRoot);
+        } catch {
+          return undefined;
+        }
+      })()
+    : undefined;
+
+  const db = existsSync(dbPath)
+    ? openStoreDatabase({
+        path: dbPath,
+        storage: runtime.storage,
+        readonly: true,
+      })
+    : openStoreDatabase({
+        path: ':memory:',
+        storage: runtime.storage,
+        migrationsDir: ensureStoreMigrationsDir(runtime.storage),
+      });
+
+  return {
+    store: new CoralStore(db, createDefaultStoreReadContext(), {
+      namespace,
+      projectRoot,
+      ...(pluginRoot ? { pluginRoot } : {}),
+    }),
+    close: () => db.close(),
+  };
+}
+
+export async function withReadCoralStore<T>(
+  projectRoot: string,
+  read: (store: CoralStore) => Promise<T> | T,
+): Promise<T> {
+  const handle = openReadCoralStore(projectRoot);
+
+  try {
+    return await read(handle.store);
+  } finally {
+    handle.close();
+  }
 }
 
 export function getOutputFormat(command: Command): CliOutputFormat {

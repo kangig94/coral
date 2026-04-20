@@ -3,9 +3,10 @@ import type BetterSqlite3 from 'better-sqlite3';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
-import type { JobPhase } from '../../jobs/phase.js';
+import { isLivePhase, type JobPhase } from '../../jobs/phase.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
 import type { JobProgress, JobStatus, JobTerminal } from '../../jobs/views.js';
+import { belongsToNamespace } from '../../jobs/views.js';
 import { decodeBody, type StoreReadContext } from '../body-codec.js';
 import { readLatestEvent } from './events.js';
 import type { EventsRow } from '../schema.js';
@@ -116,6 +117,19 @@ type JobStatusEventsByType = {
 type DecodedTerminalRow = {
   record: JobTerminal;
   signal?: string | null;
+};
+
+export type JobsListFilters = {
+  projectRoot?: string;
+  phase?: JobPhase;
+  all?: boolean;
+  provider?: string;
+  namespace?: string;
+};
+
+export type JobDetail = {
+  status: JobStatus;
+  events: JobProgress[];
 };
 
 function emptyJobProjectionDetail(): JobProjectionDetail {
@@ -525,6 +539,54 @@ export function listJobProjections(
       ),
     };
   });
+}
+
+export function listJobs(
+  db: BetterSqlite3.Database,
+  filters: JobsListFilters,
+  ctx: StoreReadContext,
+): Array<{ jobId: string; status: JobStatus }> {
+  let jobs = listJobProjections(db, ctx);
+
+  if (filters.namespace !== undefined) {
+    jobs = jobs.filter((entry) => belongsToNamespace(entry.status, filters.namespace!));
+  }
+  if (filters.all !== true) {
+    jobs = jobs.filter((entry) => isLivePhase(entry.status.phase));
+  }
+  if (filters.projectRoot !== undefined) {
+    jobs = jobs.filter((entry) => entry.status.projectRoot === filters.projectRoot);
+  }
+  if (filters.phase !== undefined) {
+    jobs = jobs.filter((entry) => entry.status.phase === filters.phase);
+  }
+  if (filters.provider !== undefined) {
+    jobs = jobs.filter((entry) => entry.status.provider === filters.provider);
+  }
+
+  return jobs;
+}
+
+export function loadJobDetail(
+  db: BetterSqlite3.Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  options: { namespace?: string } = {},
+): JobDetail | null {
+  const detail = loadJobProjectionDetail(db, jobId, ctx);
+  const status = detail.status;
+
+  if (status === null) {
+    return null;
+  }
+  if (options.namespace !== undefined && !belongsToNamespace(status, options.namespace)) {
+    return null;
+  }
+
+  return {
+    status,
+    events: readJobProgress(db, jobId, ctx),
+  };
 }
 
 export function readJobProgress(
