@@ -7,13 +7,14 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { ZodError } from 'zod';
+import type { ZodError } from 'zod';
 import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
   type WaitStreamEvent,
 } from '../../jobs/api.js';
-import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc-catalog.js';
+import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
+import type { RpcMethodSpec } from '../rpc-catalog.js';
 import {
   buildCallerContextFromQuery,
   type CallerContext,
@@ -23,7 +24,6 @@ import {
   type EventStreamHandlers,
   type HttpHandlerPorts,
   type JobListFilters,
-  type WaitCursor,
   launchToHttp,
   queryParamsToObject,
   type ToolDomainResult,

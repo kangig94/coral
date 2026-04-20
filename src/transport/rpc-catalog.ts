@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import type { ZodType } from 'zod';
 import {
   discussSeedSchema,
   discussSessionBidRequestSchema,
@@ -42,10 +42,10 @@ import {
 import type { RpcPorts } from './rpc-ports.js';
 import { workflowRequestSchema } from '../workflow/api.js';
 
-export interface RpcMethodSpec<Req, Res> {
+export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
   readonly kind: 'unary' | 'subscription';
-  readonly requestSchema: z.ZodType<Req>;
+  readonly requestSchema: ZodType<Req>;
   readonly responseKind: 'json' | 'notification-stream';
   readonly authClass: 'local' | 'authenticated';
   readonly portKey: keyof RpcPorts;

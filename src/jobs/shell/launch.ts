@@ -13,7 +13,7 @@ import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal, LaunchState } from '../views.js';
-import type { ProviderEventBody, ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
+import type { ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';

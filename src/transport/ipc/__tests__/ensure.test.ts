@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '../../../infra/paths.js';
 import { probeProcessStartedAtSeconds } from '../../../coordinator/discovery.js';
 import { coordinatorPaths } from '../../../coordinator/paths.js';
-import { BackendUnreachableError, readBuildFlavor } from '../../../shared/utils.js';
+import { readBuildFlavor } from '../../../shared/utils.js';
 
 const mockState = vi.hoisted(() => ({
   execFileSync: vi.fn(),

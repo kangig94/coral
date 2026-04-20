@@ -15,6 +15,7 @@ import type * as BackendLockMod from '../../../coordinator/lock.js';
 import type * as LifecycleMod from '../../../coordinator/control.js';
 import type * as InfraPathsMod from '../../../infra/paths.js';
 import type * as HttpHandlerMod from '../handler.js';
+import type * as WorkflowApiMod from '../../../workflow/api.js';
 import type { ProviderServerHandle } from '../../../coordinator/__tests__/server-test-deps.js';
 import { createDeferred } from '../../../shared/test-deferred.js';
 
@@ -3241,7 +3242,7 @@ describe('execution backend server', () => {
       const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
       workflowError.name = 'WorkflowInputError';
       vi.doMock('../../../workflow/api.js', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('../../../workflow/api.js')>();
+        const actual = await importOriginal<typeof WorkflowApiMod>();
         return {
           ...actual,
           workflowCompiler: {
@@ -3295,7 +3296,7 @@ describe('execution backend server', () => {
         },
       ]);
       vi.doMock('../../../workflow/api.js', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('../../../workflow/api.js')>();
+        const actual = await importOriginal<typeof WorkflowApiMod>();
         return {
           ...actual,
           workflowCompiler: {

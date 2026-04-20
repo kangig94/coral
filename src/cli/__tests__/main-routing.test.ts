@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as CommandHelpersMod from '../command-helpers.js';
+import type * as ErrorsMod from '../errors.js';
 import type * as MainMod from '../main.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/views.js';
@@ -76,8 +78,8 @@ vi.mock('../follow.js', () => ({
 }));
 
 vi.mock('../command-helpers.js', async () => {
-  const actual = await vi.importActual<typeof import('../command-helpers.js')>('../command-helpers.js');
-  const errors = await vi.importActual<typeof import('../errors.js')>('../errors.js');
+  const actual = await vi.importActual<typeof CommandHelpersMod>('../command-helpers.js');
+  const errors = await vi.importActual<typeof ErrorsMod>('../errors.js');
 
   return {
     ...actual,

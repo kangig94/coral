@@ -1,7 +1,7 @@
 import { createConnection, type Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CoralSetupError } from '../../runtime/errors.js';
-import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
+import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest } from '../json-rpc.js';
 
 const IPC_RETRY_BACKOFF_MS = 100;
 

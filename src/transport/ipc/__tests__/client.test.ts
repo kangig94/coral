@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server as NetServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,18 +25,22 @@ async function startReplyServer(
   mkdirSync(dirname(socketPath), { recursive: true });
   const server = createServer((socket) => {
     let buffer = '';
-    socket.on('data', async (chunk) => {
-      buffer += chunk.toString('utf-8');
-      const frames = buffer.split('\n');
-      buffer = frames.pop() ?? '';
-      for (const frame of frames) {
-        if (frame.trim().length === 0) continue;
-        const request = decode(frame);
-        if (request.kind !== 'request') {
-          continue;
+    socket.on('data', (chunk) => {
+      void (async () => {
+        buffer += chunk.toString('utf-8');
+        const frames = buffer.split('\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          if (frame.trim().length === 0) continue;
+          const request = decode(frame);
+          if (request.kind !== 'request') {
+            continue;
+          }
+          socket.end(`${encode(await reply(request))}\n`);
         }
-        socket.end(`${encode(await reply(request))}\n`);
-      }
+      })().catch((error: unknown) => {
+        socket.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
     });
   });
   servers.push(server);

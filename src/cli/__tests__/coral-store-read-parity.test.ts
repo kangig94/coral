@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as MainMod from '../main.js';
 
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -14,7 +15,7 @@ import { storePaths } from '../../store/paths.js';
 const REPO_ROOT = process.cwd();
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
 
-type MainModule = typeof import('../main.js');
+type MainModule = typeof MainMod;
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');

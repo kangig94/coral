@@ -3,7 +3,6 @@ import type {
   JobPhase,
   JobProgress,
   JobStatus,
-  JobTerminal,
   LaunchDecision,
   WaitStreamEvent,
   WaitStreamRequest,

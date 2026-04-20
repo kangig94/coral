@@ -108,6 +108,7 @@ export function readScriptedProviderSpecFromEnv(
   } catch (error: unknown) {
     throw new Error(
       `${CORAL_SCRIPTED_PROVIDER_SPEC_ENV} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 

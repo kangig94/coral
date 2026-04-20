@@ -548,8 +548,9 @@ export function listJobs(
 ): Array<{ jobId: string; status: JobStatus }> {
   let jobs = listJobProjections(db, ctx);
 
-  if (filters.namespace !== undefined) {
-    jobs = jobs.filter((entry) => belongsToNamespace(entry.status, filters.namespace!));
+  const { namespace } = filters;
+  if (namespace !== undefined) {
+    jobs = jobs.filter((entry) => belongsToNamespace(entry.status, namespace));
   }
   if (filters.all !== true) {
     jobs = jobs.filter((entry) => isLivePhase(entry.status.phase));

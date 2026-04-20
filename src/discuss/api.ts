@@ -12,7 +12,6 @@ import { loadAttachedOrPersistedSnapshot } from './shell/persistence.js';
 import { runStartup } from './reconcile.js';
 import {
   discussBidSchema,
-  discussSeedSchema,
   discussSpeechSchema,
   discussStartSchema,
 } from './command-schemas.js';

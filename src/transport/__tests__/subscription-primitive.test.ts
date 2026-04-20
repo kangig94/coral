@@ -27,20 +27,24 @@ async function startSubscriptionServer(
   mkdirSync(dirname(socketPath), { recursive: true });
   const server = createServer((socket) => {
     let buffer = '';
-    socket.on('data', async (chunk) => {
-      buffer += chunk.toString('utf-8');
-      const frames = buffer.split('\n');
-      buffer = frames.pop() ?? '';
-      for (const frame of frames) {
-        if (frame.trim().length === 0) {
-          continue;
+    socket.on('data', (chunk) => {
+      void (async () => {
+        buffer += chunk.toString('utf-8');
+        const frames = buffer.split('\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          if (frame.trim().length === 0) {
+            continue;
+          }
+          const request = decode(frame);
+          if (request.kind !== 'request') {
+            continue;
+          }
+          await handler(socket, request);
         }
-        const request = decode(frame);
-        if (request.kind !== 'request') {
-          continue;
-        }
-        await handler(socket, request);
-      }
+      })().catch((error: unknown) => {
+        socket.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
     });
   });
   servers.push(server);
