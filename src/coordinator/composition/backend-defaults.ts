@@ -17,7 +17,7 @@ import {
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { discussReconcile } from '../../discuss/api.js';
-import { ExecutionService as DefaultExecutionService } from '../api.js';
+import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
 import type { BackendCoreOptions, CreateServerFn, FetchFn } from './backend-core-types.js';
 
 const LOCK_HEALTHCHECK_TIMEOUT_MS = 1_000;

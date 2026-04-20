@@ -34,6 +34,10 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
+  'src/coordinator/contracts.ts',
+  'src/coordinator/event-bus.ts',
+  'src/coordinator/execution-service.ts',
+  'src/coordinator/workflow-cleanup.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/'] as const;
 const COORDINATOR_ALLOWED = new Set([
@@ -93,7 +97,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#29: only coordinator glue (coordinator.ts, bootstrap.ts, api.ts, composition/**) may bypass coordinator contract entrypoints', () => {
+  it('#29: only coordinator glue and extracted coordinator implementation leafs may bypass coordinator contract entrypoints', () => {
     const violations = collectViolations((source, target) => {
       if (
         !source.startsWith('src/coordinator/') ||

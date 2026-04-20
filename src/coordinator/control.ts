@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
@@ -18,8 +17,6 @@ import {
   markJobAsError,
   StartupInterruptedError,
   type ProgressStore,
-  type JobPhase,
-  type JobTerminal,
   type RecoveryCoordinator,
 } from '../jobs/api.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/api.js';
@@ -28,7 +25,10 @@ import type { Runtime } from '../runtime/ports.js';
 import { resolveClientHost } from './shutdown/network.js';
 import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from './shutdown/sequence.js';
 import type { ShutdownMode } from './shutdown/mode.js';
-import type { ProjectRequestPort, RecoveryCapableService } from './api.js';
+import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
+import type { TypedEventBus } from './event-bus.js';
+export type { EventBusEvents } from './event-bus.js';
+export { TypedEventBus } from './event-bus.js';
 
 export { adoptOrphanedCrossNamespaceJobs, StartupInterruptedError } from '../jobs/api.js';
 export {
@@ -78,74 +78,6 @@ export interface MutableRuntimeState extends ReadonlyRuntimeState {
   setKbSubsystem(kb: KnowledgeBaseRuntime | null): void;
   setKbInitError(error: string | null): void;
   setLaunchFenceActive(active: boolean): void;
-}
-
-export type EventBusEvents = {
-  'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };
-  'job:phase_changed': { jobId: string; phase: JobPhase; previousPhase: JobPhase };
-  'job:progress': { jobId: string; eventId: number; message: string };
-  'job:completed': {
-    jobId: string;
-    result: JobTerminal;
-    costUsd?: number;
-    tokenUsage?: {
-      inputTokens?: number;
-      outputTokens?: number;
-    };
-  };
-  'session:released': { sessionId: string; jobId: string };
-  'discuss:updated': { projectRoot: string; sessionId: string; lastSeq: number; status: string };
-};
-
-const MAX_EVENT_BUS_LISTENERS = 100;
-
-export class TypedEventBus {
-  private readonly emitter = new EventEmitter({ captureRejections: false });
-
-  constructor() {
-    this.emitter.setMaxListeners(MAX_EVENT_BUS_LISTENERS);
-  }
-
-  on<K extends keyof EventBusEvents>(event: K, listener: (payload: EventBusEvents[K]) => void): this {
-    this.emitter.on(event, listener);
-    return this;
-  }
-
-  off<K extends keyof EventBusEvents>(event: K, listener: (payload: EventBusEvents[K]) => void): this {
-    this.emitter.off(event, listener);
-    return this;
-  }
-
-  emit<K extends keyof EventBusEvents>(event: K, payload: EventBusEvents[K]): boolean {
-    const listeners = this.emitter.listeners(event) as Array<(value: EventBusEvents[K]) => unknown>;
-    if (listeners.length === 0) {
-      return false;
-    }
-
-    for (const listener of listeners) {
-      try {
-        const result = listener(payload);
-        if (result instanceof Promise) {
-          void result.catch((error: unknown) => {
-            backendLog.error(`EventBus listener for ${String(event)} failed`, error);
-          });
-        }
-      } catch (error: unknown) {
-        backendLog.error(`EventBus listener for ${String(event)} failed`, error);
-      }
-    }
-
-    return true;
-  }
-
-  removeAllListeners(): this {
-    this.emitter.removeAllListeners();
-    return this;
-  }
-
-  reset(): this {
-    return this.removeAllListeners();
-  }
 }
 
 export function createRuntimeState(startedAt: number): MutableRuntimeState {

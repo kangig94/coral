@@ -23,7 +23,12 @@ import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outc
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
-import { CliBusyError, type LaunchCoordinator, type LaunchPool, type QueuedHandle } from '../../coordinator/live/admission.js';
+import { CliBusyError } from '../../coordinator/live/admission.js';
+import type {
+  ExecutionLaunchCoordinator as LaunchCoordinator,
+  ExecutionLaunchPool as LaunchPool,
+  ExecutionQueuedHandle as QueuedHandle,
+} from '../../coordinator/contracts.js';
 import { type ProgressStore } from '../job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';

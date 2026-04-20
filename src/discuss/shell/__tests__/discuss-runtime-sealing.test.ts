@@ -24,7 +24,7 @@ import { detachSession } from '../../shell/registry.js';
 import { knownDiscussSources } from '../../shell/read-helpers.js';
 import { DiscussSessionStore } from '../../shell/session-store.js';
 import * as discussLoop from '../../shell/loop.js';
-import type { ExecutionService } from '../../../coordinator/api.js';
+import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../../../simulation/core/index.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '../../../simulation/scenario-http.js';
 

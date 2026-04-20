@@ -14,7 +14,7 @@ import type { RecoveryRegistry } from '../../coordinator/composition/recovery-re
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { RecoveryCapableService } from '../../coordinator/api.js';
+import type { RecoveryCapableService } from '../../coordinator/contracts.js';
 import { markJobAsError } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 

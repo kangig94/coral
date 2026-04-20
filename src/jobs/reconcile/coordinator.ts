@@ -9,7 +9,7 @@ import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../../coordinator/api.js';
+import type { RecoveryCapableService } from '../../coordinator/contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './job-helpers.js';

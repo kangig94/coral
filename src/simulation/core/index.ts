@@ -23,7 +23,7 @@ import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
 import { discussReconcile } from '../../discuss/reconcile.js';
-import { ExecutionService } from '../../coordinator/api.js';
+import { ExecutionService } from '../../coordinator/execution-service.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { createProjectionSessionLookup } from '../../store/queries/sessions.js';

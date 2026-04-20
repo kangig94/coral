@@ -662,7 +662,7 @@ describe('execution backend server', () => {
   it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
     const { serverModule } = await loadExecutionModules();
     const [{ ExecutionService }, claudeRequestMapping, codexRequestMapping] = await Promise.all([
-      import('../../../coordinator/api.js'),
+      import('../../../coordinator/execution-service.js'),
       import('../../../providers/claude/request-mapping.js'),
       import('../../../providers/codex/request-mapping.js'),
     ]);

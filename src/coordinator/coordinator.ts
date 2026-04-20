@@ -16,7 +16,7 @@ import {
 } from './composition/create-backend-core.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
-import { ExecutionService } from './api.js';
+import { ExecutionService } from './execution-service.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';

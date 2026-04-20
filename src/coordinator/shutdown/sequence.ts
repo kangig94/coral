@@ -7,7 +7,7 @@ import type { MutableRuntimeState } from '../control.js';
 import type { DiscussSessionStore } from '../../discuss/api.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../api.js';
+import type { RecoveryCapableService } from '../contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
 

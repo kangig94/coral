@@ -35,7 +35,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../../../co
 import { createRealRuntime } from '../../../runtime/real.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import { ExecutionService } from '../../../coordinator/api.js';
+import { ExecutionService } from '../../../coordinator/execution-service.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

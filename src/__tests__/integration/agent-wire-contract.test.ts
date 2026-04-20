@@ -13,7 +13,7 @@ import { createHttpHandler } from '../../transport/http/handler.js';
 import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import { ExecutionService } from '../../coordinator/api.js';
+import { ExecutionService } from '../../coordinator/execution-service.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';

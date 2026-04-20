@@ -3,11 +3,11 @@ import type { JobPhase } from '../phase.js';
 import type { JobKind, JobLaunch } from '../views.js';
 import type { ProviderRequest } from '../../providers/protocol.js';
 import { resolveEffort } from '../../shared/schemas.js';
-import type { AdmissionResult } from '../../coordinator/live/admission.js';
+import type { ExecutionAdmissionResult } from '../../coordinator/contracts.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
-export type AcceptedAdmission = Exclude<AdmissionResult, 'queue_full'>;
+export type AcceptedAdmission = Exclude<ExecutionAdmissionResult, 'queue_full'>;
 
 export type ClaimJobOptions = {
   expectedVersion?: number;

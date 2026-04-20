@@ -1,15 +1,16 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobStatus } from '../views.js';
+import type { JobProgress, JobStatus } from '../views.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamRequest } from '../wait.js';
-import type { TypedEventBus } from '../../coordinator/control.js';
-import type { LaunchCoordinator, LaunchPool } from '../../coordinator/live/admission.js';
+import type { TypedEventBus } from '../../coordinator/event-bus.js';
+import type {
+  ExecutionLaunchCoordinator as LaunchCoordinator,
+  ExecutionLaunchPool as LaunchPool,
+} from '../../coordinator/contracts.js';
 import { createReplayCursor, type ProgressStore } from '../job-store.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS } from './contracts.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
-import type { JobProgress } from '../views.js';
-import type { JobEvent } from './event-subscription.js';
 import { resultPathFor } from './result-artifact.js';
 
 export interface WaitCoordinatorDeps {
@@ -25,7 +26,7 @@ export interface WaitCoordinatorDeps {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
-  }) => AsyncIterable<JobEvent>;
+  }) => AsyncIterable<JobProgress>;
   getCurrentJournalSeq?: () => number;
 }
 
@@ -335,7 +336,7 @@ export class WaitCoordinator {
         const remainingMs = deadlineMs - now;
         const next = await Promise.race([
           iterator.next(),
-          this.deps.time.sleep(remainingMs).then(() => ({ done: true, value: null as JobEvent | null })),
+          this.deps.time.sleep(remainingMs).then(() => ({ done: true, value: null as JobProgress | null })),
         ]);
 
         if (next.done || !next.value) {

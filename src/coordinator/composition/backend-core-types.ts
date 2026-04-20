@@ -3,7 +3,7 @@ import type { BackendInfo } from '../discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../control.js';
-import type { ProjectRequestPort } from '../api.js';
+import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/context.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
@@ -22,7 +22,7 @@ import type {
 } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from '../api.js';
+import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
 
 export type BackendBootSnapshot = {
   version?: string;

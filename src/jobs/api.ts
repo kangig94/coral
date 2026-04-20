@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProjectRequestPort, RecoveryCapableService } from '../coordinator/api.js';
+import type { ProjectRequestPort, RecoveryCapableService } from '../coordinator/contracts.js';
 import type { ProgressStore } from './job-store.js';
 import type { RecoveryRegistry } from '../coordinator/composition/recovery-registry.js';
 import type { CallerContext } from '../shared/request-context.js';

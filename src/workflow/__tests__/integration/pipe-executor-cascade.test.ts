@@ -8,7 +8,7 @@ import { TypedEventBus } from '../../../coordinator/control.js';
 import { createProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
 import { ProgressStore } from '../../../jobs/job-store.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { ExecutionService } from '../../../coordinator/api.js';
+import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/provider-contracts.js';

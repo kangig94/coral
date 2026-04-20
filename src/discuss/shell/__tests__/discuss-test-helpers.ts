@@ -20,7 +20,7 @@ import { DiscussSessionStore } from '../../shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '../../shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { ExecutionService } from '../../../coordinator/api.js';
+import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/index.js';
 import { parseJobStatus } from '../../../jobs/views.js';

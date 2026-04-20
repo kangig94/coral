@@ -29,7 +29,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../live/pro
 import { createRealRuntime } from '../../runtime/real.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import { ExecutionService } from '../api.js';
+import { ExecutionService } from '../execution-service.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

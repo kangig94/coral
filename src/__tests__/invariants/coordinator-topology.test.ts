@@ -30,10 +30,13 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/recovery-registry.ts',
   'src/coordinator/composition/runtime-state.ts',
   'src/coordinator/consumer-driver.ts',
+  'src/coordinator/contracts.ts',
   'src/coordinator/control.ts',
   'src/coordinator/coordinator.ts',
   'src/coordinator/corpus-notify.ts',
   'src/coordinator/discovery.ts',
+  'src/coordinator/event-bus.ts',
+  'src/coordinator/execution-service.ts',
   'src/coordinator/index.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
@@ -52,6 +55,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/shutdown/mode.ts',
   'src/coordinator/shutdown/network.ts',
   'src/coordinator/shutdown/sequence.ts',
+  'src/coordinator/workflow-cleanup.ts',
 ]);
 
 const DOMAIN_API_TARGETS = new Set([
@@ -71,6 +75,10 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
+  'src/coordinator/contracts.ts',
+  'src/coordinator/event-bus.ts',
+  'src/coordinator/execution-service.ts',
+  'src/coordinator/workflow-cleanup.ts',
 ]);
 
 const BROAD_IMPORT_PREFIXES = ['src/coordinator/composition/'] as const;
@@ -97,7 +105,10 @@ describe('coordinator topology invariants', () => {
   });
 
   it('contains no forbidden coordinator extras', () => {
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/event-bus.ts')).toBe(false);
+    expect(COORDINATOR_FILE_SET.has('src/coordinator/contracts.ts')).toBe(true);
+    expect(COORDINATOR_FILE_SET.has('src/coordinator/event-bus.ts')).toBe(true);
+    expect(COORDINATOR_FILE_SET.has('src/coordinator/execution-service.ts')).toBe(true);
+    expect(COORDINATOR_FILE_SET.has('src/coordinator/workflow-cleanup.ts')).toBe(true);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/live/discuss-runtime.ts')).toBe(false);
     expect(COORDINATOR_FILE_SET.has('src/coordinator/info.ts')).toBe(false);
   });
