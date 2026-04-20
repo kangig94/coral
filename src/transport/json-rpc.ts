@@ -100,13 +100,13 @@ const jsonRpcEnvelopeSchema = z
     jsonRpcErrorSchema,
   ])
   .superRefine((value, ctx) => {
-    // Phase 4 subscriptions are one-per-connection. Keep the multiplexing slot
-    // in the envelope shape, but reject it on the wire until that mode exists.
+    // subscriptionId is reserved for future multiplexing. Keep the field in the
+    // envelope shape, but reject it on the wire until multiplexed mode exists.
     if (value.subscriptionId !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['subscriptionId'],
-        message: 'subscriptionId is reserved for future multiplexing and must be omitted at the Phase 4 gate',
+        message: 'subscriptionId is reserved for future multiplexing and must be omitted until multiplexed mode exists',
       });
     }
   });
