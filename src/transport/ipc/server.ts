@@ -8,7 +8,7 @@ import {
 } from '../http/contracts.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcError, type JsonRpcRequest, type JsonRpcResponse } from '../json-rpc.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc-catalog.js';
-import { executeCatalogRequest } from '../dispatch.js';
+import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { buildJsonRpcError, formatError, isNoEntryError } from '../../shared/utils.js';
 
 const INVALID_JSON_RESPONSE = {
@@ -26,14 +26,10 @@ export type IpcListener = {
   socketPath: string | null;
 };
 
-type IpcInvocation =
-  | { kind: 'unary'; value: unknown }
-  | { kind: 'subscription'; notifications: AsyncIterable<unknown> };
-
 export type IpcDispatchEntry = {
   readonly method: string;
   readonly spec: RpcMethodSpec<unknown, unknown>;
-  dispatch(request: unknown, rpcPorts: HttpHandlerPorts, abortSignal?: AbortSignal): Promise<IpcInvocation>;
+  dispatch(request: unknown, abortSignal?: AbortSignal): Promise<CatalogRequestExecution>;
 };
 
 function transportErrorResponse(message: string, data?: unknown): JsonRpcError {
@@ -90,16 +86,7 @@ export function ipcAdapter(
   return {
     method: spec.name,
     spec,
-    dispatch: async (request, _rpcPorts, abortSignal) => {
-      const invocation = await executeCatalogRequest(spec, request, rpcPorts, abortSignal);
-      if (invocation.kind === 'subscription') {
-        return invocation;
-      }
-      return {
-        kind: 'unary',
-        value: invocation.body,
-      };
-    },
+    dispatch: async (request, abortSignal) => await executeCatalogRequest(spec, request, rpcPorts, abortSignal),
   };
 }
 
@@ -219,6 +206,144 @@ export async function closeIpcServer(listener: IpcListener): Promise<void> {
   }
 }
 
+async function streamSubscription(
+  socket: Socket,
+  request: JsonRpcRequest,
+  entry: IpcDispatchEntry,
+  invocation: Extract<CatalogRequestExecution, { kind: 'subscription' }>,
+  controller: AbortController,
+): Promise<void> {
+  const iterator = invocation.notifications[Symbol.asyncIterator]();
+  let released = false;
+  const releaseSubscription = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    controller.abort();
+    socket.off('close', releaseSubscription);
+    void iterator.return?.().catch(() => undefined);
+  };
+  socket.once('close', releaseSubscription);
+
+  writeEnvelope(socket, {
+    kind: 'response',
+    id: request.id,
+    result: { status: 'subscribed', method: entry.method },
+  });
+
+  try {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done || socket.destroyed || socket.writableEnded) {
+        break;
+      }
+
+      writeEnvelope(socket, {
+        kind: 'notification',
+        method: entry.method,
+        params: next.value,
+      });
+    }
+  } finally {
+    releaseSubscription();
+  }
+
+  socket.end();
+}
+
+async function dispatchFrame(
+  frame: string,
+  socket: Socket,
+  dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
+  rpcPorts: HttpHandlerPorts,
+  startRequest: () => void,
+  finishRequest: () => void,
+): Promise<void> {
+  let envelope: JsonRpcEnvelope;
+  try {
+    envelope = decode(frame);
+  } catch (error: unknown) {
+    writeEnvelope(socket, transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
+    socket.end();
+    return;
+  }
+
+  if (envelope.kind !== 'request') {
+    writeEnvelope(socket, invalidRequestResponse('id' in envelope ? envelope.id : null));
+    socket.end();
+    return;
+  }
+
+  const request = envelope;
+  if (request.method === 'transport.health') {
+    writeEnvelope(socket, { kind: 'response', id: request.id, result: rpcPorts.health.read() });
+    socket.end();
+    return;
+  }
+
+  if (request.method === 'transport.shutdown') {
+    rpcPorts.admin.requestDrain('replaced');
+    writeEnvelope(socket, {
+      kind: 'response',
+      id: request.id,
+      result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
+    });
+    socket.end();
+    return;
+  }
+
+  if (!rpcPorts.admin.isLifecycleRunning() || rpcPorts.admin.isDrainRequested()) {
+    writeEnvelope(socket, {
+      kind: 'response',
+      id: request.id,
+      result: BACKEND_SHUTTING_DOWN_RESPONSE,
+    });
+    socket.end();
+    return;
+  }
+
+  const entry = dispatchMap.get(request.method);
+  if (!entry) {
+    writeEnvelope(socket, methodNotFoundResponse(request.id));
+    socket.end();
+    return;
+  }
+
+  const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
+  if (!parsed.success) {
+    writeEnvelope(socket, validationErrorResponse(request.id, parsed.error));
+    socket.end();
+    return;
+  }
+
+  startRequest();
+
+  let subscriptionController: AbortController | null = null;
+  try {
+    subscriptionController = new AbortController();
+    const invocation = await entry.dispatch(parsed.data, subscriptionController.signal);
+    if (invocation.kind === 'unary') {
+      writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponse);
+      socket.end();
+      return;
+    }
+
+    await streamSubscription(socket, request, entry, invocation, subscriptionController);
+  } catch (error: unknown) {
+    if (subscriptionController?.signal.aborted || socket.destroyed) {
+      return;
+    }
+    rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
+    if (!socket.destroyed && !socket.writableEnded) {
+      writeEnvelope(socket, requestErrorResponse(request.id, 'Internal error'));
+      socket.end();
+    }
+  } finally {
+    finishRequest();
+  }
+}
+
 export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
   const dispatchTable = buildCoordinatorIpcDispatchTable(rpcPorts);
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
@@ -258,125 +383,17 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
           continue;
         }
         handled = true;
-        void (async () => {
-          let envelope: JsonRpcEnvelope;
-          try {
-            envelope = decode(frame);
-          } catch (error: unknown) {
-            writeEnvelope(socket, transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
-            socket.end();
-            return;
-          }
-
-          if (envelope.kind !== 'request') {
-            writeEnvelope(socket, invalidRequestResponse('id' in envelope ? envelope.id : null));
-            socket.end();
-            return;
-          }
-
-          const request = envelope;
-          if (request.method === 'transport.health') {
-            writeEnvelope(socket, { kind: 'response', id: request.id, result: rpcPorts.health.read() });
-            socket.end();
-            return;
-          }
-
-          if (request.method === 'transport.shutdown') {
-            rpcPorts.admin.requestDrain('replaced');
-            writeEnvelope(socket, {
-              kind: 'response',
-              id: request.id,
-              result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
-            });
-            socket.end();
-            return;
-          }
-
-          if (!rpcPorts.admin.isLifecycleRunning() || rpcPorts.admin.isDrainRequested()) {
-            writeEnvelope(socket, {
-              kind: 'response',
-              id: request.id,
-              result: BACKEND_SHUTTING_DOWN_RESPONSE,
-            });
-            socket.end();
-            return;
-          }
-
-          const entry = dispatchMap.get(request.method);
-          if (!entry) {
-            writeEnvelope(socket, methodNotFoundResponse(request.id));
-            socket.end();
-            return;
-          }
-
-          const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
-          if (!parsed.success) {
-            writeEnvelope(socket, validationErrorResponse(request.id, parsed.error));
-            socket.end();
-            return;
-          }
-
-          rpcPorts.admin.beginRequest();
-          inflightRequest = true;
-
-          let subscriptionController: AbortController | null = null;
-          try {
-            subscriptionController = new AbortController();
-            const abortSignal = subscriptionController.signal;
-            const invocation = await entry.dispatch(parsed.data, rpcPorts, abortSignal);
-            if (invocation.kind === 'unary') {
-              writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.value } as JsonRpcResponse);
-              socket.end();
-              return;
-            }
-
-            const iterator = invocation.notifications[Symbol.asyncIterator]();
-            const controller = subscriptionController;
-            let released = false;
-            const releaseSubscription = () => {
-              if (released) {
-                return;
-              }
-              released = true;
-              controller.abort();
-              socket.off('close', releaseSubscription);
-              void iterator.return?.().catch(() => undefined);
-            };
-            socket.once('close', releaseSubscription);
-
-            writeEnvelope(socket, {
-              kind: 'response',
-              id: request.id,
-              result: { status: 'subscribed', method: entry.method },
-            });
-            while (true) {
-              const next = await iterator.next();
-              if (next.done || socket.destroyed || socket.writableEnded) {
-                break;
-              }
-
-              const notification = next.value;
-              writeEnvelope(socket, {
-                kind: 'notification',
-                method: entry.method,
-                params: notification,
-              });
-            }
-            releaseSubscription();
-            socket.end();
-          } catch (error: unknown) {
-            if (subscriptionController?.signal.aborted || socket.destroyed) {
-              return;
-            }
-            rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
-            if (!socket.destroyed && !socket.writableEnded) {
-              writeEnvelope(socket, requestErrorResponse(request.id, 'Internal error'));
-              socket.end();
-            }
-          } finally {
-            finishRequest();
-          }
-        })();
+        void dispatchFrame(
+          frame,
+          socket,
+          dispatchMap,
+          rpcPorts,
+          () => {
+            rpcPorts.admin.beginRequest();
+            inflightRequest = true;
+          },
+          finishRequest,
+        );
       }
     });
   });
