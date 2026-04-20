@@ -758,7 +758,7 @@ async function applyAction(
 
     case 'failUnsafeReplacement':
       throw new BackendUnreachableError(
-        `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}.`,
+        `Refusing unsafe replacement for sick Coral backend pid ${action.pid}: ${action.reason}. Run 'coral-cli backend status' and restart if the problem persists.`,
       );
 
     case 'quarantineCorruptLock':

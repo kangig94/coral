@@ -499,7 +499,13 @@ export function formatErrorEnvelope(
 ): string {
   const tags = [`code=${envelope.code}`];
   if (statusCode !== undefined) tags.push(`http=${statusCode}`);
-  const head = `${envelope.message} [${tags.join(', ')}]`;
+  const needsBackendStatusHint =
+    envelope.code === 'backend_unreachable'
+    && !envelope.message.includes('backend status');
+  const message = needsBackendStatusHint
+    ? `${envelope.message} Run 'coral-cli backend status' to diagnose.`
+    : envelope.message;
+  const head = `${message} [${tags.join(', ')}]`;
   if (envelope.detail === undefined) return head;
   return `${head}\nDetail: ${JSON.stringify(envelope.detail)}`;
 }

@@ -410,4 +410,29 @@ describe('cli library-direct reads', () => {
     expect(existsSync(artifacts.lockFile)).toBe(false);
     expect(existsSync(artifacts.socketPath)).toBe(false);
   });
+
+  it('prints an informational note when the CoralStore database does not exist yet', () => {
+    if (!existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
+      throw new Error('Expected build/coral-cli.cjs and build/manifest.json to exist.');
+    }
+
+    const fixture = createFixture();
+    const artifacts = coordinatorArtifacts(fixture);
+    const expectedStorePath = storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile;
+
+    const result = runCliSubprocess(fixture, ['jobs']);
+    if (result.error) {
+      throw result.error;
+    }
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe(
+      `No jobs match current project, live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
+    );
+    expect(readProbeAttempts(fixture)).toEqual([]);
+    expect(existsSync(artifacts.infoFile)).toBe(false);
+    expect(existsSync(artifacts.lockFile)).toBe(false);
+    expect(existsSync(artifacts.socketPath)).toBe(false);
+  });
 });

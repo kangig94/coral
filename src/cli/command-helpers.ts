@@ -323,6 +323,7 @@ type CachedReadStore = {
 
 let cachedReadStore: CachedReadStore | null = null;
 let readStoreCleanupRegistered = false;
+let pendingReadStoreNote: string | null = null;
 
 function createDefaultCallerContext(projectRoot: string): CallerContext {
   return {
@@ -417,9 +418,19 @@ function getSharedReadCoralStore(projectRoot: string): CoralStore {
 }
 
 function remoteDispatchUnavailable(commandName: string): never {
-  throw new UsageError(
-    `Command "${commandName}" is reserved for remote dispatch, but the CLI does not expose --remote <url> in this phase.`,
-  );
+  throw new UsageError(`Command "${commandName}" is not yet supported in this phase.`);
+}
+
+function clearPendingReadStoreNote(): void {
+  pendingReadStoreNote = null;
+}
+
+export function flushPendingReadStoreNote(outputFormat: CliOutputFormat): void {
+  const note = pendingReadStoreNote;
+  pendingReadStoreNote = null;
+  if (outputFormat === 'text' && note) {
+    process.stdout.write(note + '\n');
+  }
 }
 
 export function makeClient(projectRoot: string, command: Command): CliCommandClient {
@@ -651,6 +662,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const runtime = createRealRuntime();
   const flavor = readBuildFlavor(pluginRoot || projectRoot);
   const dbPath = storePaths(flavor).dbFile;
+  const hasStore = existsSync(dbPath);
   const namespace = pluginRoot
     ? (() => {
         try {
@@ -661,7 +673,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
       })()
     : undefined;
 
-  const db = existsSync(dbPath)
+  const db = hasStore
     ? openStoreDatabase({
         path: dbPath,
         storage: runtime.storage,
@@ -672,6 +684,10 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
         storage: runtime.storage,
         migrationsDir: ensureStoreMigrationsDir(runtime.storage),
       });
+
+  if (!hasStore) {
+    pendingReadStoreNote = `(no store at ${dbPath} — showing empty results)`;
+  }
 
   return {
     store: new CoralStore(db, createDefaultStoreReadContext(), {
@@ -707,9 +723,11 @@ export function getCliDisplayPrefix(argv: readonly string[] = process.argv): str
 export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?: (data: T) => string): void {
   const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
+  flushPendingReadStoreNote(outputFormat);
 }
 
 export function emitError(error: unknown): void {
+  clearPendingReadStoreNote();
   const { envelope, exitCode } = buildErrorEnvelope(error);
   const statusCode = error instanceof BackendToolHttpError ? error.statusCode : undefined;
   process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');

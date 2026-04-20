@@ -573,10 +573,22 @@ describe('cli format', () => {
       ]);
     });
 
-    it('formats BackendUnreachableError envelopes on a single line', () => {
+    it('formats BackendUnreachableError envelopes on a single line with recovery guidance', () => {
       const { envelope } = buildErrorEnvelope(new BackendUnreachableError('fetch failed'));
 
-      expect(formatErrorEnvelope(envelope)).toBe('fetch failed [code=backend_unreachable]');
+      expect(formatErrorEnvelope(envelope)).toBe(
+        "fetch failed Run 'coral-cli backend status' to diagnose. [code=backend_unreachable]",
+      );
+    });
+
+    it('does not duplicate the backend status hint when it is already present', () => {
+      expect(
+        formatErrorEnvelope({
+          error: true,
+          code: 'backend_unreachable',
+          message: 'fetch failed. Run coral-cli backend status for more detail.',
+        }),
+      ).toBe('fetch failed. Run coral-cli backend status for more detail. [code=backend_unreachable]');
     });
 
     it('formats TransientHttpError envelopes on a single line', () => {

@@ -8,6 +8,7 @@ import type { JobStatus } from '../../jobs/views.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
   emitError,
+  flushPendingReadStoreNote,
   getProviderNames,
   getTerminalContext,
   makeClient,
@@ -175,6 +176,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             all: parsed.all,
           }) + '\n',
         );
+        flushPendingReadStoreNote('text');
       } catch (error) {
         emitError(normalizeUsageError(error));
       }
