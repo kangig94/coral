@@ -6,10 +6,10 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
 import { appendEvents } from '../../store/append.js';
-import { createEmptyRegistry } from '../../store/envelope.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { composeReducers } from '../../store/reducers.js';
 import { rebuildProjections } from '../../store/rebuild.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { jobsRegistry } from '../events.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../store/migrations');
@@ -25,7 +25,7 @@ describe('jobs reducer equivalence (AC1)', () => {
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
       const reducers = composeReducers(jobsRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const appended = appendEvents(
         db,
@@ -101,7 +101,9 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -117,6 +119,13 @@ describe('jobs reducer equivalence (AC1)', () => {
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
         }),
+        session_id: 'session-1',
+        provider: 'codex',
+        project_root: '/workspace/coral',
+        backend_namespace: 'namespace-1',
+        bundle_hash: 'bundle-1',
+        job_kind: 'provider',
+        created_at: NOW.toISOString(),
         parent_workflow_job_id: 'job-parent',
         workflow_slot: 'workflow-slot-1',
         last_seq: appended.at(-1)?.seq,
@@ -130,7 +139,9 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -147,7 +158,7 @@ describe('jobs reducer equivalence (AC1)', () => {
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
       const reducers = composeReducers(jobsRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const appended = appendEvents(
         db,
@@ -163,6 +174,7 @@ describe('jobs reducer equivalence (AC1)', () => {
               providerAction: 'exec',
               projectRoot: '/workspace/coral',
               backendNamespace: 'namespace-1',
+              jobKind: 'workflow',
               pool: 'default',
               enqueueSequence: 1,
               request: {
@@ -192,13 +204,30 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
-      ).get('job-rejected') as { phase: string } | undefined;
+      ).get('job-rejected');
 
-      expect(before?.phase).toBe('error');
+      expect(before).toEqual({
+        job_id: 'job-rejected',
+        phase: 'error',
+        terminal: null,
+        diagnostics: JSON.stringify({ progressFaults: [] }),
+        session_id: 'session-rejected',
+        provider: 'codex',
+        project_root: '/workspace/coral',
+        backend_namespace: 'namespace-1',
+        bundle_hash: null,
+        job_kind: 'workflow',
+        created_at: NOW.toISOString(),
+        parent_workflow_job_id: null,
+        workflow_slot: null,
+        last_seq: appended.at(-1)?.seq,
+      });
 
       rebuildProjections({
         db,
@@ -208,7 +237,9 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -225,7 +256,7 @@ describe('jobs reducer equivalence (AC1)', () => {
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
       const reducers = composeReducers(jobsRegistry);
-      const upcasters = createEmptyRegistry();
+      const upcasters = createDefaultUpcasterRegistry();
 
       const appended = appendEvents(
         db,
@@ -275,13 +306,30 @@ describe('jobs reducer equivalence (AC1)', () => {
       );
 
       const before = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
-      ).get('job-aborted') as { phase: string } | undefined;
+      ).get('job-aborted');
 
-      expect(before?.phase).toBe('aborted');
+      expect(before).toEqual({
+        job_id: 'job-aborted',
+        phase: 'aborted',
+        terminal: null,
+        diagnostics: JSON.stringify({ progressFaults: [] }),
+        session_id: 'session-aborted',
+        provider: 'codex',
+        project_root: '/workspace/coral',
+        backend_namespace: 'namespace-1',
+        bundle_hash: null,
+        job_kind: 'provider',
+        created_at: NOW.toISOString(),
+        parent_workflow_job_id: null,
+        workflow_slot: null,
+        last_seq: appended.at(-1)?.seq,
+      });
 
       rebuildProjections({
         db,
@@ -291,7 +339,9 @@ describe('jobs reducer equivalence (AC1)', () => {
       });
 
       const after = db.prepare(
-        `SELECT job_id, phase, terminal, diagnostics, parent_workflow_job_id, workflow_slot, last_seq
+        `SELECT job_id, phase, terminal, diagnostics,
+                session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
+                parent_workflow_job_id, workflow_slot, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,

@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { appendEvents, type AppendInput } from '../append.js';
 import type { StoreReadContext } from '../body-codec.js';
-import { createEmptyRegistry } from '../envelope.js';
 import { applyMigrations } from '../migrations.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails } from '../queries/jobs.js';
 import { composeReducers } from '../reducers.js';
+import { createDefaultUpcasterRegistry } from '../upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../migrations');
@@ -28,7 +28,7 @@ describe('jobs queries', () => {
     applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
 
     const reducers = composeReducers(jobsRegistry);
-    const upcasters = createEmptyRegistry();
+    const upcasters = createDefaultUpcasterRegistry();
     readCtx = {
       schemas: reducers.schemas,
       upcasters,

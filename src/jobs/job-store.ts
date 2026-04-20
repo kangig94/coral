@@ -449,7 +449,7 @@ export class JobStore {
         sessionId: record.sessionId,
         ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
       },
-      bodyVersion: 1,
+      bodyVersion: 2,
       body: {
         sessionId: record.sessionId,
         provider: record.provider,
@@ -730,30 +730,23 @@ export class JobStore {
   private countProjectedLiveJobs(bundleHash?: string): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
     const phasePlaceholders = ['queued', 'launching', 'running'];
-    const clauses = [`p.phase IN (${phasePlaceholders.map(() => '?').join(', ')})`];
+    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`];
     const params: unknown[] = [...phasePlaceholders];
 
     if (excludedJobIds.length > 0) {
-      clauses.push(`p.job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
+      clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
       params.push(...excludedJobIds);
     }
 
     if (bundleHash !== undefined) {
-      clauses.push(`EXISTS (
-        SELECT 1
-          FROM events e
-         WHERE e.stream_kind = 'job'
-           AND e.stream_id = p.job_id
-           AND e.type = 'job.launch.requested'
-           AND json_extract(CAST(e.body AS TEXT), '$.bundleHash') = ?
-      )`);
+      clauses.push(`bundle_hash = ?`);
       params.push(bundleHash);
     }
 
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS count
-           FROM projection_jobs p
+           FROM projection_jobs
           WHERE ${clauses.join('\n            AND ')}`,
       )
       .get(...params) as { count: number } | undefined;
@@ -765,27 +758,20 @@ export class JobStore {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
     const phasePlaceholders = ['queued', 'launching', 'running'];
     const clauses = [
-      `p.phase IN (${phasePlaceholders.map(() => '?').join(', ')})`,
-      `EXISTS (
-        SELECT 1
-          FROM events e
-         WHERE e.stream_kind = 'job'
-           AND e.stream_id = p.job_id
-           AND e.type = 'job.launch.requested'
-           AND json_extract(CAST(e.body AS TEXT), '$.backendNamespace') = ?
-      )`,
+      `phase IN (${phasePlaceholders.map(() => '?').join(', ')})`,
+      `backend_namespace = ?`,
     ];
     const params: unknown[] = [...phasePlaceholders, namespace];
 
     if (excludedJobIds.length > 0) {
-      clauses.push(`p.job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
+      clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
       params.push(...excludedJobIds);
     }
 
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS count
-           FROM projection_jobs p
+           FROM projection_jobs
           WHERE ${clauses.join('\n            AND ')}`,
       )
       .get(...params) as { count: number } | undefined;

@@ -171,12 +171,12 @@ function seedJobProjection(
     ).run(
       jobId,
       options.phase ?? 'running',
-      options.sessionId ?? 'test-session',
+      options.sessionId ?? 's1',
       options.provider ?? 'codex',
-      options.projectRoot ?? '/tmp',
-      options.backendNamespace ?? 'test',
-      options.jobKind ?? 'provider',
-      options.createdAt ?? '2026-04-20T00:00:00.000Z',
+      options.projectRoot ?? '/tmp/project',
+      options.backendNamespace ?? 'ns',
+      options.jobKind === 'workflow' ? 'workflow' : 'provider',
+      options.createdAt ?? NOW,
       lastSeq,
     );
   });
@@ -317,9 +317,21 @@ describe('readStatusRecord', () => {
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null when the projection exists without a launch request event', () => {
+  it('returns the projection-backed status when the launch request event is absent', () => {
     seedJobProjection({ launchBody: null });
-    expect(readStatusRecord(testJobId)).toBeNull();
+    expect(readStatusRecord(testJobId)).toEqual({
+      jobId: testJobId,
+      sessionId: 's1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: 'ns',
+      jobKind: 'provider',
+      phase: 'running',
+      launch: {
+        state: 'ready',
+        updatedAt: NOW,
+      },
+    });
   });
 
   it('returns null when the launch request body contains unexpected fields under the journal schema', () => {

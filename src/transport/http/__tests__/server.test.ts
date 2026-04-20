@@ -364,6 +364,7 @@ function stubLaunchRecord(
     projectRoot: string;
     backendNamespace: string;
     pool?: string;
+    jobKind?: 'provider' | 'workflow';
   },
 ): void {
   const record: JobLaunch = {
@@ -372,6 +373,7 @@ function stubLaunchRecord(
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
     backendNamespace: overrides.backendNamespace,
+    jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: 0,
     providerAction: 'exec',
@@ -682,6 +684,13 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       initialPhase: 'running',
     });
+    stubLaunchRecord(progressStore, {
+      jobId: jobIdA,
+      sessionId: 'session-a',
+      provider: 'codex',
+      projectRoot: projectRootA,
+      backendNamespace: testBackendNamespace,
+    });
     progressStore.markTerminalStatus(jobIdA, { content: 'done-a', outcome: { kind: 'completed' } }, 'completed');
 
     progressStore.initJob({
@@ -691,6 +700,13 @@ describe('execution backend server', () => {
       projectRoot: projectRootB,
       backendNamespace: testBackendNamespace,
       initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: jobIdB,
+      sessionId: 'session-b',
+      provider: 'codex',
+      projectRoot: projectRootB,
+      backendNamespace: testBackendNamespace,
     });
     progressStore.markTerminalStatus(jobIdB, { content: 'done-b', outcome: { kind: 'completed' } }, 'completed');
 
@@ -3487,6 +3503,13 @@ describe('execution backend server', () => {
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
+    stubLaunchRecord(progressStore, {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
     progressStore.appendProgress('job-1', 'session-1', 'working');
     progressStore.appendTerminal('job-1', 'session-1', { content: 'done', outcome: { kind: 'completed' } }, 'completed');
     progressStore.initJob({
@@ -4033,6 +4056,14 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
     });
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      jobKind: 'workflow',
+    });
     progressStore.updatePhase(jobId, 'running');
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
@@ -4065,10 +4096,9 @@ describe('execution backend server', () => {
         content: '',
         workflow: { steps: [] },
         outcome: {
-          kind: 'failed',
-          causeRef: {
-            stream: { kind: 'job', id: jobId },
-            seq: 1,
+          kind: 'job_fault',
+          fault: {
+            kind: 'ghost_launch',
           },
         },
       },
@@ -5260,10 +5290,6 @@ describe('execution backend server', () => {
           content: '',
           outcome: {
             kind: 'failed',
-            causeRef: {
-              stream: { kind: 'job', id: jobId },
-              seq: 1,
-            },
           },
         },
       });

@@ -11,10 +11,10 @@ import { isProcessAlive } from '../../shared/node-process.js';
 import type { JobStatus } from '../../jobs/views.js';
 import { appendEvents } from '../../store/append.js';
 import { openStoreDatabase } from '../../store/db.js';
-import { createEmptyRegistry } from '../../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';
 import { composeReducers } from '../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
@@ -162,7 +162,7 @@ function seedCompletedJob(
       {
         now: () => new Date(),
         reducers: composeReducers(jobsRegistry),
-        upcasters: createEmptyRegistry(),
+        upcasters: createDefaultUpcasterRegistry(),
       },
     );
   } finally {

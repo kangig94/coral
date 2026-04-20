@@ -16,7 +16,7 @@ steps:
   - type: boot
   - type: launch
     prompt: simulate clean reset world
-  - type: restart
+  - type: cycle
   - type: expect
     jobCount: 0
     sessionCount:

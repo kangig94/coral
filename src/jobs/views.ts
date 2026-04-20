@@ -138,7 +138,7 @@ export interface JobLaunch {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind?: JobKind;
+  jobKind: JobKind;
   pool: string;
   enqueueSequence: number;
   providerAction: ProviderAction;

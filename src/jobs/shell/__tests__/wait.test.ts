@@ -460,6 +460,24 @@ function createClaimedJob(
     backendNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
+  progressStore.writeLaunchRecord(jobId, {
+    jobId,
+    sessionId: session.sessionId,
+    provider: 'codex',
+    projectRoot: ctx.projectRoot,
+    backendNamespace: TEST_BACKEND_NAMESPACE,
+    jobKind: 'provider',
+    pool: 'default',
+    enqueueSequence: 0,
+    providerAction: 'exec',
+    request: {
+      prompt: 'wait job',
+      cwd: ctx.projectRoot,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: '2026-03-06T00:00:00.000Z',
+  });
   expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
   return {
     jobId,

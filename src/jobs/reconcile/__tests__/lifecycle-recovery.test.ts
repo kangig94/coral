@@ -183,10 +183,10 @@ function stubLaunchRecord(
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
     backendNamespace: overrides.backendNamespace,
+    jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: overrides.enqueueSequence ?? 0,
     providerAction: 'exec',
-    jobKind: overrides.jobKind,
     request: {
       prompt: '',
       cwd: overrides.projectRoot,

@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
 import { MAX_BUFFER } from '../shared/process-constants.js';
+import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainEventRegistry, Reducer } from '../store/reducers.js';
@@ -109,6 +110,50 @@ function emptyDiagnostics(): JobDiagnostics {
   return { progressFaults: [] };
 }
 
+function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
+  return new CoralSetupError({
+    code: 'projection_jobs_premature_event',
+    userMessage: `Job projection received '${event.type}' for '${event.stream.id}' before job.launch.requested.`,
+    remediation: 'Append job.launch.requested before any queued, runtime, progress, terminal, or aborted events for a job stream.',
+    context: {
+      jobId: event.stream.id,
+      type: event.type,
+      seq: event.seq,
+    },
+  });
+}
+
+function createInitialProjectionJobState(
+  event: CoralEvent,
+  patch: Partial<ProjectedJobState>,
+): ProjectedJobState {
+  if (
+    patch.sessionId === undefined
+    || patch.provider === undefined
+    || patch.projectRoot === undefined
+    || patch.backendNamespace === undefined
+    || patch.jobKind === undefined
+    || patch.createdAt === undefined
+  ) {
+    throw prematureProjectionJobEvent(event);
+  }
+
+  return {
+    phase: patch.phase ?? 'launching',
+    terminal: patch.terminal ?? null,
+    diagnostics: patch.diagnostics ?? emptyDiagnostics(),
+    sessionId: patch.sessionId,
+    provider: patch.provider,
+    projectRoot: patch.projectRoot,
+    backendNamespace: patch.backendNamespace,
+    bundleHash: patch.bundleHash ?? null,
+    jobKind: patch.jobKind,
+    parentWorkflowJobId: patch.parentWorkflowJobId ?? (event.refs?.parentJobId ?? null),
+    workflowSlot: patch.workflowSlot ?? (event.refs?.workflowSlotId ?? null),
+    createdAt: patch.createdAt,
+  };
+}
+
 function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
   const row = db
     .prepare(
@@ -161,26 +206,24 @@ function upsertProjectionJob(
   patch: Partial<ProjectedJobState>,
 ): void {
   const previous = readProjectionJob(db, event.stream.id);
-  // Identity fields are populated by reducerForRequested. If a non-launch event
-  // fires before launch.requested (expected only in test fixtures that stage
-  // runtime/terminal events directly), we fall back to empty strings — the
-  // projection row still writes but identity filters won't match until a real
-  // launch event arrives.
+  if (!previous && event.type !== 'job.launch.requested') {
+    throw prematureProjectionJobEvent(event);
+  }
+
+  const base = previous ?? createInitialProjectionJobState(event, patch);
   const next: ProjectedJobState = {
-    phase: patch.phase ?? previous?.phase ?? ('launching' as JobPhase),
-    terminal: patch.terminal ?? previous?.terminal ?? null,
-    diagnostics: patch.diagnostics ?? previous?.diagnostics ?? emptyDiagnostics(),
-    sessionId: patch.sessionId ?? previous?.sessionId ?? '',
-    provider: patch.provider ?? previous?.provider ?? '',
-    projectRoot: patch.projectRoot ?? previous?.projectRoot ?? '',
-    backendNamespace: patch.backendNamespace ?? previous?.backendNamespace ?? '',
-    bundleHash: patch.bundleHash ?? previous?.bundleHash ?? null,
-    jobKind: patch.jobKind ?? previous?.jobKind ?? 'provider',
-    parentWorkflowJobId:
-      patch.parentWorkflowJobId ?? previous?.parentWorkflowJobId ?? (event.refs?.parentJobId ?? null),
-    workflowSlot:
-      patch.workflowSlot ?? previous?.workflowSlot ?? (event.refs?.workflowSlotId ?? null),
-    createdAt: patch.createdAt ?? previous?.createdAt ?? event.ts,
+    phase: patch.phase ?? base.phase,
+    terminal: patch.terminal ?? base.terminal,
+    diagnostics: patch.diagnostics ?? base.diagnostics,
+    sessionId: patch.sessionId ?? base.sessionId,
+    provider: patch.provider ?? base.provider,
+    projectRoot: patch.projectRoot ?? base.projectRoot,
+    backendNamespace: patch.backendNamespace ?? base.backendNamespace,
+    bundleHash: patch.bundleHash ?? base.bundleHash,
+    jobKind: patch.jobKind ?? base.jobKind,
+    parentWorkflowJobId: patch.parentWorkflowJobId ?? base.parentWorkflowJobId,
+    workflowSlot: patch.workflowSlot ?? base.workflowSlot,
+    createdAt: patch.createdAt ?? base.createdAt,
   };
 
   upsertProjection(db, {
@@ -214,7 +257,7 @@ function reducerForRequested(): Reducer<JobLaunchRequestBody> {
       projectRoot: event.body.projectRoot,
       backendNamespace: event.body.backendNamespace,
       bundleHash: event.body.bundleHash ?? null,
-      jobKind: event.body.jobKind ?? 'provider',
+      jobKind: event.body.jobKind,
       parentWorkflowJobId: event.body.parentJobId ?? event.refs?.parentJobId ?? null,
       workflowSlot: event.body.workflowSlot ?? event.refs?.workflowSlotId ?? null,
       createdAt: event.body.createdAt,

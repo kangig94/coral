@@ -9,9 +9,9 @@ import { createRealRuntime } from '../../../runtime/real.js';
 import type { StoragePort } from '../../../runtime/ports.js';
 import { applyMigrations } from '../../../store/migrations.js';
 import { appendEvents } from '../../../store/append.js';
-import { createEmptyRegistry } from '../../../store/envelope.js';
 import { readJobProgress, loadJobProjectionDetail } from '../../../store/queries/jobs.js';
 import { composeReducers } from '../../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { jobsRegistry } from '../../events.js';
 import { publishJobEvents, subscribeJobEvents } from '../event-subscription.js';
 import { WaitCoordinator } from '../wait.js';
@@ -35,7 +35,7 @@ function createDb(): InstanceType<typeof Database> {
 
 function createJournalAppender(db: InstanceType<typeof Database>) {
   const reducers = composeReducers(jobsRegistry);
-  const upcasters = createEmptyRegistry();
+  const upcasters = createDefaultUpcasterRegistry();
 
   return (inputs: Parameters<typeof appendEvents>[1]) => {
     const appended = appendEvents(db, inputs, {

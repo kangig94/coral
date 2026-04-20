@@ -689,6 +689,24 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
+    progressStore.writeLaunchRecord(jobId1, {
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'acquire first lease',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    });
     progressStore.initJob({
       jobId: jobId2,
       sessionId: 'session-2',
@@ -696,6 +714,24 @@ describe('ExecutionService launch', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
+    });
+    progressStore.writeLaunchRecord(jobId2, {
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'acquire second lease',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
     });
 
     const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
@@ -790,6 +826,24 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
+    progressStore.writeLaunchRecord(jobId1, {
+      jobId: jobId1,
+      sessionId: 'session-1',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'shared lease first',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    });
     progressStore.initJob({
       jobId: jobId2,
       sessionId: 'session-2',
@@ -797,6 +851,24 @@ describe('ExecutionService launch', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
+    });
+    progressStore.writeLaunchRecord(jobId2, {
+      jobId: jobId2,
+      sessionId: 'session-2',
+      provider: 'claude',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'shared lease second',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
     });
 
     const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
@@ -862,6 +934,24 @@ describe('ExecutionService launch', () => {
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
     });
+    progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: 'abort me',
+        cwd: ctx.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    });
     progressStore.writeRuntimeRecord(jobId, {
       transport: 'app-server',
       startTime: new Date().toISOString(),
@@ -875,23 +965,6 @@ describe('ExecutionService launch', () => {
         },
         recoveryPolicy: 'session_continuity_only',
       },
-    });
-    progressStore.writeLaunchRecord(jobId, {
-      jobId,
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'abort me',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
     });
     abortRegistry.register(jobId);
 
@@ -930,6 +1003,7 @@ describe('ExecutionService launch', () => {
       provider: 'claude',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
       providerAction: 'exec',

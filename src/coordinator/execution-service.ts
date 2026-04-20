@@ -1230,6 +1230,37 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       throw error;
     }
 
+    const workflowLaunchCwd = workDir ?? ctx.projectRoot;
+    this.progressStore.writeLaunchRecord(jobId, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: providerName,
+      projectRoot: ctx.projectRoot,
+      backendNamespace: this.backendNamespace,
+      bundleHash: this.bundleHash,
+      jobKind: 'workflow',
+      pool: 'default',
+      enqueueSequence: this.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      request: {
+        prompt: input.startPrompt,
+        cwd: workflowLaunchCwd,
+        bypassPermissions: false,
+        coralEnv: { ...ctx.coralEnv },
+      },
+      createdAt: nowIsoString(this.runtime.time),
+    });
+    this.progressStore.appendEvent({
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: jobId },
+      namespace: this.backendNamespace,
+      project: ctx.projectRoot,
+      refs: { jobId, sessionId: session.sessionId },
+      bodyVersion: 1,
+      body: {
+        startedAt: nowIsoString(this.runtime.time),
+      },
+    });
     this.markJobRunning(jobId);
 
     this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx, workDir);

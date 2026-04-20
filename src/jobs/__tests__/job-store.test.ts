@@ -72,6 +72,7 @@ function launchRecord(jobId: string, sessionId: string, backendNamespace: string
     provider: 'codex',
     projectRoot: `/workspace/${jobId}`,
     backendNamespace,
+    jobKind: 'provider',
     ...(bundleHash === undefined ? {} : { bundleHash }),
     pool: 'default',
     enqueueSequence: 1,

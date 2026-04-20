@@ -61,6 +61,16 @@ export function markJobAsError(
       log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
     }
   }
+  if (!progressStore.hasLaunchRecord(status.jobId)) {
+    progressStore.updateLaunchState(status.jobId, 'error', message);
+    const current = progressStore.readStatus(status.jobId) ?? status;
+    progressStore.writeStatus(status.jobId, {
+      ...current,
+      phase: 'error',
+      result: terminalResult,
+    });
+    return;
+  }
   try {
     progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
   } catch {

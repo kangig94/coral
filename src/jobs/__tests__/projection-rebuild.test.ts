@@ -6,9 +6,9 @@ import { describe, expect, it } from 'vitest';
 import type { StoragePort } from '../../runtime/ports.js';
 import { ConsumerDriver } from '../../coordinator/consumer-driver.js';
 import { appendEvents } from '../../store/append.js';
-import { createEmptyRegistry } from '../../store/envelope.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { composeReducers } from '../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { registerJobsConsumer } from '../consumer.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
@@ -104,7 +104,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
         {
           now: () => NOW,
           reducers: composeReducers(),
-          upcasters: createEmptyRegistry(),
+          upcasters: createDefaultUpcasterRegistry(),
         },
       );
 

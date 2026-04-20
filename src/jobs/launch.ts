@@ -42,7 +42,7 @@ export interface JobLaunchRequestBody {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind?: 'provider' | 'workflow';
+  jobKind: 'provider' | 'workflow';
   pool: string;
   enqueueSequence: number;
   request: {
@@ -77,7 +77,7 @@ export const jobLaunchRequestBodySchema = z
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
-    jobKind: z.enum(['provider', 'workflow']).optional(),
+    jobKind: z.enum(['provider', 'workflow']),
     pool: z.string(),
     enqueueSequence: z.number().int().nonnegative(),
     request: z

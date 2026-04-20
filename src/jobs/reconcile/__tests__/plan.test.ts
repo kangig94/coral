@@ -178,6 +178,7 @@ function makeLaunch(
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
     backendNamespace: CURRENT_NAMESPACE,
+    jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
     providerAction: 'exec',

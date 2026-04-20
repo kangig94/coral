@@ -17,7 +17,7 @@ type JobLaunchProjection = {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind?: 'provider' | 'workflow';
+  jobKind: 'provider' | 'workflow';
   pool: string;
   enqueueSequence: number;
   providerAction: 'exec' | 'resume' | 'fork';
@@ -92,11 +92,27 @@ type ProjectionRow = {
   job_id: string;
   phase: string;
   terminal: string | null;
+  diagnostics: string | null;
+  session_id: string;
+  provider: string;
+  project_root: string;
+  backend_namespace: string;
+  bundle_hash: string | null;
+  job_kind: 'provider' | 'workflow';
+  parent_workflow_job_id: string | null;
+  workflow_slot: string | null;
+  created_at: string;
   last_seq: number;
 };
 
 type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'>;
 type LatestJobEventProjection = EventRow & { stream_id: string };
+type ProjectionStatusEventType = 'job.launch.rejected' | 'job.runtime.started' | 'job.terminal.recorded';
+type JobStatusEventsByType = {
+  rejected: EventRow | null;
+  runtime: EventRow | null;
+  terminal: EventRow | null;
+};
 type DecodedTerminalRow = {
   record: JobTerminal;
   signal?: string | null;
@@ -121,7 +137,9 @@ function readProjectionRow(
 ): ProjectionRow | null {
   const row = db
     .prepare(
-      `SELECT job_id, phase, terminal, last_seq
+      `SELECT job_id, phase, terminal, diagnostics,
+              session_id, provider, project_root, backend_namespace, bundle_hash,
+              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
          FROM projection_jobs
         WHERE job_id = ?`,
     )
@@ -140,13 +158,27 @@ function readProjectionRows(
 
   const rows = db
     .prepare(
-      `SELECT job_id, phase, terminal, last_seq
+      `SELECT job_id, phase, terminal, diagnostics,
+              session_id, provider, project_root, backend_namespace, bundle_hash,
+              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
          FROM projection_jobs
         WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
     )
     .all(...jobIds) as ProjectionRow[];
 
   return new Map(rows.map((row) => [row.job_id, row]));
+}
+
+function readOrderedProjectionRows(db: BetterSqlite3.Database): ProjectionRow[] {
+  return db
+    .prepare(
+      `SELECT job_id, phase, terminal, diagnostics,
+              session_id, provider, project_root, backend_namespace, bundle_hash,
+              job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+         FROM projection_jobs
+        ORDER BY job_id ASC`,
+    )
+    .all() as ProjectionRow[];
 }
 
 function readLatestEventsForJobs(
@@ -182,6 +214,51 @@ function readLatestEventsForJobs(
       body_version: row.body_version,
       body: row.body,
     });
+  }
+
+  return eventsByJob;
+}
+
+function readLatestProjectionStatusEvents(
+  db: BetterSqlite3.Database,
+  jobIds: string[],
+): Map<string, JobStatusEventsByType> {
+  const eventsByJob = new Map<string, JobStatusEventsByType>();
+  if (jobIds.length === 0) {
+    return eventsByJob;
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT stream_id, type, seq, ts, body_version, body
+         FROM (
+           SELECT stream_id, type, seq, ts, body_version, body,
+                  ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
+             FROM events
+            WHERE stream_kind = 'job'
+              AND type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
+              AND stream_id IN (${sqlPlaceholders(jobIds.length)})
+         )
+        WHERE row_number = 1`,
+    )
+    .all(...jobIds) as Array<LatestJobEventProjection & { type: ProjectionStatusEventType }>;
+
+  for (const row of rows) {
+    const current = eventsByJob.get(row.stream_id) ?? {
+      rejected: null,
+      runtime: null,
+      terminal: null,
+    };
+
+    if (row.type === 'job.launch.rejected') {
+      current.rejected = row;
+    } else if (row.type === 'job.runtime.started') {
+      current.runtime = row;
+    } else {
+      current.terminal = row;
+    }
+
+    eventsByJob.set(row.stream_id, current);
   }
 
   return eventsByJob;
@@ -292,14 +369,14 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
     record: {
       content: body.content ?? '',
       durationMs: body.durationMs,
-      exitCode: body.exitCode,
-      nonResumable: body.nonResumable,
-      warnings: body.warnings,
-      usage: body.usage,
-      workflow: body.workflow,
       outcome: body.outcome,
+      ...(body.exitCode === undefined ? {} : { exitCode: body.exitCode }),
+      ...(body.nonResumable === undefined ? {} : { nonResumable: body.nonResumable }),
+      ...(body.warnings === undefined ? {} : { warnings: body.warnings }),
+      ...(body.usage === undefined ? {} : { usage: body.usage }),
+      ...(body.workflow === undefined ? {} : { workflow: body.workflow }),
     },
-    signal: body.signal,
+    ...(body.signal === undefined ? {} : { signal: body.signal }),
   };
 }
 
@@ -308,6 +385,34 @@ function toJobExitProjection(row: EventRow, terminal: DecodedTerminalRow): JobEx
     ...terminal.record,
     signal: terminal.signal,
     endTime: row.ts,
+  };
+}
+
+function projectionRowToStatus(
+  jobId: string,
+  projection: ProjectionRow,
+  rejected: EventRow | null,
+  runtime: EventRow | null,
+  terminal: EventRow | null,
+  requested: EventRow | null,
+  ctx: StoreReadContext,
+): JobStatus {
+  const terminalRecord = decodeTerminalRecord(terminal, ctx);
+
+  return {
+    jobId,
+    sessionId: projection.session_id,
+    provider: projection.provider,
+    projectRoot: projection.project_root,
+    backendNamespace: projection.backend_namespace,
+    ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
+    jobKind: projection.job_kind,
+    phase: projection.phase as JobPhase,
+    launch: {
+      ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
+      updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
+    },
+    ...(terminalRecord ? { result: terminalRecord.record } : {}),
   };
 }
 
@@ -324,24 +429,9 @@ function hydrateJobProjectionDetail(
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
   const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord) : null;
 
-  const status =
-    projection && launch
-      ? {
-          jobId,
-          sessionId: launch.sessionId,
-          provider: launch.provider,
-          projectRoot: launch.projectRoot,
-          backendNamespace: launch.backendNamespace,
-          bundleHash: launch.bundleHash,
-          jobKind: launch.jobKind,
-          phase: projection.phase as JobPhase,
-          launch: {
-            ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
-            updatedAt: terminal?.ts ?? runtime?.ts ?? requested?.ts ?? new Date(0).toISOString(),
-          },
-          ...(terminalRecord ? { result: terminalRecord.record } : {}),
-        }
-      : null;
+  const status = projection
+    ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
+    : null;
 
   return {
     status,
@@ -349,29 +439,6 @@ function hydrateJobProjectionDetail(
     runtime: runtime ? jobRuntimeBodyFromEvent(runtime, ctx) : null,
     exit,
   };
-}
-
-// TODO(rewrite): Replace this replay helper with projection_jobs.session_id once that column exists.
-function readLaunchSessionId(
-  db: BetterSqlite3.Database,
-  jobId: string,
-  ctx: StoreReadContext,
-): string {
-  const row = db
-    .prepare(
-      `SELECT type, body_version, body
-         FROM events
-        WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'
-        ORDER BY seq ASC
-        LIMIT 1`,
-    )
-    .get(jobId) as Pick<EventsRow, 'type' | 'body_version' | 'body'> | undefined;
-
-  if (!row) {
-    return '';
-  }
-
-  return decodeBody(row, jobLaunchRequestBodySchema, ctx).sessionId;
 }
 
 export function loadJobProjectionDetail(
@@ -429,17 +496,31 @@ export function listJobProjections(
   db: BetterSqlite3.Database,
   ctx: StoreReadContext,
 ): Array<{ jobId: string; status: JobStatus }> {
-  const rows = db
-    .prepare(
-      `SELECT job_id
-         FROM projection_jobs
-        ORDER BY job_id ASC`,
-    )
-    .all() as Array<{ job_id: string }>;
+  const projections = readOrderedProjectionRows(db);
+  const statusEventsByJob = readLatestProjectionStatusEvents(
+    db,
+    projections.map(({ job_id: jobId }) => jobId),
+  );
 
-  return rows.flatMap(({ job_id: jobId }) => {
-    const detail = loadJobProjectionDetail(db, jobId, ctx);
-    return detail.status ? [{ jobId, status: detail.status }] : [];
+  return projections.map((projection) => {
+    const statusEvents = statusEventsByJob.get(projection.job_id) ?? {
+      rejected: null,
+      runtime: null,
+      terminal: null,
+    };
+
+    return {
+      jobId: projection.job_id,
+      status: projectionRowToStatus(
+        projection.job_id,
+        projection,
+        statusEvents.rejected,
+        statusEvents.runtime,
+        statusEvents.terminal,
+        null,
+        ctx,
+      ),
+    };
   });
 }
 
@@ -472,7 +553,7 @@ export function readJobProgress(
       body: Uint8Array | Buffer;
     }>;
 
-  const sessionId = readLaunchSessionId(db, jobId, ctx);
+  const sessionId = readProjectionRow(db, jobId)?.session_id ?? '';
 
   return rows.flatMap<JobProgressProjection>((row) => {
     if (row.type === 'job.progress.emitted') {
