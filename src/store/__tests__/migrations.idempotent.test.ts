@@ -71,7 +71,7 @@ describe('migrations idempotency', () => {
       ).map(({ key, value }) => ({ key, value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value }));
       expect(metaA).toEqual(metaB);
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
+      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
 
       const corpusStateA = dbFromSchema.prepare('SELECT id, content_seq, metadata_seq FROM corpus_state').get() as {
         id: number;

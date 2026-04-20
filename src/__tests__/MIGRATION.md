@@ -177,6 +177,7 @@ Commit ledger:
 
 Migration notes:
 
+- Store schema bootstrap now uses a single canonical `src/store/migrations/001_initial.sql` at first-deploy `schema_version='1'`. Pre-merge schema changes edit `001` in place; `002+` versioning begins only after the first main merge.
 - AC3 rename pass: `AppServerRuntimeRecord` normalized to `AppServerRuntime`; downstream imports now point at the renamed jobs view type.
 - AC4 deletion pass: workflow-cleanup claims remain closed; no deleted workflow/checkpoint types were reintroduced during final polish.
 - AC9 schema additions: `projection_sessions.shard_dir` is authoritative, seeded by `session.opened`, and no empty-string fallback remains in reducer paths.

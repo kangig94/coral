@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS curate_retry_queue (
 CREATE INDEX IF NOT EXISTS curate_retry_by_time ON curate_retry_queue(retry_not_before);
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '2'),
+  ('schema_version', '1'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));

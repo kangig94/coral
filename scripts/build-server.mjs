@@ -1,7 +1,7 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'fs';
 
 mkdirSync('build', { recursive: true });
 
@@ -27,6 +27,11 @@ function parseArgs(argv) {
 function copyStoreSqlAssets(outRoot) {
   mkdirSync(`${outRoot}/store/migrations`, { recursive: true });
   copyFileSync('src/store/schema.sql', `${outRoot}/store/schema.sql`);
+
+  for (const file of readdirSync(`${outRoot}/store/migrations`)) {
+    if (!file.endsWith('.sql')) continue;
+    rmSync(`${outRoot}/store/migrations/${file}`, { force: true });
+  }
 
   for (const file of readdirSync('src/store/migrations')) {
     if (!file.endsWith('.sql')) continue;
