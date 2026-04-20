@@ -97,6 +97,9 @@ import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { createRealRuntime } from '../runtime/real.js';
 
+// TODO(phase-6-runtime-follow-up): split this module into narrower runtime slices once the
+// Phase 5 search/layering fixes have landed and stabilized.
+
 const INDEX_STATE_FILE = 'index-state.json';
 const INDEX_FILE = 'index.json';
 const ORAMA_INDEX_FILE = 'orama-index.json';
@@ -1841,6 +1844,8 @@ export function createKbRuntime(opts: CreateKbRuntimeOptions): KbRuntime {
   return new KbRuntimeImpl(opts);
 }
 
+// KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
+// write method without widening the public interface.
 export function captureKbCorpusSnapshot(kb: KbRuntime): KbCorpusPublication['snapshot'] {
   const runtime = kb as KbRuntime & {
     captureCurrentCorpusSnapshot?: () => KbCorpusPublication['snapshot'];
@@ -1851,6 +1856,8 @@ export function captureKbCorpusSnapshot(kb: KbRuntime): KbCorpusPublication['sna
   return runtime.captureCurrentCorpusSnapshot();
 }
 
+// KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
+// write method without widening the public interface.
 export function setMutationLockProjectionDispatchMode(kb: KbRuntime, mode: 'delta' | 'full'): void {
   const runtime = kb as KbRuntime & {
     setMutationLockProjectionDispatchMode?: (nextMode: 'delta' | 'full') => void;
@@ -1861,6 +1868,8 @@ export function setMutationLockProjectionDispatchMode(kb: KbRuntime, mode: 'delt
   runtime.setMutationLockProjectionDispatchMode(mode);
 }
 
+// KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
+// write method without widening the public interface.
 export function writeEntityGraphLocked(kb: KbRuntime, graph: EntityGraph): void {
   const runtime = kb as KbRuntime & {
     writeEntityGraphLocked?: (nextGraph: EntityGraph) => void;

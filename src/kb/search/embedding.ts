@@ -556,6 +556,7 @@ function resolveOnnxRuntime(runtimeDir: string): OnnxRuntimeModule | null {
   return isOnnxRuntimeModule(loaded) ? loaded : null;
 }
 
+/** Resolves embedding configuration from Coral env so indexers share one vector spec. */
 export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null {
   loadCoralEnv();
 
@@ -634,6 +635,7 @@ export function resolveEmbeddingProviderConfig(): EmbeddingProviderConfig | null
   };
 }
 
+/** Creates the configured embedding provider or returns null when embeddings are disabled. */
 export async function createEmbeddingProvider(
   runtimeDir: string = kbRuntimeDir(),
   config?: EmbeddingProviderConfig | null,

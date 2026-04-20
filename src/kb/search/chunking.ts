@@ -99,6 +99,7 @@ function splitAtParagraphBoundaries(prefix: string, section: string): string[] {
   return chunks.length === 0 ? [prefixed] : chunks;
 }
 
+/** Splits one KB entry into deterministic embedding chunks sized for vector indexing. */
 export function chunkEntry(entry: EntryRecord, body: string): ChunkSeed[] {
   if (entry.kind === 'community') {
     return [];

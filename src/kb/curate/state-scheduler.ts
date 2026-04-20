@@ -10,8 +10,13 @@ type CurateSchedulerState = {
   discoveryHighSeq: number;
   discoveryOffset: number;
   lastRunDay: string | null;
+  lastAttemptedThrough: CurateCursor | null;
+  retryNotBefore: string | null;
   consecutiveFailures: number;
   communityTopologyHash?: string;
+  communitySummaryTopologyHash?: string;
+  initialized: boolean;
+  migrationVersion: number;
 };
 
 const schedulerRowSchema = z.object({
@@ -22,8 +27,15 @@ const schedulerRowSchema = z.object({
   discovery_high_seq: z.number().int().nonnegative().nullable(),
   discovery_offset: z.number().int().nonnegative().nullable(),
   last_run_day: z.string().nullable(),
+  last_attempted_through_seq: z.number().int().positive().nullable(),
+  last_attempted_through_entry_id: kbEntryIdSchema.nullable(),
+  last_attempted_through_entry_kind: z.enum(['note', 'source']).nullable(),
+  retry_not_before: z.string().nullable(),
   consecutive_failures: z.number().int().nonnegative(),
   community_topology_hash: z.string().nullable(),
+  community_summary_topology_hash: z.string().nullable(),
+  initialized: z.union([z.literal(0), z.literal(1)]),
+  migration_version: z.number().int().nonnegative(),
 });
 
 function defaultCurateSchedulerState(): CurateSchedulerState {
@@ -32,8 +44,13 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
     discoveryHighSeq: 0,
     discoveryOffset: 0,
     lastRunDay: null,
+    lastAttemptedThrough: null,
+    retryNotBefore: null,
     consecutiveFailures: 0,
     communityTopologyHash: undefined,
+    communitySummaryTopologyHash: undefined,
+    initialized: false,
+    migrationVersion: 0,
   };
 }
 
@@ -48,32 +65,62 @@ function cursorEntryKind(cursor: CurateCursor): 'note' | 'source' {
   throw new Error(`curate scheduler cursor must point at a note or source entry: ${cursor.entryId}`);
 }
 
+function parseStoredCursor(
+  label: string,
+  entrySeq: number | null,
+  entryId: CurateCursor['entryId'] | null,
+  entryKind: 'note' | 'source' | null,
+): CurateCursor | null {
+  if (entrySeq === null && entryId === null && entryKind === null) {
+    return null;
+  }
+
+  if ((entrySeq === null) !== (entryId === null) || (entrySeq === null) !== (entryKind === null)) {
+    throw new Error(`curate_scheduler ${label} columns must be all null or all populated`);
+  }
+  if (entrySeq === null || entryId === null || entryKind === null) {
+    throw new Error(`curate_scheduler ${label} columns must be all null or all populated`);
+  }
+
+  const cursor = {
+    entrySeq,
+    entryId,
+  };
+  if (cursorEntryKind(cursor) !== entryKind) {
+    throw new Error(`curate_scheduler ${label} entry kind must match the stored entry ID`);
+  }
+  return cursor;
+}
+
 function rowToCurateSchedulerState(row: CurateSchedulerRow | undefined): CurateSchedulerState {
   if (row === undefined) {
     return defaultCurateSchedulerState();
   }
 
   const parsed = schedulerRowSchema.parse(row);
-  if (
-    (parsed.processed_through_seq === null) !== (parsed.processed_through_entry_id === null) ||
-    (parsed.processed_through_seq === null) !== (parsed.processed_through_entry_kind === null)
-  ) {
-    throw new Error('curate_scheduler processed_through columns must be all null or all populated');
-  }
 
   return {
-    processedThrough:
-      parsed.processed_through_seq === null || parsed.processed_through_entry_id === null
-        ? null
-        : {
-            entrySeq: parsed.processed_through_seq,
-            entryId: parsed.processed_through_entry_id,
-          },
+    processedThrough: parseStoredCursor(
+      'processed_through',
+      parsed.processed_through_seq,
+      parsed.processed_through_entry_id,
+      parsed.processed_through_entry_kind,
+    ),
     discoveryHighSeq: parsed.discovery_high_seq ?? 0,
     discoveryOffset: parsed.discovery_offset ?? 0,
     lastRunDay: parsed.last_run_day,
+    lastAttemptedThrough: parseStoredCursor(
+      'last_attempted_through',
+      parsed.last_attempted_through_seq,
+      parsed.last_attempted_through_entry_id,
+      parsed.last_attempted_through_entry_kind,
+    ),
+    retryNotBefore: parsed.retry_not_before,
     consecutiveFailures: parsed.consecutive_failures,
     communityTopologyHash: parsed.community_topology_hash ?? undefined,
+    communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
+    initialized: parsed.initialized === 1,
+    migrationVersion: parsed.migration_version,
   };
 }
 
@@ -88,8 +135,15 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
        discovery_high_seq,
        discovery_offset,
        last_run_day,
+       last_attempted_through_seq,
+       last_attempted_through_entry_id,
+       last_attempted_through_entry_kind,
+       retry_not_before,
        consecutive_failures,
-       community_topology_hash
+       community_topology_hash,
+       community_summary_topology_hash,
+       initialized,
+       migration_version
      FROM curate_scheduler
      WHERE id = 1`,
   ).get();
@@ -98,9 +152,27 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
 
 export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSchedulerState): void {
   const processedThroughEntryKind = state.processedThrough === null ? null : cursorEntryKind(state.processedThrough);
+  const lastAttemptedThroughEntryKind =
+    state.lastAttemptedThrough === null ? null : cursorEntryKind(state.lastAttemptedThrough);
 
   prepareCached<
-    [number | null, string | null, 'note' | 'source' | null, number, number, string | null, number, string | null]
+    [
+      number | null,
+      string | null,
+      'note' | 'source' | null,
+      number,
+      number,
+      string | null,
+      number | null,
+      string | null,
+      'note' | 'source' | null,
+      string | null,
+      number,
+      string | null,
+      string | null,
+      0 | 1,
+      number,
+    ]
   >(
     target,
     `UPDATE curate_scheduler
@@ -110,8 +182,15 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
             discovery_high_seq = ?,
             discovery_offset = ?,
             last_run_day = ?,
+            last_attempted_through_seq = ?,
+            last_attempted_through_entry_id = ?,
+            last_attempted_through_entry_kind = ?,
+            retry_not_before = ?,
             consecutive_failures = ?,
-            community_topology_hash = ?
+            community_topology_hash = ?,
+            community_summary_topology_hash = ?,
+            initialized = ?,
+            migration_version = ?
       WHERE id = 1`,
   ).run(
     state.processedThrough?.entrySeq ?? null,
@@ -120,8 +199,15 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     state.discoveryHighSeq,
     state.discoveryOffset,
     state.lastRunDay,
+    state.lastAttemptedThrough?.entrySeq ?? null,
+    state.lastAttemptedThrough?.entryId ?? null,
+    lastAttemptedThroughEntryKind,
+    state.retryNotBefore,
     state.consecutiveFailures,
     state.communityTopologyHash ?? null,
+    state.communitySummaryTopologyHash ?? null,
+    state.initialized ? 1 : 0,
+    state.migrationVersion,
   );
 }
 

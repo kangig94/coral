@@ -60,6 +60,7 @@ No settings registration step exists here. The installer returns executable path
 ## Notes
 
 - Binary installs go to `~/.claude/tools/`
-- `kb` installs the native addon to `~/.coral/data/kb-*/needle/coral-needle.node`
+- `kb` installs the native addon to `~/.coral/data/kb{,-dev}/needle/coral-needle.node`
+- Production uses the `kb/` path; dev flavor uses `kb-dev/`
 - If a KB prebuild is unavailable, the installer falls back to `cmake` and may install it via `uv tool install cmake`
-- To force reinstall, delete the installed artifact and run again. For `kb`, remove `~/.coral/data/kb-*/needle/coral-needle.node`
+- To force reinstall, delete the installed artifact and run again. For `kb`, remove `~/.coral/data/kb{,-dev}/needle/coral-needle.node`

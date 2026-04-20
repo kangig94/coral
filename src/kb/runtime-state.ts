@@ -10,6 +10,7 @@ export interface CorpusStateMirror {
   invalidate(): void;
 }
 
+/** Caches the last persisted corpus snapshot so repeated readers avoid duplicate store hits. */
 export function createCorpusStateMirror(db: Database): CorpusStateMirror {
   let cachedSnapshot: CorpusSnapshot | null = null;
 

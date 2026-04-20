@@ -9,7 +9,7 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
-import { closeNeedleBackend } from '../../kb/search/needle-backend.js';
+import { closeNeedleBackend } from '../../kb/api.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 

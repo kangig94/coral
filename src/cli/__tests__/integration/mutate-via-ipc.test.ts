@@ -100,12 +100,26 @@ async function shutdownCoordinator(record: CoordinatorDiscoveryRecord | null): P
   try {
     await createIpcClient(record.socketPath).shutdown({ timeoutMs: 5_000 });
   } catch {
-    process.kill(record.pid, 'SIGTERM');
+    try {
+      process.kill(record.pid, 'SIGTERM');
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      if (code !== 'ESRCH') {
+        throw error;
+      }
+    }
   }
 
   await waitForCondition(() => !isProcessAlive(record.pid), 10_000).catch(() => {
     if (isProcessAlive(record.pid)) {
-      process.kill(record.pid, 'SIGKILL');
+      try {
+        process.kill(record.pid, 'SIGKILL');
+      } catch (error: unknown) {
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        if (code !== 'ESRCH') {
+          throw error;
+        }
+      }
     }
   });
 }

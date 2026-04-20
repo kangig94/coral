@@ -109,6 +109,7 @@ const noopSpawnCli: SpawnCliFn = async () => {
   throw new Error('KB repair git-sync conflict resolution is unavailable in the standalone auto-fix runner.');
 };
 
+/** Applies deterministic KB repair actions and queues manual follow-up when automation must stop. */
 export async function applyDetectedIncidentFixes(
   incidents: readonly DetectedIncident[],
   kb: KbRuntime,

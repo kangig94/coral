@@ -16,6 +16,7 @@ import {
 } from '../../discuss/shell/tools.js';
 import {
   handleKbCommunityRead,
+  handleKbDiagnose,
   handleKbMemo,
   handleKbMemoDeleteConsolidated,
   handleKbMemoList,
@@ -197,6 +198,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     },
     kb: {
       readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
+      diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
       readNote: (slug) => withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyCallerContext, runtime, kbSubsystem)),
       readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
       readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),

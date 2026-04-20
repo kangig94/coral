@@ -138,14 +138,21 @@ describe('migrations idempotency', () => {
         'discovery_high_seq',
         'discovery_offset',
         'last_run_day',
+        'last_attempted_through_seq',
+        'last_attempted_through_entry_id',
+        'last_attempted_through_entry_kind',
+        'retry_not_before',
         'consecutive_failures',
         'community_topology_hash',
+        'community_summary_topology_hash',
+        'initialized',
+        'migration_version',
       ]);
       expect(curateSchedulerColumnsB).toEqual(curateSchedulerColumnsA);
 
       const curateSchedulerA = dbFromSchema
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
         )
         .get() as {
           id: number;
@@ -155,12 +162,19 @@ describe('migrations idempotency', () => {
           discovery_high_seq: number | null;
           discovery_offset: number | null;
           last_run_day: string | null;
+          last_attempted_through_seq: number | null;
+          last_attempted_through_entry_id: string | null;
+          last_attempted_through_entry_kind: string | null;
+          retry_not_before: string | null;
           consecutive_failures: number;
           community_topology_hash: string | null;
+          community_summary_topology_hash: string | null;
+          initialized: number;
+          migration_version: number;
         };
       const curateSchedulerB = dbFromMigration
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
         )
         .get() as {
           id: number;
@@ -170,8 +184,15 @@ describe('migrations idempotency', () => {
           discovery_high_seq: number | null;
           discovery_offset: number | null;
           last_run_day: string | null;
+          last_attempted_through_seq: number | null;
+          last_attempted_through_entry_id: string | null;
+          last_attempted_through_entry_kind: string | null;
+          retry_not_before: string | null;
           consecutive_failures: number;
           community_topology_hash: string | null;
+          community_summary_topology_hash: string | null;
+          initialized: number;
+          migration_version: number;
         };
       expect(curateSchedulerA).toEqual({
         id: 1,
@@ -181,10 +202,43 @@ describe('migrations idempotency', () => {
         discovery_high_seq: null,
         discovery_offset: null,
         last_run_day: null,
+        last_attempted_through_seq: null,
+        last_attempted_through_entry_id: null,
+        last_attempted_through_entry_kind: null,
+        retry_not_before: null,
         consecutive_failures: 0,
         community_topology_hash: null,
+        community_summary_topology_hash: null,
+        initialized: 0,
+        migration_version: 0,
       });
       expect(curateSchedulerB).toEqual(curateSchedulerA);
+
+      const activeClaimColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_active_claim')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const activeClaimColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_active_claim')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(activeClaimColumnsA).toEqual(['id', 'through_seq', 'through_entry_id', 'through_entry_kind', 'started_at']);
+      expect(activeClaimColumnsB).toEqual(activeClaimColumnsA);
+      expect(dbFromSchema.prepare('SELECT COUNT(*) AS count FROM curate_active_claim').get()).toEqual({ count: 0 });
+      expect(dbFromMigration.prepare('SELECT COUNT(*) AS count FROM curate_active_claim').get()).toEqual({ count: 0 });
+
+      const fingerprintColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const fingerprintColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(fingerprintColumnsA).toEqual(['community_slug', 'fingerprint']);
+      expect(fingerprintColumnsB).toEqual(fingerprintColumnsA);
+      expect(
+        dbFromSchema.prepare('SELECT COUNT(*) AS count FROM curate_community_summary_input_fingerprints').get(),
+      ).toEqual({ count: 0 });
+      expect(
+        dbFromMigration.prepare('SELECT COUNT(*) AS count FROM curate_community_summary_input_fingerprints').get(),
+      ).toEqual({ count: 0 });
 
       const retryQueueColumnsA = (
         dbFromSchema.prepare("PRAGMA table_info('curate_retry_queue')").all() as Array<{ name: string }>
@@ -194,6 +248,7 @@ describe('migrations idempotency', () => {
       ).map((row) => row.name);
       expect(retryQueueColumnsA).toEqual([
         'entry_id',
+        'entry_seq',
         'reason',
         'observed_at',
         'locus',

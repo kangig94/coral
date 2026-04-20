@@ -17,6 +17,7 @@ import {
 } from '../jobs/api.js';
 import {
   kbCommunityReadRequestSchema,
+  kbDiagnoseRequestSchema,
   kbEntriesRequestSchema,
   kbMemoCreateRequestSchema,
   kbMemoDeleteRequestSchema,
@@ -211,6 +212,15 @@ export const rpcCatalog = [
     authClass: 'authenticated',
     portKey: 'kb',
     http: { method: 'GET', path: '/kb/entries', queryShape: 'keyed' },
+  },
+  {
+    name: 'kb.diagnose',
+    kind: 'unary',
+    requestSchema: kbDiagnoseRequestSchema,
+    responseKind: 'json',
+    authClass: 'authenticated',
+    portKey: 'kb',
+    http: { method: 'GET', path: '/kb/diagnose' },
   },
   {
     name: 'kb.note.read',

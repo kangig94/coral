@@ -1,10 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { CorpusConsumerRegistration } from '../../coordinator/consumer-driver.js';
 import { readCorpusState } from '../../store/corpus-state.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { errorMessage, isRecord } from '../../shared/utils.js';
-import type { KbRuntime } from '../contracts.js';
+import type { CorpusConsumerApplyContext, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
 import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../paths.js';
@@ -32,7 +31,7 @@ type NeedleBackendStagingHook = (ctx: {
   specId: string;
 }) => void | Promise<void>;
 
-type NeedleApplyContext = Parameters<CorpusConsumerRegistration['apply']>[0];
+type NeedleApplyContext = CorpusConsumerApplyContext;
 
 type NeedleCursorView = {
   snapshotId: string;
@@ -663,6 +662,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
   }
 }
 
+/** Returns the shared KB needle backend for a runtime so coordinator wiring stays single-instance. */
 export function createNeedleBackend(runtime: KbRuntime, options?: NeedleBackendOptions): NeedleBackend {
   const existing = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (existing !== undefined) {
@@ -687,6 +687,7 @@ export function __setNeedleBackendStagingHookForTests(hook: NeedleBackendStaging
   needleBackendStagingHookForTests = hook;
 }
 
+/** Releases the shared KB needle backend and any leased snapshot handles for a runtime. */
 export async function closeNeedleBackend(runtime: KbRuntime): Promise<void> {
   const backend = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (backend === undefined) {

@@ -906,11 +906,13 @@ function toHybridResult(
   query: QueryContext,
   communityContext?: string[],
 ): KbResult {
-  if (hit.document === null) {
-    return toVectorOnlyResult(hit, communityContext);
-  }
+  const base =
+    hit.document === null
+      ? toVectorOnlyResult(hit, communityContext)
+      : withCommunityContext(toResult(hit as ResolvedKbSearchHit, query), communityContext);
+  const graphRank = 'graphRank' in hit ? hit.graphRank : undefined;
 
-  return withCommunityContext(toResult(hit as ResolvedKbSearchHit, query), communityContext);
+  return graphRank === undefined ? base : { ...base, graphRank };
 }
 
 function buildTextResponse(

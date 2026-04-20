@@ -58,6 +58,7 @@ export interface KbResult {
   principles: string[];
   snippet?: string;
   communityContext?: string[];
+  graphRank?: number;
 }
 
 export type KbEntryId = `note:${string}` | `source:${string}` | `community:${string}`;

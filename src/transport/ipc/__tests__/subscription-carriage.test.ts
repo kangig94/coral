@@ -105,6 +105,7 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
     },
     kb: {
       readSearch: vi.fn(),
+      diagnose: vi.fn(),
       readNote: vi.fn(),
       readSource: vi.fn(),
       readCommunity: vi.fn(),

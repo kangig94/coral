@@ -193,9 +193,9 @@ export function registerKbCommands(program: Command): void {
   kbSearchCommand
     .description('Search KB entries')
     .argument('<query>', 'Search query')
-    .option('--top-k <n>', 'Maximum results')
-    .option('--vector', 'Force vector-only search')
-    .option('--hybrid', 'Force hybrid search')
+    .option('--top-k <n>', 'Maximum results (default: 20)')
+    .option('--vector', 'Force vector-only search (requires embedding backend)')
+    .option('--hybrid', 'Force hybrid search (requires embedding backend)')
     .addOption(
       new Option('--scope <scope>', 'Limit results to notes, communities, sources, or all').choices([
         'notes',
@@ -229,10 +229,9 @@ export function registerKbCommands(program: Command): void {
 
   const kbDiagnoseCommand = kb.command('diagnose');
   kbDiagnoseCommand
-    .description('Show KB incidents that need manual repair')
-    .option('--json', 'Emit machine-readable JSON')
-    .action(async (opts: { json?: boolean }) => {
-      const outputFormat = opts.json === true ? 'json' : getOutputFormat(kbDiagnoseCommand);
+    .description('Show KB entries with pending manual repair actions')
+    .action(async () => {
+      const outputFormat = getOutputFormat(kbDiagnoseCommand);
 
       try {
         const client = makeClient(process.cwd(), kbDiagnoseCommand);

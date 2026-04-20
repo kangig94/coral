@@ -90,7 +90,12 @@ function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'
     return undefined;
   }
 
-  return warning.replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
+  return warning
+    .replace(
+      /\bkb_search_degraded_until_coordinator_rebuild\b/g,
+      'Search index is unavailable; start the Coral backend to rebuild it.',
+    )
+    .replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
 }
 
 function normalizeKbWarnings(
@@ -411,7 +416,7 @@ export function formatKbDiagnose(data: KbDiagnoseResult): string {
         `canonical_incident: ${incident.canonical_incident ?? 'null'}`,
         `repair_hint: ${incident.repair_hint ?? 'null'}`,
         'signals:',
-        JSON.stringify(incident.signals, null, 2) ?? 'null',
+        JSON.stringify(incident.signals ?? null, null, 2),
         `retry_count: ${incident.retry_count}`,
         `retry_not_before: ${incident.retry_not_before}`,
       ]),

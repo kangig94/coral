@@ -8,6 +8,7 @@ import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '../..
 import {
   handleKbCommunityRead,
   handleKbDelete,
+  handleKbDiagnose,
   handleKbMemo,
   handleKbMemoDelete,
   handleKbMemoDeleteConsolidated,
@@ -193,6 +194,7 @@ describe('kb-tools', () => {
     ['source-list', () => handleKbSourceList({ extra: true }, createKbSubsystem())],
     ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbSubsystem())],
     ['reindex', () => handleKbReindex({ extra: true }, createKbSubsystem())],
+    ['diagnose', () => handleKbDiagnose({ extra: true }, createKbSubsystem())],
     ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbSubsystem())],
     ['memo', () => handleKbMemo({ topic: 'routing', content: 'memo', owner: 'owner-a', extra: true }, testContext)],
     ['memo-list', () => handleKbMemoList({ owner: 'owner-a', extra: true }, testContext)],
@@ -208,10 +210,23 @@ describe('kb-tools', () => {
 
     const result = await handleKbSearch({ query: 'contracts' }, kbSubsystem);
 
-    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all');
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', undefined);
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'] },
+    });
+  });
+
+  it('forwards explicit search modes after schema parsing', async () => {
+    const kbSubsystem = createKbSubsystem();
+    mockState.searchKb.mockResolvedValue({ hits: ['note:a'], mode: 'vector' });
+
+    const result = await handleKbSearch({ query: 'contracts', mode: 'vector' }, kbSubsystem);
+
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'vector');
+    expect(result).toEqual({
+      ok: true,
+      data: { hits: ['note:a'], mode: 'vector' },
     });
   });
 

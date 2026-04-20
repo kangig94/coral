@@ -8,8 +8,8 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
-import type { CorpusSnapshot } from '../../kb/corpus/snapshot.js';
-import { NEEDLE_CONSUMER_ID } from '../../kb/search/needle-backend.js';
+import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/api.js';
+import { NEEDLE_CONSUMER_ID } from '../../kb/api.js';
 
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
@@ -112,6 +112,10 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       expect(waitFreshUntil).toHaveBeenCalledTimes(4);
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
     } finally {

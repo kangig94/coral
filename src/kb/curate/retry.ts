@@ -3,18 +3,15 @@ import { z } from 'zod';
 import type { CurateRetryQueueRow } from '../../store/schema.js';
 import { kbEntryIdSchema, type PendingRepair } from './state-shared.js';
 import {
-  deleteMetaValue,
   prepareCached,
-  readMetaValue,
-  writeMetaValue,
   type SqliteTarget,
 } from './sqlite.js';
 
-const RETRY_ENTRY_SEQ_META_PREFIX = 'curate.retry.entry_seq:';
 const DEFAULT_RETRY_REASON = 'pending-repair';
 
 const retryRowSchema = z.object({
   entry_id: kbEntryIdSchema,
+  entry_seq: z.number().int().positive().nullable(),
   reason: z.string().min(1),
   observed_at: z.string().datetime({ offset: true }),
   locus: z.string().nullable(),
@@ -40,38 +37,11 @@ const retryRowSchema = z.object({
   retry_count: z.number().int().nonnegative(),
 });
 
-function retryEntrySeqMetaKey(entryId: string): string {
-  return `${RETRY_ENTRY_SEQ_META_PREFIX}${entryId}`;
-}
-
-function readRetryEntrySeq(target: SqliteTarget, entryId: string): number | null {
-  const raw = readMetaValue(target, retryEntrySeqMetaKey(entryId));
-  if (raw === null) {
-    return null;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error(`retry entry sequence meta must be a positive integer for ${entryId}`);
-  }
-
-  return parsed;
-}
-
-function writeRetryEntrySeq(target: SqliteTarget, entry: PendingRepair): void {
-  if (entry.entrySeq === null) {
-    deleteMetaValue(target, retryEntrySeqMetaKey(entry.entryId));
-    return;
-  }
-
-  writeMetaValue(target, retryEntrySeqMetaKey(entry.entryId), entry.entrySeq.toString(10));
-}
-
-function rowToPendingRepair(target: SqliteTarget, row: CurateRetryQueueRow): PendingRepair {
+function rowToPendingRepair(row: CurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
   return {
     entryId: parsed.entry_id,
-    entrySeq: readRetryEntrySeq(target, parsed.entry_id),
+    entrySeq: parsed.entry_seq,
     detectedAt: parsed.observed_at,
     reason: parsed.reason,
     locus: parsed.locus ?? undefined,
@@ -86,6 +56,7 @@ function rowToPendingRepair(target: SqliteTarget, row: CurateRetryQueueRow): Pen
 function pendingRepairToRow(entry: PendingRepair): CurateRetryQueueRow {
   return retryRowSchema.parse({
     entry_id: entry.entryId,
+    entry_seq: entry.entrySeq,
     reason: entry.reason ?? DEFAULT_RETRY_REASON,
     observed_at: entry.detectedAt,
     locus: entry.locus ?? null,
@@ -102,6 +73,7 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
     target,
     `SELECT
        entry_id,
+       entry_seq,
        reason,
        observed_at,
        locus,
@@ -113,7 +85,7 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
      FROM curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
-  return rows.map((row) => rowToPendingRepair(target, row));
+  return rows.map((row) => rowToPendingRepair(row));
 }
 
 export function scanDueCurateRetryQueue(
@@ -125,6 +97,7 @@ export function scanDueCurateRetryQueue(
     target,
     `SELECT
        entry_id,
+       entry_seq,
        reason,
        observed_at,
        locus,
@@ -138,17 +111,18 @@ export function scanDueCurateRetryQueue(
      ORDER BY retry_not_before ASC, entry_id ASC
      LIMIT ?`,
   ).all(retryNotBefore, limit);
-  return rows.map((row) => rowToPendingRepair(target, row));
+  return rows.map((row) => rowToPendingRepair(row));
 }
 
 export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepair): void {
   const row = pendingRepairToRow(entry);
   prepareCached<
-    [string, string, string, string | null, string | null, string | null, string | null, string, number]
+    [string, number | null, string, string, string | null, string | null, string | null, string | null, string, number]
   >(
     target,
     `INSERT INTO curate_retry_queue (
        entry_id,
+       entry_seq,
        reason,
        observed_at,
        locus,
@@ -157,8 +131,9 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
        repair_hint,
        retry_not_before,
        retry_count
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(entry_id) DO UPDATE SET
+       entry_seq = excluded.entry_seq,
        reason = excluded.reason,
        observed_at = excluded.observed_at,
        locus = excluded.locus,
@@ -169,6 +144,7 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
        retry_count = excluded.retry_count`,
   ).run(
     row.entry_id,
+    row.entry_seq,
     row.reason,
     row.observed_at,
     row.locus,
@@ -178,26 +154,14 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
     row.retry_not_before,
     row.retry_count,
   );
-  writeRetryEntrySeq(target, entry);
 }
 
 export function deleteCurateRetryEntry(target: SqliteTarget, entryId: string): void {
   prepareCached<[string]>(target, `DELETE FROM curate_retry_queue WHERE entry_id = ?`).run(entryId);
-  deleteMetaValue(target, retryEntrySeqMetaKey(entryId));
 }
 
 export function replaceCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArray<PendingRepair>): void {
   prepareCached<[]>(target, `DELETE FROM curate_retry_queue`).run();
-
-  const staleMetaKeys = prepareCached<[string], { key: string }>(
-    target,
-    `SELECT key
-       FROM meta
-      WHERE key LIKE ? ESCAPE '\\'`,
-  ).all(`${RETRY_ENTRY_SEQ_META_PREFIX.replaceAll('\\', '\\\\')}%`);
-  for (const { key } of staleMetaKeys) {
-    deleteMetaValue(target, key);
-  }
 
   for (const entry of entries) {
     upsertCurateRetryEntry(target, entry);

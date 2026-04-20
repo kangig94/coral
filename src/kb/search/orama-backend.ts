@@ -191,6 +191,7 @@ function siftWorseCandidateDown(heap: ScoredVectorCandidate[], startIndex: numbe
 }
 
 function listStoredDocuments(db: KbOramaDb): KbOramaDocument[] {
+  // Orama does not expose enumerate-all publicly; documentsStore is internal but stable across minor versions.
   const store = (db as KbOramaDb & {
     documentsStore: { getAll(docs: unknown): Record<number, KbOramaDocument> };
     data: { docs: unknown };
@@ -385,11 +386,13 @@ function retrievalHitFromDocument(document: KbOramaDocument, score: number, rank
   };
 }
 
+/** Coordinator-facing Orama projection that serves both lexical search and cosine fallback search. */
 export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
   private embeddingProviderPromise: Promise<EmbeddingProvider | null> | null = null;
 
   constructor(private readonly runtime: KbRuntime) {}
 
+  /** Loads the current Orama index artifacts from the runtime. */
   async ensureLoaded(): Promise<OramaLoadedIndex> {
     const { db, tokenizer } = await this.runtime.ensureOramaIndex();
     return { db, tokenizer };
@@ -397,6 +400,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
 
   async search(query: string, topK: number, scope?: RetrievalScope): Promise<TextRetrievalResult>;
   async search(embedding: number[], topK: number, scope?: RetrievalScope): Promise<VectorRetrievalResult>;
+  /** Runs lexical search for text queries and cosine search over stored vectors for embeddings. */
   async search(
     queryOrEmbedding: string | number[],
     topK: number,
@@ -447,6 +451,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     return { hits } as VectorRetrievalResult;
   }
 
+  /** Prepares the document delta needed to bring Orama in sync with a changed corpus subset. */
   async prepareDeltaForCurrentCorpusEntries(
     index: KbIndex,
     changedEntryIds: readonly string[],
@@ -473,10 +478,12 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     };
   }
 
+  /** Materializes a full Orama projection from the current runtime corpus view. */
   async prepareFullSnapshotForCurrentCorpus(index: KbIndex = this.runtime.readIndexOrEmpty()): Promise<PreparedOramaProjection> {
     return this.prepareFullSnapshotForProjectedIndex({ index });
   }
 
+  /** Builds a complete projection from a provided index, optionally injecting generated community docs. */
   async prepareFullSnapshotForProjectedIndex(params: {
     index: KbIndex;
     generatedCommunityDocs?: readonly CommunityDocument[];
@@ -494,7 +501,9 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     };
   }
 
+  /** Applies a prepared delta while the caller already holds the KB mutation lock. */
   async applyDeltaInWriteLock(snapshot: KbCorpusSnapshot, preparedDelta: PreparedOramaDelta): Promise<void> {
+    // snapshot reserved for future freshness FIFO write guard; Orama writes are sync under mutation lock.
     void snapshot;
 
     const loaded = await this.runtime.loadOramaSnapshotIfPresent();
@@ -519,10 +528,12 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     this.runtime.installRebuiltArtifacts(preparedDelta.index, loaded);
   }
 
+  /** Installs a fully rebuilt Orama projection while the caller already holds the KB mutation lock. */
   async installFullSnapshotInWriteLock(
     snapshot: KbCorpusSnapshot,
     preparedProjection: PreparedOramaProjection,
   ): Promise<void> {
+    // snapshot reserved for future freshness FIFO write guard; Orama writes are sync under mutation lock.
     void snapshot;
 
     if (preparedProjection.documents.length > 0) {
@@ -741,6 +752,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
   }
 }
 
+/** Creates the shared Orama projection wrapper for a KB runtime. */
 export function createOramaBaseProjection(runtime: KbRuntime): OramaBaseProjection {
   return new OramaBaseProjection(runtime);
 }

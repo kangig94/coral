@@ -106,6 +106,7 @@ export class ReciprocalRankFusion implements HybridFusion {
   }
 }
 
+/** Creates the project-standard hybrid ranker that blends text, vector, and graph evidence. */
 export function createHybridFusion(): HybridFusion {
   return new ReciprocalRankFusion();
 }

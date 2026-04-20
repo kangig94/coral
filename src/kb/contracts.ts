@@ -10,6 +10,8 @@ export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 export type KbCorpusSnapshot = CorpusSnapshot;
 
 export type KbCorpusLane = 'content' | 'metadata';
+export type CorpusLaneHint = KbCorpusLane;
+export type CorpusInterest = CorpusLaneHint | 'both';
 
 export interface KbCorpusPublication {
   snapshot: KbCorpusSnapshot;
@@ -34,6 +36,18 @@ export interface KbCorpusPublishCallbacks {
   notifyCorpusMutation(publication: KbCorpusPublication): Promise<void> | void;
   onPublishFailure?(failure: KbCorpusPublishFailure): void;
   onPublishSuccess?(): void;
+}
+
+export interface CorpusConsumerApplyContext {
+  readonly snapshot: KbCorpusSnapshot;
+  readonly db: BetterSqlite3.Database;
+}
+
+export interface CorpusConsumerRegistration {
+  readonly id: string;
+  readonly authority: 'corpus';
+  readonly corpusInterest: CorpusInterest;
+  apply(ctx: CorpusConsumerApplyContext): Promise<void>;
 }
 
 export interface KbTextArtifactsSnapshot {

@@ -439,6 +439,7 @@ describe('hybrid reciprocal rank fusion', () => {
     expect(response.mode).toBe('hybrid');
     expect(resultNotes(response.results)[0]).toBe('rendering-anchor');
     expect(resultNotes(response.results)).toContain('memory-node');
+    expect(resultFor(response.results, 'memory-node').graphRank).toBeGreaterThan(0);
     expect(resultFor(response.results, 'memory-node').matchedBy).toEqual([]);
   });
 });

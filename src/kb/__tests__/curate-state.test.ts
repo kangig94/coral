@@ -24,13 +24,10 @@ import {
 import { readCurateDiscoveryBacklog } from '../curate/discovery-backlog.js';
 import { readCurateRetryQueue } from '../curate/retry.js';
 import { writeCurateSchedulerState, readCurateSchedulerState } from '../curate/state-scheduler.js';
-import { writeMetaValue } from '../curate/sqlite.js';
 import { parseFrontmatter } from '../corpus/frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { createRealRuntime } from '../../runtime/real.js';
-
-const INITIALIZED_KEY = 'curate.initialized';
 
 function expectPendingRepairEntries(
   pendingRepair: PendingRepair[] | null,
@@ -264,8 +261,13 @@ describe('curate state', () => {
       discoveryHighSeq: 0,
       discoveryOffset: 0,
       lastRunDay: '2026-03-25',
+      lastAttemptedThrough: cursor('coral-second', 4),
+      retryNotBefore: '2026-03-26T00:00:00.000Z',
       consecutiveFailures: 2,
       communityTopologyHash: 'graph-hash',
+      communitySummaryTopologyHash: 'graph-hash',
+      initialized: true,
+      migrationVersion: 0,
     });
     expect(readCurateDiscoveryBacklog(runtime)).toEqual(persisted.pendingDiscoveries);
     expectPendingRepairEntries(readCurateRetryQueue(runtime), [
@@ -289,16 +291,20 @@ describe('curate state', () => {
     ]);
   });
 
-  it('treats missing community fingerprint fields as undefined when reading legacy state', () => {
+  it('treats missing community fingerprint rows as undefined when reading scheduler state', () => {
     writeCurateSchedulerState(runtime, {
       processedThrough: cursor('coral-legacy', 8),
       discoveryHighSeq: 0,
       discoveryOffset: 0,
       lastRunDay: null,
+      lastAttemptedThrough: null,
+      retryNotBefore: null,
       consecutiveFailures: 0,
       communityTopologyHash: undefined,
+      communitySummaryTopologyHash: undefined,
+      initialized: true,
+      migrationVersion: 0,
     });
-    writeMetaValue(runtime, INITIALIZED_KEY, '1');
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
@@ -330,8 +336,13 @@ describe('curate state', () => {
       discoveryHighSeq: 0,
       discoveryOffset: 0,
       lastRunDay: null,
+      lastAttemptedThrough: null,
+      retryNotBefore: null,
       consecutiveFailures: 0,
       communityTopologyHash: undefined,
+      communitySummaryTopologyHash: undefined,
+      initialized: true,
+      migrationVersion: 0,
     });
     expect(readCurateDiscoveryBacklog(runtime)).toEqual(state.pendingDiscoveries);
     expect(readCurateRetryQueue(runtime)).toEqual([]);

@@ -80,6 +80,7 @@ export interface WorkflowRequestPort {
 
 export interface KbRequestPort {
   readSearch(args: Record<string, unknown>): Promise<ToolDomainResult>;
+  diagnose(): ToolDomainResult;
   readNote(slug: string): ToolDomainResult;
   readSource(slug: string): ToolDomainResult;
   readCommunity(slug: string): ToolDomainResult;

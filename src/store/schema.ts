@@ -37,12 +37,33 @@ export interface CurateSchedulerRow {
   discovery_high_seq: number | null;
   discovery_offset: number | null;
   last_run_day: string | null;
+  last_attempted_through_seq: number | null;
+  last_attempted_through_entry_id: string | null;
+  last_attempted_through_entry_kind: string | null;
+  retry_not_before: string | null;
   consecutive_failures: number;
   community_topology_hash: string | null;
+  community_summary_topology_hash: string | null;
+  initialized: number;
+  migration_version: number;
+}
+
+export interface CurateActiveClaimRow {
+  id: 1;
+  through_seq: number;
+  through_entry_id: string;
+  through_entry_kind: string;
+  started_at: string;
+}
+
+export interface CurateCommunitySummaryInputFingerprintRow {
+  community_slug: string;
+  fingerprint: string;
 }
 
 export interface CurateRetryQueueRow {
   entry_id: string;
+  entry_seq: number | null;
   reason: string;
   observed_at: string;
   locus: string | null;

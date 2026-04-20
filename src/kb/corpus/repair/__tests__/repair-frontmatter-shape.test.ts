@@ -32,7 +32,7 @@ describe('repair fixtures: frontmatter shape', () => {
       fixture: 'frontmatter-shape-yaml-parse-error',
       classification: 'needs-manual',
       assertFailure(harness) {
-        expect(() => loadKbNote(harness.path('notes/yaml-parse-error-note.md'))).toThrow();
+        expect(() => loadKbNote(harness.path('notes/yaml-parse-error-note.md'))).toThrow(/yaml/i);
       },
       expectedIncidents: [
         {

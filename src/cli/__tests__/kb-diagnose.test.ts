@@ -46,6 +46,7 @@ function seedRetryQueue(entries: Array<{
     const statement = db.prepare(
       `INSERT INTO curate_retry_queue (
          entry_id,
+         entry_seq,
          reason,
          observed_at,
          locus,
@@ -54,12 +55,13 @@ function seedRetryQueue(entries: Array<{
          repair_hint,
          retry_not_before,
          retry_count
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
     for (const entry of entries) {
       statement.run(
         entry.entryId,
+        null,
         entry.reason,
         entry.observedAt,
         entry.locus,
@@ -127,29 +129,32 @@ describe('kb diagnose integration', () => {
   });
 
   afterEach(() => {
-    vi.resetModules();
-    process.chdir(originalCwd);
-    process.exitCode = undefined;
+    try {
+      vi.resetModules();
+      process.chdir(originalCwd);
+    } finally {
+      process.exitCode = undefined;
 
-    if (originalHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = originalHome;
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+
+      if (originalPluginRoot === undefined) {
+        delete process.env.CLAUDE_PLUGIN_ROOT;
+      } else {
+        process.env.CLAUDE_PLUGIN_ROOT = originalPluginRoot;
+      }
+
+      if (originalKbPath === undefined) {
+        delete process.env.CORAL_KB_PATH;
+      } else {
+        process.env.CORAL_KB_PATH = originalKbPath;
+      }
+
+      rmSync(tempHome, { recursive: true, force: true });
     }
-
-    if (originalPluginRoot === undefined) {
-      delete process.env.CLAUDE_PLUGIN_ROOT;
-    } else {
-      process.env.CLAUDE_PLUGIN_ROOT = originalPluginRoot;
-    }
-
-    if (originalKbPath === undefined) {
-      delete process.env.CORAL_KB_PATH;
-    } else {
-      process.env.CORAL_KB_PATH = originalKbPath;
-    }
-
-    rmSync(tempHome, { recursive: true, force: true });
   });
 
   it('prints queued manual-repair incidents with pretty-printed signals', async () => {
@@ -214,7 +219,7 @@ describe('kb diagnose integration', () => {
     );
   });
 
-  it('supports --json for machine-readable diagnose output', async () => {
+  it('supports the shared output-format flag for machine-readable diagnose output', async () => {
     seedRetryQueue([
       {
         entryId: 'note:broken-frontmatter',
@@ -230,7 +235,7 @@ describe('kb diagnose integration', () => {
     ]);
 
     const { buildProgram } = await loadMainModule();
-    const { stdout, stderr } = await runCli(buildProgram(), ['kb', 'diagnose', '--json']);
+    const { stdout, stderr } = await runCli(buildProgram(), ['kb', 'diagnose', '--output-format', 'json']);
 
     expect(stderr).toBe('');
     expect(JSON.parse(stdout)).toEqual({

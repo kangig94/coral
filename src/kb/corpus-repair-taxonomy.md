@@ -121,8 +121,8 @@ Canonical incident: `identity-sequence/entryseq-format`
   - Or the raw frontmatter contains a leading-zero decimal token such as `entrySeq: 0012`.
   - Or structural validation of the parsed value proves that `entrySeq` is not a canonical positive base-10 integer.
   - Canonical non-canonical regexes:
-    - quoted decimal: `(?m)^entrySeq:\s*["'][0-9]+["']\s*$`
-    - leading zeros: `(?m)^entrySeq:\s*0[0-9]+\s*$`
+    - quoted decimal: `/(?:^|\r?\n)\s*entrySeq:\s*(["'])([0-9]+)\1\s*(?:#.*)?(?=\r?\n|$)/`
+    - leading zeros: `/(?:^|\r?\n)\s*entrySeq:\s*(0[0-9]+)\s*(?:#.*)?(?=\r?\n|$)/`
 - Classification: `auto-fixable`
   - Rationale: this incident is about canonical representation of an already-present sequence value; normalization is safe when the bytes denote one positive integer.
 - Recovery contract:

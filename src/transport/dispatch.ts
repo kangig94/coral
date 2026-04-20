@@ -333,6 +333,9 @@ export async function executeCatalogRequest(
       );
     }
 
+    case 'kb.diagnose':
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.diagnose()));
+
     case 'kb.note.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);

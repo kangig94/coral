@@ -490,6 +490,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         q: args.query,
         ...(args.scope === undefined ? {} : { scope: args.scope }),
         ...(args.top_k === undefined ? {} : { top_k: args.top_k }),
+        ...(args.mode === undefined ? {} : { mode: args.mode }),
       });
     },
     kbDiagnose: async (_args = {}) => {
@@ -497,7 +498,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         return await Promise.resolve(readStore().kb.diagnose());
       }
 
-      throw new Error(`Command "${path}" is classified as ${commandClass} and cannot issue direct KB diagnose reads.`);
+      return await request<KbDiagnoseResult>('kb.diagnose', {});
     },
     kbPrinciples: async (args) => {
       if (commandClass === 'read') {

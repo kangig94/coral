@@ -36,6 +36,7 @@ class NullGraphRetrieval implements GraphRetrieval {
   }
 }
 
+/** Chooses the active vector backend, falling back to Orama when Needle is not fresh. */
 export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBaseProjection(runtime)): ResolvedVectorRoute {
   const needle = createNeedleBackend(runtime);
   if (needle.isSearchReady()) {
@@ -59,6 +60,7 @@ export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBas
   };
 }
 
+/** Builds the KB search router with shared text, vector, graph, and hybrid retrieval roles. */
 export function createRouter(runtime: KbRuntime, options: SearchRouterOptions = {}): SearchRouter {
   const orama = createOramaBaseProjection(runtime);
   const vectorRoute = resolveVectorRoute(runtime, orama);

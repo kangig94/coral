@@ -1,8 +1,15 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CorpusSnapshot } from '../kb/corpus/snapshot.js';
+import type {
+  CorpusConsumerRegistration,
+  CorpusInterest,
+  CorpusLaneHint,
+  KbCorpusSnapshot as CorpusSnapshot,
+} from '../kb/api.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../shared/backend-log.js';
+
+export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint };
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number, timeoutMs: number) {
@@ -13,8 +20,6 @@ export class FreshnessTimeout extends Error {
 }
 
 export type Authority = 'journal' | 'corpus';
-export type CorpusLaneHint = 'content' | 'metadata';
-export type CorpusInterest = CorpusLaneHint | 'both';
 
 export interface JournalApplyContext {
   readonly fromSeq: number;
@@ -33,13 +38,6 @@ export interface JournalConsumerRegistration {
    *   is tolerated because the same range re-applies on next start (upsert semantics).
    */
   apply(ctx: JournalApplyContext): Promise<void>;
-}
-
-export interface CorpusConsumerRegistration {
-  readonly id: string;
-  readonly authority: 'corpus';
-  readonly corpusInterest: CorpusInterest;
-  apply(_ctx: { snapshot: CorpusSnapshot; db: BetterSqlite3.Database }): Promise<void>;
 }
 
 interface Waiter {
@@ -169,7 +167,9 @@ export class ConsumerDriver {
   private readonly advanceMetadataCursorStmt: BetterSqlite3.Statement<
     [string, number, number, string, string, string, number, number, string]
   >;
-  private readonly advanceBothCursorStmt: BetterSqlite3.Statement<[string, number, number, string, string, string, string]>;
+  private readonly advanceBothCursorStmt: BetterSqlite3.Statement<
+    [string, number, number, string, string, string, number, number, string]
+  >;
 
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
@@ -240,7 +240,9 @@ export class ConsumerDriver {
            AND (metadata_seq < ? OR (metadata_seq = ? AND metadata_manifest_hash != ?))
       `,
     );
-    this.advanceBothCursorStmt = this.db.prepare<[string, number, number, string, string, string, string]>(
+    this.advanceBothCursorStmt = this.db.prepare<
+      [string, number, number, string, string, string, number, number, string]
+    >(
       `
         UPDATE equipment_cursors
            SET snapshot_id = ?,
@@ -249,7 +251,7 @@ export class ConsumerDriver {
                content_manifest_hash = ?,
                metadata_manifest_hash = ?
          WHERE consumer_id = ?
-           AND snapshot_id != ?
+           AND (content_seq < ? OR metadata_seq < ? OR snapshot_id != ?)
       `,
     );
   }
@@ -624,6 +626,8 @@ export class ConsumerDriver {
       snapshot.contentManifestHash,
       snapshot.metadataManifestHash,
       reg.id,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
       snapshot.snapshotId,
     );
   }

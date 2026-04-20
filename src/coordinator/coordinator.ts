@@ -39,7 +39,7 @@ import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { createNeedleBackend } from '../kb/search/needle-backend.js';
+import { createNeedleBackend } from '../kb/api.js';
 export { createBackendCore } from './composition/create-backend-core.js';
 export { listInstantiatedExecutionServices } from './composition/execution-services.js';
 export type {
@@ -179,19 +179,24 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           runtime,
         });
       }
+      // Boot step 1: replay any corpus publication that committed state before a prior notify failure.
       await kbSubsystem.kb.retryPendingCorpusPublication();
+      // Boot step 2: rebuild the local text surface before exposing coordinator-owned read paths.
       await kbSubsystem.kb.withMutationLock(async () => {
         kbSubsystem.kb.runEntrySeqUpgradeGuardIfNeeded();
         await kbSubsystem.kb.ensureOramaIndex();
       });
       const driver = getConsumerDriver();
+      // Boot step 3: register the vector projection consumer against the now-current corpus state.
       driver.register(
         createNeedleBackend(kbSubsystem.kb, {
           pluginRoot: coreOptions.pluginRoot ?? runtime.env.cwd(),
         }),
       );
+      // Boot step 4: replay the persisted corpus snapshot into downstream consumers.
       driver.notifyCorpus(kbSubsystem.kb.getCorpusStateSnapshot());
       if (kbSubsystem.curateScheduler) {
+        // Boot step 5: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();
       }
       return kbSubsystem;

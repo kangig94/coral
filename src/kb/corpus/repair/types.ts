@@ -65,6 +65,7 @@ export interface CorpusEntityGraphRelationshipScan {
   evidence: readonly string[];
 }
 
+// Synthetic scan identifier for the detached entity-graph artifact; not a valid KbEntryId.
 export const ENTITY_GRAPH_SCAN_ENTRY_ID = 'entity-graph:.entity-graph.json' as const;
 
 export interface CorpusEntityGraphScan {
@@ -143,6 +144,7 @@ export function createCorpusEntityGraphScan(input: { content: string; path?: str
   }
 }
 
+/** Builds the detector view over scanned markdown files plus the optional entity-graph artifact. */
 export function createCorpusScanView(input: {
   markdownFiles: readonly CorpusMarkdownFileScan[];
   entityGraph?: CorpusEntityGraphScan | null;

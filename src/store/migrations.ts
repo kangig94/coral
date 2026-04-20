@@ -1,13 +1,33 @@
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { StoragePort } from '../runtime/ports.js';
 
 declare const __PLUGIN_ROOT__: string | undefined;
 
-const MODULE_DIR =
-  typeof __dirname === 'string' ? __dirname : dirname(fileURLToPath(import.meta.url));
-const SOURCE_MIGRATIONS_DIR = join(MODULE_DIR, 'migrations');
+function resolveModuleDir(): string {
+  if (typeof __dirname === 'string') {
+    return __dirname;
+  }
+
+  const previousPrepareStackTrace = Error.prepareStackTrace;
+  try {
+    Error.prepareStackTrace = (_error, stack) => stack;
+    const stack = new Error().stack as unknown as Array<{ getFileName?: () => string | null }> | undefined;
+    const fileName = stack
+      ?.map((frame) => frame.getFileName?.() ?? null)
+      .find((candidate) => typeof candidate === 'string' && /\/store\/migrations\.(?:ts|js)$/.test(candidate));
+
+    if (typeof fileName === 'string') {
+      return dirname(fileName);
+    }
+  } finally {
+    Error.prepareStackTrace = previousPrepareStackTrace;
+  }
+
+  return join(process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd(), 'src', 'store');
+}
+
+const SOURCE_MIGRATIONS_DIR = join(resolveModuleDir(), 'migrations');
 const BUNDLED_MIGRATIONS_DIR =
   typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined;
 const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';

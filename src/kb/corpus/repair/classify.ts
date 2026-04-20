@@ -24,6 +24,7 @@ const INCIDENT_CLASSIFICATIONS: Readonly<
   },
 };
 
+/** Maps a detected repair incident to the automation policy Coral should apply. */
 export function classifyIncident(incident: DetectedIncident): IncidentClassification {
   return INCIDENT_CLASSIFICATIONS[incident.locus][incident.canonical] ?? 'unrecoverable';
 }

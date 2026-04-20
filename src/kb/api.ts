@@ -50,12 +50,21 @@ export { createKbSubsystem } from './subsystem.js';
 export type { CreateKbSubsystemOptions, KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 export type { CurateHandle } from './curate/types.js';
 export type {
+  CorpusConsumerApplyContext,
+  CorpusConsumerRegistration,
+  CorpusInterest,
+  CorpusLaneHint,
   KbCorpusPublishCallbacks,
   KbCorpusPublication,
   KbCorpusPublishFailure,
   KbCorpusSnapshot,
 } from './contracts.js';
 export type { ToolDomainResult } from '../shared/tool-domain-result.js';
+export {
+  closeNeedleBackend,
+  createNeedleBackend,
+  NEEDLE_CONSUMER_ID,
+} from './search/needle-backend.js';
 export {
   KB_BARE_READ_ORDER,
   expandKbReadSelector,
@@ -256,6 +265,7 @@ export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema }).strict()
 export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
 export const kbDiagnoseSchema = z.object({}).strict();
+export const kbDiagnoseRequestSchema = kbDiagnoseSchema;
 
 function kbErrorResult(error: unknown): ToolDomainResult {
   const detail = error instanceof Error ? { message: error.message } : error;
@@ -389,6 +399,7 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
       parsed.data.query,
       parsed.data.top_k ?? 20,
       parsed.data.scope ?? 'all',
+      parsed.data.mode,
     ),
   );
 }

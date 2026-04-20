@@ -113,8 +113,7 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
 );
 
 -- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
--- Single row. Worker claim is omitted (coordinator single-writer covers it);
--- migration_version is omitted (meta.schema_version handles schema evolution).
+-- Single row for scalar scheduler state; the active claim lives in curate_active_claim.
 CREATE TABLE IF NOT EXISTS curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through_seq      INTEGER,
@@ -123,8 +122,28 @@ CREATE TABLE IF NOT EXISTS curate_scheduler (
   discovery_high_seq         INTEGER,
   discovery_offset           INTEGER,
   last_run_day               TEXT,
+  last_attempted_through_seq INTEGER,
+  last_attempted_through_entry_id TEXT,
+  last_attempted_through_entry_kind TEXT,
+  retry_not_before           TEXT,
   consecutive_failures       INTEGER NOT NULL DEFAULT 0,
-  community_topology_hash    TEXT
+  community_topology_hash    TEXT,
+  community_summary_topology_hash TEXT,
+  initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
+  migration_version          INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS curate_active_claim (
+  id                         INTEGER PRIMARY KEY CHECK (id = 1),
+  through_seq                INTEGER NOT NULL CHECK (through_seq > 0),
+  through_entry_id           TEXT NOT NULL,
+  through_entry_kind         TEXT NOT NULL,
+  started_at                 TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS curate_community_summary_input_fingerprints (
+  community_slug             TEXT PRIMARY KEY,
+  fingerprint                TEXT NOT NULL
 );
 
 -- Curate retry queue (pendingRepair[] in the legacy file-backed state).
@@ -132,6 +151,7 @@ CREATE TABLE IF NOT EXISTS curate_scheduler (
 -- O(log n) "who is due now" scans.
 CREATE TABLE IF NOT EXISTS curate_retry_queue (
   entry_id                   TEXT PRIMARY KEY,
+  entry_seq                  INTEGER,
   reason                     TEXT NOT NULL,
   observed_at                TEXT NOT NULL,
   locus                      TEXT,
@@ -183,7 +203,14 @@ INSERT OR IGNORE INTO curate_scheduler (
   discovery_high_seq,
   discovery_offset,
   last_run_day,
+  last_attempted_through_seq,
+  last_attempted_through_entry_id,
+  last_attempted_through_entry_kind,
+  retry_not_before,
   consecutive_failures,
-  community_topology_hash
+  community_topology_hash,
+  community_summary_topology_hash,
+  initialized,
+  migration_version
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL);
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, 0, 0);

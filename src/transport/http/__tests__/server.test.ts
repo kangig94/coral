@@ -46,6 +46,7 @@ import { domainError, domainSuccess, type ToolDomainResult } from '../tool-respo
 import {
   handleKbCommunityRead,
   handleKbDelete,
+  handleKbDiagnose,
   handleKbMemo,
   handleKbMemoDeleteConsolidated,
   handleKbMemoList,
@@ -1470,6 +1471,7 @@ describe('execution backend server', () => {
         },
         kb: {
           readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
+          diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
           readNote: (slug: string) =>
             withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyCallerContext, deps.runtime, kbSubsystem)),
           readSource: (slug: string) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, deps.runtime)),
@@ -1575,6 +1577,7 @@ describe('execution backend server', () => {
       };
       const kbTools = {
         handleKbSearch: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:search', args })),
+        handleKbDiagnose: vi.fn((args: unknown) => domainSuccess({ route: 'kb:diagnose', args })),
         handleKbNoteRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:note-read', slug })),
         handleKbSourceRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:source-read', slug })),
         handleKbCommunityRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:community-read', slug })),
@@ -1647,6 +1650,7 @@ describe('execution backend server', () => {
       };
       created.deps.kb = {
         readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => mockKbTools.handleKbSearch(args, kbSubsystem)),
+        diagnose: () => withKb((kbSubsystem) => mockKbTools.handleKbDiagnose({}, kbSubsystem)),
         readNote: (slug: string) =>
           withKb((kbSubsystem) =>
             mockKbTools.handleKbNoteRead(slug, readOnlyCallerContext, created.deps.runtime, kbSubsystem),
@@ -1972,6 +1976,59 @@ describe('execution backend server', () => {
           { query: 'contracts', scope: 'notes', top_k: 5 },
           kbSubsystem,
         );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('round-trips GET /kb/entries mode through the HTTP KB search surface', async () => {
+      const started = await startMockedRouteServer({
+        kbToolOverrides: {
+          handleKbSearch: vi.fn(async (args: Record<string, unknown>) =>
+            domainSuccess({
+              results: [],
+              mode: args.mode ?? 'text',
+            })),
+        },
+      });
+      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+
+      try {
+        const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&mode=vector`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          results: [],
+          mode: 'vector',
+        });
+        expect(started.kbTools.handleKbSearch).toHaveBeenCalledTimes(1);
+        expect(started.kbTools.handleKbSearch).toHaveBeenCalledWith(
+          { query: 'contracts', mode: 'vector' },
+          kbSubsystem,
+        );
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('routes GET /kb/diagnose through KB diagnose reads', async () => {
+      const started = await startMockedRouteServer();
+      const kbSubsystem = started.deps.runtimeState.getKbSubsystem();
+
+      try {
+        const response = await fetch(`${started.baseUrl}/kb/diagnose`, {
+          headers: { 'X-Coral-Backend-Token': 'test-token' },
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          route: 'kb:diagnose',
+          args: {},
+        });
+        expect(started.kbTools.handleKbDiagnose).toHaveBeenCalledTimes(1);
+        expect(started.kbTools.handleKbDiagnose).toHaveBeenCalledWith({}, kbSubsystem);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -5334,6 +5391,7 @@ describe('execution backend server', () => {
         },
         kb: {
           readSearch: vi.fn(),
+          diagnose: vi.fn(),
           readNote: vi.fn(),
           readSource: vi.fn(),
           readCommunity: vi.fn(),

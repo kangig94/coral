@@ -46,7 +46,15 @@ function extractFrontmatterBlock(content: string): string {
 }
 
 function parseFrontmatterRecord(content: string): Record<string, unknown> {
-  const parsed = yaml.parse(extractFrontmatterBlock(content)) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(extractFrontmatterBlock(content)) as unknown;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`YAML parse error: ${message}`, {
+      ...(error instanceof Error ? { cause: error } : {}),
+    });
+  }
   if (parsed === null) {
     return {};
   }

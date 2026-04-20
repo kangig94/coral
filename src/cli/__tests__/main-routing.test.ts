@@ -1430,7 +1430,7 @@ describe('cli main routing', () => {
     );
   });
 
-  it('routes kb diagnose --json as raw machine output', async () => {
+  it('routes kb diagnose --output-format json as raw machine output', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1438,7 +1438,7 @@ describe('cli main routing', () => {
       incidents: [],
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'kb', 'diagnose', '--json']);
+    await program.parseAsync(['node', 'coral-cli', 'kb', 'diagnose', '--output-format', 'json']);
 
     expect(mockState.kbDiagnose).toHaveBeenCalledWith({});
     expect(JSON.parse(stdout.trim())).toEqual({ incidents: [] });

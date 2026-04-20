@@ -356,7 +356,7 @@ describe('cli format', () => {
       );
 
       expect(parsed.indicator).toBe('[vector]');
-      expect(parsed.warnings).toEqual(['kb_search_degraded_until_coordinator_rebuild']);
+      expect(parsed.warnings).toEqual(['Search index is unavailable; start the Coral backend to rebuild it.']);
     });
 
     it('formats kb read note payloads as JSON', () => {

@@ -347,6 +347,7 @@ describe('agent wire contract', () => {
         deleteSource: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
         createMemo: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
         deleteMemos: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
+        diagnose: () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
         reindex: async () => ({ ok: false, code: 'kb_unavailable', message: 'Knowledge base is not available.' }),
       },
       discuss: {

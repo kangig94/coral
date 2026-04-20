@@ -1,5 +1,9 @@
 import { join } from 'node:path';
 
+import type {
+  CurateActiveClaimRow,
+  CurateCommunitySummaryInputFingerprintRow,
+} from '../../store/schema.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { errorMessage } from '../../shared/utils.js';
 import {
@@ -53,22 +57,10 @@ import {
   type PendingRepair,
 } from './state-shared.js';
 import {
-  deleteMetaValue,
-  listMetaByPrefix,
-  readMetaValue,
-  replaceMetaPrefix,
+  prepareCached,
   resolveSqliteDb,
-  writeMetaValue,
 } from './sqlite.js';
 import { readCurateSchedulerState, writeCurateSchedulerState } from './state-scheduler.js';
-
-const LAST_ATTEMPTED_THROUGH_META_PREFIX = 'curate.last_attempted_through.';
-const ACTIVE_CLAIM_META_PREFIX = 'curate.active_claim.';
-const COMMUNITY_SUMMARY_INPUT_FINGERPRINT_PREFIX = 'curate.community_summary_input_fingerprint:';
-const COMMUNITY_SUMMARY_TOPOLOGY_HASH_KEY = 'curate.community_summary_topology_hash';
-const RETRY_NOT_BEFORE_KEY = 'curate.retry_not_before';
-const INITIALIZED_KEY = 'curate.initialized';
-const MIGRATION_VERSION_KEY = 'curate.migration_version';
 
 type CurateStateTarget = Pick<KbRuntime, 'db'>;
 type CurateStateRuntime = Pick<
@@ -101,108 +93,98 @@ type ScannedSource = {
   frontmatter: KbSourceFrontmatter;
 };
 
-function readOptionalMetaCursor(target: CurateStateTarget, prefix: string): CurateCursor | null {
-  const rawEntryId = readMetaValue(target, `${prefix}entry_id`);
-  const rawEntrySeq = readMetaValue(target, `${prefix}entry_seq`);
-  if (rawEntryId === null && rawEntrySeq === null) {
-    return null;
+function cursorEntryKind(cursor: CurateCursor): 'note' | 'source' {
+  if (cursor.entryId.startsWith('note:')) {
+    return 'note';
   }
-  if (rawEntryId === null || rawEntrySeq === null) {
-    throw new Error(`curate meta cursor ${prefix} must store both entry_id and entry_seq`);
+  if (cursor.entryId.startsWith('source:')) {
+    return 'source';
   }
 
-  const entryId = kbEntryIdSchema.parse(rawEntryId);
-  const entrySeq = parsePositiveInteger(Number.parseInt(rawEntrySeq, 10), `${prefix}entry_seq`);
-  return {
-    entryId,
-    entrySeq,
-  };
-}
-
-function writeOptionalMetaCursor(target: CurateStateTarget, prefix: string, cursor: CurateCursor | null): void {
-  replaceMetaPrefix(
-    target,
-    prefix,
-    cursor === null
-      ? {}
-      : {
-          [`${prefix}entry_id`]: cursor.entryId,
-          [`${prefix}entry_seq`]: cursor.entrySeq.toString(10),
-        },
-  );
+  throw new Error(`curate cursor must point at a note or source entry: ${cursor.entryId}`);
 }
 
 function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
-  const through = readOptionalMetaCursor(target, ACTIVE_CLAIM_META_PREFIX);
-  const startedAt = readMetaValue(target, `${ACTIVE_CLAIM_META_PREFIX}started_at`);
-  if (through === null && startedAt === null) {
+  const row = prepareCached<[], CurateActiveClaimRow | undefined>(
+    target,
+    `SELECT id, through_seq, through_entry_id, through_entry_kind, started_at
+       FROM curate_active_claim
+      WHERE id = 1`,
+  ).get();
+  if (row === undefined) {
     return null;
   }
-  if (through === null || startedAt === null) {
-    throw new Error('curate active claim meta must store both cursor and started_at');
+
+  const through = {
+    entryId: kbEntryIdSchema.parse(row.through_entry_id),
+    entrySeq: parsePositiveInteger(row.through_seq, 'curate_active_claim.through_seq'),
+  };
+  if (cursorEntryKind(through) !== row.through_entry_kind) {
+    throw new Error('curate_active_claim through_entry_kind must match the stored entry ID');
   }
 
   return {
     through,
-    startedAt,
+    startedAt: row.started_at,
   };
 }
 
 function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['activeClaim']): void {
-  replaceMetaPrefix(
+  prepareCached<[]>(target, `DELETE FROM curate_active_claim WHERE id = 1`).run();
+  if (activeClaim === null) {
+    return;
+  }
+
+  prepareCached<[number, string, 'note' | 'source', string]>(
     target,
-    ACTIVE_CLAIM_META_PREFIX,
-    activeClaim === null
-      ? {}
-      : {
-          [`${ACTIVE_CLAIM_META_PREFIX}entry_id`]: activeClaim.through.entryId,
-          [`${ACTIVE_CLAIM_META_PREFIX}entry_seq`]: activeClaim.through.entrySeq.toString(10),
-          [`${ACTIVE_CLAIM_META_PREFIX}started_at`]: activeClaim.startedAt,
-        },
+    `INSERT INTO curate_active_claim (
+       id,
+       through_seq,
+       through_entry_id,
+       through_entry_kind,
+       started_at
+     ) VALUES (1, ?, ?, ?, ?)`,
+  ).run(
+    activeClaim.through.entrySeq,
+    activeClaim.through.entryId,
+    cursorEntryKind(activeClaim.through),
+    activeClaim.startedAt,
   );
 }
 
 function readCommunitySummaryInputFingerprints(target: CurateStateTarget): Record<string, string> | undefined {
-  const rows = listMetaByPrefix(target, COMMUNITY_SUMMARY_INPUT_FINGERPRINT_PREFIX);
+  const rows = prepareCached<[], CurateCommunitySummaryInputFingerprintRow>(
+    target,
+    `SELECT community_slug, fingerprint
+       FROM curate_community_summary_input_fingerprints
+      ORDER BY community_slug ASC`,
+  ).all();
   if (rows.length === 0) {
     return undefined;
   }
 
-  return Object.fromEntries(
-    rows.map(({ key, value }) => [key.slice(COMMUNITY_SUMMARY_INPUT_FINGERPRINT_PREFIX.length), value]),
-  );
+  return Object.fromEntries(rows.map(({ community_slug, fingerprint }) => [community_slug, fingerprint]));
 }
 
 function writeCommunitySummaryInputFingerprints(
   target: CurateStateTarget,
   fingerprints: Record<string, string> | undefined,
 ): void {
-  replaceMetaPrefix(
-    target,
-    COMMUNITY_SUMMARY_INPUT_FINGERPRINT_PREFIX,
-    fingerprints === undefined
-      ? {}
-      : Object.fromEntries(
-          Object.entries(fingerprints).map(([slug, fingerprint]) => [
-            `${COMMUNITY_SUMMARY_INPUT_FINGERPRINT_PREFIX}${slug}`,
-            fingerprint,
-          ]),
-        ),
-  );
-}
-
-function readInitialized(target: CurateStateTarget): boolean {
-  return readMetaValue(target, INITIALIZED_KEY) === '1';
-}
-
-function readMigrationVersion(target: CurateStateTarget): number {
-  const raw = readMetaValue(target, MIGRATION_VERSION_KEY);
-  if (raw === null) {
-    return 0;
+  prepareCached<[]>(target, `DELETE FROM curate_community_summary_input_fingerprints`).run();
+  if (fingerprints === undefined) {
+    return;
   }
 
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+  const insert = prepareCached<[string, string]>(
+    target,
+    `INSERT INTO curate_community_summary_input_fingerprints (
+       community_slug,
+       fingerprint
+     ) VALUES (?, ?)`,
+  );
+  for (const [communitySlug, fingerprint] of Object.entries(fingerprints).sort(([left], [right]) => left.localeCompare(right))) {
+    insert.run(communitySlug, fingerprint);
+  }
 }
 
 function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir'>): string[] {
@@ -355,17 +337,17 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     discoveryHighSeq: scheduler.discoveryHighSeq,
     discoveryOffset: scheduler.discoveryOffset,
     lastRunDay: scheduler.lastRunDay,
-    lastAttemptedThrough: readOptionalMetaCursor(target, LAST_ATTEMPTED_THROUGH_META_PREFIX),
-    retryNotBefore: readMetaValue(target, RETRY_NOT_BEFORE_KEY),
+    lastAttemptedThrough: scheduler.lastAttemptedThrough,
+    retryNotBefore: scheduler.retryNotBefore,
     activeClaim: readActiveClaim(target),
     pendingDiscoveries: readCurateDiscoveryBacklog(target),
     pendingRepair: retryQueue.length === 0 ? null : retryQueue,
     communityTopologyHash: scheduler.communityTopologyHash,
-    communitySummaryTopologyHash: readMetaValue(target, COMMUNITY_SUMMARY_TOPOLOGY_HASH_KEY) ?? undefined,
+    communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
     communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(target),
     consecutiveFailures: scheduler.consecutiveFailures,
-    initialized: readInitialized(target),
-    migrationVersion: readMigrationVersion(target),
+    initialized: scheduler.initialized,
+    migrationVersion: scheduler.migrationVersion,
   });
 
   return state;
@@ -380,29 +362,18 @@ export function writeCurateState(target: CurateStateTarget, state: CurateState):
       discoveryHighSeq: normalized.discoveryHighSeq,
       discoveryOffset: normalized.discoveryOffset,
       lastRunDay: normalized.lastRunDay,
+      lastAttemptedThrough: normalized.lastAttemptedThrough,
+      retryNotBefore: normalized.retryNotBefore,
       consecutiveFailures: normalized.consecutiveFailures,
       communityTopologyHash: normalized.communityTopologyHash,
+      communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
+      initialized: normalized.initialized,
+      migrationVersion: normalized.migrationVersion,
     });
     replaceCurateRetryQueue(target, normalized.pendingRepair ?? []);
     replaceCurateDiscoveryBacklog(target, normalized.pendingDiscoveries);
-    writeOptionalMetaCursor(target, LAST_ATTEMPTED_THROUGH_META_PREFIX, normalized.lastAttemptedThrough);
     writeActiveClaim(target, normalized.activeClaim);
-
-    if (normalized.retryNotBefore === null) {
-      deleteMetaValue(target, RETRY_NOT_BEFORE_KEY);
-    } else {
-      writeMetaValue(target, RETRY_NOT_BEFORE_KEY, normalized.retryNotBefore);
-    }
-
-    if (normalized.communitySummaryTopologyHash === undefined) {
-      deleteMetaValue(target, COMMUNITY_SUMMARY_TOPOLOGY_HASH_KEY);
-    } else {
-      writeMetaValue(target, COMMUNITY_SUMMARY_TOPOLOGY_HASH_KEY, normalized.communitySummaryTopologyHash);
-    }
-
     writeCommunitySummaryInputFingerprints(target, normalized.communitySummaryInputFingerprints);
-    writeMetaValue(target, INITIALIZED_KEY, normalized.initialized ? '1' : '0');
-    writeMetaValue(target, MIGRATION_VERSION_KEY, normalized.migrationVersion.toString(10));
   })();
 }
 
