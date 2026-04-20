@@ -8,34 +8,22 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ZodError } from 'zod';
+import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc-catalog.js';
 import {
   buildCallerContextFromQuery,
   type CallerContext,
-  type DiscussView,
-  discussDeleteQuerySchema,
-  discussDetailQuerySchema,
-  discussEventsQuerySchema,
   domainError,
   domainResultToHttp,
   formatZodError,
   type EventStreamHandlers,
   type HttpHandlerPorts,
-  jobAbortSchema,
-  jobsListRequestSchema,
-  jobWaitSchema,
-  kbMemoDeleteQuerySchema,
-  kbMemoListQuerySchema,
-  kbPrinciplesQuerySchema,
-  kbEntriesRequestSchema,
+  type JobListFilters,
   launchToHttp,
   queryParamsToObject,
-  sessionCreateSchema,
-  sessionForkSchema,
-  sessionMessageSchema,
   type ToolDomainResult,
   type WaitCursor,
   type WaitStreamRequest,
-  workflowRequestSchema,
+  type WorkflowPortInput,
 } from './contracts.js';
 import { subscribeAll } from './sse-subscribe.js';
 
@@ -63,6 +51,7 @@ const BACKEND_RECOVERING_RESPONSE = {
   code: 'backend_recovering',
   message: 'recovering — retry after 500ms',
 };
+const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
 
 export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -111,11 +100,6 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-type ParsedDirectBody = {
-  ctx: NonNullable<ReturnType<typeof buildCallerContext>>;
-  args: Record<string, unknown>;
-};
-
 function buildControllerEnv(
   body: Record<string, unknown>,
   coralEnvSnapshot: Readonly<Record<string, string>>,
@@ -148,34 +132,8 @@ function buildCallerContext(
   };
 }
 
-function parseDirectBody(
-  body: unknown,
-  resolvedPluginRoot: string,
-  coralEnvSnapshot: Readonly<Record<string, string>>,
-): ParsedDirectBody | null {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
-  const record = body as Record<string, unknown>;
-  if ('owner' in record && record.owner !== undefined && typeof record.owner !== 'string') return null;
-  if ('effort' in record && record.effort !== undefined && typeof record.effort !== 'string') return null;
-  if (
-    'claudeModelCap' in record &&
-    record.claudeModelCap !== undefined &&
-    typeof record.claudeModelCap !== 'string'
-  ) {
-    return null;
-  }
-
-  const ctx = buildCallerContext(record, resolvedPluginRoot, coralEnvSnapshot);
-  if (!ctx) return null;
-
-  const {
-    projectRoot: _projectRoot,
-    owner: _owner,
-    effort: _effort,
-    claudeModelCap: _claudeModelCap,
-    ...args
-  } = record;
-  return { ctx, args };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +199,7 @@ export function parseEventStreamFilter(url: string): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Discuss read helpers
+// Shared response helpers
 // ---------------------------------------------------------------------------
 
 function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
@@ -257,6 +215,12 @@ function sendInvalidJson(res: ServerResponse): void {
   sendJson(res, 400, INVALID_JSON_RESPONSE);
 }
 
+function sendValidationFailure(res: ServerResponse, error: ZodError): void {
+  const { message, detail } = formatZodError(error);
+  const response = domainResultToHttp(invalidRequestResult(message, detail));
+  sendJson(res, response.statusCode, response.body);
+}
+
 function decodePathSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
@@ -265,47 +229,648 @@ function decodePathSegment(segment: string): string | null {
   }
 }
 
-type RouteHandler = (
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  match: RegExpExecArray,
-  parsedUrl: URL,
-) => Promise<void>;
+function sendInvalidRequestBody(res: ServerResponse): void {
+  const response = domainResultToHttp(invalidRequestResult());
+  sendJson(res, response.statusCode, response.body);
+}
 
-type Route = {
-  method: string;
-  pattern: RegExp;
-  handler: RouteHandler;
-};
-
-function getRouteParam(match: RegExpExecArray, name: string): string {
-  const value = match.groups?.[name];
-  if (value === undefined) {
-    throw new Error(`Missing route parameter: ${name}`);
+function ensureLaunchFenceInactive(res: ServerResponse, deps: HttpHandlerPorts): boolean {
+  if (deps.admin.isLaunchFenceActive()) {
+    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
+    return false;
   }
-  return value;
+  return true;
+}
+
+function buildBodyCallerContext(
+  res: ServerResponse,
+  request: Record<string, unknown>,
+  deps: HttpHandlerPorts,
+): CallerContext | null {
+  const ctx = buildCallerContext(request, deps.identity.pluginRoot, deps.coralEnvSnapshot);
+  if (!ctx) {
+    sendInvalidRequestBody(res);
+    return null;
+  }
+  return ctx;
 }
 
 // ---------------------------------------------------------------------------
-// Route handlers
+// Catalog-backed routing
 // ---------------------------------------------------------------------------
 
-async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
-  let parsed: ReturnType<typeof jobWaitSchema.parse>;
-  try {
-    parsed = jobWaitSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
+type HttpMethod = NonNullable<RpcMethodSpec<unknown, unknown>['http']>['method'];
+
+export type CatalogBackedHttpRoute = {
+  method: HttpMethod;
+  path: string;
+  spec: RpcMethodSpec<unknown, unknown>;
+};
+
+type ProjectedCatalogBackedHttpRoute = CatalogBackedHttpRoute & {
+  pattern: RegExp;
+  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL, pathParams: Record<string, string>) => Promise<void>;
+};
+
+type TransportLocalRoute = {
+  method: 'GET' | 'POST';
+  path: string;
+};
+
+type ProjectedTransportLocalRoute = TransportLocalRoute & {
+  pattern: RegExp;
+  requiresRunningLifecycle: boolean;
+  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL) => Promise<void>;
+};
+
+const [healthPath, shutdownPath, eventsStreamPath] = transportOperationalCarveouts;
+
+export const transportLocalRoutes: readonly TransportLocalRoute[] = [
+  { method: 'GET', path: healthPath },
+  { method: 'POST', path: shutdownPath },
+  { method: 'GET', path: eventsStreamPath },
+];
+
+export const coordinatorHttpRoutes: readonly CatalogBackedHttpRoute[] = rpcCatalog.map((spec) => ({
+  method: spec.http.method,
+  path: spec.http.path,
+  spec,
+}));
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compilePathPattern(path: string): RegExp {
+  const parts = path.split('/').map((segment) => {
+    if (segment.startsWith(':')) {
+      return `(?<${segment.slice(1)}>[^/]+)`;
+    }
+    return escapeRegexLiteral(segment);
+  });
+  return new RegExp(`^${parts.join('/')}$`);
+}
+
+function extractPathParams(match: RegExpExecArray): Record<string, string> {
+  return { ...(match.groups ?? {}) };
+}
+
+function combineRouteInput(
+  method: HttpMethod,
+  payload: unknown,
+  pathParams: Record<string, string>,
+): unknown {
+  if (method === 'GET' || method === 'DELETE') {
+    return {
+      ...(isRecord(payload) ? payload : {}),
+      ...pathParams,
+    };
+  }
+
+  if (Object.keys(pathParams).length === 0) {
+    return payload;
+  }
+
+  if (isRecord(payload)) {
+    return {
+      ...payload,
+      ...pathParams,
+    };
+  }
+
+  return payload;
+}
+
+async function parseCatalogRequest(
+  spec: RpcMethodSpec<unknown, unknown>,
+  req: IncomingMessage,
+  res: ServerResponse,
+  parsedUrl: URL,
+  pathParams: Record<string, string>,
+): Promise<unknown | typeof REQUEST_PARSE_FAILED> {
+  let candidate: unknown;
+
+  if (spec.http.method === 'GET' || spec.http.method === 'DELETE') {
+    req.resume();
+    candidate = combineRouteInput(spec.http.method, queryParamsToObject(parsedUrl.searchParams), pathParams);
+  } else {
+    try {
+      candidate = combineRouteInput(spec.http.method, await readJsonBody(req), pathParams);
+    } catch {
+      sendInvalidJson(res);
+      return REQUEST_PARSE_FAILED;
+    }
+  }
+
+  const parsed = spec.requestSchema.safeParse(candidate);
+  if (!parsed.success) {
+    sendValidationFailure(res, parsed.error);
+    return REQUEST_PARSE_FAILED;
+  }
+
+  return parsed.data;
+}
+
+async function handleCatalogUnaryRoute(
+  spec: RpcMethodSpec<unknown, unknown>,
+  request: unknown,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+): Promise<void> {
+  switch (spec.name) {
+    case 'sessions.create': {
+      const parsed = request as Record<string, unknown> & {
+        provider: string;
+        prompt: string;
+      };
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const decision = await deps.sessions.start(
+        parsed.provider,
+        {
+          prompt: parsed.prompt,
+          ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
+          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
+          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
+          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
+          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
+          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+        },
+        ctx,
+      );
+      const response = launchToHttp(decision, 201);
       sendJson(res, response.statusCode, response.body);
       return;
     }
-    sendInvalidJson(res);
-    return;
-  }
 
+    case 'sessions.message': {
+      const parsed = request as Record<string, unknown> & {
+        sessionId: string;
+        prompt: string;
+      };
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const decision = await deps.sessions.resumeBySessionId(
+        {
+          sessionId: parsed.sessionId,
+          prompt: parsed.prompt,
+          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
+          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
+          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
+          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
+          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
+          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+        },
+        ctx,
+      );
+      const response = launchToHttp(decision, 202);
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+
+    case 'sessions.fork': {
+      const parsed = request as Record<string, unknown> & {
+        sessionId: string;
+      };
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const decision = await deps.sessions.forkBySessionId(
+        {
+          sessionId: parsed.sessionId,
+          ...(typeof parsed.prompt === 'string' ? { prompt: parsed.prompt } : {}),
+          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
+          ...(typeof parsed.model === 'string' ? { model: parsed.model } : {}),
+          ...(typeof parsed.workDir === 'string' ? { cwd: parsed.workDir } : {}),
+          ...(typeof parsed.effort === 'string' ? { effort: parsed.effort } : {}),
+          ...(typeof parsed.bypassPermissions === 'boolean' ? { bypassPermissions: parsed.bypassPermissions } : {}),
+          ...(typeof parsed.systemPrompt === 'string' ? { systemPrompt: parsed.systemPrompt } : {}),
+        },
+        ctx,
+      );
+      const response = launchToHttp(decision, 201);
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+
+    case 'workflow.run': {
+      const parsed = request as Record<string, unknown>;
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const { projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand } = parsed;
+      const result = await deps.workflows.execute(workflowCommand as WorkflowPortInput, ctx);
+      if (result.kind === 'invalid_request') {
+        const response = domainResultToHttp(invalidRequestResult(result.message, result.detail));
+        sendJson(res, response.statusCode, response.body);
+        return;
+      }
+
+      const response = launchToHttp(result.decision, 202);
+      sendJson(res, response.statusCode, response.body);
+      return;
+    }
+
+    case 'jobs.abort': {
+      const parsed = request as { jobs: string[]; projectRoot: string };
+      const scopeCheck = deps.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
+      if (scopeCheck.mismatch.length > 0) {
+        const response = domainResultToHttp(
+          domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+        );
+        sendJson(res, response.statusCode, response.body);
+        return;
+      }
+      if (scopeCheck.missing.length === parsed.jobs.length) {
+        sendJson(res, 404, {
+          code: 'jobs_not_found',
+          message: 'Requested jobs were not found',
+          detail: { jobs: parsed.jobs },
+        });
+        return;
+      }
+
+      sendJson(res, 200, deps.jobs.abort(parsed.jobs));
+      return;
+    }
+
+    case 'jobs.list': {
+      const parsed = request as JobListFilters & { provider?: string };
+      const jobs = deps.jobs.list({
+        ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
+        ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
+        ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
+        all: parsed.all === true,
+      });
+      jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
+
+      sendJson(res, 200, { jobs });
+      return;
+    }
+
+    case 'jobs.detail': {
+      const parsed = request as { jobId: string };
+      const detail = deps.jobs.detail(parsed.jobId);
+      if (!detail) {
+        sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${parsed.jobId}` });
+        return;
+      }
+      sendJson(res, 200, detail);
+      return;
+    }
+
+    case 'discuss.persona.generate': {
+      sendToolResult(res, deps.discuss.seed(request), 200);
+      return;
+    }
+
+    case 'discuss.session.create': {
+      const parsed = request as Record<string, unknown>;
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
+        parsed;
+      sendToolResult(res, await deps.discuss.start(args, ctx), 201);
+      return;
+    }
+
+    case 'discuss.session.list': {
+      sendJson(res, 200, { sessions: deps.discuss.listSessions() });
+      return;
+    }
+
+    case 'discuss.session.detail': {
+      const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
+      const context = buildCallerContextFromQuery(
+        parsed.projectRoot,
+        deps.identity.pluginRoot,
+        deps.coralEnvSnapshot,
+      );
+      const view = parsed.view ?? 'control';
+      const detail = deps.discuss.loadDetail(context.projectRoot, parsed.sessionId, view);
+      if (!detail) {
+        sendJson(res, 404, { code: 'session_not_found', message: 'Session not found' });
+        return;
+      }
+      if (detail === 'audit_requires_ended_session') {
+        sendJson(res, 409, { code: 'audit_requires_ended_session', message: 'Audit requires ended session' });
+        return;
+      }
+
+      sendJson(res, 200, detail);
+      return;
+    }
+
+    case 'discuss.session.events': {
+      const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
+      const context = buildCallerContextFromQuery(
+        parsed.projectRoot,
+        deps.identity.pluginRoot,
+        deps.coralEnvSnapshot,
+      );
+      sendToolResult(
+        res,
+        deps.discuss.watch(
+          {
+            session: parsed.sessionId,
+            ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+          },
+          context,
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'discuss.session.bid': {
+      const parsed = request as Record<string, unknown> & { sessionId: string };
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const {
+        sessionId,
+        projectRoot: _projectRoot,
+        owner: _owner,
+        effort: _effort,
+        claudeModelCap: _claudeModelCap,
+        ...args
+      } = parsed;
+      sendToolResult(
+        res,
+        await deps.discuss.bid(
+          {
+            ...args,
+            session: sessionId,
+          },
+          ctx,
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'discuss.session.speech': {
+      const parsed = request as Record<string, unknown> & { sessionId: string };
+      if (!ensureLaunchFenceInactive(res, deps)) return;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const {
+        sessionId,
+        projectRoot: _projectRoot,
+        owner: _owner,
+        effort: _effort,
+        claudeModelCap: _claudeModelCap,
+        ...args
+      } = parsed;
+      sendToolResult(
+        res,
+        await deps.discuss.speech(
+          {
+            ...args,
+            session: sessionId,
+          },
+          ctx,
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'discuss.session.delete': {
+      const parsed = request as { sessionId: string; projectRoot: string };
+      const context = buildCallerContextFromQuery(
+        parsed.projectRoot,
+        deps.identity.pluginRoot,
+        deps.coralEnvSnapshot,
+      );
+      sendToolResult(res, await deps.discuss.abort({ session: parsed.sessionId }, context), 200);
+      return;
+    }
+
+    case 'kb.entries.search': {
+      const parsed = request as { q: string; scope?: string; top_k?: number };
+      sendToolResult(
+        res,
+        await deps.kb.readSearch({
+          query: parsed.q,
+          ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
+          ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
+        }),
+        200,
+      );
+      return;
+    }
+
+    case 'kb.note.read': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, deps.kb.readNote(slug), 200);
+      return;
+    }
+
+    case 'kb.note.create': {
+      const parsed = request as Record<string, unknown>;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
+        parsed;
+      sendToolResult(res, await deps.kb.createNote(args, ctx), 201);
+      return;
+    }
+
+    case 'kb.note.update': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+
+      const {
+        slug: _slug,
+        projectRoot: _projectRoot,
+        owner: _owner,
+        effort: _effort,
+        claudeModelCap: _claudeModelCap,
+        ...args
+      } = parsed;
+      sendToolResult(res, await deps.kb.updateNote({ ...args, note: slug }), 200);
+      return;
+    }
+
+    case 'kb.note.delete': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, await deps.kb.deleteNote(slug), 200);
+      return;
+    }
+
+    case 'kb.source.list': {
+      sendToolResult(res, await deps.kb.listSources(), 200);
+      return;
+    }
+
+    case 'kb.source.read': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, deps.kb.readSource(slug), 200);
+      return;
+    }
+
+    case 'kb.source.create': {
+      const parsed = request as Record<string, unknown>;
+      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
+        parsed;
+      sendToolResult(res, await deps.kb.createSource(args), 201);
+      return;
+    }
+
+    case 'kb.source.delete': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, await deps.kb.deleteSource(slug), 200);
+      return;
+    }
+
+    case 'kb.community.read': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, deps.kb.readCommunity(slug), 200);
+      return;
+    }
+
+    case 'kb.memo.list': {
+      const parsed = request as { projectRoot: string; owner?: string };
+      sendToolResult(
+        res,
+        deps.kb.listMemos(
+          parsed.owner === undefined ? {} : { owner: parsed.owner },
+          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'kb.memo.read': {
+      const parsed = request as { slug: string; projectRoot: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(
+        res,
+        deps.kb.readMemo(
+          slug,
+          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'kb.memo.create': {
+      const parsed = request as Record<string, unknown>;
+      const ctx = buildBodyCallerContext(res, parsed, deps);
+      if (!ctx) return;
+
+      const { projectRoot: _projectRoot, owner: _owner, effort: _effort, claudeModelCap: _claudeModelCap, ...args } =
+        parsed;
+      const memoArgs = ctx.coralEnv.CORAL_OWNER === undefined ? args : { ...args, owner: ctx.coralEnv.CORAL_OWNER };
+      sendToolResult(res, deps.kb.createMemo(memoArgs, ctx), 201);
+      return;
+    }
+
+    case 'kb.memo.delete': {
+      const parsed = request as { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
+      sendToolResult(
+        res,
+        deps.kb.deleteMemos(
+          {
+            ...(parsed.pattern === undefined ? {} : { pattern: parsed.pattern }),
+            ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),
+            ...(parsed.all === undefined ? {} : { all: parsed.all }),
+          },
+          buildCallerContextFromQuery(parsed.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
+        ),
+        200,
+      );
+      return;
+    }
+
+    case 'kb.principles.list': {
+      const parsed = request as { q?: string; top_k?: number; verbose?: boolean };
+      sendToolResult(
+        res,
+        await deps.kb.listPrinciples({
+          ...(parsed.q === undefined ? {} : { query: parsed.q }),
+          ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
+          ...(parsed.verbose === undefined ? {} : { verbose: parsed.verbose }),
+        }),
+        200,
+      );
+      return;
+    }
+
+    case 'kb.principle.read': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) {
+        sendToolResult(res, invalidRequestResult('Invalid KB slug'));
+        return;
+      }
+      sendToolResult(res, deps.kb.readPrinciple(slug), 200);
+      return;
+    }
+
+    case 'kb.reindex': {
+      sendToolResult(res, await deps.kb.reindex(), 200);
+      return;
+    }
+
+    default:
+      throw new Error(`Unhandled HTTP RPC route: ${spec.name}`);
+  }
+}
+
+async function handleJobsWaitSubscription(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number },
+): Promise<void> {
   const lastEventIdHeader = Array.isArray(req.headers['last-event-id'])
     ? req.headers['last-event-id'][0]
     : req.headers['last-event-id'];
@@ -315,7 +880,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     return;
   }
 
-  const scopeCheck = deps.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
+  const scopeCheck = deps.jobs.scopeCheck(request.jobIds, request.projectRoot);
   if (scopeCheck.mismatch.length > 0) {
     sendJson(res, 403, {
       code: 'scope_mismatch',
@@ -324,7 +889,7 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     });
     return;
   }
-  if (scopeCheck.missing.length === parsed.jobIds.length) {
+  if (scopeCheck.missing.length === request.jobIds.length) {
     sendJson(res, 404, {
       code: 'jobs_not_found',
       message: 'Requested jobs were not found',
@@ -340,14 +905,9 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
     jobs: { ...inputCursor.jobs },
   };
   const waitRequest: WaitStreamRequest = {
-    ...parsed,
+    ...request,
     cursor: inputCursor,
   };
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    sendJson(res, 400, { code: 'invalid_request', message: 'Project root is required' });
-    return;
-  }
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream');
@@ -394,6 +954,57 @@ async function handleWaitStream(req: IncomingMessage, res: ServerResponse, deps:
   if (!closed && !res.writableEnded) {
     res.end();
   }
+}
+
+async function handleCatalogSubscriptionRoute(
+  spec: RpcMethodSpec<unknown, unknown>,
+  request: unknown,
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+): Promise<void> {
+  switch (spec.name) {
+    case 'jobs.wait':
+      await handleJobsWaitSubscription(req, res, deps, request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number });
+      return;
+    default:
+      throw new Error(`Unhandled HTTP subscription route: ${spec.name}`);
+  }
+}
+
+export function httpAdapter(
+  spec: RpcMethodSpec<unknown, unknown>,
+  rpcPorts: HttpHandlerPorts,
+): ProjectedCatalogBackedHttpRoute {
+  const route = {
+    method: spec.http.method,
+    path: spec.http.path,
+    spec,
+  } satisfies CatalogBackedHttpRoute;
+
+  return {
+    ...route,
+    pattern: compilePathPattern(route.path),
+    handle: async (req, res, parsedUrl, pathParams) => {
+      const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams);
+      if (parsed === REQUEST_PARSE_FAILED) {
+        return;
+      }
+
+      if (spec.kind === 'subscription') {
+        await handleCatalogSubscriptionRoute(spec, parsed, req, res, rpcPorts);
+        return;
+      }
+
+      await handleCatalogUnaryRoute(spec, parsed, res, rpcPorts);
+    },
+  };
+}
+
+export function buildCoordinatorHttpDispatchTable(
+  rpcPorts: HttpHandlerPorts,
+): readonly ProjectedCatalogBackedHttpRoute[] {
+  return rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts));
 }
 
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
@@ -458,1060 +1069,61 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   });
 }
 
-async function handleSessionCreate(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
-  let parsed: ReturnType<typeof sessionCreateSchema.parse>;
-  try {
-    parsed = sessionCreateSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-
-  const decision = await deps.sessions.start(
-    parsed.provider,
+function buildTransportLocalRouteTable(deps: HttpHandlerPorts): readonly ProjectedTransportLocalRoute[] {
+  return [
     {
-      prompt: parsed.prompt,
-      agent: parsed.agent,
-      model: parsed.model,
-      cwd: parsed.workDir,
-      effort: parsed.effort,
-      bypassPermissions: parsed.bypassPermissions,
-      systemPrompt: parsed.systemPrompt,
+      ...transportLocalRoutes[0],
+      pattern: compilePathPattern(transportLocalRoutes[0].path),
+      requiresRunningLifecycle: false,
+      handle: async (_req, res) => {
+        sendJson(res, 200, deps.health.read());
+      },
     },
-    ctx,
-  );
-  const response = launchToHttp(decision, 201);
-  sendJson(res, response.statusCode, response.body);
-}
-
-async function handleSessionMessage(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-): Promise<void> {
-  let parsed: ReturnType<typeof sessionMessageSchema.parse>;
-  try {
-    parsed = sessionMessageSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-
-  const decision = await deps.sessions.resumeBySessionId(
     {
-      sessionId,
-      prompt: parsed.prompt,
-      ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
-      model: parsed.model,
-      cwd: parsed.workDir,
-      effort: parsed.effort,
-      bypassPermissions: parsed.bypassPermissions,
-      systemPrompt: parsed.systemPrompt,
+      ...transportLocalRoutes[1],
+      pattern: compilePathPattern(transportLocalRoutes[1].path),
+      requiresRunningLifecycle: false,
+      handle: async (req, res) => {
+        req.resume();
+        deps.admin.requestDrain('replaced');
+        sendJson(res, 200, { status: 'draining', instanceId: deps.identity.instanceId });
+      },
     },
-    ctx,
-  );
-  const response = launchToHttp(decision, 202);
-  sendJson(res, response.statusCode, response.body);
-}
-
-async function handleSessionFork(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-): Promise<void> {
-  let parsed: ReturnType<typeof sessionForkSchema.parse>;
-  try {
-    parsed = sessionForkSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
-      sendJson(res, response.statusCode, response.body);
-      return;
-    }
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-
-  const decision = await deps.sessions.forkBySessionId(
     {
-      sessionId,
-      prompt: parsed.prompt,
-      ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
-      model: parsed.model,
-      cwd: parsed.workDir,
-      effort: parsed.effort,
-      bypassPermissions: parsed.bypassPermissions,
-      systemPrompt: parsed.systemPrompt,
+      ...transportLocalRoutes[2],
+      pattern: compilePathPattern(transportLocalRoutes[2].path),
+      requiresRunningLifecycle: true,
+      handle: async (req, res) => {
+        req.resume();
+        await handleEventStream(req, res, deps);
+      },
     },
-    ctx,
-  );
-  const response = launchToHttp(decision, 201);
-  sendJson(res, response.statusCode, response.body);
+  ];
 }
 
-async function handleWorkflowRequest(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
-  let parsed: ReturnType<typeof workflowRequestSchema.parse>;
-  try {
-    parsed = workflowRequestSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
-      sendJson(res, response.statusCode, response.body);
-      return;
+function matchRoute<T extends { method: string; pattern: RegExp }>(
+  routes: readonly T[],
+  method: string | undefined,
+  pathname: string,
+): { route: T; pathParams: Record<string, string> } | null {
+  for (const route of routes) {
+    if (route.method !== method) {
+      continue;
     }
-    sendInvalidJson(res);
-    return;
-  }
 
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  const ctx = buildCallerContext(parsed, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  if (!ctx) {
-    const response = domainResultToHttp(invalidRequestResult());
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-
-  const command = (({ projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand }) => workflowCommand)(
-    parsed,
-  );
-  const result = await deps.workflows.execute(command, ctx);
-  if (result.kind === 'invalid_request') {
-    const response = domainResultToHttp(invalidRequestResult(result.message, result.detail));
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-
-  const response = launchToHttp(result.decision, 202);
-  sendJson(res, response.statusCode, response.body);
-}
-
-async function handleAbortRequest(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
-  let args: ReturnType<typeof jobAbortSchema.parse>;
-  try {
-    args = jobAbortSchema.parse(await readJsonBody(req));
-  } catch (error: unknown) {
-    if (error instanceof ZodError) {
-      const { message, detail } = formatZodError(error);
-      const response = domainResultToHttp(invalidRequestResult(message, detail));
-      sendJson(res, response.statusCode, response.body);
-      return;
+    const match = route.pattern.exec(pathname);
+    if (!match) {
+      continue;
     }
-    sendInvalidJson(res);
-    return;
+
+    return {
+      route,
+      pathParams: extractPathParams(match),
+    };
   }
 
-  const scopeCheck = deps.jobs.scopeCheck(args.jobs, args.projectRoot);
-  if (scopeCheck.mismatch.length > 0) {
-    const response = domainResultToHttp(
-      domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-    );
-    sendJson(res, response.statusCode, response.body);
-    return;
-  }
-  if (scopeCheck.missing.length === args.jobs.length) {
-    sendJson(res, 404, {
-      code: 'jobs_not_found',
-      message: 'Requested jobs were not found',
-      detail: { jobs: args.jobs },
-    });
-    return;
-  }
-
-  sendJson(res, 200, deps.jobs.abort(args.jobs));
+  return null;
 }
-
-async function handleDiscussPersonaSets(
-  req: IncomingMessage,
-  res: ServerResponse,
-  _deps: HttpHandlerPorts,
-): Promise<void> {
-  let body: unknown;
-  try {
-    body = await readJsonBody(req);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  sendToolResult(res, _deps.discuss.seed(body), 200);
-}
-
-async function handleDiscussSessionCreate(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  sendToolResult(
-    res,
-    await deps.discuss.start(request.args, request.ctx),
-    201,
-  );
-}
-
-async function handleDiscussSessionDetail(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = discussDetailQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  const view: DiscussView = parsed.data.view ?? 'control';
-  const detail = deps.discuss.loadDetail(context.projectRoot, sessionId, view);
-  if (!detail) {
-    sendJson(res, 404, { code: 'session_not_found', message: 'Session not found' });
-    return;
-  }
-  if (detail === 'audit_requires_ended_session') {
-    sendJson(res, 409, { code: 'audit_requires_ended_session', message: 'Audit requires ended session' });
-    return;
-  }
-
-  sendJson(res, 200, detail);
-}
-
-async function handleDiscussEvents(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = discussEventsQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  const result = deps.discuss.watch(
-    {
-      session: sessionId,
-      ...(parsed.data.cursor === undefined ? {} : { cursor: parsed.data.cursor }),
-    },
-    context,
-  );
-  sendToolResult(res, result, 200);
-}
-
-async function handleDiscussBidRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  sendToolResult(
-    res,
-    await deps.discuss.bid(
-      {
-        ...request.args,
-        session: sessionId,
-      },
-      request.ctx,
-    ),
-    200,
-  );
-}
-
-async function handleDiscussSpeechRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  if (deps.admin.isLaunchFenceActive()) {
-    sendJson(res, 503, BACKEND_RECOVERING_RESPONSE);
-    return;
-  }
-
-  sendToolResult(
-    res,
-    await deps.discuss.speech(
-      {
-        ...request.args,
-        session: sessionId,
-      },
-      request.ctx,
-    ),
-    200,
-  );
-}
-
-async function handleDiscussSessionDelete(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  sessionId: string,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = discussDeleteQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  const context = buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  sendToolResult(res, await deps.discuss.abort({ session: sessionId }, context), 200);
-}
-
-async function handleKbEntries(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = kbEntriesRequestSchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  sendToolResult(
-    res,
-    await deps.kb.readSearch(
-      {
-        query: parsed.data.q,
-        ...(parsed.data.scope === undefined ? {} : { scope: parsed.data.scope }),
-        ...(parsed.data.top_k === undefined ? {} : { top_k: parsed.data.top_k }),
-      },
-    ),
-    200,
-  );
-}
-
-async function handleKbNoteReadRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, deps.kb.readNote(slug), 200);
-}
-
-async function handleKbSourceReadRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, deps.kb.readSource(slug), 200);
-}
-
-async function handleKbSourceListRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  sendToolResult(res, await deps.kb.listSources(), 200);
-}
-
-async function handleKbCommunityReadRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, deps.kb.readCommunity(slug), 200);
-}
-
-async function handleKbMemoReadRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-  params: URLSearchParams,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  const parsed = kbMemoListQuerySchema.pick({ projectRoot: true }).safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  sendToolResult(
-    res,
-    deps.kb.readMemo(
-      slug,
-      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-    ),
-    200,
-  );
-}
-
-async function handleKbMemoListRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = kbMemoListQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  sendToolResult(
-    res,
-    deps.kb.listMemos(
-      parsed.data.owner === undefined ? {} : { owner: parsed.data.owner },
-      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-    ),
-    200,
-  );
-}
-
-async function handleKbPrinciplesRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = kbPrinciplesQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  sendToolResult(
-    res,
-    await deps.kb.listPrinciples(
-      {
-        ...(parsed.data.q === undefined ? {} : { query: parsed.data.q }),
-        ...(parsed.data.top_k === undefined ? {} : { top_k: parsed.data.top_k }),
-        ...(parsed.data.verbose === undefined ? {} : { verbose: parsed.data.verbose }),
-      },
-    ),
-    200,
-  );
-}
-
-async function handleKbPrincipleReadRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, deps.kb.readPrinciple(slug), 200);
-}
-
-async function handleKbNoteCreate(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.createNote(request.args, request.ctx), 201);
-}
-
-async function handleKbSourceCreate(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.createSource(request.args), 201);
-}
-
-async function handleKbMemoCreate(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  const args =
-    request.ctx.coralEnv.CORAL_OWNER === undefined
-      ? request.args
-      : { ...request.args, owner: request.ctx.coralEnv.CORAL_OWNER };
-
-  sendToolResult(res, deps.kb.createMemo(args, request.ctx), 201);
-}
-
-async function handleKbIndex(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.reindex(), 200);
-}
-
-async function handleKbNoteUpdateRoute(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  let request: ParsedDirectBody | null;
-  try {
-    request = parseDirectBody(await readJsonBody(req), deps.identity.pluginRoot, deps.coralEnvSnapshot);
-  } catch {
-    sendInvalidJson(res);
-    return;
-  }
-
-  if (!request) {
-    sendToolResult(res, invalidRequestResult());
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.updateNote({ ...request.args, note: slug }), 200);
-}
-
-async function handleKbNoteDeleteRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.deleteNote(slug), 200);
-}
-
-async function handleKbSourceDeleteRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  slugSegment: string,
-): Promise<void> {
-  const slug = decodePathSegment(slugSegment);
-  if (slug === null) {
-    sendToolResult(res, invalidRequestResult('Invalid KB slug'));
-    return;
-  }
-
-  sendToolResult(res, await deps.kb.deleteSource(slug), 200);
-}
-
-async function handleKbMemoDeleteRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  params: URLSearchParams,
-): Promise<void> {
-  const parsed = kbMemoDeleteQuerySchema.safeParse(queryParamsToObject(params));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  sendToolResult(
-    res,
-    deps.kb.deleteMemos(
-      {
-        ...(parsed.data.pattern === undefined ? {} : { pattern: parsed.data.pattern }),
-        ...(parsed.data.owner === undefined ? {} : { owner: parsed.data.owner }),
-        ...(parsed.data.all === undefined ? {} : { all: parsed.data.all }),
-      },
-      buildCallerContextFromQuery(parsed.data.projectRoot, deps.identity.pluginRoot, deps.coralEnvSnapshot),
-    ),
-    200,
-  );
-}
-
-async function handleJobListRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  parsedUrl: URL,
-): Promise<void> {
-  const parsed = jobsListRequestSchema.safeParse(queryParamsToObject(parsedUrl.searchParams));
-  if (!parsed.success) {
-    const { message, detail } = formatZodError(parsed.error);
-    sendToolResult(res, invalidRequestResult(message, detail));
-    return;
-  }
-
-  const jobs = deps.jobs.list({
-    ...(parsed.data.projectRoot === undefined ? {} : { projectRoot: parsed.data.projectRoot }),
-    ...(parsed.data.phase === undefined ? {} : { phase: parsed.data.phase }),
-    ...(parsed.data.provider === undefined ? {} : { provider: parsed.data.provider }),
-    all: parsed.data.all === true,
-  });
-  jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
-
-  sendJson(res, 200, { jobs });
-}
-
-async function handleJobDetailRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-  jobId: string,
-): Promise<void> {
-  const detail = deps.jobs.detail(jobId);
-  if (!detail) {
-    sendJson(res, 404, { code: 'job_not_found', message: `Job not found: ${jobId}` });
-    return;
-  }
-  sendJson(res, 200, detail);
-}
-
-async function handleDiscussSessionListRoute(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  deps: HttpHandlerPorts,
-): Promise<void> {
-  sendJson(res, 200, { sessions: deps.discuss.listSessions() });
-}
-
-const routes: Route[] = [
-  {
-    method: 'POST',
-    pattern: /^\/jobs\/wait$/,
-    handler: async (req, res, deps) => {
-      await handleWaitStream(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/sessions$/,
-    handler: async (req, res, deps) => {
-      await handleSessionCreate(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/sessions\/(?<sessionId>[^/]+)\/messages$/,
-    handler: async (req, res, deps, match) => {
-      await handleSessionMessage(req, res, deps, getRouteParam(match, 'sessionId'));
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/sessions\/(?<sessionId>[^/]+)\/forks$/,
-    handler: async (req, res, deps, match) => {
-      await handleSessionFork(req, res, deps, getRouteParam(match, 'sessionId'));
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/workflow$/,
-    handler: async (req, res, deps) => {
-      await handleWorkflowRequest(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/jobs\/abort$/,
-    handler: async (req, res, deps) => {
-      await handleAbortRequest(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/discuss\/persona-sets$/,
-    handler: async (req, res, deps) => {
-      await handleDiscussPersonaSets(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/discuss\/sessions$/,
-    handler: async (req, res, deps) => {
-      await handleDiscussSessionCreate(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/bids$/,
-    handler: async (req, res, deps, match) => {
-      await handleDiscussBidRoute(req, res, deps, getRouteParam(match, 'sessionId'));
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/speeches$/,
-    handler: async (req, res, deps, match) => {
-      await handleDiscussSpeechRoute(req, res, deps, getRouteParam(match, 'sessionId'));
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/kb\/notes$/,
-    handler: async (req, res, deps) => {
-      await handleKbNoteCreate(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/kb\/sources$/,
-    handler: async (req, res, deps) => {
-      await handleKbSourceCreate(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/kb\/memos$/,
-    handler: async (req, res, deps) => {
-      await handleKbMemoCreate(req, res, deps);
-    },
-  },
-  {
-    method: 'POST',
-    pattern: /^\/kb\/index$/,
-    handler: async (req, res, deps) => {
-      await handleKbIndex(req, res, deps);
-    },
-  },
-  {
-    method: 'PUT',
-    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      await handleKbNoteUpdateRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/jobs$/,
-    handler: async (req, res, deps, _match, parsedUrl) => {
-      req.resume();
-      await handleJobListRoute(req, res, deps, parsedUrl);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/jobs\/(?<jobId>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleJobDetailRoute(req, res, deps, getRouteParam(match, 'jobId'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/discuss\/sessions$/,
-    handler: async (req, res, deps) => {
-      req.resume();
-      await handleDiscussSessionListRoute(req, res, deps);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)\/events$/,
-    handler: async (req, res, deps, match, parsedUrl) => {
-      req.resume();
-      await handleDiscussEvents(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)$/,
-    handler: async (req, res, deps, match, parsedUrl) => {
-      req.resume();
-      await handleDiscussSessionDetail(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/entries$/,
-    handler: async (req, res, deps, _match, parsedUrl) => {
-      req.resume();
-      await handleKbEntries(req, res, deps, parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbNoteReadRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/sources$/,
-    handler: async (req, res, deps) => {
-      req.resume();
-      await handleKbSourceListRoute(req, res, deps);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/sources\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbSourceReadRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/communities\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbCommunityReadRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/memos$/,
-    handler: async (req, res, deps, _match, parsedUrl) => {
-      req.resume();
-      await handleKbMemoListRoute(req, res, deps, parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/memos\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match, parsedUrl) => {
-      req.resume();
-      await handleKbMemoReadRoute(req, res, deps, getRouteParam(match, 'slug'), parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/principles$/,
-    handler: async (req, res, deps, _match, parsedUrl) => {
-      req.resume();
-      await handleKbPrinciplesRoute(req, res, deps, parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'GET',
-    pattern: /^\/kb\/principles\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbPrincipleReadRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'DELETE',
-    pattern: /^\/discuss\/sessions\/(?<sessionId>[^/]+)$/,
-    handler: async (req, res, deps, match, parsedUrl) => {
-      req.resume();
-      await handleDiscussSessionDelete(req, res, deps, getRouteParam(match, 'sessionId'), parsedUrl.searchParams);
-    },
-  },
-  {
-    method: 'DELETE',
-    pattern: /^\/kb\/notes\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbNoteDeleteRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'DELETE',
-    pattern: /^\/kb\/sources\/(?<slug>[^/]+)$/,
-    handler: async (req, res, deps, match) => {
-      req.resume();
-      await handleKbSourceDeleteRoute(req, res, deps, getRouteParam(match, 'slug'));
-    },
-  },
-  {
-    method: 'DELETE',
-    pattern: /^\/kb\/memos$/,
-    handler: async (req, res, deps, _match, parsedUrl) => {
-      req.resume();
-      await handleKbMemoDeleteRoute(req, res, deps, parsedUrl.searchParams);
-    },
-  },
-];
 
 // ---------------------------------------------------------------------------
 // Main request dispatcher
@@ -1519,6 +1131,8 @@ const routes: Route[] = [
 
 export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const { identity } = deps;
+  const coordinatorRoutes = buildCoordinatorHttpDispatchTable(deps);
+  const localRoutes = buildTransportLocalRouteTable(deps);
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') {
@@ -1538,32 +1152,28 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
     res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 
-    if (req.method === 'GET' && req.url === '/health') {
-      sendJson(res, 200, deps.health.read());
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/admin/shutdown') {
+    if (!req.url) {
       req.resume();
-      // Flip drain fence immediately, before lifecycle transitions.
-      // This closes the race window where requests slip through between requestDrain()
-      // and lifecycle = 'draining'.
-      deps.admin.requestDrain('replaced');
-      sendJson(res, 200, { status: 'draining', instanceId: identity.instanceId });
+      sendJson(res, 404, { code: 'not_found', message: 'Not found' });
       return;
     }
 
-    // Drain admission fence: reject work-admitting requests as soon as drain is requested,
-    // even before lifecycle transitions to 'draining'.
+    const parsedUrl = new URL(req.url, 'http://localhost');
+    const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
+
+    if (localMatch && !localMatch.route.requiresRunningLifecycle) {
+      await localMatch.route.handle(req, res, parsedUrl);
+      return;
+    }
+
     if (!deps.admin.isLifecycleRunning() || deps.admin.isDrainRequested()) {
       req.resume();
       sendJson(res, 503, { code: 'backend_shutting_down', message: 'Backend shutting down' });
       return;
     }
 
-    if (req.method === 'GET' && req.url?.startsWith('/events/stream')) {
-      req.resume();
-      await handleEventStream(req, res, deps);
+    if (localMatch) {
+      await localMatch.route.handle(req, res, parsedUrl);
       return;
     }
 
@@ -1572,26 +1182,9 @@ export function createHttpHandler(deps: HttpHandlerPorts): (req: IncomingMessage
       deps.admin.endRequest();
     });
 
-    if (!req.url) {
-      req.resume();
-      sendJson(res, 404, { code: 'not_found', message: 'Not found' });
-      return;
-    }
-
-    const parsedUrl = new URL(req.url, 'http://localhost');
-    const { pathname } = parsedUrl;
-
-    for (const route of routes) {
-      if (req.method !== route.method) {
-        continue;
-      }
-
-      const match = route.pattern.exec(pathname);
-      if (!match) {
-        continue;
-      }
-
-      await route.handler(req, res, deps, match, parsedUrl);
+    const catalogMatch = matchRoute(coordinatorRoutes, req.method, parsedUrl.pathname);
+    if (catalogMatch) {
+      await catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams);
       return;
     }
 

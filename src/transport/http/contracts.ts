@@ -12,11 +12,7 @@ import {
 import {
   belongsToNamespace,
   isLivePhase,
-  jobAbortSchema,
-  jobDetailRequestSchema,
   jobPhaseSchema,
-  jobsListRequestSchema,
-  jobWaitSchema,
   type JobPhase,
   type JobProgress,
   type JobStatus,
@@ -27,37 +23,21 @@ import {
   type WaitStreamRequest,
 } from '../../jobs/api.js';
 import {
-  kbEntriesRequestSchema,
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
 } from '../../kb/api.js';
-import {
-  sessionCreateSchema,
-  sessionForkSchema,
-  sessionMessageSchema,
-} from '../../sessions/api.js';
-import { workflowRequestSchema } from '../../workflow/api.js';
 import type { RpcPorts } from '../rpc-ports.js';
 
 export {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
   discussEventsQuerySchema,
-  jobAbortSchema,
-  jobsListRequestSchema,
-  jobWaitSchema,
-  jobDetailRequestSchema,
-  sessionCreateSchema,
-  sessionForkSchema,
-  sessionMessageSchema,
-  kbEntriesRequestSchema,
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
-  workflowRequestSchema,
   belongsToNamespace,
   isLivePhase,
   jobPhaseSchema,

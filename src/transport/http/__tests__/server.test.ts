@@ -606,6 +606,7 @@ describe('execution backend server', () => {
     backendInfo.writeBackendInfo(pluginRoot, {
       pid: process.pid,
       port: 4100,
+      socketPath: '/tmp/coral-dev.sock',
       host: '127.0.0.1',
       token: 'test-token',
       version: '9.9.9',
@@ -626,6 +627,7 @@ describe('execution backend server', () => {
       JSON.stringify({
         pid: process.pid,
         port: 4101,
+        socketPath: '/tmp/coral-prod.sock',
         token: 'legacy-token',
         version: '9.9.9',
         bundleHash: 'legacyhash1234',
@@ -2153,11 +2155,29 @@ describe('execution backend server', () => {
       {
         name: 'source create',
         path: '/kb/sources',
-        args: { slug: 'slug', stagedPath: '/tmp/staged.md' },
+        args: {
+          slug: 'slug',
+          stagedPath: '/tmp/staged.md',
+          meta: {
+            title: 'Source Title',
+            type: 'markdown',
+            tags: ['transport'],
+            importedAt: '2026-04-20T00:00:00.000Z',
+          },
+        },
         expectedStatus: 201,
         expectedBody: {
           route: 'kb:source-import',
-          args: { slug: 'slug', stagedPath: '/tmp/staged.md' },
+          args: {
+            slug: 'slug',
+            stagedPath: '/tmp/staged.md',
+            meta: {
+              title: 'Source Title',
+              type: 'markdown',
+              tags: ['transport'],
+              importedAt: '2026-04-20T00:00:00.000Z',
+            },
+          },
         },
         handlerName: 'handleKbSourceImport',
         callShape: 'args-kb',
@@ -2425,9 +2445,12 @@ describe('execution backend server', () => {
           });
 
           expect(response.status).toBe(400);
-          expect(await response.json()).toEqual({
+          expect(await response.json()).toMatchObject({
             code: 'invalid_request',
-            message: 'invalid request',
+            message: expect.any(String),
+            detail: {
+              issues: expect.any(Array),
+            },
           });
           expect(Object.values(started.discussTools).some((handler) => handler.mock.calls.length > 0)).toBe(false);
           expect(Object.values(started.kbTools).some((handler) => handler.mock.calls.length > 0)).toBe(false);
@@ -2440,7 +2463,13 @@ describe('execution backend server', () => {
     it.each([
       {
         path: '/discuss/sessions',
-        args: { topic: 'Should we ship?', agents: [] },
+        args: {
+          topic: 'Should we ship?',
+          agents: [
+            { name: 'alpha', persona: '# Alpha' },
+            { name: 'beta', persona: '# Beta' },
+          ],
+        },
         handlerName: 'handleDiscussStart',
       },
       {
@@ -2675,7 +2704,7 @@ describe('execution backend server', () => {
         name: 'GET /kb/memos projectRoot',
         method: 'GET',
         path: '/kb/memos?projectRoot=',
-        expectedMessage: 'projectRoot: String must contain at least 1 character(s)',
+        expectedMessage: 'projectRoot: Project root is required',
       },
       {
         name: 'DELETE /kb/memos pattern/all',
@@ -3210,17 +3239,21 @@ describe('execution backend server', () => {
       vi.resetModules();
       const workflowError = new Error('Step 0, atom \'architect\' has unsupported namespace \'other\'');
       workflowError.name = 'WorkflowInputError';
-      vi.doMock('../../../workflow/api.js', () => ({
-        workflowCompiler: {
-          compile: vi.fn(() => {
-            throw workflowError;
-          }),
-        },
-        workflowCommands: {
-          execute: vi.fn(),
-        },
-        isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
-      }));
+      vi.doMock('../../../workflow/api.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../../workflow/api.js')>();
+        return {
+          ...actual,
+          workflowCompiler: {
+            compile: vi.fn(() => {
+              throw workflowError;
+            }),
+          },
+          workflowCommands: {
+            execute: vi.fn(),
+          },
+          isWorkflowInputFailure: (error: unknown) => error === workflowError || error instanceof ZodError,
+        };
+      });
 
       const { createHttpHandler } = await import('../handler.js');
       const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
@@ -3260,17 +3293,21 @@ describe('execution backend server', () => {
           message: 'Expression required',
         },
       ]);
-      vi.doMock('../../../workflow/api.js', () => ({
-        workflowCompiler: {
-          compile: vi.fn(() => {
-            throw workflowError;
-          }),
-        },
-        workflowCommands: {
-          execute: vi.fn(),
-        },
-        isWorkflowInputFailure: (error: unknown) => error === workflowError,
-      }));
+      vi.doMock('../../../workflow/api.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../../workflow/api.js')>();
+        return {
+          ...actual,
+          workflowCompiler: {
+            compile: vi.fn(() => {
+              throw workflowError;
+            }),
+          },
+          workflowCommands: {
+            execute: vi.fn(),
+          },
+          isWorkflowInputFailure: (error: unknown) => error === workflowError,
+        };
+      });
 
       const { createHttpHandler } = await import('../handler.js');
       const { deps } = createHttpHandlerDeps({ executionService: createFakeExecutionService() });
