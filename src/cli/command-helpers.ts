@@ -49,6 +49,7 @@ import type {
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../shared/controller-profile.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
 import { collectCoralEnv, readBuildFlavor } from '../shared/utils.js';
@@ -339,18 +340,15 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Calle
     projectRoot: context.projectRoot,
   };
 
-  const owner = context.coralEnv.CORAL_OWNER;
-  const effort = context.coralEnv.CORAL_EFFORT;
-  const claudeModelCap = context.coralEnv.CORAL_CLAUDE_MODEL_CAP;
+  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+    if (body[field] !== undefined) {
+      continue;
+    }
 
-  if (body.owner === undefined && typeof owner === 'string' && owner.length > 0) {
-    body.owner = owner;
-  }
-  if (body.effort === undefined && typeof effort === 'string' && effort.length > 0) {
-    body.effort = effort;
-  }
-  if (body.claudeModelCap === undefined && typeof claudeModelCap === 'string' && claudeModelCap.length > 0) {
-    body.claudeModelCap = claudeModelCap;
+    const value = context.coralEnv[CONTEXT_ENV_KEY[field]];
+    if (typeof value === 'string' && value.length > 0) {
+      body[field] = value;
+    }
   }
 
   return body;

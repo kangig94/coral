@@ -34,6 +34,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
 import { materializeLegacyOutcome } from '../../jobs/reconcile/job-helpers.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../shared/controller-profile.js';
 
 interface LaunchIntentBase {
   prompt: string;
@@ -87,19 +88,20 @@ export type InterruptedAppServerFinalization = {
 export function buildSessionControllerProfile(
   coralEnv: Record<string, string>,
 ): SessionAllocateOptions['controllerProfile'] | undefined {
-  const owner = coralEnv.CORAL_OWNER;
-  const effort = coralEnv.CORAL_EFFORT;
-  const claudeModelCap = coralEnv.CORAL_CLAUDE_MODEL_CAP;
+  const profile: Partial<NonNullable<SessionAllocateOptions['controllerProfile']>> = {};
 
-  if (owner === undefined && effort === undefined && claudeModelCap === undefined) {
+  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+    const value = coralEnv[CONTEXT_ENV_KEY[field]];
+    if (value !== undefined) {
+      profile[field] = value;
+    }
+  }
+
+  if (Object.keys(profile).length === 0) {
     return undefined;
   }
 
-  return {
-    ...(owner !== undefined ? { owner } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-    ...(claudeModelCap !== undefined ? { claudeModelCap } : {}),
-  };
+  return profile;
 }
 
 export function mapResolverError(err: unknown): LaunchDecision | null {
@@ -137,16 +139,19 @@ export function buildEffectiveCoralEnv(
   const merged = { ...coralEnv };
   const storedProfile = options.controllerProfile;
 
-  if (storedProfile?.owner !== undefined && merged.CORAL_OWNER === undefined) {
-    merged.CORAL_OWNER = storedProfile.owner;
-  }
-  if (storedProfile?.claudeModelCap !== undefined && merged.CORAL_CLAUDE_MODEL_CAP === undefined) {
-    merged.CORAL_CLAUDE_MODEL_CAP = storedProfile.claudeModelCap;
-  }
-  if (options.effort !== undefined) {
-    merged.CORAL_EFFORT = options.effort;
-  } else if (storedProfile?.effort !== undefined && merged.CORAL_EFFORT === undefined) {
-    merged.CORAL_EFFORT = storedProfile.effort;
+  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+    const envKey = CONTEXT_ENV_KEY[field];
+    if (field === 'effort') {
+      if (options.effort !== undefined) {
+        merged[envKey] = options.effort;
+        continue;
+      }
+    }
+
+    const storedValue = storedProfile?.[field];
+    if (storedValue !== undefined && merged[envKey] === undefined) {
+      merged[envKey] = storedValue;
+    }
   }
 
   return merged;

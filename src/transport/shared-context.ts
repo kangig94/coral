@@ -1,4 +1,5 @@
 import type { CallerContext } from '../shared/request-context.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../shared/controller-profile.js';
 
 export function decodePathSegment(segment: string): string | null {
   try {
@@ -13,14 +14,11 @@ export function buildControllerEnv(
   coralEnvSnapshot: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const env = { ...coralEnvSnapshot };
-  if (typeof body.owner === 'string') {
-    env.CORAL_OWNER = body.owner;
-  }
-  if (typeof body.effort === 'string') {
-    env.CORAL_EFFORT = body.effort;
-  }
-  if (typeof body.claudeModelCap === 'string') {
-    env.CORAL_CLAUDE_MODEL_CAP = body.claudeModelCap;
+  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+    const value = body[field];
+    if (typeof value === 'string') {
+      env[CONTEXT_ENV_KEY[field]] = value;
+    }
   }
   return env;
 }
