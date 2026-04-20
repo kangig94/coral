@@ -2,6 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequest } from '../json-rpc.js';
+import { createLineFramer } from '../line-framing.js';
 
 const IPC_RETRY_BACKOFF_MS = 100;
 
@@ -127,8 +128,8 @@ export async function requestIpcMethod<TResult>(
 
   return await new Promise<TResult>((resolve, reject) => {
     let settled = false;
-    let buffer = '';
     let timer: NodeJS.Timeout | null = null;
+    const framer = createLineFramer();
 
     const finish = (handler: () => void) => {
       if (settled) {
@@ -154,11 +155,7 @@ export async function requestIpcMethod<TResult>(
     };
 
     const onData = (chunk: Buffer | string) => {
-      buffer += chunk.toString();
-      const frames = buffer.split('\n');
-      buffer = frames.pop() ?? '';
-
-      for (const frame of frames) {
+      for (const frame of framer.push(chunk)) {
         if (frame.trim().length === 0) {
           continue;
         }
@@ -221,7 +218,6 @@ export async function subscribeIpcMethod<TResult>(
   const timeoutMs = options?.timeoutMs;
   const socket = await connectSocket(socketPath, timeoutMs);
 
-  let buffer = '';
   let done = false;
   let failure: Error | null = null;
   let handshakeComplete = false;
@@ -230,6 +226,7 @@ export async function subscribeIpcMethod<TResult>(
   let resolveClose: (() => void) | null = null;
   let resolveHandshake: (() => void) | null = null;
   let rejectHandshake: ((error: Error) => void) | null = null;
+  const framer = createLineFramer();
   const queued: IteratorResult<TResult>[] = [];
   const waiters: Array<{
     resolve: (value: IteratorResult<TResult>) => void;
@@ -323,11 +320,7 @@ export async function subscribeIpcMethod<TResult>(
   };
 
   const onData = (chunk: Buffer | string) => {
-    buffer += chunk.toString();
-    const frames = buffer.split('\n');
-    buffer = frames.pop() ?? '';
-
-    for (const frame of frames) {
+    for (const frame of framer.push(chunk)) {
       if (frame.trim().length === 0) {
         continue;
       }
