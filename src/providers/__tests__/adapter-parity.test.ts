@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../protocol.js';
+import { collectProviderTerminalEvent, providerTerminalEvent, type ProviderRequest } from '../protocol.js';
 import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 
 vi.mock('../claude/claude-executor.js', () => {
@@ -84,7 +84,6 @@ function makeRuntime(lease?: ProviderServerLease): {
     runCli,
     runtime: {
       signal: controller.signal,
-      onEvent: () => {},
       runCli,
       acquireServer: lease ? vi.fn(async () => lease) : undefined,
       checkpointRecovery: vi.fn(),
@@ -160,7 +159,7 @@ describe('claude provider adapter', () => {
     });
     const { runtime, runCli } = makeRuntime(lease);
 
-    const execution = claudeProvider.execute(
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         instruction: { channel: 'system', content: 'You are the architect agent' },
         systemPrompt: 'Honor repository policy',
@@ -170,7 +169,7 @@ describe('claude provider adapter', () => {
         bypassPermissions: true,
       }),
       runtime,
-    );
+    ));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
@@ -213,14 +212,14 @@ describe('claude provider adapter', () => {
     });
     const { runtime, runCli } = makeRuntime(lease);
 
-    const execution = claudeProvider.execute(
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         instruction: { channel: 'prompt', content: 'First follow this instruction' },
         systemPrompt: 'System stays separate',
         
       }),
       runtime,
-    );
+    ));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
@@ -261,12 +260,12 @@ describe('claude provider adapter', () => {
     });
     const { runtime, runCli } = makeRuntime(lease);
 
-    const execution = claudeProvider.execute(
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         systemPrompt: 'Just the system prompt',
       }),
       runtime,
-    );
+    ));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
@@ -303,7 +302,7 @@ describe('claude provider adapter', () => {
     });
     const { runtime, runCli } = makeRuntime(lease);
 
-    const execution = claudeProvider.execute(
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'resume',
         conversationRef: 'claude-thread-123',
@@ -311,7 +310,7 @@ describe('claude provider adapter', () => {
         systemPrompt: 'Restore persona',
       }),
       runtime,
-    );
+    ));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({
@@ -346,12 +345,12 @@ describe('claude provider adapter', () => {
       }),
     );
 
-    const result = await claudeProvider.execute(
+    const result = await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'claude-thread-123', model: 'sonnet' }),
       makeRuntime().runtime,
-    );
+    ));
 
-    expect(result).toEqual({
+    expect(result).toEqual(providerTerminalEvent({
       content: '',
       nonResumable: true,
       model: 'sonnet',
@@ -367,7 +366,7 @@ describe('claude provider adapter', () => {
           parseError: 'parse failed',
         },
       },
-    });
+    }));
   });
 
   it('maps persistent broker output into ProviderTurnResult fields including usage.costUsd', async () => {
@@ -390,7 +389,9 @@ describe('claude provider adapter', () => {
         return {};
       },
     });
-    const execution = claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime(lease).runtime);
+    const execution = collectProviderTerminalEvent(
+      claudeProvider.execute(makeRequest({ model: 'sonnet' }), makeRuntime(lease).runtime),
+    );
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));

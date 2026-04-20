@@ -9,6 +9,7 @@ import { TypedEventBus } from '../control.js';
 import { createDiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
+import { streamProviderTerminal } from '../../providers/protocol.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { JobTerminal } from '../../jobs/views.js';
 
@@ -87,11 +88,11 @@ describe('backend isolation', () => {
 
     regA.register({
       name: 'provider-a',
-      execute: async () => ({ content: '', outcome: { kind: 'completed' } }),
+      execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
     });
     regB.register({
       name: 'provider-b',
-      execute: async () => ({ content: '', outcome: { kind: 'completed' } }),
+      execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
     });
 
     expect(regA.get('provider-a')).toBeDefined();

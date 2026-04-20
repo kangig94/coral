@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { ZodError } from 'zod';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
@@ -360,7 +361,15 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     listenFn: defaults.listenFn,
     ipcServer,
     closeIpcServerFn: closeIpcServer,
-    listenIpcFn: (listener) => listenIpcServer(listener, coordinatorPaths(identity.flavor).socketPath),
+    listenIpcFn:
+      options.listenIpcFn ??
+      ((listener) =>
+        listenIpcServer(
+          listener,
+          coordinatorPaths(identity.flavor, runtime.env.fullSnapshot(), {
+            baseDir: join(runtime.env.homedir(), '.coral'),
+          }).socketPath,
+        )),
     onStopped: options.onStopped,
     onFatalShutdownError: options.onFatalShutdownError,
   };

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { registerBuiltInProviders } from '../bootstrap.js';
+import { createBuiltInProviderRegistry, registerBuiltInProviders } from '../bootstrap.js';
+import { collectProviderTerminalEvent, providerTerminalEvent, streamProviderTerminal } from '../protocol.js';
 import { ProviderRegistry } from '../registry.js';
 import type { Provider, ProviderArtifactCleanup } from '../provider-contracts.js';
 
 function makeProvider(name: string): Provider {
   return {
     name,
-    execute: async () => ({ content: `${name} response`, outcome: { kind: 'completed' as const } }),
+    execute: () => streamProviderTerminal({ content: `${name} response`, outcome: { kind: 'completed' as const } }),
   };
 }
 
@@ -42,12 +43,13 @@ describe('ProviderRegistry', () => {
       finalizeInterrupted: () => ({}),
     };
     const artifactRecovery = {
-      finalizeFromArtifacts: async () => ({ content: 'recovered', outcome: { kind: 'completed' as const } }),
+      finalizeFromArtifacts: async () =>
+        providerTerminalEvent({ content: 'recovered', outcome: { kind: 'completed' as const } }),
     };
     const artifactCleanup = makeCleanupRole('claude');
     const provider: Provider = {
       name: 'claude',
-      execute: async () => ({ content: 'ok', outcome: { kind: 'completed' as const } }),
+      execute: () => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } }),
       appServerLifecycle,
       artifactRecovery,
       artifactCleanup,
@@ -168,5 +170,44 @@ describe('registerBuiltInProviders', () => {
     registerBuiltInProviders(registry);
 
     expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
+  });
+
+  it('replaces a built-in provider when CORAL_SCRIPTED_PROVIDER_SPEC targets the same name', async () => {
+    const registry = createBuiltInProviderRegistry({
+      CORAL_SCRIPTED_PROVIDER_SPEC: JSON.stringify({
+        name: 'codex',
+        progress: [{ message: 'scripted registry progress' }],
+        result: {
+          content: 'scripted registry terminal',
+          conversationRef: 'scripted-registry-session',
+          outcome: { kind: 'completed' },
+        },
+      }),
+    });
+
+    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
+
+    const terminal = await collectProviderTerminalEvent(
+      registry.getExecutor('codex')!.execute(
+        {
+          action: 'exec',
+          sessionId: 'job-scripted',
+          prompt: 'hello',
+          cwd: process.cwd(),
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        {
+          signal: new AbortController().signal,
+          runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
+        },
+      ),
+    );
+
+    expect(terminal).toMatchObject({
+      content: 'scripted registry terminal',
+      conversationRef: 'scripted-registry-session',
+      outcome: { kind: 'completed' },
+    });
   });
 });

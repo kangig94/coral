@@ -1,4 +1,3 @@
-import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../views.js';
@@ -7,7 +6,6 @@ import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderArtifactRecovery } from '../../providers/provider-contracts.js';
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
-import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 import type { ProgressStore } from '../job-store.js';
 import type { RecoveryAction } from './plan.js';
 import type { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
@@ -15,7 +13,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from '../../coordinator/contracts.js';
-import { markJobAsError } from './job-helpers.js';
+import { markJobAsError, materializeLegacyOutcome, materializeProviderTerminal } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
@@ -173,22 +171,6 @@ export function finalizeDeadAdoptedJob({
   progressStore,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
-  const normalizeLegacyOutcome = (
-    legacyOutcome: NonNullable<Awaited<ReturnType<NonNullable<ProviderLike>['finalizeFromArtifacts']>>>['outcome'],
-  ): TerminalOutcome => {
-    const plan = planLegacyTerminalOutcome(legacyOutcome, {
-      jobId,
-      sessionId: launchRecord.sessionId,
-    });
-    if (plan.immediateOutcome !== null) {
-      return plan.immediateOutcome;
-    }
-    return materializeLegacyTerminalOutcome(
-      plan,
-      plan.domainEvents.map((event, index) => ({ seq: index + 1, stream: event.stream })),
-    );
-  };
-
   const exitRecord = progressStore.readExitRecord(jobId);
   if (exitRecord) {
     if (provider) {
@@ -201,37 +183,30 @@ export function finalizeDeadAdoptedJob({
           fallbackConversationRef: launchRecord.request.conversationRef,
         })
         .then((result) => {
-          const outcome = normalizeLegacyOutcome(result.outcome);
+          const terminal = materializeProviderTerminal(progressStore, result, {
+            jobId,
+            sessionId: launchRecord.sessionId,
+          });
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
-            {
-              content: result.content,
-              durationMs: result.durationMs,
-              nonResumable: result.nonResumable,
-              exitCode: result.exitCode,
-              warnings: result.warnings,
-              usage: result.usage,
-              outcome,
-            },
-            phaseForOutcome(outcome),
+            terminal,
+            phaseForOutcome(terminal.outcome),
             { conversationRef: result.conversationRef, nonResumable: result.nonResumable },
           );
         })
         .catch((recoverErr: unknown) => {
           log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
-          const outcome = materializeLegacyTerminalOutcome(
-            planLegacyTerminalOutcome(
-              {
-                kind: 'legacy_fault',
-                fault: {
-                  kind: 'recovery_parse_failed',
-                  cause: { message: formatError(recoverErr) },
-                },
+          const outcome = materializeLegacyOutcome(
+            progressStore,
+            {
+              kind: 'legacy_fault',
+              fault: {
+                kind: 'recovery_parse_failed',
+                cause: { message: formatError(recoverErr) },
               },
-              { jobId, sessionId: launchRecord.sessionId },
-            ),
-            [{ seq: 1, stream: { kind: 'job', id: jobId } }],
+            },
+            { jobId, sessionId: launchRecord.sessionId },
           );
           service.completeRecoveredJob(
             jobId,
@@ -256,20 +231,18 @@ export function finalizeDeadAdoptedJob({
 
     const outcome: TerminalOutcome =
       exitRecord.exitCode === null
-        ? materializeLegacyTerminalOutcome(
-            planLegacyTerminalOutcome(
-              {
-                kind: 'legacy_fault',
-                fault: legacyWrapperCrashedFault(
+        ? {
+            kind: 'job_fault',
+            fault: {
+              kind: 'wrapper_crashed',
+              cause: {
+                message:
                   exitRecord.signal !== null
                     ? `Provider wrapper exited via signal ${exitRecord.signal} without a terminal outcome`
                     : 'Provider wrapper exited without a numeric exit code or terminal outcome',
-                ),
               },
-              { jobId, sessionId: launchRecord.sessionId },
-            ),
-            [{ seq: 1, stream: { kind: 'job', id: jobId } }],
-          )
+            },
+          }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
     service.completeRecoveredJob(
       jobId,
@@ -285,13 +258,7 @@ export function finalizeDeadAdoptedJob({
     launchRecord.sessionId,
     {
       content: '',
-      outcome: materializeLegacyTerminalOutcome(
-        planLegacyTerminalOutcome(
-          { kind: 'legacy_fault', fault: { kind: 'wrapper_lost' } },
-          { jobId, sessionId: launchRecord.sessionId },
-        ),
-        [{ seq: 1, stream: { kind: 'job', id: jobId } }],
-      ),
+      outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
     },
     'error',
   );

@@ -275,7 +275,7 @@ describe('jobWaitSchema', () => {
     ).toThrow('At least one job required');
   });
 
-  it('rejects a body cursor via strict mode', () => {
+  it('parses an IPC wait cursor when provided in the request body', () => {
     const input = {
       jobIds: ['job-1'],
       projectRoot: '/tmp/project',
@@ -286,13 +286,7 @@ describe('jobWaitSchema', () => {
       },
     };
 
-    expect(() => jobWaitSchema.parse(input)).toThrow();
-
-    const parsed = jobWaitSchema.safeParse(input);
-    expect(parsed.success).toBe(false);
-    if (!parsed.success) {
-      expect(parsed.error.issues[0]?.code).toBe('unrecognized_keys');
-    }
+    expect(jobWaitSchema.parse(input)).toEqual(input);
   });
 
   it('rejects legacy inline-only fields via strict mode', () => {

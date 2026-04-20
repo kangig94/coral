@@ -8,7 +8,11 @@ import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
 import { createDeferred } from '../../shared/test-deferred.js';
 import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
-import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
+import {
+  streamProviderTerminal,
+  type ProviderRequest,
+  type ProviderTerminalEventBody,
+} from '../../providers/protocol.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 
 import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
@@ -32,6 +36,8 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
+
+type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -268,9 +274,7 @@ function createFakeProviderServerHandle(options?: {
   };
 }
 
-type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
-  outcome?: ProviderTurnResult['outcome'];
-};
+type TestProviderTurnResult = ProviderTurnResult;
 
 type _TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
   outcome?: NonNullable<JobStatus['result']>['outcome'];
@@ -280,29 +284,31 @@ function completedOutcome() {
   return { kind: 'completed' } as const;
 }
 
-function withCompletedOutcome<T extends { content: string; outcome?: unknown }>(
-  result: T,
-): T & {
-  outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome>;
-} {
-  if (result.outcome !== undefined) {
-    return result as T & { outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome> };
+function toCompletedResult(
+  result: TestProviderTurnResult | { content: string },
+): TestProviderTurnResult {
+  if ('outcome' in result) {
+    return result;
   }
   return { ...result, outcome: completedOutcome() };
 }
 
+function streamCompletedResult(
+  result: TestProviderTurnResult | Promise<TestProviderTurnResult | { content: string }> | { content: string },
+) {
+  return streamProviderTerminal(Promise.resolve(result).then((value) => toCompletedResult(value)));
+}
+
 function makeProvider(options?: {
-  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult>;
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult | { content: string }>;
   preflight?: Provider['preflight'];
 }): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderTurnResult> => {
-    const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
-    return withCompletedOutcome(result) as ProviderTurnResult;
-  });
+  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })));
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -315,7 +321,7 @@ function makeProvider(options?: {
 function makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
@@ -387,7 +393,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
@@ -819,7 +825,7 @@ describe('ExecutionService', () => {
               kind: 'session',
               id: expect.any(String),
             },
-            seq: 1,
+            seq: expect.any(Number),
           },
         },
       });
@@ -1476,14 +1482,31 @@ describe('ExecutionService', () => {
             jobId: string,
             sessionId: string,
             launchState: string,
-            fault: { kind: 'provider_request_failed'; provider: 'codex'; message: string },
+            terminal: {
+              content: string;
+              outcome: {
+                kind: 'failed';
+                causeRef: {
+                  stream: { kind: 'session'; id: string };
+                  seq: number;
+                };
+              };
+            },
           ): void;
         };
       }
     ).launchOrchestrator.failJob(jobId, 'session-1', 'error', {
-      kind: 'provider_request_failed',
-      provider: 'codex',
-      message: 'provider failed',
+      content: '',
+      outcome: {
+        kind: 'failed',
+        causeRef: {
+          stream: {
+            kind: 'session',
+            id: 'session-1',
+          },
+          seq: 1,
+        },
+      },
     });
 
     expect(markTerminalStatus).toHaveBeenCalledWith(
@@ -2138,7 +2161,7 @@ describe('ExecutionService', () => {
                   kind: 'session',
                   id: session.sessionId,
                 },
-                seq: 1,
+                seq: expect.any(Number),
               },
             },
           },
@@ -2216,7 +2239,7 @@ describe('ExecutionService', () => {
                   kind: 'session',
                   id: session.sessionId,
                 },
-                seq: 1,
+                seq: expect.any(Number),
               },
             },
           },
@@ -2306,7 +2329,7 @@ describe('ExecutionService', () => {
                   kind: 'session',
                   id: session.sessionId,
                 },
-                seq: 1,
+                seq: expect.any(Number),
               },
             },
           },
@@ -2397,7 +2420,7 @@ describe('ExecutionService', () => {
                   kind: 'session',
                   id: session.sessionId,
                 },
-                seq: 1,
+                seq: expect.any(Number),
               },
             },
           },

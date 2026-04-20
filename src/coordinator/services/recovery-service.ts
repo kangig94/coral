@@ -15,7 +15,7 @@ import {
   type JobTerminal,
   writeWorkflowResult,
 } from '../../jobs/api.js';
-import type { ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
+import type { ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../shared/utils.js';
@@ -287,7 +287,12 @@ export class RecoveryService {
     }
 
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
-    const outcome = normalizeLegacyFaultOutcome(launchRecord.jobId, launchRecord.sessionId, fault);
+    const outcome = normalizeLegacyFaultOutcome(
+      this.deps.progressStore,
+      launchRecord.jobId,
+      launchRecord.sessionId,
+      fault,
+    );
 
     this.deps.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeLegacyCoralFault(fault));
     this.deps.launchOrchestrator.writeJobTerminal(
@@ -398,7 +403,7 @@ export class RecoveryService {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderTurnResult,
+    result: ProviderTerminalEventBody,
   ): Promise<void> {
     const appServerLifecycle = this.deps.providerRegistry.getAppServerLifecycle(providerName);
     const runtimeRecord = this.deps.progressStore.readRuntimeRecord(jobId);

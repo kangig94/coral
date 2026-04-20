@@ -1,4 +1,4 @@
-import type { ProviderTurnResult } from '../protocol.js';
+import { providerTerminalEvent, type ProviderTerminalEventBody } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { readString } from '../../shared/utils.js';
 import { resolveModelTier } from '../../shared/schemas.js';
@@ -565,9 +565,9 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     };
   },
 
-  finalize(state, outcome): ProviderTurnResult {
+  finalize(state, outcome): ProviderTerminalEventBody {
     if (outcome.kind === 'nonResumable') {
-      return {
+      return providerTerminalEvent({
         content: '',
         durationMs: Date.now() - state.startedAt,
         nonResumable: true,
@@ -579,7 +579,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
             note: outcome.message,
           },
         },
-      };
+      });
     }
 
     if (state.threadId) {
@@ -587,17 +587,17 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
     }
 
     if (outcome.kind === 'aborted') {
-      return {
+      return providerTerminalEvent({
         content: '',
         conversationRef: state.threadId ?? undefined,
         model: state.model,
         durationMs: Date.now() - state.startedAt,
         outcome: { kind: 'aborted', reason: outcome.reason },
-      };
+      });
     }
 
     if (outcome.kind === 'failed') {
-      return {
+      return providerTerminalEvent({
         content: '',
         conversationRef: state.threadId ?? undefined,
         model: state.model,
@@ -610,7 +610,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
             message: buildProviderFailureMessage('Codex', outcome.message),
           },
         },
-      };
+      });
     }
 
     const turn = outcome.turn as Turn;
@@ -621,7 +621,7 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
       ? buildProviderFailureMessage('Codex', state.error?.message, turnStatus)
       : undefined;
 
-    return {
+    return providerTerminalEvent({
       content: state.lastAgentMessage,
       conversationRef: state.threadId ?? undefined,
       model: state.model,
@@ -638,6 +638,6 @@ export const codexSessionDriver: AppServerSessionDriver<CodexTurnState> = {
               },
             }
           : { kind: 'completed' },
-    };
+    });
   },
 };

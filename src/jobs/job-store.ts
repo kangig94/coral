@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
 import { TypedEventBus } from '../coordinator/event-bus.js';
-import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
+import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
@@ -119,7 +119,7 @@ export class JobStore {
     this.appendEvents =
       appendEvents ??
       ((inputs) => {
-        appendJournalEvents(this.db, inputs, {
+        return appendJournalEvents(this.db, inputs, {
           now: () => new Date(this.runtime.time.now()),
           reducers,
           upcasters: this.upcasters,
@@ -309,41 +309,63 @@ export class JobStore {
     return [...projections.entries()].map(([jobId, status]) => ({ jobId, status }));
   }
 
-  appendEvent(input: CoralEventInput): void {
-    if (input.stream.kind !== 'job') {
-      this.appendEvents([input]);
-      return;
+  appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[] {
+    if (inputs.length === 0) {
+      return [];
     }
 
-    const jobId = input.stream.id;
-    const previous = this.readStatus(jobId);
-    this.appendEvents([input]);
-    if (input.type === 'job.launch.requested') {
-      this.drafts.delete(jobId);
-      this.namespaceOverrides.delete(jobId);
+    const previousByJob = new Map<string, JobStatus | null>();
+    for (const input of inputs) {
+      if (input.stream.kind !== 'job' || previousByJob.has(input.stream.id)) {
+        continue;
+      }
+      previousByJob.set(input.stream.id, this.readStatus(input.stream.id));
     }
 
-    const next = this.readStatus(jobId);
+    const appended = this.appendEvents(inputs) ?? [];
+
+    for (const input of inputs) {
+      if (input.type === 'job.launch.requested' && input.stream.kind === 'job') {
+        this.drafts.delete(input.stream.id);
+        this.namespaceOverrides.delete(input.stream.id);
+      }
+    }
+
+    for (const input of inputs) {
+      if (input.stream.kind !== 'job') {
+        continue;
+      }
+
+      if (input.type === 'job.progress.emitted') {
+        const eventId = this.advanceProgressTail(input.stream.id);
+        const body = input.body as { kind?: string; message?: string };
+        if (body.kind === 'message' && typeof body.message === 'string') {
+          this.eventBus.emit('job:progress', { jobId: input.stream.id, eventId, message: body.message });
+        }
+        continue;
+      }
+
+      if (input.type === 'job.terminal.recorded') {
+        this.advanceProgressTail(input.stream.id);
+        this.jobStartedAt.delete(input.stream.id);
+        const result = this.readTerminalPayload(input.stream.id);
+        if (result !== null) {
+          this.eventBus.emit('job:completed', { jobId: input.stream.id, result });
+        }
+      }
+    }
+
+    for (const [jobId, previous] of previousByJob) {
+      const next = this.readStatus(jobId);
+      this.notifyPhaseChange(previous, next);
+    }
+
     this.notifyWaiters();
-    this.notifyPhaseChange(previous, next);
+    return [...appended];
+  }
 
-    if (input.type === 'job.progress.emitted') {
-      const eventId = this.advanceProgressTail(jobId);
-      const body = input.body as { kind?: string; message?: string };
-      if (body.kind === 'message' && typeof body.message === 'string') {
-        this.eventBus.emit('job:progress', { jobId, eventId, message: body.message });
-      }
-      return;
-    }
-
-    if (input.type === 'job.terminal.recorded') {
-      this.advanceProgressTail(jobId);
-      this.jobStartedAt.delete(jobId);
-      const result = this.readTerminalPayload(jobId);
-      if (result !== null) {
-        this.eventBus.emit('job:completed', { jobId, result });
-      }
-    }
+  appendEvent(input: CoralEventInput): void {
+    this.appendEventsWithResult([input]);
   }
 
   initJob(opts: InitJobOptions): void {

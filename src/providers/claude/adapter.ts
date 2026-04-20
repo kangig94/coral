@@ -9,9 +9,15 @@ import { detectClaudeCli } from '../cli-detection.js';
 import { resolveInjectMd } from '../inject.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { isRecord } from '../../shared/utils.js';
-import type { ProviderRequest, ProviderTurnResult } from '../protocol.js';
+import {
+  providerTerminalEvent,
+  streamProviderEvents,
+  type ProviderEventBody,
+  type ProviderRequest,
+  type ProviderTerminalEventBody,
+} from '../protocol.js';
 import { runAppServerTurn } from '../app-server/runner.js';
-import { mapProviderTurnResultBase } from '../result-mapping.js';
+import { mapProviderTerminalEventBase } from '../result-mapping.js';
 import {
   type ArtifactCleanupRuntime,
   makeOnEvent,
@@ -87,18 +93,18 @@ function buildClaudeArgs(request: ProviderRequest): { prompt: string; systemProm
   };
 }
 
-function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderTurnResult {
-  return {
-    ...mapProviderTurnResultBase(result),
+function mapResult(result: ClaudeExecResult, fallbackConversationRef?: string): ProviderTerminalEventBody {
+  return providerTerminalEvent({
+    ...mapProviderTerminalEventBase(result),
     conversationRef: result.sessionId ?? fallbackConversationRef,
     nonResumable: result.sessionId === null || result.sessionId === undefined ? true : undefined,
     usage: result.costUsd !== null && result.costUsd !== undefined ? { costUsd: result.costUsd } : undefined,
-  };
+  });
 }
 
-function parseError(error: unknown, fallbackModel: string): ProviderTurnResult | null {
+function parseError(error: unknown, fallbackModel: string): ProviderTerminalEventBody | null {
   if (error instanceof ClaudeExecParseError) {
-    return {
+    return providerTerminalEvent({
       content: '',
       nonResumable: true,
       model: fallbackModel,
@@ -114,7 +120,7 @@ function parseError(error: unknown, fallbackModel: string): ProviderTurnResult |
           parseError: error.failure.parseError,
         },
       },
-    };
+    });
   }
   return null;
 }
@@ -164,8 +170,8 @@ function buildPreparedRequest(
   };
 }
 
-function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderTurnResult {
-  return {
+function buildNewSessionRequiredResult(request: ProviderRequest, reason: string): ProviderTerminalEventBody {
+  return providerTerminalEvent({
     content: '',
     model: resolveClaudeModel(request.model, request.coralEnv),
     nonResumable: true,
@@ -177,7 +183,7 @@ function buildNewSessionRequiredResult(request: ProviderRequest, reason: string)
         note: reason,
       },
     },
-  };
+  });
 }
 
 function getPersistentRedirectReason(
@@ -211,38 +217,43 @@ function getPersistentRedirectReason(
   return null;
 }
 
-async function executeFork(
+function executeFork(
   request: ProviderRequest,
   runtime: ProviderRuntime,
   prepared: { prompt: string; systemPrompt?: string; model?: string; effort: EffortLevel },
-): Promise<ProviderTurnResult> {
-  const options = {
-    model: prepared.model,
-    workingDirectory: request.cwd,
-    systemPrompt: prepared.systemPrompt,
-    effort: prepared.effort,
-    bypassPermissions: request.bypassPermissions,
-    onEvent: makeOnEvent(runtime, request.sessionId, extractClaudeProgressMessage, request.cwd),
-    runCli: runtime.runCli,
-    environment: request.coralEnv,
-  };
+): AsyncIterable<ProviderEventBody> {
+  return streamProviderEvents(async (emit) => {
+    const options = {
+      model: prepared.model,
+      workingDirectory: request.cwd,
+      systemPrompt: prepared.systemPrompt,
+      effort: prepared.effort,
+      bypassPermissions: request.bypassPermissions,
+      onEvent: makeOnEvent(emit, extractClaudeProgressMessage, request.cwd),
+      runCli: runtime.runCli,
+      environment: request.coralEnv,
+    };
 
-  try {
-    const conversationRef = requireConversationRef(request, 'fork');
-    return mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options));
-  } catch (error) {
-    const result = parseError(error, request.model ?? 'unknown');
-    if (result) return result;
-    throw error;
-  }
+    try {
+      const conversationRef = requireConversationRef(request, 'fork');
+      emit(mapResult(await executeClaudeFork(conversationRef, prepared.prompt, options)));
+    } catch (error) {
+      const result = parseError(error, request.model ?? 'unknown');
+      if (result) {
+        emit(result);
+        return;
+      }
+      throw error;
+    }
+  });
 }
 
-async function executePersistent(
+function executePersistent(
   request: ProviderRequest,
   runtime: ProviderRuntime,
   _prepared: { prompt: string; systemPrompt?: string; model?: string },
   _persistedContinuity: ClaudePersistedContinuity,
-): Promise<ProviderTurnResult> {
+): AsyncIterable<ProviderEventBody> {
   return runAppServerTurn(claudeSessionDriver, request, runtime);
 }
 
@@ -333,12 +344,14 @@ const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
   },
 };
 
-async function execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderTurnResult> {
+function execute(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
   const prepared = buildPreparedRequest(request);
   const continuity = readClaudePersistedContinuity(runtime.persistedContinuity);
   const redirectReason = getPersistentRedirectReason(request, runtime, continuity, prepared.systemPrompt);
   if (redirectReason) {
-    return buildNewSessionRequiredResult(request, redirectReason);
+    return streamProviderEvents(async (emit) => {
+      emit(buildNewSessionRequiredResult(request, redirectReason));
+    });
   }
 
   if (request.action === 'fork') {

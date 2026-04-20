@@ -23,6 +23,7 @@ import type {
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
+import type { IpcListener } from '../../transport/ipc/server.js';
 
 export type BackendBootSnapshot = {
   version?: string;
@@ -51,6 +52,7 @@ export type BackendCoreOptions = {
   createServerFn?: CreateServerFn;
   fetchFn?: FetchFn;
   listenFn?: (server: Server) => Promise<{ port: number; host: string }>;
+  listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;

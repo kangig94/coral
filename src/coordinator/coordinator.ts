@@ -144,11 +144,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       upcasters,
     });
     if (appended.length === 0) {
-      return;
+      return appended;
     }
 
     publishJobEvents(db, appended);
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
+    return appended;
   };
 
   const core = createBackendCore({

@@ -76,6 +76,9 @@ const CONTRACT_TARGETS = new Set([
   'src/providers/registry.ts',
   'src/simulation/recording.ts',
 ]);
+const TRANSPORT_TARGETS = new Set([
+  'src/transport/ipc/server.ts',
+]);
 
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
@@ -140,6 +143,10 @@ describe('coordinator topology invariants', () => {
       }
 
       if (CONTRACT_TARGETS.has(target)) {
+        return false;
+      }
+
+      if (TRANSPORT_TARGETS.has(target)) {
         return false;
       }
 

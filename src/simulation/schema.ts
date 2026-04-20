@@ -89,7 +89,7 @@ const usageSummarySchema = z.object({
   costUsd: z.number().optional(),
 });
 
-const fakeProviderTurnResultSchema = z.object({
+const fakeProviderTerminalResultSchema = z.object({
   content: z.string().optional(),
   conversationRef: z.string().optional(),
   model: z.string().optional(),
@@ -106,7 +106,7 @@ const fakeProviderSchema = z.object({
   faultProvider: z.enum(['claude', 'codex']).optional(),
   cli: fakeProviderCliSchema.optional(),
   progress: z.array(fakeProviderProgressSchema).optional(),
-  result: fakeProviderTurnResultSchema.optional(),
+  result: fakeProviderTerminalResultSchema.optional(),
   preflightError: scenarioErrorSchema.optional(),
 });
 

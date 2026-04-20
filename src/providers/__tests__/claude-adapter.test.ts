@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../protocol.js';
+import { collectProviderTerminalEvent, type ProviderRequest } from '../protocol.js';
 import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 
 vi.mock('../cli-detection.js', () => ({
@@ -88,7 +88,6 @@ function makeRuntime(
   const checkpointRecovery = vi.fn();
   return {
     signal: controller.signal,
-    onEvent: vi.fn(),
     runCli: vi.fn(),
     acquireServer: lease ? vi.fn(async () => lease) : undefined,
     checkpointRecovery,
@@ -116,7 +115,9 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
       conversationRef: 'sess-original',
     });
 
-    const result = await claudeProvider.execute(makeRequest({ cwd: '/different/workspace' }), runtime);
+    const result = await collectProviderTerminalEvent(
+      claudeProvider.execute(makeRequest({ cwd: '/different/workspace' }), runtime),
+    );
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
     expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
@@ -140,7 +141,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
       },
     );
 
-    await claudeProvider.execute(makeRequest({ cwd: '/other' }), runtime).catch(() => {});
+    await collectProviderTerminalEvent(claudeProvider.execute(makeRequest({ cwd: '/other' }), runtime)).catch(() => {});
 
     expect(runCliMock).not.toHaveBeenCalled();
   });
@@ -163,7 +164,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
       },
     );
 
-    await claudeProvider.execute(makeRequest({ cwd: '/drift' }), runtime).catch(() => {});
+    await collectProviderTerminalEvent(claudeProvider.execute(makeRequest({ cwd: '/drift' }), runtime)).catch(() => {});
 
     expect(acquireServerMock).not.toHaveBeenCalled();
   });
@@ -180,7 +181,7 @@ describe('claude adapter: non-fork requests use the persistent path', () => {
 
     const runtime = makeRuntime(null, { runCli: vi.fn() });
 
-    await expect(claudeProvider.execute(makeRequest(), runtime)).rejects.toThrow(
+    await expect(collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime))).rejects.toThrow(
       'Claude persistent provider requires ProviderRuntime.acquireServer().',
     );
     expect(runtime.runCli).not.toHaveBeenCalled();
@@ -216,7 +217,7 @@ describe('claude adapter: non-fork requests use the persistent path', () => {
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(request, runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(request, runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith(
@@ -377,7 +378,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await sessionEnsureStarted;
     await vi.waitFor(() => {
@@ -427,7 +428,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -474,7 +475,7 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       const calls = runtime.checkpointRecovery.mock.calls as Array<[Record<string, unknown>]>;
@@ -523,7 +524,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -566,7 +567,7 @@ describe('claude adapter: broker death becomes terminal failure (not hung wait)'
     });
 
     const runtime = makeRuntime(lease);
-    const execution = claudeProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -657,10 +658,10 @@ describe('claude adapter: fork action stays on one-shot path regardless of acqui
     }));
 
     const runtime = makeRuntime(lease, { acquireServer: acquireServerMock, runCli: runCliMock });
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original' }),
       runtime,
-    );
+    ));
 
     expect(acquireServerMock).not.toHaveBeenCalled();
     expect(runCliMock).toHaveBeenCalled();
@@ -702,10 +703,10 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'xhigh', model: 'opus' }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('xhigh');
@@ -715,10 +716,10 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'xhigh', model: 'sonnet' }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -728,7 +729,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -736,7 +737,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         model: 'claude-sonnet-4-6',
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -746,7 +747,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -755,7 +756,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         coralEnv: { CORAL_CLAUDE_MODEL_CAP: 'sonnet' },
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -765,10 +766,10 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: undefined, model: 'opus' }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('xhigh');
@@ -778,10 +779,10 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: undefined, model: 'sonnet' }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -791,7 +792,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -800,7 +801,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         coralEnv: { CORAL_CLAUDE_EFFORT: 'medium' },
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('medium');
@@ -810,7 +811,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -819,7 +820,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         coralEnv: { CORAL_CLAUDE_EFFORT: 'low', CORAL_EFFORT: 'high' },
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('low');
@@ -829,7 +830,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -838,7 +839,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         coralEnv: { CORAL_EFFORT: 'high' },
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('high');
@@ -848,10 +849,10 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({ action: 'fork', conversationRef: 'sess-original', effort: 'max', model: 'sonnet' }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -861,7 +862,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runCliMock, runtime } = forkRuntimeCapturingEffort();
 
-    await claudeProvider.execute(
+    await collectProviderTerminalEvent(claudeProvider.execute(
       makeRequest({
         action: 'fork',
         conversationRef: 'sess-original',
@@ -869,7 +870,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         model: 'claude-haiku-3-5',
       }),
       runtime,
-    );
+    ));
 
     const args = runCliMock.mock.calls[0]?.[0]?.args as string[];
     expect(extractEffort(args)).toBe('max');
@@ -879,7 +880,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
     const { claudeProvider } = await loadProvider();
     const { runtime } = forkRuntimeCapturingEffort();
 
-    await expect(
+    expect(() =>
       claudeProvider.execute(
         makeRequest({
           action: 'fork',
@@ -890,7 +891,7 @@ describe('claude adapter: effort clamping for non-Opus tiers', () => {
         }),
         runtime,
       ),
-    ).rejects.toThrow('Invalid CORAL_CLAUDE_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
+    ).toThrow('Invalid CORAL_CLAUDE_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
   });
 });
 
@@ -925,7 +926,7 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
     });
     const acquireServerMock = vi.fn(async () => lease);
     const runtime = makeRuntime(lease, { acquireServer: acquireServerMock, runCli: runCliMock });
-    const execution = claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('session/ensure', expect.objectContaining({ permissionMode: 'default' }));
@@ -977,7 +978,7 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
         conversationRef: 'sess-established-default',
       },
     );
-    const execution = claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime);
+    const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -1016,7 +1017,9 @@ describe('claude adapter: bypassPermissions=false stays on the persistent path',
       },
     );
 
-    const result = await claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime);
+    const result = await collectProviderTerminalEvent(
+      claudeProvider.execute(makeRequest({ bypassPermissions: false }), runtime),
+    );
 
     expect(runCliMock).not.toHaveBeenCalled();
     expect(acquireServerMock).not.toHaveBeenCalled();

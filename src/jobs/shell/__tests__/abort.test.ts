@@ -20,7 +20,11 @@ import type {
   JobStatus,
 } from '../../views.js';
 import type { WaitStreamEvent } from '../../wait.js';
-import type { ProviderRequest as _ProviderRequest, ProviderTurnResult } from '../../../providers/protocol.js';
+import {
+  streamProviderTerminal,
+  type ProviderRequest as _ProviderRequest,
+  type ProviderTerminalEventBody,
+} from '../../../providers/protocol.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 
 import type { PreflightRuntime, Provider } from '../../../providers/provider-contracts.js';
@@ -49,6 +53,8 @@ import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+
+type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -263,9 +269,7 @@ function _createFakeProviderServerHandle(options?: {
   };
 }
 
-type TestProviderTurnResult = Omit<ProviderTurnResult, 'outcome'> & {
-  outcome?: ProviderTurnResult['outcome'];
-};
+type TestProviderTurnResult = ProviderTurnResult;
 
 type TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
   outcome?: NonNullable<JobStatus['result']>['outcome'];
@@ -275,29 +279,40 @@ function completedOutcome() {
   return { kind: 'completed' } as const;
 }
 
-function withCompletedOutcome<T extends { content: string; outcome?: unknown }>(
-  result: T,
-): T & {
-  outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome>;
-} {
-  if (result.outcome !== undefined) {
-    return result as T & { outcome: Exclude<T['outcome'], undefined> | ReturnType<typeof completedOutcome> };
+function toCompletedResult(
+  result: TestProviderTurnResult | { content: string },
+): TestProviderTurnResult {
+  if ('outcome' in result) {
+    return result;
   }
   return { ...result, outcome: completedOutcome() };
 }
 
+function toCompletedJobTerminal(
+  result: TestJobTerminal | { content: string },
+): NonNullable<JobStatus['result']> {
+  if ('outcome' in result && result.outcome !== undefined) {
+    return result as NonNullable<JobStatus['result']>;
+  }
+  return { ...result, outcome: completedOutcome() };
+}
+
+function streamCompletedResult(
+  result: TestProviderTurnResult | Promise<TestProviderTurnResult | { content: string }> | { content: string },
+) {
+  return streamProviderTerminal(Promise.resolve(result).then((value) => toCompletedResult(value)));
+}
+
 function makeProvider(options?: {
-  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult>;
+  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult | { content: string }>;
   preflight?: Provider['preflight'];
 }): {
   provider: Provider;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn(async (...args: Parameters<Provider['execute']>): Promise<ProviderTurnResult> => {
-    const result = await (options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' }));
-    return withCompletedOutcome(result) as ProviderTurnResult;
-  });
+  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })));
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
@@ -310,7 +325,7 @@ function makeProvider(options?: {
 function _makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
@@ -382,7 +397,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
@@ -518,7 +533,7 @@ function _makeStatusRecord(
       state: 'ready',
       updatedAt: '2026-03-06T00:00:00.000Z',
     },
-    ...(options.result ? { result: withCompletedOutcome(options.result) } : {}),
+    ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
   };
 }
 
@@ -539,7 +554,7 @@ function _makeTerminalReplay(
     eventId: options.eventId ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: withCompletedOutcome(options.result ?? { content: 'done' }),
+    result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
   };
 }
 

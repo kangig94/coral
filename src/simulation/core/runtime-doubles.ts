@@ -21,7 +21,8 @@ import { hashToken } from '../../shared/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
-const DEFAULT_HOME = '/tmp/sim/home';
+const DEFAULT_RUNTIME_ROOT = `/tmp/sim/${process.pid}`;
+const DEFAULT_HOME = join(DEFAULT_RUNTIME_ROOT, 'home');
 const DEFAULT_PATH = '/usr/bin';
 const DEFAULT_CWD = '/tmp/sim';
 const DEFAULT_PID = 12_345;

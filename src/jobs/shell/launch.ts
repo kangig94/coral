@@ -6,10 +6,6 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/provider-contracts.js';
-import {
-  legacyWrapperCrashedFault,
-  type RecoveryFaultCompat,
-} from '../../shared/legacy-terminal-outcome-compat.js';
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { getCallerContext } from '../../coordinator/caller-context.js';
@@ -17,10 +13,9 @@ import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal, LaunchState } from '../views.js';
-import type { ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from '../../providers/protocol.js';
+import type { ProviderEventBody, ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import { phaseForOutcome, type AbortReason, type TerminalOutcome } from '../outcome.js';
-import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from './legacy-ingest.js';
+import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
 import { CliBusyError } from '../../coordinator/live/admission.js';
@@ -34,6 +29,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
+import { materializeProviderTerminal } from '../reconcile/job-helpers.js';
 import {
   SessionClaimError,
   rejectLaunch,
@@ -97,7 +93,7 @@ export interface LaunchOrchestratorDeps {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderTurnResult,
+    result: ProviderTerminalEventBody,
   ) => Promise<void>;
 }
 
@@ -163,19 +159,46 @@ export class LaunchOrchestrator {
     });
   }
 
-  private normalizeLegacyOutcome(jobId: string, sessionId: string, legacyOutcome: ProviderTurnResult['outcome']): TerminalOutcome {
-    const plan = planLegacyTerminalOutcome(legacyOutcome, { jobId, sessionId });
-    if (plan.immediateOutcome !== null) {
-      return plan.immediateOutcome;
+  private appendJobFailureCause(
+    jobId: string,
+    sessionId: string,
+    body: JobLaunchRejected,
+    options: {
+      parentJobId?: string;
+      workflowSlotId?: string;
+      projectRoot?: string;
+    } = {},
+  ): TerminalOutcome {
+    const metadata = this.resolveEventMetadata(jobId, options.projectRoot);
+    const [appended] = this.deps.progressStore.appendEventsWithResult([
+      {
+        type: 'job.launch.rejected',
+        stream: { kind: 'job', id: jobId },
+        namespace: metadata.namespace,
+        project: metadata.project,
+        correlationId: metadata.correlationId,
+        refs: {
+          jobId,
+          sessionId,
+          ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
+          ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
+        },
+        bodyVersion: 1,
+        body,
+      },
+    ]);
+
+    if (!appended) {
+      throw new Error(`Failed to append job.launch.rejected for ${jobId}`);
     }
 
-    return materializeLegacyTerminalOutcome(
-      plan,
-      plan.domainEvents.map((event, index) => ({
-        seq: index + 1,
-        stream: event.stream,
-      })),
-    );
+    return {
+      kind: 'failed',
+      causeRef: {
+        stream: appended.stream as CauseRef['stream'],
+        seq: appended.seq,
+      },
+    };
   }
 
   async claimAndAdmitJob(
@@ -381,14 +404,10 @@ export class LaunchOrchestrator {
     this.finishAbortedJob(jobId, sessionId, reason);
   }
 
-  failJob(jobId: string, sessionId: string, launchState: LaunchState, fault: RecoveryFaultCompat): void {
+  failJob(jobId: string, sessionId: string, launchState: LaunchState, terminal: JobTerminal): void {
     const { abortRegistry, jobPools, sessionManager } = this.deps;
-    const outcome = this.normalizeLegacyOutcome(jobId, sessionId, { kind: 'legacy_fault', fault });
     void launchState;
-    if (fault.kind === 'launch_rejected') {
-      this.appendJobEvent(jobId, sessionId, 'job.launch.rejected', fault);
-    }
-    this.writeJobTerminal(jobId, sessionId, { content: '', outcome }, 'error');
+    this.writeJobTerminal(jobId, sessionId, terminal, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
     sessionManager.releaseJob(sessionId, jobId);
@@ -423,18 +442,32 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
   ): Promise<void> {
-    const onEvent = (event: ProviderTurnProgressEvent): void => {
-      const currentStatus = this.deps.progressStore.readStatus(jobId);
-      if (canAdvanceLaunchState(currentStatus)) {
-        this.markJobRunning(jobId);
-      }
-      this.appendProgressEvent(jobId, sessionId, event.message);
-    };
-
     try {
-      const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool, onEvent);
-      const result = await provider.execute(request, runtime);
-      await this.handleJobCompletion(provider.name, request, sessionId, jobId, result);
+      const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
+      let terminal: ProviderTerminalEventBody | null = null;
+
+      for await (const event of provider.execute(request, runtime)) {
+        if (terminal) {
+          throw new Error(`Provider ${provider.name} emitted ${event.type} after launch.terminal`);
+        }
+
+        if (event.type === 'launch.progress') {
+          const currentStatus = this.deps.progressStore.readStatus(jobId);
+          if (canAdvanceLaunchState(currentStatus)) {
+            this.markJobRunning(jobId);
+          }
+          this.appendProgressEvent(jobId, sessionId, event.message);
+          continue;
+        }
+
+        terminal = event;
+      }
+
+      if (!terminal) {
+        throw new Error(`Provider ${provider.name} completed without emitting launch.terminal`);
+      }
+
+      await this.handleJobCompletion(provider.name, request, sessionId, jobId, terminal);
     } catch (error: unknown) {
       this.handleProviderJobError(jobId, sessionId, signal, error);
     }
@@ -445,24 +478,22 @@ export class LaunchOrchestrator {
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderTurnResult,
+    result: ProviderTerminalEventBody,
   ): Promise<void> {
     const { abortRegistry, jobPools, progressStore } = this.deps;
     if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
       this.markJobReady(jobId);
     }
 
-    const outcome = this.normalizeLegacyOutcome(jobId, sessionId, result.outcome);
-    const phase = phaseForOutcome(outcome);
-    const terminalResult: JobTerminal = {
-      content: result.content,
-      durationMs: result.durationMs,
-      nonResumable: result.nonResumable,
-      exitCode: result.exitCode,
-      warnings: result.warnings,
-      usage: result.usage,
-      outcome,
-    };
+    const metadata = this.resolveEventMetadata(jobId, request.cwd);
+    const terminalResult = materializeProviderTerminal(progressStore, result, {
+      jobId,
+      sessionId,
+      namespace: metadata.namespace,
+      project: metadata.project,
+      correlationId: metadata.correlationId,
+    });
+    const phase = phaseForOutcome(terminalResult.outcome);
 
     const currentStatus = progressStore.readStatus(jobId);
     if (currentStatus && isTerminalPhase(currentStatus.phase)) {
@@ -490,14 +521,14 @@ export class LaunchOrchestrator {
     }
 
     if (error instanceof CliBusyError) {
-      this.failJob(jobId, sessionId, 'busy', {
-        kind: 'launch_rejected',
+      const outcome = this.appendJobFailureCause(jobId, sessionId, {
         reason: 'busy',
         message: error.message,
         provider: error.detail.provider,
         globalActive: error.detail.globalActive,
         globalLimit: error.detail.globalLimit,
       });
+      this.failJob(jobId, sessionId, 'busy', { content: '', outcome });
       return;
     }
 
@@ -506,7 +537,16 @@ export class LaunchOrchestrator {
       return;
     }
 
-    this.failJob(jobId, sessionId, 'error', legacyWrapperCrashedFault(errorMessage(error)));
+    this.failJob(jobId, sessionId, 'error', {
+      content: '',
+      outcome: {
+        kind: 'job_fault',
+        fault: {
+          kind: 'wrapper_crashed',
+          cause: { message: errorMessage(error) },
+        },
+      },
+    });
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {
@@ -523,11 +563,9 @@ export class LaunchOrchestrator {
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
-    onEvent: (event: ProviderTurnProgressEvent) => void,
   ): ProviderRuntime {
     return {
       signal,
-      onEvent,
       runCli: bindProviderRunner(
         this.deps.launchCoordinator,
         providerName,

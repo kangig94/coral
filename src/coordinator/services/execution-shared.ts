@@ -19,7 +19,6 @@ import {
   type TerminalOutcome,
   type WorkflowResultMeta,
 } from '../../jobs/api.js';
-import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../../jobs/shell/legacy-ingest.js';
 import type { SessionAllocateOptions } from '../../sessions/shell/store.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { ProjectRequestPort } from '../contracts.js';
@@ -34,6 +33,7 @@ import type { ProviderInstruction } from '../../providers/protocol.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
+import { materializeLegacyOutcome } from '../../jobs/reconcile/job-helpers.js';
 
 interface LaunchIntentBase {
   prompt: string;
@@ -185,22 +185,12 @@ export function buildInterruptedAppServerReport(
 }
 
 export function normalizeLegacyFaultOutcome(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   jobId: string,
   sessionId: string,
   fault: RecoveryFaultCompat,
 ): TerminalOutcome {
-  const plan = planLegacyTerminalOutcome({ kind: 'legacy_fault', fault }, { jobId, sessionId });
-  if (plan.immediateOutcome !== null) {
-    return plan.immediateOutcome;
-  }
-
-  return materializeLegacyTerminalOutcome(
-    plan,
-    plan.domainEvents.map((event, index) => ({
-      seq: index + 1,
-      stream: event.stream,
-    })),
-  );
+  return materializeLegacyOutcome(progressStore, { kind: 'legacy_fault', fault }, { jobId, sessionId });
 }
 
 export function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {

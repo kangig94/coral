@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { codexProvider } from '../codex/adapter.js';
-import type { ProviderRequest } from '../protocol.js';
+import { collectProviderTerminalEvent, type ProviderRequest } from '../protocol.js';
 import type { PreflightRuntime, ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
 
 type CodexPreflightRuntimeFixture = {
@@ -92,7 +92,6 @@ function makeRuntime(
 
   return {
     signal: controller.signal,
-    onEvent: vi.fn(),
     runCli: vi.fn(),
     acquireServer: vi.fn(async () => lease),
     checkpointRecovery,
@@ -241,7 +240,7 @@ describe('codex adapter app-server flow', () => {
     const runtime = makeRuntime(lease);
     const { codexProvider } = await loadProvider();
 
-    const execution = codexProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(codexProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       expect(runtime.checkpointRecovery).toHaveBeenCalledTimes(2);
@@ -328,7 +327,7 @@ describe('codex adapter app-server flow', () => {
     });
     const { codexProvider } = await loadProvider();
 
-    const execution = codexProvider.execute(makeRequest(), runtime);
+    const execution = collectProviderTerminalEvent(codexProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
       expect(runtime.checkpointRecovery).toHaveBeenCalledWith({
@@ -382,13 +381,13 @@ describe('codex adapter app-server flow', () => {
     const { codexProvider } = await loadProvider();
 
     await expect(
-      codexProvider.execute(
+      collectProviderTerminalEvent(codexProvider.execute(
         makeRequest({
           action: 'resume',
           conversationRef: 'thread-missing',
         }),
         runtime,
-      ),
+      )),
     ).resolves.toMatchObject({
       content: '',
       nonResumable: true,
@@ -412,7 +411,7 @@ describe('codex adapter app-server flow', () => {
     const runtime = makeRuntime(lease);
     const { codexProvider } = await loadProvider();
 
-    await expect(
+    expect(() =>
       codexProvider.execute(
         makeRequest({
           action: 'fork',
@@ -420,7 +419,7 @@ describe('codex adapter app-server flow', () => {
         }),
         runtime,
       ),
-    ).rejects.toThrow('Codex app-server fork is unsupported until clone/fork RPC is available.');
+    ).toThrow('Codex app-server fork is unsupported until clone/fork RPC is available.');
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
     expect(lease.releaseMock).not.toHaveBeenCalled();

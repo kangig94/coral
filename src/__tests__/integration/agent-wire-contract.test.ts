@@ -21,7 +21,7 @@ import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/provider-contracts.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
-import type { ProviderInstruction, ProviderRequest } from '../../providers/protocol.js';
+import { streamProviderTerminal, type ProviderInstruction, type ProviderRequest } from '../../providers/protocol.js';
 import type { LifecycleState } from '../../coordinator/control.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 
@@ -175,9 +175,9 @@ async function waitForLaunchRequest(launchRequests: readonly RecordedLaunchReque
 }
 
 const launchRequests: RecordedLaunchRequest[] = [];
-const providerExecute = vi.fn(async (request: ProviderRequest) => {
+const providerExecute = vi.fn((request: ProviderRequest) => {
   launchRequests.push(cloneProviderRequest(request));
-  return { content: 'stub-provider-result', outcome: { kind: 'completed' as const } };
+  return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' as const } });
 });
 
 describe('agent wire contract', () => {

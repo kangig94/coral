@@ -14,7 +14,7 @@ import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/provider-contracts.js';
 import type { CallerContext } from '../../../shared/request-context.js';
-import type { ProviderInstruction, ProviderRequest } from '../../../providers/protocol.js';
+import { streamProviderTerminal, type ProviderInstruction, type ProviderRequest } from '../../../providers/protocol.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 
@@ -75,9 +75,9 @@ describe('pipe executor coral cascade invariant', () => {
       const capturedLaunches: RecordedLaunchRequest[] = [];
       const stubProvider: Provider = {
         name: 'stub-provider',
-        execute: async (request) => {
+        execute: (request) => {
           capturedLaunches.push(cloneProviderRequest(request));
-          return { content: 'stub-provider-result', outcome: { kind: 'completed' } };
+          return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' } });
         },
       };
 

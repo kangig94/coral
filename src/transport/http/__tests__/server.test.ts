@@ -69,6 +69,7 @@ import {
 } from '../../../coordinator/__tests__/server-test-deps.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { SimulationRuntime, flushMicrotasks } from '../../../simulation/core/index.js';
+import { streamProviderTerminal } from '../../../providers/protocol.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import { parseJobStatus } from '../../../jobs/views.js';
 import {
@@ -1253,7 +1254,7 @@ describe('execution backend server', () => {
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register({
         name: 'codex',
-        execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
+        execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
       });
       const executionService = options.executionService ?? createFakeExecutionService();
       const idleTimer = createFakeIdleTimer();
@@ -5403,6 +5404,9 @@ describe('execution backend server', () => {
       const _backend = await startBackendServer({ progressStore });
 
       // After recovery, the old-format job should be marked as a stale_status_schema fault
+      await vi.waitFor(() => {
+        expect(progressStore.readStatus(jobId)?.phase).toBe('error');
+      });
       const status = progressStore.readStatus(jobId);
       expect(status).toMatchObject({
         phase: 'error',

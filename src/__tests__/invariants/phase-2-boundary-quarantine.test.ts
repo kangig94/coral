@@ -10,23 +10,23 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const LEGACY_IDENTIFIER_RE = /^Legacy[A-Za-z0-9_]*$/;
 const LEGACY_HELPERS = new Set([
   'describeLegacyCoralFault',
+  'legacyWrapperCrashedFault',
   'materializeLegacyTerminalOutcome',
   'planLegacyTerminalOutcome',
   'RecoveryFaultCompat',
 ]);
 const ALLOWLIST = [
-  /^src\/coordinator\/api\.ts$/,
-  /^src\/coordinator\/execution-service\.ts$/,
+  /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
+  /^src\/jobs\/shell\/legacy-ingest\.ts$/,
+  /^src\/jobs\/reconcile\/job-helpers\.ts$/,
+  /^src\/jobs\/reconcile\/coordinator\.ts$/,
+  /^src\/jobs\/reconcile\/plan\.ts$/,
+  /^src\/coordinator\/control\.ts$/,
   /^src\/coordinator\/services\/execution-shared\.ts$/,
   /^src\/coordinator\/services\/recovery-service\.ts$/,
-  /^src\/jobs\/reconcile\//,
-  /^src\/jobs\/shell\/launch\.ts$/,
-  /^src\/providers\//,
-  /^src\/runtime\//,
-  /^src\/jobs\/shell\/legacy-ingest\.ts$/,
-  /^src\/simulation\/schema\.ts$/,
-  /^src\/simulation\/core\/index\.ts$/,
-  /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
+  /^src\/providers\/app-server\/driver\.ts$/,
+  /^src\/providers\/provider-contracts\.ts$/,
+  /^src\/providers\/codex\/adapter\.ts$/,
 ];
 
 function scanForbiddenBoundaryIdentifiers(filePath: string): string[] {

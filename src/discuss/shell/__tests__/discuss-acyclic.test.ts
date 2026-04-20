@@ -33,6 +33,9 @@ const SUBSYSTEM_PREFIXES = [
   'jobs',
   'sessions',
   'transport/http',
+  'transport/ipc',
+  'transport',
+  'testing',
   'simulation',
 ] as const;
 

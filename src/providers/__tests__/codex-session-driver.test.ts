@@ -34,27 +34,40 @@ function makeLease(
 
 function makeRuntime(controller = new AbortController()): ProviderRuntime & {
   checkpointRecovery: ReturnType<typeof vi.fn>;
-  onEvent: ReturnType<typeof vi.fn>;
+  emitProgress: (message: string) => void;
+  emitProgressMock: ReturnType<typeof vi.fn>;
 } {
+  const emitProgressMock = vi.fn<(message: string) => void>();
   return {
     signal: controller.signal,
-    onEvent: vi.fn(),
     runCli: vi.fn(),
     checkpointRecovery: vi.fn(),
-  } as ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn>; onEvent: ReturnType<typeof vi.fn> };
+    emitProgress(message: string) {
+      emitProgressMock(message);
+    },
+    emitProgressMock,
+  } as ProviderRuntime & {
+    checkpointRecovery: ReturnType<typeof vi.fn>;
+    emitProgress: (message: string) => void;
+    emitProgressMock: ReturnType<typeof vi.fn>;
+  };
 }
 
 function makeContext(
   request: ProviderRequest,
   lease: ProviderServerLease,
-  runtime: ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn>; onEvent: ReturnType<typeof vi.fn> },
+  runtime: ProviderRuntime & {
+    checkpointRecovery: ReturnType<typeof vi.fn>;
+    emitProgress: (message: string) => void;
+    emitProgressMock: ReturnType<typeof vi.fn>;
+  },
 ) {
   return {
     lease,
     runtime,
     checkpointRecovery: runtime.checkpointRecovery,
     emitProgress(message: string) {
-      runtime.onEvent({ jobId: request.sessionId, message, ts: 'now' });
+      runtime.emitProgress(message);
     },
   };
 }
@@ -62,7 +75,11 @@ function makeContext(
 async function initializeState(
   request: ProviderRequest,
   lease: ProviderServerLease,
-  runtime: ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn>; onEvent: ReturnType<typeof vi.fn> },
+  runtime: ProviderRuntime & {
+    checkpointRecovery: ReturnType<typeof vi.fn>;
+    emitProgress: (message: string) => void;
+    emitProgressMock: ReturnType<typeof vi.fn>;
+  },
 ) {
   const ctx = makeContext(request, lease, runtime);
   const state = codexSessionDriver.createInitialState(ctx, request);

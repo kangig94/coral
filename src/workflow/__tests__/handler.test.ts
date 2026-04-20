@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { streamProviderTerminal } from '../../providers/protocol.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { WorkflowCommand } from '../api.js';
@@ -21,7 +22,7 @@ function createProviderRegistry(): ProviderRegistry {
   for (const name of ['claude', 'codex']) {
     registry.register({
       name,
-      execute: async () => ({ content: `${name} response`, outcome: { kind: 'completed' } }),
+      execute: () => streamProviderTerminal({ content: `${name} response`, outcome: { kind: 'completed' } }),
     });
   }
   return registry;

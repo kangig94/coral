@@ -1,8 +1,8 @@
-import type { ProviderTurnResult } from './protocol.js';
+import type { ProviderTerminalEventBody } from './protocol.js';
 
 /**
  * Raw execution result shape common to both Codex and Claude executors.
- * Not all fields are used by mapProviderTurnResultBase — provider-specific fields
+ * Not all fields are used by mapProviderTerminalEventBase — provider-specific fields
  * (exitCode, warnings, costUsd) are applied by each adapter.
  */
 export interface RawExecResult {
@@ -13,13 +13,13 @@ export interface RawExecResult {
 }
 
 /**
- * Map the common fields shared across all provider result constructions.
+ * Map the common fields shared across all provider terminal event constructions.
  * Session policy (conversationRef, nonResumable) and provider-specific fields
  * (exitCode/warnings vs usage) remain in each adapter.
  */
-export function mapProviderTurnResultBase(
+export function mapProviderTerminalEventBase(
   raw: RawExecResult,
-): Pick<ProviderTurnResult, 'content' | 'model' | 'durationMs' | 'outcome'> {
+): Omit<Pick<ProviderTerminalEventBody, 'type' | 'content' | 'model' | 'durationMs' | 'outcome'>, 'type'> {
   return {
     content: raw.response,
     model: raw.model,

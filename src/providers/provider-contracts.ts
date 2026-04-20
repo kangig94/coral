@@ -1,5 +1,5 @@
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
-import type { ProviderTurnProgressEvent, ProviderRequest, ProviderTurnResult } from './protocol.js';
+import type { ProviderProgressEventBody, ProviderRequest, ProviderTerminalEventBody, ProviderEventBody } from './protocol.js';
 import type { Runtime } from '../runtime/ports.js';
 import { nowIsoString } from '../shared/utils.js';
 import type { ProviderCliRunner } from './runner-port.js';
@@ -73,7 +73,7 @@ export interface ProviderRecoveryContract {
     signal: string | null;
     providerMeta?: Record<string, unknown>;
     fallbackConversationRef?: string;
-  }): Promise<ProviderTurnResult>;
+  }): Promise<ProviderTerminalEventBody>;
 
   /**
    * Build recovery metadata to persist at launch time.
@@ -94,8 +94,7 @@ export interface ProviderRecoveryContract {
 
 /** Build an onEvent callback that parses JSON lines and emits ProviderTurnProgressEvents. */
 export function makeOnEvent<TEvent>(
-  runtime: ProviderRuntime,
-  jobId: string,
+  emit: (event: ProviderProgressEventBody) => void,
   extractor: (event: TEvent, projectRoot?: string) => string | null,
   projectRoot?: string,
 ): (line: string) => void {
@@ -104,8 +103,7 @@ export function makeOnEvent<TEvent>(
       const event = JSON.parse(line) as TEvent;
       const message = extractor(event, projectRoot);
       if (!message) return;
-      const progressEvent: ProviderTurnProgressEvent = { jobId, message, ts: nowIsoString() };
-      runtime.onEvent(progressEvent);
+      emit({ type: 'launch.progress', message, ts: nowIsoString() });
     } catch {
       /* ignore non-JSON or unparseable lines */
     }
@@ -115,7 +113,6 @@ export function makeOnEvent<TEvent>(
 /** Runtime context injected by the ExecutionService into Provider.execute(). */
 export interface ProviderRuntime {
   signal: AbortSignal;
-  onEvent: (event: ProviderTurnProgressEvent) => void;
   runCli: ProviderCliRunner;
   storage?: Pick<Runtime['storage'], 'readFileSync'>;
   env?: Pick<Runtime['env'], 'homedir'>;
@@ -134,7 +131,7 @@ export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
 
 export interface ProviderExecutor {
   readonly name: string;
-  execute(request: ProviderRequest, runtime: ProviderRuntime): Promise<ProviderTurnResult>;
+  execute(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody>;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(runtime: PreflightRuntime): Promise<void>;
 }

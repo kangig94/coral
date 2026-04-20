@@ -1,9 +1,16 @@
-import { describeLegacyCoralFault, type RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
+import {
+  describeLegacyCoralFault,
+  type LegacyTerminalOutcome,
+  type RecoveryFaultCompat,
+} from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isLivePhase } from '../phase.js';
-import type { JobStatus, JobTerminal } from '../views.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
 import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
+import type { LegacyIngestOptions } from '../shell/legacy-ingest.js';
+import type { ProviderTerminalEventBody } from '../../providers/protocol.js';
+import type { TerminalOutcome } from '../outcome.js';
 
 export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
   return {
@@ -44,10 +51,18 @@ export function markJobAsError(
   fault: RecoveryFaultCompat,
   log: (message: string) => void,
 ): void {
-  const outcome = materializeLegacyTerminalOutcome(
-    planLegacyTerminalOutcome({ kind: 'legacy_fault', fault }, { jobId: status.jobId, sessionId: status.sessionId }),
-    [{ seq: 1, stream: { kind: 'job', id: status.jobId } }],
-  );
+  const legacyOutcome: LegacyTerminalOutcome = { kind: 'legacy_fault', fault };
+  const plan = planLegacyTerminalOutcome(legacyOutcome, {
+    jobId: status.jobId,
+    sessionId: status.sessionId,
+  });
+  if (plan.immediateOutcome === null && !progressStore.hasLaunchRecord(status.jobId)) {
+    progressStore.writeLaunchRecord(status.jobId, syntheticLaunchRecord(status));
+  }
+  const outcome = materializeLegacyOutcome(progressStore, legacyOutcome, {
+    jobId: status.jobId,
+    sessionId: status.sessionId,
+  });
   const message = describeLegacyCoralFault(fault);
   const terminalResult: JobTerminal =
     status.jobKind === 'workflow'
@@ -76,4 +91,56 @@ export function markJobAsError(
   } catch {
     progressStore.markTerminalStatus(status.jobId, terminalResult, 'error');
   }
+}
+
+export function materializeLegacyOutcome(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  outcome: LegacyTerminalOutcome,
+  options: LegacyIngestOptions,
+): TerminalOutcome {
+  const plan = planLegacyTerminalOutcome(outcome, options);
+  if (plan.immediateOutcome !== null) {
+    return plan.immediateOutcome;
+  }
+
+  const appended = progressStore.appendEventsWithResult(plan.domainEvents);
+  return materializeLegacyTerminalOutcome(plan, appended);
+}
+
+function syntheticLaunchRecord(status: JobStatus): JobLaunch {
+  return {
+    jobId: status.jobId,
+    sessionId: status.sessionId,
+    provider: status.provider,
+    projectRoot: status.projectRoot,
+    backendNamespace: status.backendNamespace,
+    ...(status.bundleHash === undefined ? {} : { bundleHash: status.bundleHash }),
+    jobKind: status.jobKind ?? 'provider',
+    pool: 'default',
+    enqueueSequence: 0,
+    providerAction: 'exec',
+    request: {
+      prompt: '',
+      cwd: status.projectRoot,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: status.launch.updatedAt,
+  };
+}
+
+export function materializeProviderTerminal(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  terminal: ProviderTerminalEventBody,
+  options: LegacyIngestOptions,
+): JobTerminal {
+  return {
+    content: terminal.content,
+    durationMs: terminal.durationMs,
+    nonResumable: terminal.nonResumable,
+    exitCode: terminal.exitCode,
+    warnings: terminal.warnings,
+    usage: terminal.usage,
+    outcome: materializeLegacyOutcome(progressStore, terminal.outcome, options),
+  };
 }

@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   readBackendInfo,
   removeBackendInfoIfOwner,
@@ -10,8 +10,12 @@ import { ProviderRegistry } from '../../providers/registry.js';
 import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { ProviderTurnResult } from '../../providers/protocol.js';
-import type { LegacyProviderName, LegacyTerminalOutcome } from '../../shared/legacy-terminal-outcome-compat.js';
+import {
+  providerProgressEvent,
+  providerTerminalEvent,
+  streamProviderEvents,
+  type ProviderTerminalEventBody,
+} from '../../providers/protocol.js';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import { SimulationRuntime } from '../runtime.js';
 import { sendJson } from '../../transport/http/handler.js';
@@ -22,6 +26,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
+import { coordinatorPaths } from '../../coordinator/paths.js';
 import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/execution-service.js';
 import { jobsReconcile } from '../../jobs/api.js';
@@ -64,16 +69,19 @@ export { DEFAULT_EPOCH_MS, VirtualTime, VirtualTimerHandle, flushMicrotasks } fr
 export { SimulationRuntime } from '../runtime.js';
 export type { SimulationRuntimeOptions } from '../runtime.js';
 
+type SimulationFaultProviderName = 'claude' | 'codex';
+type SimulationTerminalOutcome = ProviderTerminalEventBody['outcome'];
+
 export type FakeProviderScenario = {
   name?: string;
-  faultProvider?: LegacyProviderName;
+  faultProvider?: SimulationFaultProviderName;
   cli?: {
     command?: string;
     args?: string[];
     extraEnv?: Record<string, string>;
   };
   progress?: Array<{ delayMs?: number; message: string }>;
-  result?: Omit<Partial<ProviderTurnResult>, 'outcome'> & Pick<ProviderTurnResult, 'outcome'>;
+  result?: Omit<Partial<ProviderTerminalEventBody>, 'type' | 'outcome'> & Pick<ProviderTerminalEventBody, 'outcome'>;
   preflightError?: Error | string;
 };
 
@@ -172,7 +180,10 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
   };
 }
 
-function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null | undefined): LegacyTerminalOutcome {
+function buildDefaultExecutionOutcome(
+  aborted: boolean,
+  exitCode: number | null | undefined,
+): SimulationTerminalOutcome {
   if (aborted) {
     return { kind: 'aborted', reason: 'signal_abort' };
   }
@@ -185,7 +196,7 @@ function buildDefaultExecutionOutcome(aborted: boolean, exitCode: number | null 
 function buildRecoveredArtifactFailureOutcome(
   scenario: FakeProviderScenario | undefined,
   message: string,
-): LegacyTerminalOutcome {
+): SimulationTerminalOutcome {
   return {
     kind: 'legacy_fault',
     fault: {
@@ -208,42 +219,40 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           },
         }
       : {}),
-    execute: async (request, providerRuntime) => {
-      const startedAt = runtime.time.now();
+    execute: (request, providerRuntime) =>
+      streamProviderEvents(async (emit) => {
+        const startedAt = runtime.time.now();
 
-      for (const progress of scenario?.progress ?? []) {
-        if ((progress.delayMs ?? 0) > 0) {
-          await runtime.time.sleep(progress.delayMs ?? 0);
+        for (const progress of scenario?.progress ?? []) {
+          if ((progress.delayMs ?? 0) > 0) {
+            await runtime.time.sleep(progress.delayMs ?? 0);
+          }
+          emit(providerProgressEvent(progress.message, nowIsoString(runtime.time)));
         }
-        providerRuntime.onEvent({
-          jobId: request.sessionId,
-          message: progress.message,
-          ts: nowIsoString(runtime.time),
+
+        const cli = await providerRuntime.runCli({
+          command: scenario?.cli?.command ?? providerName,
+          args: scenario?.cli?.args ?? [`--${request.action}`],
+          prompt: request.prompt,
+          cwd: request.cwd,
+          extraEnv: {
+            ...request.coralEnv,
+            ...(scenario?.cli?.extraEnv ?? {}),
+          },
         });
-      }
 
-      const cli = await providerRuntime.runCli({
-        command: scenario?.cli?.command ?? providerName,
-        args: scenario?.cli?.args ?? [`--${request.action}`],
-        prompt: request.prompt,
-        cwd: request.cwd,
-        extraEnv: {
-          ...request.coralEnv,
-          ...(scenario?.cli?.extraEnv ?? {}),
-        },
-      });
-
-      const exitCode = scenario?.result?.exitCode ?? cli.code;
-      const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(cli.aborted, exitCode);
-      const result: ProviderTurnResult = {
-        ...scenario?.result,
-        content: scenario?.result?.content ?? cli.stdout.trimEnd(),
-        exitCode,
-        durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
-        outcome,
-      };
-      return result;
-    },
+        const exitCode = scenario?.result?.exitCode ?? cli.code;
+        const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(cli.aborted, exitCode);
+        emit(
+          providerTerminalEvent({
+            ...scenario?.result,
+            content: scenario?.result?.content ?? cli.stdout.trimEnd(),
+            exitCode,
+            durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
+            outcome,
+          }),
+        );
+      }),
     artifactRecovery: {
       buildRecoveryMeta: () => ({ provider: providerName }),
       finalizeFromArtifacts: async ({ stdoutPath, stderrPath, exitCode, signal }) => {
@@ -255,14 +264,13 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           (recoveredArtifactFailed
             ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
             : buildDefaultExecutionOutcome(signal !== null, exitCode));
-        const result: ProviderTurnResult = {
+        return providerTerminalEvent({
           ...scenario?.result,
           content: scenario?.result?.content ?? stdout,
           exitCode: scenario?.result?.exitCode ?? exitCode,
           nonResumable: scenario?.result?.nonResumable ?? (recoveredArtifactFailed ? true : undefined),
           outcome,
-        };
-        return result;
+        });
       },
       extractProgress: ({ stdoutPath, fromOffset }) => {
         const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset, runtime.storage);
@@ -415,6 +423,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       hooks.listenCalls.push({ host: listenHost, port: listenPort });
       return { host: listenHost, port: listenPort };
     },
+    listenIpcFn: async () => ({
+      socketPath: coordinatorPaths('dev', runtime.env.fullSnapshot(), {
+        baseDir: join(runtime.env.homedir(), '.coral'),
+      }).socketPath,
+    }),
     acquireLockFn: async (bootPluginRoot, instanceId, version, bundleHash, flavor) => {
       hooks.acquireLockCalls.push({
         pluginRoot: bootPluginRoot,

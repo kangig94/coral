@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ProviderRequest } from '../protocol.js';
+import { collectProviderTerminalEvent, providerTerminalEvent, type ProviderRequest } from '../protocol.js';
 import type { AppServerSessionDriver, DriverStepOutcome, TurnOutcome } from '../app-server/driver.js';
 import { runAppServerTurn } from '../app-server/runner.js';
 import type { ProviderRuntime, ProviderServerLease } from '../provider-contracts.js';
@@ -65,13 +65,10 @@ function makeLease(options: { unsubscribeThrows?: boolean } = {}): ProviderServe
 function makeRuntime(lease: ProviderServerLease, controller = new AbortController()): ProviderRuntime & {
   acquireServer: ReturnType<typeof vi.fn>;
   checkpointRecovery: ReturnType<typeof vi.fn>;
-  onEvent: ReturnType<typeof vi.fn>;
 } {
   const checkpointRecovery = vi.fn();
-  const onEvent = vi.fn();
   return {
     signal: controller.signal,
-    onEvent,
     runCli: vi.fn(),
     acquireServer: vi.fn(async () => lease),
     checkpointRecovery,
@@ -174,18 +171,18 @@ function createDriver(options: {
           return options.finalize(state, outcome);
         }
         if (outcome.kind === 'completed') {
-          return {
+          return providerTerminalEvent({
             content:
               state.value ||
               (typeof outcome.turn === 'string' ? outcome.turn : 'completed'),
             outcome: { kind: 'completed' },
-          };
+          });
         }
         if (outcome.kind === 'aborted') {
-          return { content: '', outcome: { kind: 'aborted', reason: outcome.reason } };
+          return providerTerminalEvent({ content: '', outcome: { kind: 'aborted', reason: outcome.reason } });
         }
         if (outcome.kind === 'nonResumable') {
-          return {
+          return providerTerminalEvent({
             content: '',
             nonResumable: true,
             outcome: {
@@ -196,9 +193,9 @@ function createDriver(options: {
                 note: outcome.message,
               },
             },
-          };
+          });
         }
-        return {
+        return providerTerminalEvent({
           content: '',
           exitCode: 1,
           outcome: {
@@ -209,7 +206,7 @@ function createDriver(options: {
               message: outcome.message,
             },
           },
-        };
+        });
       },
     },
   };
@@ -226,7 +223,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const result = await runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const result = await collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
 
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ content: 'subscribed:1' });
@@ -245,7 +242,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const result = await runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const result = await collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
 
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ content: 'subscribed:0' });
@@ -265,7 +262,9 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const result = await runAppServerTurn(driver, makeRequest({ action: 'resume' }), makeRuntime(lease));
+    const result = await collectProviderTerminalEvent(
+      runAppServerTurn(driver, makeRequest({ action: 'resume' }), makeRuntime(lease)),
+    );
 
     expect(startTurn).not.toHaveBeenCalled();
     expect(lease.subscribeMock).not.toHaveBeenCalled();
@@ -296,7 +295,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const result = await runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const result = await collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
 
     expect(awaitTurnOutcome).not.toHaveBeenCalled();
     expect(result).toMatchObject({ content: 'immediate-terminal' });
@@ -318,7 +317,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller)));
 
     controller.abort();
     initializeDeferred.resolve({});
@@ -339,7 +338,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller)));
 
     await vi.waitFor(() => {
       expect(stateRef()).toBeDefined();
@@ -362,7 +361,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease, controller)));
 
     await vi.waitFor(() => {
       expect(stateRef()).toBeDefined();
@@ -384,7 +383,7 @@ describe('runAppServerTurn', () => {
     }));
     const { driver } = createDriver({ onTransportClosed });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
     lease.close(new Error('transport down'));
 
     await expect(execution).resolves.toMatchObject({
@@ -409,7 +408,7 @@ describe('runAppServerTurn', () => {
     }));
     const { driver, stateRef } = createDriver({ onTransportClosed });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
     await vi.waitFor(() => {
       expect(stateRef()).toBeDefined();
     });
@@ -431,7 +430,7 @@ describe('runAppServerTurn', () => {
       finalize(state, outcome) {
         expect(state.ctxNotifications).not.toContain('late-notification');
         expect(state.value).toBe('closed-state');
-        return {
+        return providerTerminalEvent({
           content: state.value,
           exitCode: outcome.kind === 'failed' ? 1 : 0,
           outcome:
@@ -445,11 +444,11 @@ describe('runAppServerTurn', () => {
                   },
                 }
               : { kind: 'completed' },
-        };
+        });
       },
     });
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
     lease.close(new Error('transport close'));
     setTimeout(() => {
       lease.emit({ method: 'late-notification', params: { value: 'should-not-apply' } });
@@ -478,7 +477,7 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    const result = await runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const result = await collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
 
     expect(result).toMatchObject({
       exitCode: 1,
@@ -497,7 +496,7 @@ describe('runAppServerTurn', () => {
     const lease = makeLease();
     const { driver, stateRef } = createDriver();
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
     await vi.waitFor(() => {
       expect(stateRef()).toBeDefined();
     });
@@ -521,7 +520,9 @@ describe('runAppServerTurn', () => {
       },
     });
 
-    await expect(runAppServerTurn(driver, makeRequest(), makeRuntime(lease))).resolves.toMatchObject({
+    await expect(
+      collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease))),
+    ).resolves.toMatchObject({
       nonResumable: true,
       outcome: {
         kind: 'legacy_fault',
@@ -539,7 +540,7 @@ describe('runAppServerTurn', () => {
     const lease = makeLease({ unsubscribeThrows: true });
     const { driver, stateRef } = createDriver();
 
-    const execution = runAppServerTurn(driver, makeRequest(), makeRuntime(lease));
+    const execution = collectProviderTerminalEvent(runAppServerTurn(driver, makeRequest(), makeRuntime(lease)));
     await vi.waitFor(() => {
       expect(stateRef()).toBeDefined();
     });
