@@ -39,3 +39,11 @@ export function buildCallerContext(
     coralEnv: buildControllerEnv(body, coralEnvSnapshot),
   };
 }
+
+export function buildCallerContextFromQuery(
+  projectRoot: string,
+  pluginRoot: string,
+  coralEnvSnapshot: Readonly<Record<string, string>>,
+): CallerContext {
+  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot } };
+}

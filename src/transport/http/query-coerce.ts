@@ -1,4 +1,4 @@
-import type { CallerContext } from '../../shared/request-context.js';
+export { buildCallerContextFromQuery } from '../shared-context.js';
 
 export function parseBooleanQuery(value: unknown): boolean | undefined {
   if (value === 'true' || value === '1') return true;
@@ -9,12 +9,4 @@ export function parseBooleanQuery(value: unknown): boolean | undefined {
 
 export function queryParamsToObject(params: URLSearchParams): Record<string, string> {
   return Object.fromEntries(params);
-}
-
-export function buildCallerContextFromQuery(
-  projectRoot: string,
-  pluginRoot: string,
-  coralEnvSnapshot: Readonly<Record<string, string>>,
-): CallerContext {
-  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot } };
 }

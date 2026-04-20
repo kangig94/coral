@@ -1,28 +1,33 @@
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/api.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { ToolDomainResult } from '../shared/tool-domain-result.js';
-import { buildCallerContextFromQuery } from './http/query-coerce.js';
 import { domainError, domainResultToHttp, launchToHttp } from './http/tool-response.js';
 import type { HttpHandlerPorts } from './http/contracts.js';
 import type { RpcMethodSpec } from './rpc-catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc-ports.js';
-import { buildCallerContext, decodePathSegment } from './shared-context.js';
+import { buildCallerContext, buildCallerContextFromQuery, decodePathSegment } from './shared-context.js';
 
 export type CatalogRequestExecution =
-  | { kind: 'unary'; body: unknown }
+  | { kind: 'unary'; body: unknown; statusCode?: number }
   | { kind: 'subscription'; notifications: AsyncIterable<unknown> };
 
-const BACKEND_RECOVERING_RESPONSE = {
-  code: 'backend_recovering',
-  message: 'recovering — retry after 500ms',
-};
+const BACKEND_RECOVERING_MESSAGE = 'recovering — retry after 500ms';
 
 function invalidRequestResult(message = 'invalid request', detail?: unknown): ToolDomainResult {
   return domainError('invalid_request', message, detail);
 }
 
-function unary(body: unknown): CatalogRequestExecution {
-  return { kind: 'unary', body };
+function unary(body: unknown, statusCode?: number): CatalogRequestExecution {
+  return statusCode === undefined ? { kind: 'unary', body } : { kind: 'unary', body, statusCode };
+}
+
+function unaryHttp(response: { statusCode: number; body: unknown }): CatalogRequestExecution {
+  return unary(response.body, response.statusCode);
+}
+
+function unaryDomain(result: ToolDomainResult, successStatusCode = 200): CatalogRequestExecution {
+  const response = domainResultToHttp(result);
+  return unary(response.body, result.ok ? successStatusCode : response.statusCode);
 }
 
 function buildBodyCallerContext(
@@ -32,11 +37,36 @@ function buildBodyCallerContext(
   return buildCallerContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
-function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): unknown | null {
+function buildQueryContext(
+  request: { projectRoot: string },
+  rpcPorts: HttpHandlerPorts,
+): CallerContext {
+  return buildCallerContextFromQuery(request.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
+}
+
+function stripTransportContextKeys<T extends Record<string, unknown>>(
+  parsed: T,
+): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap'> {
+  const {
+    projectRoot: _projectRoot,
+    owner: _owner,
+    effort: _effort,
+    claudeModelCap: _claudeModelCap,
+    ...args
+  } = parsed as T & {
+    projectRoot?: unknown;
+    owner?: unknown;
+    effort?: unknown;
+    claudeModelCap?: unknown;
+  };
+  return args;
+}
+
+function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: number; body: unknown } | null {
   if (!rpcPorts.admin.isLaunchFenceActive()) {
     return null;
   }
-  return BACKEND_RECOVERING_RESPONSE;
+  return domainResultToHttp(domainError('backend_recovering', BACKEND_RECOVERING_MESSAGE));
 }
 
 function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal): T {
@@ -52,88 +82,6 @@ function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal
   return request;
 }
 
-function defaultSuccessStatus(methodName: string): number {
-  switch (methodName) {
-    case 'sessions.create':
-    case 'sessions.fork':
-    case 'discuss.session.create':
-    case 'kb.memo.create':
-    case 'kb.note.create':
-    case 'kb.source.create':
-      return 201;
-    case 'sessions.message':
-    case 'workflow.run':
-      return 202;
-    default:
-      return 200;
-  }
-}
-
-function defaultErrorStatus(methodName: string): number {
-  switch (methodName) {
-    case 'sessions.create':
-    case 'sessions.message':
-    case 'sessions.fork':
-    case 'workflow.run':
-      return 400;
-    default:
-      return 500;
-  }
-}
-
-function errorCode(body: unknown): string | null {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return null;
-  }
-
-  const code = (body as Record<string, unknown>).code;
-  return typeof code === 'string' ? code : null;
-}
-
-export function catalogHttpStatus(
-  spec: RpcMethodSpec<unknown, unknown>,
-  body: unknown,
-): number {
-  const code = errorCode(body);
-  if (!code) {
-    return defaultSuccessStatus(spec.name);
-  }
-
-  switch (code) {
-    case 'invalid_request':
-    case 'invalid_agent':
-      return 400;
-    case 'not_found':
-    case 'session_not_found':
-    case 'unknown_tool':
-    case 'agent_not_found':
-    case 'agent_namespace_not_found':
-    case 'unknown_provider':
-    case 'job_not_found':
-    case 'jobs_not_found':
-      return 404;
-    case 'scope_mismatch':
-      return 403;
-    case 'backend_recovering':
-    case 'busy':
-    case 'preflight_failed':
-    case 'kb_unavailable':
-      return 503;
-    case 'session_busy':
-    case 'non_resumable':
-    case 'legacy_session_unsupported':
-    case 'provider_mismatch':
-    case 'audit_requires_ended_session':
-      return 409;
-    case 'start_failed':
-    case 'kb_error':
-    case 'discuss_error':
-      return 500;
-    default:
-      return defaultErrorStatus(spec.name);
-  }
-}
-
 export async function executeCatalogRequest(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
@@ -144,9 +92,9 @@ export async function executeCatalogRequest(
     case 'sessions.create': {
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.start(
         parsed.provider,
@@ -161,15 +109,15 @@ export async function executeCatalogRequest(
         },
         ctx,
       );
-      return unary(launchToHttp(decision, 201).body);
+      return unaryHttp(launchToHttp(decision, 201));
     }
 
     case 'sessions.message': {
       const parsed = request as Record<string, unknown> & { sessionId: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.resumeBySessionId(
         {
@@ -184,15 +132,15 @@ export async function executeCatalogRequest(
         },
         ctx,
       );
-      return unary(launchToHttp(decision, 202).body);
+      return unaryHttp(launchToHttp(decision, 202));
     }
 
     case 'sessions.fork': {
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.forkBySessionId(
         {
@@ -207,33 +155,33 @@ export async function executeCatalogRequest(
         },
         ctx,
       );
-      return unary(launchToHttp(decision, 201).body);
+      return unaryHttp(launchToHttp(decision, 201));
     }
 
     case 'workflow.run': {
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand } = parsed;
       const result = await rpcPorts.workflows.execute(workflowCommand as WorkflowPortInput, ctx);
       if (result.kind === 'invalid_request') {
-        return unary(domainResultToHttp(invalidRequestResult(result.message, result.detail)).body);
+        return unaryHttp(domainResultToHttp(invalidRequestResult(result.message, result.detail)));
       }
 
-      return unary(launchToHttp(result.decision, 202).body);
+      return unaryHttp(launchToHttp(result.decision, 202));
     }
 
     case 'jobs.abort': {
       const parsed = request as { jobs: string[]; projectRoot: string };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
       if (scopeCheck.mismatch.length > 0) {
-        return unary(
+        return unaryHttp(
           domainResultToHttp(
             domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-          ).body,
+          ),
         );
       }
       if (scopeCheck.missing.length === parsed.jobs.length) {
@@ -241,7 +189,7 @@ export async function executeCatalogRequest(
           code: 'jobs_not_found',
           message: 'Requested jobs were not found',
           detail: { jobs: parsed.jobs },
-        });
+        }, 404);
       }
 
       return unary(rpcPorts.jobs.abort(parsed.jobs));
@@ -263,7 +211,7 @@ export async function executeCatalogRequest(
       const parsed = request as { jobId: string };
       const detail = rpcPorts.jobs.detail(parsed.jobId);
       if (!detail) {
-        return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` });
+        return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
       }
       return unary(detail);
     }
@@ -277,10 +225,10 @@ export async function executeCatalogRequest(
       };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
       if (scopeCheck.mismatch.length > 0) {
-        return unary(
+        return unaryHttp(
           domainResultToHttp(
             domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-          ).body,
+          ),
         );
       }
       if (scopeCheck.missing.length === parsed.jobIds.length) {
@@ -288,7 +236,7 @@ export async function executeCatalogRequest(
           code: 'jobs_not_found',
           message: 'Requested jobs were not found',
           detail: { jobs: scopeCheck.missing },
-        });
+        }, 404);
       }
 
       const waitRequest: WaitStreamRequest = { ...parsed };
@@ -299,23 +247,16 @@ export async function executeCatalogRequest(
     }
 
     case 'discuss.persona.generate':
-      return unary(domainResultToHttp(rpcPorts.discuss.seed(request)).body);
+      return unaryHttp(domainResultToHttp(rpcPorts.discuss.seed(request)));
 
     case 'discuss.session.create': {
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const {
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.discuss.start(args, ctx)).body);
+      return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
     }
 
     case 'discuss.session.list':
@@ -323,29 +264,21 @@ export async function executeCatalogRequest(
 
     case 'discuss.session.detail': {
       const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        rpcPorts.identity.pluginRoot,
-        rpcPorts.coralEnvSnapshot,
-      );
+      const context = buildQueryContext(parsed, rpcPorts);
       const detail = rpcPorts.discuss.loadDetail(context.projectRoot, parsed.sessionId, parsed.view ?? 'control');
       if (!detail) {
-        return unary({ code: 'session_not_found', message: 'Session not found' });
+        return unary({ code: 'session_not_found', message: 'Session not found' }, 404);
       }
       if (detail === 'audit_requires_ended_session') {
-        return unary({ code: 'audit_requires_ended_session', message: 'Audit requires ended session' });
+        return unary({ code: 'audit_requires_ended_session', message: 'Audit requires ended session' }, 409);
       }
       return unary(detail);
     }
 
     case 'discuss.session.events': {
       const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        rpcPorts.identity.pluginRoot,
-        rpcPorts.coralEnvSnapshot,
-      );
-      return unary(
+      const context = buildQueryContext(parsed, rpcPorts);
+      return unaryHttp(
         domainResultToHttp(
           rpcPorts.discuss.watch(
             {
@@ -354,195 +287,150 @@ export async function executeCatalogRequest(
             },
             context,
           ),
-        ).body,
+        ),
       );
     }
 
     case 'discuss.session.bid': {
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const {
-        sessionId,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.discuss.bid({ ...args, session: sessionId }, ctx)).body);
+      const { sessionId, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.bid({ ...args, session: sessionId }, ctx)));
     }
 
     case 'discuss.session.speech': {
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unary(recovering);
+      if (recovering) return unaryHttp(recovering);
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const {
-        sessionId,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.discuss.speech({ ...args, session: sessionId }, ctx)).body);
+      const { sessionId, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.speech({ ...args, session: sessionId }, ctx)));
     }
 
     case 'discuss.session.delete': {
       const parsed = request as { sessionId: string; projectRoot: string };
-      const context = buildCallerContextFromQuery(
-        parsed.projectRoot,
-        rpcPorts.identity.pluginRoot,
-        rpcPorts.coralEnvSnapshot,
-      );
-      return unary(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)).body);
+      const context = buildQueryContext(parsed, rpcPorts);
+      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)));
     }
 
     case 'kb.entries.search': {
       const parsed = request as { q: string; scope?: string; top_k?: number };
-      return unary(
+      return unaryHttp(
         domainResultToHttp(
           await rpcPorts.kb.readSearch({
             query: parsed.q,
             ...(parsed.scope === undefined ? {} : { scope: parsed.scope }),
             ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
           }),
-        ).body,
+        ),
       );
     }
 
     case 'kb.note.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(rpcPorts.kb.readNote(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readNote(slug)));
     }
 
     case 'kb.note.create': {
       const parsed = request as Record<string, unknown>;
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const {
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.kb.createNote(args, ctx)).body);
+      return unaryDomain(await rpcPorts.kb.createNote(stripTransportContextKeys(parsed), ctx), 201);
     }
 
     case 'kb.note.update': {
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
 
-      const {
-        slug: _slug,
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug })).body);
+      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.updateNote({ ...args, note: slug })));
     }
 
     case 'kb.note.delete': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(await rpcPorts.kb.deleteNote(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteNote(slug)));
     }
 
     case 'kb.source.list':
-      return unary(domainResultToHttp(await rpcPorts.kb.listSources()).body);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listSources()));
 
     case 'kb.source.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(rpcPorts.kb.readSource(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readSource(slug)));
     }
 
     case 'kb.source.create': {
       const parsed = request as Record<string, unknown>;
-      const {
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
-      return unary(domainResultToHttp(await rpcPorts.kb.createSource(args)).body);
+      return unaryDomain(await rpcPorts.kb.createSource(stripTransportContextKeys(parsed)), 201);
     }
 
     case 'kb.source.delete': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(await rpcPorts.kb.deleteSource(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.deleteSource(slug)));
     }
 
     case 'kb.community.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(rpcPorts.kb.readCommunity(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readCommunity(slug)));
     }
 
     case 'kb.memo.list': {
       const parsed = request as { projectRoot: string; owner?: string };
-      return unary(
+      return unaryHttp(
         domainResultToHttp(
           rpcPorts.kb.listMemos(
             parsed.owner === undefined ? {} : { owner: parsed.owner },
-            buildCallerContextFromQuery(parsed.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot),
+            buildQueryContext(parsed, rpcPorts),
           ),
-        ).body,
+        ),
       );
     }
 
     case 'kb.memo.read': {
       const parsed = request as { slug: string; projectRoot: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(
         domainResultToHttp(
           rpcPorts.kb.readMemo(
             slug,
-            buildCallerContextFromQuery(parsed.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot),
+            buildQueryContext(parsed, rpcPorts),
           ),
-        ).body,
+        ),
       );
     }
 
     case 'kb.memo.create': {
       const parsed = request as Record<string, unknown>;
       const ctx = buildBodyCallerContext(parsed, rpcPorts);
-      if (!ctx) return unary(domainResultToHttp(invalidRequestResult()).body);
+      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const {
-        projectRoot: _projectRoot,
-        owner: _owner,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        ...args
-      } = parsed;
+      const args = stripTransportContextKeys(parsed);
       const memoArgs = ctx.coralEnv.CORAL_OWNER === undefined ? args : { ...args, owner: ctx.coralEnv.CORAL_OWNER };
-      return unary(domainResultToHttp(rpcPorts.kb.createMemo(memoArgs, ctx)).body);
+      return unaryDomain(rpcPorts.kb.createMemo(memoArgs, ctx), 201);
     }
 
     case 'kb.memo.delete': {
       const parsed = request as { projectRoot: string; pattern?: string; owner?: string; all?: boolean };
-      return unary(
+      return unaryHttp(
         domainResultToHttp(
           rpcPorts.kb.deleteMemos(
             {
@@ -550,34 +438,34 @@ export async function executeCatalogRequest(
               ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),
               ...(parsed.all === undefined ? {} : { all: parsed.all }),
             },
-            buildCallerContextFromQuery(parsed.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot),
+            buildQueryContext(parsed, rpcPorts),
           ),
-        ).body,
+        ),
       );
     }
 
     case 'kb.principles.list': {
       const parsed = request as { q?: string; top_k?: number; verbose?: boolean };
-      return unary(
+      return unaryHttp(
         domainResultToHttp(
           await rpcPorts.kb.listPrinciples({
             ...(parsed.q === undefined ? {} : { query: parsed.q }),
             ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
             ...(parsed.verbose === undefined ? {} : { verbose: parsed.verbose }),
           }),
-        ).body,
+        ),
       );
     }
 
     case 'kb.principle.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unary(domainResultToHttp(invalidRequestResult('Invalid KB slug')).body);
-      return unary(domainResultToHttp(rpcPorts.kb.readPrinciple(slug)).body);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readPrinciple(slug)));
     }
 
     case 'kb.reindex':
-      return unary(domainResultToHttp(await rpcPorts.kb.reindex()).body);
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.reindex()));
 
     default:
       throw new Error(`Unhandled transport RPC route: ${spec.name}`);

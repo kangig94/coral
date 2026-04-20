@@ -6,7 +6,7 @@ import {
   type WaitStreamEvent,
 } from '../../jobs/api.js';
 import { isRecord } from '../../shared/utils.js';
-import { catalogHttpStatus, executeCatalogRequest } from '../dispatch.js';
+import { executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
 import type { RpcMethodSpec } from '../rpc-catalog.js';
 import {
@@ -255,12 +255,8 @@ async function parseCatalogRequest(
   return parsed.data;
 }
 
-function sendCatalogResponse(
-  res: ServerResponse,
-  spec: RpcMethodSpec<unknown, unknown>,
-  body: unknown,
-): void {
-  sendJson(res, catalogHttpStatus(spec, body), body);
+function sendCatalogResponse(res: ServerResponse, result: { statusCode?: number; body: unknown }): void {
+  sendJson(res, result.statusCode ?? 200, result.body);
 }
 
 async function handleCatalogUnaryRoute(
@@ -274,7 +270,7 @@ async function handleCatalogUnaryRoute(
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
 
-  sendCatalogResponse(res, spec, result.body);
+  sendCatalogResponse(res, result);
 }
 
 async function handleJobsWaitSubscription(
@@ -314,7 +310,7 @@ async function handleJobsWaitSubscription(
   const execution = await executeCatalogRequest(spec, waitRequest, deps, controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
-    sendCatalogResponse(res, spec, execution.body);
+    sendCatalogResponse(res, execution);
     return;
   }
 
