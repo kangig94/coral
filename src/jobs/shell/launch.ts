@@ -12,7 +12,7 @@ import { getCallerContext } from '../../coordinator/caller-context.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal, LaunchState } from '../views.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
 import type { ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
@@ -404,9 +404,8 @@ export class LaunchOrchestrator {
     this.finishAbortedJob(jobId, sessionId, reason);
   }
 
-  failJob(jobId: string, sessionId: string, launchState: LaunchState, terminal: JobTerminal): void {
+  failJob(jobId: string, sessionId: string, terminal: JobTerminal): void {
     const { abortRegistry, jobPools, sessionManager } = this.deps;
-    void launchState;
     this.writeJobTerminal(jobId, sessionId, terminal, 'error');
     abortRegistry.remove(jobId);
     jobPools.delete(jobId);
@@ -528,7 +527,7 @@ export class LaunchOrchestrator {
         globalActive: error.detail.globalActive,
         globalLimit: error.detail.globalLimit,
       });
-      this.failJob(jobId, sessionId, 'busy', { content: '', outcome });
+      this.failJob(jobId, sessionId, { content: '', outcome });
       return;
     }
 
@@ -537,7 +536,7 @@ export class LaunchOrchestrator {
       return;
     }
 
-    this.failJob(jobId, sessionId, 'error', {
+    this.failJob(jobId, sessionId, {
       content: '',
       outcome: {
         kind: 'job_fault',
@@ -640,8 +639,7 @@ export class LaunchOrchestrator {
   }
 
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {
-    const { abortRegistry, jobPools, progressStore, sessionManager } = this.deps;
-    void progressStore;
+    const { abortRegistry, jobPools, sessionManager } = this.deps;
     this.appendJobEvent(jobId, sessionId, 'job.aborted', { reason });
     this.writeJobTerminal(
       jobId,

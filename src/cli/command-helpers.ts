@@ -484,30 +484,18 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   return {
     createSession: async (provider, prompt, options = {}) => {
-      if (commandClass === 'remote') {
-        remoteDispatchUnavailable(path);
-      }
-
       return request<SessionCreateResponse>(
         'sessions.create',
         buildTransportContextBody({ provider, prompt, ...options }, defaultContext),
       );
     },
     sendMessage: async (sessionId, prompt, options = {}) => {
-      if (commandClass === 'remote') {
-        remoteDispatchUnavailable(path);
-      }
-
       return request<SessionMessageResponse>(
         'sessions.message',
         buildTransportContextBody({ sessionId, prompt, ...options }, defaultContext),
       );
     },
     workflow: async (expression, options) => {
-      if (commandClass === 'remote') {
-        remoteDispatchUnavailable(path);
-      }
-
       return request<WorkflowLaunchResponse>(
         'workflow.run',
         buildTransportContextBody({ expression, ...options }, defaultContext),
@@ -626,32 +614,32 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         buildProjectScopedQuery(owner === undefined ? {} : { owner }, defaultContext),
       );
     },
-    kbMemoDelete: async (args) =>
-      await request<KbMemoDeleteResult>(
+    kbMemoDelete: async (args) => {
+      const owner = resolveMemoOwner(args.owner, defaultContext);
+      return await request<KbMemoDeleteResult>(
         'kb.memo.delete',
         buildProjectScopedQuery(
           {
             pattern: args.pattern,
-            ...(resolveMemoOwner(args.owner, defaultContext) === undefined
-              ? {}
-              : { owner: resolveMemoOwner(args.owner, defaultContext) }),
+            ...(owner === undefined ? {} : { owner }),
           },
           defaultContext,
         ),
-      ),
-    kbMemoPurge: async (args) =>
-      await request<KbMemoPurgeResult>(
+      );
+    },
+    kbMemoPurge: async (args) => {
+      const owner = resolveMemoOwner(args.owner, defaultContext);
+      return await request<KbMemoPurgeResult>(
         'kb.memo.delete',
         buildProjectScopedQuery(
           {
             all: true,
-            ...(resolveMemoOwner(args.owner, defaultContext) === undefined
-              ? {}
-              : { owner: resolveMemoOwner(args.owner, defaultContext) }),
+            ...(owner === undefined ? {} : { owner }),
           },
           defaultContext,
         ),
-      ),
+      );
+    },
     kbReindex: async (_args = {}) =>
       await request<ReindexResult>('kb.reindex', buildTransportContextBody({}, defaultContext)),
     subscribe,

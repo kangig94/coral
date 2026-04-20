@@ -1481,7 +1481,6 @@ describe('ExecutionService', () => {
           failJob(
             jobId: string,
             sessionId: string,
-            launchState: string,
             terminal: {
               content: string;
               outcome: {
@@ -1495,7 +1494,7 @@ describe('ExecutionService', () => {
           ): void;
         };
       }
-    ).launchOrchestrator.failJob(jobId, 'session-1', 'error', {
+    ).launchOrchestrator.failJob(jobId, 'session-1', {
       content: '',
       outcome: {
         kind: 'failed',

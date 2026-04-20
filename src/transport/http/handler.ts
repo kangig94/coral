@@ -1,11 +1,3 @@
-/**
- * HTTP request handler for the backend server.
- *
- * Extracted from `createBackendServer()` in server.ts. All closure
- * dependencies are received through the explicit `HttpHandlerPorts` contract
- * defined in contracts.ts.
- */
-
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ZodError } from 'zod';
 import {
@@ -13,6 +5,7 @@ import {
   serializeWaitCursor,
   type WaitStreamEvent,
 } from '../../jobs/api.js';
+import { isRecord } from '../../shared/utils.js';
 import { catalogHttpStatus, executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
 import type { RpcMethodSpec } from '../rpc-catalog.js';
@@ -93,10 +86,6 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
     req.once('error', onError);
     req.once('end', onEnd);
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
