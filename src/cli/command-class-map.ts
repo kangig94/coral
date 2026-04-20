@@ -23,7 +23,6 @@ export type StaticCommandPath =
   | 'kb reindex'
   | 'discuss seed'
   | 'discuss start'
-  | 'discuss watch'
   | 'discuss participate'
   | 'discuss abort';
 
@@ -48,8 +47,6 @@ export const commandClassMap = {
   'kb reindex': 'mutate',
   'discuss seed': 'mutate',
   'discuss start': 'mutate',
-  // discuss watch remains a unary snapshot RPC, not a live subscription.
-  'discuss watch': 'mutate',
   'discuss participate': 'mutate',
   'discuss abort': 'mutate',
 } as const satisfies Readonly<Record<StaticCommandPath, CommandClass>>;
@@ -66,6 +63,7 @@ export const commandClassExemptions = {
   simulate: 'local-only simulation runner',
   'backend status': 'local operational health probe',
   'backend shutdown': 'local operational drain request',
+  'discuss watch': 'cursor-based unary snapshot kept unchanged until discuss-read redesign',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();

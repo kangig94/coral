@@ -279,6 +279,20 @@ export const WAIT_TIMEOUT_SECONDS = 590;
 
 const pluginRoot = typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : (process.env.CLAUDE_PLUGIN_ROOT ?? '');
 
+// Transport dispatch for exempt commands (commandClassExemptions entries).
+// Kept minimal: exemptions are the escape hatch for surfaces not yet
+// redesigned (e.g. `discuss watch` stays a unary snapshot until the
+// discuss-read rework). Callers explicitly opt in — the exempt path bypasses
+// makeClient()'s command-class invariant.
+export async function exemptIpcRequest<TResult>(
+  method: string,
+  params?: unknown,
+  options?: { timeoutMs?: number },
+): Promise<TResult> {
+  const client = await ensure(pluginRoot || undefined);
+  return client.request<TResult>(method, params, { timeoutMs: options?.timeoutMs ?? TOOL_TIMEOUT_MS });
+}
+
 export function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
 }

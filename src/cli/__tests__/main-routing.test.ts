@@ -34,6 +34,7 @@ const mockState = vi.hoisted(() => ({
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
   discussWatch: vi.fn(),
+  exemptIpcRequest: vi.fn(),
   discussBid: vi.fn(),
   discussSpeech: vi.fn(),
   discussAbort: vi.fn(),
@@ -83,6 +84,7 @@ vi.mock('../command-helpers.js', async () => {
 
   return {
     ...actual,
+    exemptIpcRequest: mockState.exemptIpcRequest,
     emitError: (error: unknown) => {
       const normalized =
         error instanceof Error && error.name === 'UsageError' && !(error instanceof errors.UsageError)
@@ -210,6 +212,7 @@ describe('cli main routing', () => {
     mockState.getBackendStatusFull.mockReset();
     mockState.shutdownBackend.mockReset();
     mockState.streamWait.mockReset();
+    mockState.exemptIpcRequest.mockReset();
     mockState.discussSeed.mockReset();
     mockState.discussStart.mockReset();
     mockState.discussWatch.mockReset();
@@ -1278,7 +1281,7 @@ describe('cli main routing', () => {
     expect(stdout).toBe(`${formatDiscussParticipate(result)}\n`);
   });
 
-  it('routes discuss watch through discussWatch', async () => {
+  it('routes discuss watch through the exempt IPC request path', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1291,11 +1294,11 @@ describe('cli main routing', () => {
       events: [],
       cursor: 4,
     } as const;
-    mockState.discussWatch.mockResolvedValueOnce(result);
+    mockState.exemptIpcRequest.mockResolvedValueOnce(result);
 
     await program.parseAsync(['node', 'coral-cli', 'discuss', 'watch', '--session', 'session-1', '--cursor', '4']);
 
-    expect(mockState.discussWatch).toHaveBeenCalledWith('session-1', 4);
+    expect(mockState.exemptIpcRequest).toHaveBeenCalledWith('discuss.watch', { session: 'session-1', cursor: 4 });
     expect(stdout).toBe(`${formatDiscussWatch(result)}\n`);
   });
 

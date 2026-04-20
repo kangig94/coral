@@ -2,8 +2,10 @@ import type { Command } from 'commander';
 
 import type { BackendClient } from '../../client/http-client.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
+import type { WatchState } from '../../discuss/watch.js';
 import {
   emitError,
+  exemptIpcRequest,
   makeClient,
   parseIntegerFlag,
   type DiscussAbortOptions,
@@ -88,8 +90,9 @@ export function registerDiscussCommands(program: Command): void {
     .action(async (opts: DiscussWatchOptions) => {
       try {
         const cursor = opts.cursor !== undefined ? parseIntegerFlag('--cursor', opts.cursor) : undefined;
-        const client = makeClient(process.cwd(), discussWatchCommand);
-        const result = await client.discussWatch(opts.session, cursor);
+        // `discuss watch` is exempt from command-class dispatch: it is a unary
+        // cursor snapshot, kept unchanged until the discuss-read redesign.
+        const result = await exemptIpcRequest<WatchState>('discuss.watch', { session: opts.session, cursor });
         process.stdout.write(formatDiscussWatch(result) + '\n');
       } catch (error) {
         emitError(error);
