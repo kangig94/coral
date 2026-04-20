@@ -195,6 +195,10 @@ function compilePathPattern(path: string): RegExp {
   return new RegExp(`^${parts.join('/')}$`);
 }
 
+function isStaticPath(path: string): boolean {
+  return !path.split('/').some((segment) => segment.startsWith(':'));
+}
+
 function extractPathParams(match: RegExpExecArray): Record<string, string> {
   return { ...(match.groups ?? {}) };
 }
@@ -428,10 +432,34 @@ export function httpAdapter(
   };
 }
 
+export type RouteDispatchTable<T extends { method: string; path: string; pattern: RegExp }> = {
+  readonly static: ReadonlyMap<string, T>;
+  readonly params: readonly T[];
+};
+
+function staticRouteKey(method: string, path: string): string {
+  return `${method} ${path}`;
+}
+
+function buildRouteDispatchTable<T extends { method: string; path: string; pattern: RegExp }>(
+  routes: readonly T[],
+): RouteDispatchTable<T> {
+  const staticMap = new Map<string, T>();
+  const params: T[] = [];
+  for (const route of routes) {
+    if (isStaticPath(route.path)) {
+      staticMap.set(staticRouteKey(route.method, route.path), route);
+    } else {
+      params.push(route);
+    }
+  }
+  return { static: staticMap, params };
+}
+
 export function buildCoordinatorHttpDispatchTable(
   rpcPorts: HttpHandlerPorts,
-): readonly ProjectedCatalogBackedHttpRoute[] {
-  return rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts));
+): RouteDispatchTable<ProjectedCatalogBackedHttpRoute> {
+  return buildRouteDispatchTable(rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts)));
 }
 
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
@@ -496,8 +524,8 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   });
 }
 
-function buildTransportLocalRouteTable(deps: HttpHandlerPorts): readonly ProjectedTransportLocalRoute[] {
-  return [
+function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTable<ProjectedTransportLocalRoute> {
+  return buildRouteDispatchTable<ProjectedTransportLocalRoute>([
     {
       ...transportLocalRoutes[0],
       pattern: compilePathPattern(transportLocalRoutes[0].path),
@@ -525,15 +553,24 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): readonly Project
         await handleEventStream(req, res, deps);
       },
     },
-  ];
+  ]);
 }
 
-function matchRoute<T extends { method: string; pattern: RegExp }>(
-  routes: readonly T[],
+function matchRoute<T extends { method: string; path: string; pattern: RegExp }>(
+  table: RouteDispatchTable<T>,
   method: string | undefined,
   pathname: string,
 ): { route: T; pathParams: Record<string, string> } | null {
-  for (const route of routes) {
+  if (method === undefined) {
+    return null;
+  }
+
+  const exact = table.static.get(staticRouteKey(method, pathname));
+  if (exact) {
+    return { route: exact, pathParams: {} };
+  }
+
+  for (const route of table.params) {
     if (route.method !== method) {
       continue;
     }

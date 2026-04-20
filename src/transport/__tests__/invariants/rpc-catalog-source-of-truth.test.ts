@@ -22,18 +22,14 @@ describe('rpc catalog source of truth', () => {
 
   it('projects the coordinator HTTP dispatch table via rpcCatalog.map(spec => httpAdapter(spec, rpcPorts))', () => {
     const rpcPorts = {} as HttpHandlerPorts;
-    const projected = buildCoordinatorHttpDispatchTable(rpcPorts).map(({ method, path, pattern, spec }) => ({
-      method,
-      path,
-      pattern: pattern.source,
-      spec,
-    }));
-    const mapped = rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts)).map(({ method, path, pattern, spec }) => ({
-      method,
-      path,
-      pattern: pattern.source,
-      spec,
-    }));
+    const table = buildCoordinatorHttpDispatchTable(rpcPorts);
+    const projected = [...table.static.values(), ...table.params]
+      .map(({ method, path, pattern, spec }) => ({ method, path, pattern: pattern.source, spec }))
+      .sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`));
+    const mapped = rpcCatalog
+      .map((spec) => httpAdapter(spec, rpcPorts))
+      .map(({ method, path, pattern, spec }) => ({ method, path, pattern: pattern.source, spec }))
+      .sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`));
 
     expect(projected).toEqual(mapped);
     expect(coordinatorHttpRoutes).toEqual(
@@ -61,8 +57,11 @@ describe('rpc catalog source of truth', () => {
 
   it('rejects coordinator RPC HTTP routes outside rpcCatalog unless they appear in the fixed operational carveout list', () => {
     const rpcPorts = {} as HttpHandlerPorts;
-    const coordinatorRouteKeys = buildCoordinatorHttpDispatchTable(rpcPorts).map(({ method, path }) => `${method} ${path}`);
-    const catalogKeys = rpcCatalog.map((spec) => `${spec.http.method} ${spec.http.path}`);
+    const table = buildCoordinatorHttpDispatchTable(rpcPorts);
+    const coordinatorRouteKeys = [...table.static.values(), ...table.params]
+      .map(({ method, path }) => `${method} ${path}`)
+      .sort();
+    const catalogKeys = rpcCatalog.map((spec) => `${spec.http.method} ${spec.http.path}`).sort();
 
     expect(coordinatorRouteKeys).toEqual(catalogKeys);
     expect(transportLocalRoutes).toEqual([
