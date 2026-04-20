@@ -108,19 +108,13 @@ export function providerTerminalEvent(
 
 export function streamProviderTerminal(
   terminal:
+    | ProviderTerminalEventBody
     | Omit<ProviderTerminalEventBody, 'type'>
-    | Promise<Omit<ProviderTerminalEventBody, 'type'>>,
+    | Promise<ProviderTerminalEventBody | Omit<ProviderTerminalEventBody, 'type'>>,
 ): AsyncIterable<ProviderEventBody> {
   return streamProviderEvents(async (emit) => {
-    emit(providerTerminalEvent(await terminal));
-  });
-}
-
-export function streamProviderTerminalEvent(
-  terminal: ProviderTerminalEventBody | Promise<ProviderTerminalEventBody>,
-): AsyncIterable<ProviderEventBody> {
-  return streamProviderEvents(async (emit) => {
-    emit(await terminal);
+    const resolved = await terminal;
+    emit('type' in resolved && resolved.type === 'launch.terminal' ? resolved : providerTerminalEvent(resolved));
   });
 }
 
