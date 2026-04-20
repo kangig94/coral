@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import { createKbRuntime } from '../../kb/runtime.js';
 import type {
+  KbMemoListInput,
+  KbMemoListResult,
   KbPrincipleVerboseRow,
   KbPrinciplesInput,
   KbPrinciplesResult,
@@ -9,6 +11,7 @@ import type {
   KbReadResult,
   KbSearchInput,
   KbSearchResponse,
+  KbSourceListResult,
 } from '../../kb/entry-types.js';
 import { isNoteEntry } from '../../kb/entry-types.js';
 import {
@@ -16,7 +19,9 @@ import {
   kbPrinciplesSchema,
   kbSearchSchema,
 } from '../../kb/api.js';
+import { listMemos } from '../../kb/ops/memo.js';
 import { searchKb } from '../../kb/ops/search.js';
+import { listSources } from '../../kb/ops/source-store.js';
 import { compareLocale } from '../../kb/validation.js';
 import { kbRuntimeDir } from '../../kb/paths.js';
 import { kbRoot } from '../../infra/paths.js';
@@ -146,4 +151,21 @@ export async function listKnowledgeBasePrinciples(
   } finally {
     await kb.closeVectorStores();
   }
+}
+
+export async function listKnowledgeBaseSources(): Promise<KbSourceListResult> {
+  const kb = createKbQueryRuntime();
+
+  try {
+    return await listSources(kb);
+  } finally {
+    await kb.closeVectorStores();
+  }
+}
+
+export function listKnowledgeBaseMemos(
+  projectRoot: string,
+  args: KbMemoListInput = {},
+): KbMemoListResult {
+  return listMemos(projectRoot, args.owner);
 }

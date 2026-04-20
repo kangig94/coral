@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '../../client/backend-health.js';
-import { ensureBackend } from '../../cli/backend-lifecycle.js';
 import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
 import { isProcessAlive } from '../../shared/node-process.js';
@@ -17,6 +16,7 @@ import { composeReducers } from '../../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { jobsRegistry } from '../../jobs/events.js';
 import { createRealRuntime } from '../../runtime/real.js';
+import { ensure } from '../../transport/ipc/ensure.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
@@ -251,8 +251,8 @@ describe('flavor coexistence integration', () => {
     seedCompletedJob(devJobId, devNamespace, devProjectRoot, devFixture.bundleHash, 'dev');
 
     startedPluginRoots.push(prodFixture.root, devFixture.root);
-    await ensureBackend(prodFixture.root);
-    await ensureBackend(devFixture.root);
+    await ensure(prodFixture.root);
+    await ensure(devFixture.root);
 
     const prodInfo = await requireBackendInfo(prodFixture.root);
     const devInfo = await requireBackendInfo(devFixture.root);

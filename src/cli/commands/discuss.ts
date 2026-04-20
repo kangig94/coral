@@ -45,7 +45,7 @@ export function registerDiscussCommands(program: Command): void {
           ...(axes !== undefined ? { controversy_axes: axes } : {}),
         };
         discussSeedSchema.parse(args);
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussSeedCommand);
         const result = await client.discussSeed(args as Parameters<BackendClient['discussSeed']>[0]);
         process.stdout.write(formatPersonaSeed(result) + '\n');
       } catch (error) {
@@ -72,7 +72,7 @@ export function registerDiscussCommands(program: Command): void {
           ...(agents !== undefined ? { agents } : {}),
         };
         discussStartSchema.parse(args);
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussStartCommand);
         const result = await client.discussStart(args as Parameters<BackendClient['discussStart']>[0]);
         process.stdout.write(formatDiscussStart(result) + '\n');
       } catch (error) {
@@ -88,7 +88,7 @@ export function registerDiscussCommands(program: Command): void {
     .action(async (opts: DiscussWatchOptions) => {
       try {
         const cursor = opts.cursor !== undefined ? parseIntegerFlag('--cursor', opts.cursor) : undefined;
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussWatchCommand);
         const result = await client.discussWatch(opts.session, cursor);
         process.stdout.write(formatDiscussWatch(result) + '\n');
       } catch (error) {
@@ -122,7 +122,7 @@ export function registerDiscussCommands(program: Command): void {
         } else {
           discussBidSchema.parse(args);
         }
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussParticipateCommand);
         const result = isSpeech
           ? await client.discussSpeech(args as Parameters<BackendClient['discussSpeech']>[0])
           : await client.discussBid(args as Parameters<BackendClient['discussBid']>[0]);
@@ -138,7 +138,7 @@ export function registerDiscussCommands(program: Command): void {
     .requiredOption('--session <id>', 'Session ID')
     .action(async (opts: DiscussAbortOptions) => {
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), discussAbortCommand);
         const result = await client.discussAbort(opts.session);
         process.stdout.write(formatDiscussAbort(result) + '\n');
       } catch (error) {

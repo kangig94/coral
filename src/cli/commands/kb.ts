@@ -15,7 +15,6 @@ import {
   makeClient,
   parseIntegerFlag,
   resolveFilePath,
-  withReadCoralStore,
   type KbMemoDeleteOptions,
   type KbMemoListOptions,
   type KbMemoPurgeOptions,
@@ -58,7 +57,7 @@ function registerKbSourceCommands(kb: Command): void {
         const prepared = await prepareSourceImport(resolveFilePath(file), opts.slug, (line) =>
           process.stderr.write(`${line}\n`),
         );
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbSourceImportCommand);
         const result = await client.kbSourceImport({
           slug: prepared.slug,
           stagedPath: prepared.stagedPath,
@@ -75,7 +74,7 @@ function registerKbSourceCommands(kb: Command): void {
     const outputFormat = getOutputFormat(kbSourceListCommand);
 
     try {
-      const client = makeClient(process.cwd());
+      const client = makeClient(process.cwd(), kbSourceListCommand);
       const result = await client.kbSourceList();
       emit(result, outputFormat, formatKbSourceList);
     } catch (error) {
@@ -91,7 +90,7 @@ function registerKbSourceCommands(kb: Command): void {
       const outputFormat = getOutputFormat(kbSourceDeleteCommand);
 
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbSourceDeleteCommand);
         const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
         emit(result, outputFormat, formatKbSourceDelete);
       } catch (error) {
@@ -124,7 +123,7 @@ function registerKbMemoCommands(kb: Command): void {
           throw new UsageError('--owner is required (or set CORAL_OWNER env var)');
         }
         const owner = assertOwnerId(rawOwner, 'owner');
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbMemoWriteCommand);
         const result = await client.kbMemo({ topic: opts.topic, content, owner });
         emit(result, outputFormat, formatKbMemo);
       } catch (error) {
@@ -140,7 +139,7 @@ function registerKbMemoCommands(kb: Command): void {
       const outputFormat = getOutputFormat(kbMemoListCommand);
 
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbMemoListCommand);
         const result = await client.kbMemoList({ owner: opts.owner });
         emit(result, outputFormat, formatKbMemoList);
       } catch (error) {
@@ -157,7 +156,7 @@ function registerKbMemoCommands(kb: Command): void {
       const outputFormat = getOutputFormat(kbMemoDeleteCommand);
 
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbMemoDeleteCommand);
         const result = await client.kbMemoDelete({ pattern, owner: opts.owner });
         emit(result, outputFormat, formatKbMemoDelete);
       } catch (error) {
@@ -173,7 +172,7 @@ function registerKbMemoCommands(kb: Command): void {
       const outputFormat = getOutputFormat(kbMemoPurgeCommand);
 
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbMemoPurgeCommand);
         const result = await client.kbMemoPurge(opts.owner ? { owner: opts.owner } : {});
         emit(result, outputFormat, formatKbMemoPurge);
       } catch (error) {
@@ -211,7 +210,8 @@ export function registerKbCommands(program: Command): void {
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
         };
-        const result = await withReadCoralStore(process.cwd(), (store) => store.kb.search(args));
+        const client = makeClient(process.cwd(), kbSearchCommand);
+        const result = await client.kbSearch(args);
         emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
       } catch (error) {
         emitError(error);
@@ -233,7 +233,8 @@ export function registerKbCommands(program: Command): void {
           ...(opts.topK !== undefined ? { top_k: parseIntegerFlag('--top-k', opts.topK) } : {}),
           ...(opts.verbose === true ? { verbose: true } : {}),
         };
-        const result = await withReadCoralStore(process.cwd(), (store) => store.kb.listPrinciples(args));
+        const client = makeClient(process.cwd(), kbPrinciplesCommand);
+        const result = await client.kbPrinciples(args);
         emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
       } catch (error) {
         emitError(error);
@@ -254,7 +255,8 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbReadCommand);
 
       try {
-        const result = await withReadCoralStore(process.cwd(), (store) => Promise.resolve(store.kb.read({ note })));
+        const client = makeClient(process.cwd(), kbReadCommand);
+        const result = await client.kbRead({ note });
         emit(result, outputFormat, formatKbRead);
       } catch (error) {
         emitError(error);
@@ -282,7 +284,7 @@ export function registerKbCommands(program: Command): void {
           ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
           ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
         };
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbPromoteCommand);
         const result = await client.kbPromote(args as KbPromoteInput);
         emit(result, outputFormat, formatKbPromote);
       } catch (error) {
@@ -307,7 +309,7 @@ export function registerKbCommands(program: Command): void {
           ...(opts.title !== undefined ? { title: opts.title } : {}),
           ...(content !== undefined ? { content } : {}),
         };
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbUpdateCommand);
         const result = await client.kbUpdate(args);
         emit(result, outputFormat, formatKbUpdate);
       } catch (error) {
@@ -323,7 +325,7 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbDeleteCommand);
 
       try {
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), kbDeleteCommand);
         const result = await client.kbDelete({ note });
         emit(result, outputFormat, formatKbDelete);
       } catch (error) {
@@ -336,7 +338,7 @@ export function registerKbCommands(program: Command): void {
     const outputFormat = getOutputFormat(kbReindexCommand);
 
     try {
-      const client = makeClient(process.cwd());
+      const client = makeClient(process.cwd(), kbReindexCommand);
       const result = await client.kbReindex({});
       emit(result, outputFormat, (data) => formatKbReindex(data, cliPrefix));
     } catch (error) {

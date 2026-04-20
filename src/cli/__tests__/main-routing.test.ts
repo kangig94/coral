@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '../main.js';
+import { serializeWaitCursor } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/views.js';
 import {
   formatAbortResult,
@@ -25,7 +26,6 @@ const mockState = vi.hoisted(() => ({
   listJobs: vi.fn(),
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
-  ensureBackend: vi.fn(),
   getBackendStatusFull: vi.fn(),
   shutdownBackend: vi.fn(),
   streamWait: vi.fn(),
@@ -37,6 +37,9 @@ const mockState = vi.hoisted(() => ({
   discussAbort: vi.fn(),
   kbSearch: vi.fn(),
   kbPrinciples: vi.fn(),
+  kbSourceImport: vi.fn(),
+  kbSourceList: vi.fn(),
+  kbSourceDelete: vi.fn(),
   kbMemo: vi.fn(),
   kbMemoList: vi.fn(),
   kbMemoDelete: vi.fn(),
@@ -60,44 +63,12 @@ vi.mock('../../client/http-client.js', () => {
     }
   }
 
-  class BackendClient {
-    createSession = mockState.createSession;
-    sendMessage = mockState.sendMessage;
-    workflow = mockState.workflow;
-    listJobs = mockState.listJobs;
-    abortJobs = mockState.abortJobs;
-    discussSeed = mockState.discussSeed;
-    discussStart = mockState.discussStart;
-    discussWatch = mockState.discussWatch;
-    discussBid = mockState.discussBid;
-    discussSpeech = mockState.discussSpeech;
-    discussAbort = mockState.discussAbort;
-    kbSearch = mockState.kbSearch;
-    kbPrinciples = mockState.kbPrinciples;
-    kbMemo = mockState.kbMemo;
-    kbMemoList = mockState.kbMemoList;
-    kbMemoDelete = mockState.kbMemoDelete;
-    kbMemoPurge = mockState.kbMemoPurge;
-    kbRead = mockState.kbRead;
-    kbPromote = mockState.kbPromote;
-    kbUpdate = mockState.kbUpdate;
-    kbDelete = mockState.kbDelete;
-    kbReindex = mockState.kbReindex;
-
-    constructor(_options: unknown) {}
-  }
-
-  return { BackendClient, BackendToolHttpError };
+  return { BackendToolHttpError };
 });
-
-vi.mock('../backend-lifecycle.js', () => ({
-  ensureBackend: mockState.ensureBackend,
-}));
 
 vi.mock('../../client/backend-helpers.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
   shutdownBackend: mockState.shutdownBackend,
-  streamWait: mockState.streamWait,
 }));
 
 vi.mock('../follow.js', () => ({
@@ -106,26 +77,59 @@ vi.mock('../follow.js', () => ({
 
 vi.mock('../command-helpers.js', async () => {
   const actual = await vi.importActual<typeof import('../command-helpers.js')>('../command-helpers.js');
+  const errors = await vi.importActual<typeof import('../errors.js')>('../errors.js');
 
   return {
     ...actual,
-    withReadCoralStore: async (_projectRoot: string, read: (store: unknown) => unknown) =>
-      read({
-        jobs: {
-          list: async (filters: unknown) => {
-            const result = await mockState.listJobs(filters);
-            return result.jobs;
-          },
-          detail: vi.fn(),
-        },
-        kb: {
-          search: mockState.kbSearch,
-          listPrinciples: mockState.kbPrinciples,
-          read: mockState.kbRead,
-        },
-        discuss: {},
-        sessions: {},
-      }),
+    emitError: (error: unknown) => {
+      const normalized =
+        error instanceof Error && error.name === 'UsageError' && !(error instanceof errors.UsageError)
+          ? new errors.UsageError(error.message)
+          : error;
+      const { envelope, exitCode } = errors.buildErrorEnvelope(normalized);
+      const statusCode =
+        normalized instanceof Error
+        && 'statusCode' in normalized
+        && typeof (normalized as { statusCode?: unknown }).statusCode === 'number'
+          ? (normalized as { statusCode: number }).statusCode
+          : undefined;
+      process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
+      process.exitCode = exitCode;
+    },
+    makeClient: () => ({
+      createSession: mockState.createSession,
+      sendMessage: mockState.sendMessage,
+      workflow: mockState.workflow,
+      listJobs: mockState.listJobs,
+      abortJobs: mockState.abortJobs,
+      discussSeed: mockState.discussSeed,
+      discussStart: mockState.discussStart,
+      discussWatch: mockState.discussWatch,
+      discussBid: mockState.discussBid,
+      discussSpeech: mockState.discussSpeech,
+      discussAbort: mockState.discussAbort,
+      kbSearch: mockState.kbSearch,
+      kbPrinciples: mockState.kbPrinciples,
+      kbRead: mockState.kbRead,
+      kbPromote: mockState.kbPromote,
+      kbUpdate: mockState.kbUpdate,
+      kbDelete: mockState.kbDelete,
+      kbSourceImport: mockState.kbSourceImport,
+      kbSourceList: mockState.kbSourceList,
+      kbSourceDelete: mockState.kbSourceDelete,
+      kbMemo: mockState.kbMemo,
+      kbMemoList: mockState.kbMemoList,
+      kbMemoDelete: mockState.kbMemoDelete,
+      kbMemoPurge: mockState.kbMemoPurge,
+      kbReindex: mockState.kbReindex,
+      subscribe: async () => {
+        const iterator = await mockState.streamWait();
+        return {
+          close: vi.fn().mockResolvedValue(undefined),
+          [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
+        };
+      },
+    }),
   };
 });
 
@@ -201,7 +205,6 @@ describe('cli main routing', () => {
     mockState.listJobs.mockReset();
     mockState.abortJobs.mockReset();
     mockState.launchAndFollow.mockReset();
-    mockState.ensureBackend.mockReset();
     mockState.getBackendStatusFull.mockReset();
     mockState.shutdownBackend.mockReset();
     mockState.streamWait.mockReset();
@@ -213,6 +216,9 @@ describe('cli main routing', () => {
     mockState.discussAbort.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbPrinciples.mockReset();
+    mockState.kbSourceImport.mockReset();
+    mockState.kbSourceList.mockReset();
+    mockState.kbSourceDelete.mockReset();
     mockState.kbMemo.mockReset();
     mockState.kbMemoList.mockReset();
     mockState.kbMemoDelete.mockReset();
@@ -1094,11 +1100,6 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.ensureBackend.mockResolvedValueOnce({
-      host: '127.0.0.1',
-      port: 4100,
-      token: 'backend-token',
-    });
     const progressEvent = {
       type: 'progress',
       jobId: 'job-1',
@@ -1119,7 +1120,9 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1']);
 
-    expect(stdout).toBe(`${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, null, false)}\n`);
+    expect(stdout).toBe(
+      `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ jobs: { 'job-1': 1 } }), false)}\n`,
+    );
     expect(stderr).toBe('');
   });
 
@@ -1127,11 +1130,6 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.ensureBackend.mockResolvedValueOnce({
-      host: '127.0.0.1',
-      port: 4100,
-      token: 'backend-token',
-    });
     const terminalEvent = {
       type: 'terminal' as const,
       jobId: 'job-1',
@@ -1154,11 +1152,6 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.ensureBackend.mockResolvedValueOnce({
-      host: '127.0.0.1',
-      port: 4100,
-      token: 'backend-token',
-    });
     const terminalEvent = {
       type: 'terminal' as const,
       jobId: 'job-1',

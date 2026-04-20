@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 
 import type { ProviderRegistry } from '../../providers/registry.js';
+import { markProviderCommand } from '../command-class-map.js';
 import { UsageError } from '../errors.js';
 import {
   emitError,
@@ -14,6 +15,7 @@ import {
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
     const provider = program.command(providerName).description(`${providerName} provider operations`);
+    markProviderCommand(provider);
     provider
       .argument('[agent]', 'Agent name (omit for raw execution)')
       .option('-i, --input <text-or-file...>', 'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)')
@@ -30,7 +32,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
           }
 
           const prompt = resolveInput(opts.input);
-          const client = makeClient(process.cwd());
+          const client = makeClient(process.cwd(), provider);
           const requestOptions = {
             ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
             ...(opts.model !== undefined ? { model: opts.model } : {}),

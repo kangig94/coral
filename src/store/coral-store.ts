@@ -13,7 +13,9 @@ import {
   type JobsListFilters,
 } from './queries/jobs.js';
 import {
+  listKnowledgeBaseMemos,
   listKnowledgeBasePrinciples,
+  listKnowledgeBaseSources,
   readKnowledgeBaseEntry,
   searchKnowledgeBase,
 } from './queries/kb.js';
@@ -31,7 +33,17 @@ import {
   readSessionEntryLenientById,
   readSessionProvenanceById,
 } from './queries/sessions.js';
-import type { KbPrinciplesInput, KbPrinciplesResult, KbReadInput, KbReadResult, KbSearchInput, KbSearchResponse } from '../kb/entry-types.js';
+import type {
+  KbMemoListInput,
+  KbMemoListResult,
+  KbPrinciplesInput,
+  KbPrinciplesResult,
+  KbReadInput,
+  KbReadResult,
+  KbSearchInput,
+  KbSearchResponse,
+  KbSourceListResult,
+} from '../kb/entry-types.js';
 import type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../shared/persistence-types.js';
@@ -57,6 +69,8 @@ export class CoralStore implements StoreReadContext {
     search: (args: KbSearchInput) => Promise<KbSearchResponse>;
     read: (selector: KbReadInput) => KbReadResult;
     listPrinciples: (args: KbPrinciplesInput) => Promise<KbPrinciplesResult>;
+    listSources: () => Promise<KbSourceListResult>;
+    listMemos: (args: KbMemoListInput) => KbMemoListResult;
   };
   public readonly discuss: {
     snapshot: (ref: DiscussReadRef) => DiscussSnapshotRow | null;
@@ -99,6 +113,8 @@ export class CoralStore implements StoreReadContext {
       search: (args) => searchKnowledgeBase(args, { pluginRoot: this.pluginRoot }),
       read: (selector) => readKnowledgeBaseEntry(selector, { projectRoot: this.projectRoot, pluginRoot: this.pluginRoot }),
       listPrinciples: (args) => listKnowledgeBasePrinciples(args),
+      listSources: () => listKnowledgeBaseSources(),
+      listMemos: (args) => listKnowledgeBaseMemos(this.projectRoot ?? process.cwd(), args),
     };
 
     this.discuss = {

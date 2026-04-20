@@ -39,7 +39,7 @@ export function registerWorkflowCommands(program: Command): void {
           startPrompt: resolveInput(opts.startPrompt),
         };
 
-        const client = makeClient(process.cwd());
+        const client = makeClient(process.cwd(), workflowCommand);
         const result = await client.workflow(expression, payload);
         await handleLaunchResult(result, opts.detach, client);
       } catch (error) {

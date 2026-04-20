@@ -4,6 +4,7 @@ import { Command } from 'commander';
 
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { assertCommandClassCoverage } from './command-class-map.js';
 import { registerBackendCommands } from './commands/backend.js';
 import { registerDiscussCommands } from './commands/discuss.js';
 import { registerKbCommands } from './commands/kb.js';
@@ -31,6 +32,7 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
   registerBackendCommands(program);
   registerDiscussCommands(program);
   registerKbCommands(program);
+  assertCommandClassCoverage(program);
 
   return program;
 }
