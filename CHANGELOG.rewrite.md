@@ -155,3 +155,4 @@ Cluster commits:
 - `802f27a2` — AC5 leaf tightening: coordinator contracts stop importing shell modules; jobs store imports the event-bus leaf.
 - `2c39b59e` — AC1 + AC12 tightening: result-markdown routes through `decodeBody`; invariant #45 catches `decodeEventBody(...) as ...` bypasses.
 - `current cluster commit` — quality/coverage/doc closeout: cached read-context singleton, explicit `ProgressStore` upcasters, `AppServerRuntime` rename, shutdown budget binding, query-count/session v1-v2 coverage, doc sync.
+- Deferred: discuss follow-up agent concurrency (`Promise.all` -> `Promise.allSettled`) stays postponed pending discuss-agent lifecycle design; see `src/__tests__/MIGRATION.md`, `Deferred — post-rewrite-final-polish`.

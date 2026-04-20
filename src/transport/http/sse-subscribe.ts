@@ -1,28 +1,19 @@
-export interface TypedEventBus {
-  on(event: string, listener: (payload: unknown) => void): unknown;
-  off(event: string, listener: (payload: unknown) => void): unknown;
-}
+import type { EventBusEvents, TypedEventBus } from '../../coordinator/event-bus.js';
 
-// AC10b requires the public helper to accept arbitrary bus payload handlers.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function subscribeAll<T extends Record<string, (data: any) => void>>(
+export function subscribeAll<K extends keyof EventBusEvents>(
   bus: TypedEventBus,
-  handlers: Partial<T>,
+  handlers: Partial<{ [E in K]: (data: EventBusEvents[E]) => void }>,
 ): () => void {
-  const subscriptions: Array<[string, (data: unknown) => void]> = [];
-
-  for (const key of Object.keys(handlers) as Array<keyof T & string>) {
+  const keys = Object.keys(handlers) as K[];
+  for (const key of keys) {
     const handler = handlers[key];
-    if (!handler) continue;
-
-    const listener = handler as (data: unknown) => void;
-    subscriptions.push([key, listener]);
-    bus.on(key, listener);
+    if (handler) bus.on(key, handler);
   }
 
   return () => {
-    for (const [key, listener] of subscriptions) {
-      bus.off(key, listener);
+    for (const key of keys) {
+      const handler = handlers[key];
+      if (handler) bus.off(key, handler);
     }
   };
 }

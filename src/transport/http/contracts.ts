@@ -1,7 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { AbortResult } from '../../shared/execution-contracts.js';
-import type { TypedEventBus } from './sse-subscribe.js';
+import type { TypedEventBus } from '../../coordinator/event-bus.js';
 import {
   jobAbortSchema,
   providerNameSchema,
