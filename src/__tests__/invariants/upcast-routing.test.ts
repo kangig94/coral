@@ -81,6 +81,13 @@ function collectViolations(sourceFile: ts.SourceFile): string[] {
   const violations: string[] = [];
 
   function visit(node: ts.Node): void {
+    if ((ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) && isDecodeEventBodyCall(node.expression)) {
+      const detail = ts.isAsExpression(node)
+        ? 'decodeEventBody(...) as ... bypasses UpcasterRegistry'
+        : 'decodeEventBody(...) satisfies ... bypasses UpcasterRegistry';
+      violations.push(formatViolation(sourceFile, node, detail));
+    }
+
     if (ts.isCallExpression(node)) {
       if (ts.isIdentifier(node.expression) && node.expression.text === 'rowToCoralEvent' && node.arguments.length === 1) {
         violations.push(

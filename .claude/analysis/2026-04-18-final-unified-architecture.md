@@ -1866,7 +1866,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap.
 43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to `/unequip Y` first.
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
-45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, and `src/store/rebuild.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
+45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. `src/coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
 
 ---
