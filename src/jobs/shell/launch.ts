@@ -1,4 +1,4 @@
-import type { ProviderCliRunner } from '../../providers/runner-port.js';
+import { bindProviderRunner } from '../../providers/cli-runner.js';
 import type {
   ProviderExecutor,
   ProviderRecoveryMeta,
@@ -12,8 +12,8 @@ import { getCallerContext } from '../../coordinator/caller-context.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
-import type { ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
+import type { ProviderEventBody, ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
@@ -39,31 +39,10 @@ import {
 } from './contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
-
-function bindProviderRunner(
-  launchCoordinator: LaunchCoordinator,
-  provider: string,
-  signal: AbortSignal,
-  pool: LaunchPool,
-  jobDir: string,
-  onRuntimeRecord?: (record: JobRuntime) => void,
-): ProviderCliRunner {
-  return (request) =>
-    launchCoordinator.spawnDurableJob({
-      provider,
-      signal,
-      permitGranted: true,
-      pool,
-      jobDir,
-      command: request.command,
-      args: request.args,
-      prompt: request.prompt,
-      cwd: request.cwd,
-      extraEnv: request.extraEnv,
-      onEvent: request.onEvent,
-      onRuntimeRecord,
-    });
-}
+const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> = {
+  checkpoint: () => {},
+  transportClosed: () => {},
+};
 
 function canAdvanceLaunchState(status: JobStatus | null): status is JobStatus {
   return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
@@ -71,6 +50,14 @@ function canAdvanceLaunchState(status: JobStatus | null): status is JobStatus {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function runProviderExecution(
+  provider: ProviderExecutor,
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+): AsyncIterable<ProviderEventBody> {
+  return typeof provider === 'function' ? provider(request, runtime) : provider.execute(request, runtime);
 }
 
 export interface LaunchOrchestratorDeps {
@@ -445,7 +432,7 @@ export class LaunchOrchestrator {
       const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
       let terminal: ProviderTerminalEventBody | null = null;
 
-      for await (const event of provider.execute(request, runtime)) {
+      for await (const event of runProviderExecution(provider, request, runtime)) {
         if (terminal) {
           throw new Error(`Provider ${provider.name} emitted ${event.type} after launch.terminal`);
         }
@@ -579,6 +566,7 @@ export class LaunchOrchestrator {
       env: this.deps.runtime.env,
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
+      continuityBridge: NOOP_CONTINUITY_BRIDGE,
       checkpointRecovery: (update) => {
         this.deps.checkpointRecovery(jobId, update);
       },

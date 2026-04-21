@@ -2,7 +2,7 @@ import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { ProviderProgressEventBody, ProviderRequest, ProviderTerminalEventBody, ProviderEventBody } from './protocol.js';
 import type { Runtime } from '../runtime/ports.js';
 import { nowIsoString } from '../shared/utils.js';
-import type { ProviderCliRunner } from './runner-port.js';
+import type { ProviderRuntime as ContractProviderRuntime } from './contract.js';
 
 export type { ProviderContinuityBlob } from '../sessions/continuity.js';
 
@@ -113,11 +113,12 @@ export function makeOnEvent<TEvent>(
 /** Runtime context injected by the ExecutionService into Provider.execute(). */
 export interface ProviderRuntime {
   signal: AbortSignal;
-  runCli: ProviderCliRunner;
+  runCli: ContractProviderRuntime['runCli'];
   storage?: Pick<Runtime['storage'], 'readFileSync'>;
   env?: Pick<Runtime['env'], 'homedir'>;
   acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
+  continuityBridge?: ContractProviderRuntime['continuityBridge'];
   checkpointRecovery?: (update: {
     conversationRef?: string;
     providerMeta: ProviderRecoveryMeta;
@@ -129,12 +130,25 @@ export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
 /** Minimal runtime surface for post-workflow artifact cleanup. */
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
 
-export interface ProviderExecutor {
+export type ProviderInvocation = (
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+) => AsyncIterable<ProviderEventBody>;
+
+type CallableProviderExecutor = ProviderInvocation & {
   readonly name: string;
-  execute(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody>;
+  execute: ProviderInvocation;
   /** Optional preflight check: auth/availability. Throw to reject launch before jobId is allocated. */
   preflight?(runtime: PreflightRuntime): Promise<void>;
-}
+};
+
+type LegacyProviderExecutor = {
+  readonly name: string;
+  execute: ProviderInvocation;
+  preflight?(runtime: PreflightRuntime): Promise<void>;
+};
+
+export type ProviderExecutor = CallableProviderExecutor | LegacyProviderExecutor;
 
 /**
  * Alias of ProviderAppServerContract, named for the consumer seam (app-server lifecycle).
@@ -156,11 +170,13 @@ export interface ProviderArtifactCleanup {
   cleanupSessions(runtime: ArtifactCleanupRuntime, conversationRefs: readonly string[]): Promise<void>;
 }
 
-export interface Provider extends ProviderExecutor {
+type ProviderRoles = {
   appServerLifecycle?: ProviderAppServerLifecycle;
   artifactRecovery?: ProviderArtifactRecovery;
   artifactCleanup?: ProviderArtifactCleanup;
-}
+};
+
+export type Provider = ProviderExecutor & ProviderRoles;
 
 export function requireConversationRef(request: ProviderRequest, action: 'resume' | 'fork'): string {
   if (!request.conversationRef) throw new Error(`${action} requires conversationRef`);

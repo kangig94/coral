@@ -68,15 +68,8 @@ function resolveTerminalResult(
 
 export function createScriptedProvider(specInput: ScriptedProviderSpec): Provider {
   const spec = scriptedProviderSpecSchema.parse(specInput);
-
-  return {
-    name: spec.name,
-    preflight: async (_runtime: PreflightRuntime): Promise<void> => {
-      if (spec.preflightError) {
-        throw new Error(spec.preflightError);
-      }
-    },
-    execute(request, runtime) {
+  const scriptedProvider = Object.assign(
+    (request: ProviderRequest, runtime: Parameters<NonNullable<Provider['execute']>>[1]) => {
       const progress = spec.progress ?? [];
       const terminal = resolveTerminalResult(request, spec);
 
@@ -91,7 +84,17 @@ export function createScriptedProvider(specInput: ScriptedProviderSpec): Provide
         emit(providerTerminalEvent(terminal));
       });
     },
-  };
+    {
+      preflight: async (_runtime: PreflightRuntime): Promise<void> => {
+        if (spec.preflightError) {
+          throw new Error(spec.preflightError);
+        }
+      },
+    },
+  );
+
+  Object.defineProperty(scriptedProvider, 'name', { value: spec.name, configurable: true });
+  return Object.assign(scriptedProvider, { execute: scriptedProvider }) as Provider;
 }
 
 export function readScriptedProviderSpecFromEnv(

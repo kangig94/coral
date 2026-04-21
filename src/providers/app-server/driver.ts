@@ -1,12 +1,26 @@
 import type { ProviderRequest, ProviderTerminalEventBody } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { LegacyAbortReason, LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
+import type { LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../provider-contracts.js';
+import type {
+  AppServerNotificationMessage,
+  AppServerSubscriptionPhase,
+  DriverStepOutcome,
+  TurnOutcome,
+} from './types.js';
+
+export type {
+  AppServerNotificationMessage,
+  AppServerSubscriptionPhase,
+  DriverStepOutcome,
+  ProviderTransportClose,
+  TurnOutcome,
+} from './types.js';
 
 export interface AppServerSessionDriver<TState> {
   readonly name: string;
   readonly faultProviderName: LegacyProviderName;
-  readonly subscriptionPhase: 'beforeInitialize' | 'afterInitialize';
+  readonly subscriptionPhase: AppServerSubscriptionPhase;
 
   buildServerSpec(
     request: ProviderRequest,
@@ -15,7 +29,7 @@ export interface AppServerSessionDriver<TState> {
   createInitialState(ctx: DriverContext, request: ProviderRequest): TState;
   initialize(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
   startTurn(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
-  applyNotification(state: TState, message: { method: string; params?: Record<string, unknown> }): void;
+  applyNotification(state: TState, message: AppServerNotificationMessage): void;
   awaitTurnOutcome(state: TState): Promise<TurnOutcome>;
   requestInterrupt(ctx: DriverContext, state: TState): Promise<void>;
   onTransportClosed(state: TState, outcome: Error | void): TurnOutcome;
@@ -28,14 +42,6 @@ export interface DriverContext {
   checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
   emitProgress(message: string): void;
 }
-
-export type DriverStepOutcome = { terminal?: TurnOutcome };
-
-export type TurnOutcome =
-  | { kind: 'completed'; turn: unknown }
-  | { kind: 'failed'; message: string }
-  | { kind: 'aborted'; reason: LegacyAbortReason }
-  | { kind: 'nonResumable'; message: string };
 
 export function buildProviderFailureMessage(label: string, message?: string, status?: string): string {
   if (typeof message === 'string' && message.trim().length > 0) {

@@ -6,7 +6,6 @@ import { runAppServerTurn } from '../app-server/runner.js';
 import {
   type PreflightRuntime,
   type ProviderAppServerLifecycle,
-  type ProviderExecutor,
   type ProviderRuntime,
   type ProviderServerLease,
   type Provider,
@@ -212,20 +211,20 @@ const codexAppServerLifecycle: ProviderAppServerLifecycle = {
   },
 };
 
-function execute(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
+function runCodex(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
   if (request.action === 'fork') {
     throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
   }
   return runAppServerTurn(codexSessionDriver, request, runtime);
 }
 
-const codexExecutor: ProviderExecutor = {
-  name: 'codex',
-  execute,
+const codexProviderBase = Object.assign(function codex(request: ProviderRequest, runtime: ProviderRuntime) {
+  return runCodex(request, runtime);
+}, {
   preflight,
-};
-
-export const codexProvider = {
-  ...codexExecutor,
   appServerLifecycle: codexAppServerLifecycle,
-} satisfies Provider & { appServerLifecycle: ProviderAppServerLifecycle };
+});
+
+export const codexProvider = Object.assign(codexProviderBase, {
+  execute: codexProviderBase,
+}) satisfies Provider & { appServerLifecycle: ProviderAppServerLifecycle };

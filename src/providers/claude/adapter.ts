@@ -26,7 +26,6 @@ import {
   type Provider,
   type ProviderAppServerLifecycle,
   type ProviderArtifactCleanup,
-  type ProviderExecutor,
   type ProviderRuntime,
   type ProviderServerLease,
 } from '../provider-contracts.js';
@@ -344,7 +343,7 @@ const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
   },
 };
 
-function execute(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
+function runClaude(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
   const prepared = buildPreparedRequest(request);
   const continuity = readClaudePersistedContinuity(runtime.persistedContinuity);
   const redirectReason = getPersistentRedirectReason(request, runtime, continuity, prepared.systemPrompt);
@@ -393,22 +392,22 @@ async function cleanupSessions(
   }
 }
 
-const claudeExecutor: ProviderExecutor = {
-  name: 'claude',
-  execute,
-  preflight,
-};
-
 const claudeArtifactCleanup: ProviderArtifactCleanup = {
   name: 'claude',
   cleanupSessions,
 };
 
-export const claudeProvider = {
-  ...claudeExecutor,
+const claudeProviderBase = Object.assign(function claude(request: ProviderRequest, runtime: ProviderRuntime) {
+  return runClaude(request, runtime);
+}, {
+  preflight,
   appServerLifecycle: claudeAppServerLifecycle,
   artifactCleanup: claudeArtifactCleanup,
-} satisfies Provider & {
+});
+
+export const claudeProvider = Object.assign(claudeProviderBase, {
+  execute: claudeProviderBase,
+}) satisfies Provider & {
   appServerLifecycle: ProviderAppServerLifecycle;
   artifactCleanup: ProviderArtifactCleanup;
 };

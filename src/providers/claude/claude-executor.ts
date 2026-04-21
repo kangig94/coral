@@ -1,7 +1,7 @@
 import type { EffortLevel } from '../../shared/schemas.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import type { ClaudeExecFailure, ClaudeExecResult } from './types.js';
-import type { ProviderCliRunner } from '../runner-port.js';
+import type { ProviderCliRunner } from '../cli-runner.js';
 
 export type ClaudeExecOptions = {
   model?: string;
