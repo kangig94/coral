@@ -241,8 +241,7 @@ describe('scenario runner', () => {
       result: {
         exitCode: 9,
         outcome: {
-          kind: 'provider_exit',
-          code: 9,
+          kind: 'failed',
         },
       },
     });

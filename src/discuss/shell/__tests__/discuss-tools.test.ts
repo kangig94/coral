@@ -190,7 +190,7 @@ describe('execution discuss tools', () => {
         start: vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-1' }),
         waitStreamOnce: vi
           .fn()
-          .mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false }),
+          .mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', continuity: null }),
       }),
     );
     const registry = createDiscussContextRegistry();

@@ -35,7 +35,6 @@ function toTerminalPayload(detail: JobProjectionDetail): JobTerminal | null {
     outcome: exit.outcome,
     ...(exit.durationMs === undefined ? {} : { durationMs: exit.durationMs }),
     ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
-    ...(exit.nonResumable === undefined ? {} : { nonResumable: exit.nonResumable }),
     ...(exit.warnings === undefined ? {} : { warnings: [...exit.warnings] }),
     ...(exit.usage === undefined ? {} : { usage: { ...exit.usage } }),
     ...(exit.workflow === undefined

@@ -35,6 +35,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
+import { toProviderSpec } from '../../providers/spec-compat.js';
 import { getInternals } from '../../jobs/shell/__tests__/__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
@@ -118,7 +119,7 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => mockState.getNewProvider(name);
+  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
   return new ExecutionService(ctx, {
     runtime,
     progressStore: options.progressStore ?? createProgressStore(),
@@ -289,7 +290,7 @@ function makeProvider(options?: {
   execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult | { content: string }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: Provider;
+  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
@@ -301,11 +302,11 @@ function makeProvider(options?: {
     execute,
     ...(preflight ? { preflight } : {}),
   };
-  return { provider, execute, preflight };
+  return { provider: toProviderSpec(provider)!, execute, preflight };
 }
 
-function makeCodexAppServerProvider(): Provider {
-  return {
+function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderSpec>> {
+  return toProviderSpec({
     name: 'codex',
     execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
@@ -359,7 +360,7 @@ function makeCodexAppServerProvider(): Provider {
               continuityMutation: continuity,
             },
     },
-  };
+  })!;
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
@@ -803,7 +804,6 @@ describe('ExecutionService', () => {
 
       expect(terminal.result).toMatchObject({
         content: '',
-        nonResumable: true,
         outcome: {
           kind: 'failed',
           causeRef: {
@@ -815,6 +815,7 @@ describe('ExecutionService', () => {
           },
         },
       });
+      expect(terminal.continuity).toEqual({ conversationRef: null, resumable: false });
       expect(updatedSession?.activeJobId).toBeUndefined();
       expect(updatedSession?.lastJobId).toBe(decision.job);
       expect(updatedSession?.state).toBe('non_resumable');
@@ -1413,6 +1414,7 @@ describe('ExecutionService', () => {
       decision.job,
       expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
       'completed',
+      { continuity: null },
     );
     expect(status).toMatchObject({
       phase: 'launching',
@@ -1450,6 +1452,7 @@ describe('ExecutionService', () => {
       jobId,
       { content: '', outcome: { kind: 'aborted', reason: 'queue_shutdown' } },
       'aborted',
+      {},
     );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'aborted' });
     expect(progressStore.readStatus(jobId)?.result).toBeUndefined();
@@ -1524,6 +1527,7 @@ describe('ExecutionService', () => {
         },
       },
       'error',
+      {},
     );
     expect(progressStore.readStatus(jobId)).toMatchObject({ phase: 'launching' });
   });
@@ -1564,7 +1568,7 @@ describe('ExecutionService', () => {
       }
     ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed');
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed', {});
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'launching',
     });
@@ -2350,7 +2354,6 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
-            nonResumable: true,
             outcome: {
               kind: 'failed',
               causeRef: {
@@ -2362,6 +2365,7 @@ describe('ExecutionService', () => {
               },
             },
           },
+          continuity: null,
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
@@ -2443,7 +2447,6 @@ describe('ExecutionService', () => {
           phase: 'error',
           result: {
             content: expectedReport,
-            nonResumable: true,
             outcome: {
               kind: 'failed',
               causeRef: {
@@ -2455,6 +2458,7 @@ describe('ExecutionService', () => {
               },
             },
           },
+          continuity: null,
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
         expect(sessionManager.get('codex', session.sessionId)).toMatchObject({

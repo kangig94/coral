@@ -385,11 +385,10 @@ function buildCodexContinuity(cwd: string, threadId: string, turnId?: string | n
 }
 
 function checkpoint(state: CodexTurnState, threadId: string, turnId?: string | null): void {
-  state.ctx.checkpointRecovery({
+  state.ctx.runtime.continuityBridge?.checkpoint({
     conversationRef: threadId,
-    providerMeta: {
-      providerContinuity: buildCodexContinuity(state.cwd, threadId, turnId),
-    },
+    resumable: true,
+    providerContinuity: buildCodexContinuity(state.cwd, threadId, turnId),
   });
 }
 

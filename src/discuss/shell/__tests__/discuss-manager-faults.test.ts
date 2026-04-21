@@ -128,7 +128,7 @@ describe('Discuss faults and retry recovery', () => {
     const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: '{"score": 66, "thought": "second attempt"}',
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ resume, waitStreamOnce }));
     await persistSession(harness, {
@@ -193,7 +193,7 @@ describe('Discuss faults and retry recovery', () => {
       });
       return {
         content: '{"score": 58, "thought": "recovered bid"}',
-        nonResumable: false,
+        continuity: null,
       };
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ resume, waitStreamOnce }));

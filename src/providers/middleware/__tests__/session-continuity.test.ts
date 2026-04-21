@@ -127,7 +127,7 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('sessionContinuity', () => {
-  it('emits an opening continuity snapshot for resumable sessions with a conversationRef', async () => {
+  it('does not emit an opening continuity snapshot when no live delta occurs', async () => {
     const downstreamTerminal = terminalEvent('resumable');
     const provider: Provider = async function* openingResumableProvider() {
       yield downstreamTerminal;
@@ -145,19 +145,11 @@ describe('sessionContinuity', () => {
       )(provider)(BASE_REQUEST, createRuntime()),
     );
 
-    expect(events).toEqual([
-      {
-        kind: 'continuity',
-        conversationRef: 'abc',
-        resumable: true,
-        providerContinuity: { thread: 'abc' },
-      },
-      downstreamTerminal,
-    ]);
-    expect(events.filter((event) => event.kind === 'continuity')).toHaveLength(1);
+    expect(events).toEqual([downstreamTerminal]);
+    expect(events.filter((event) => event.kind === 'continuity')).toHaveLength(0);
   });
 
-  it('emits resumable: false for non-resumable opening continuity', async () => {
+  it('does not emit opening continuity for non-resumable persisted state without a live delta', async () => {
     const provider: Provider = async function* openingNonResumableProvider() {
       yield terminalEvent('non-resumable');
     };
@@ -174,18 +166,10 @@ describe('sessionContinuity', () => {
       )(provider)(BASE_REQUEST, createRuntime()),
     );
 
-    expect(events).toEqual([
-      {
-        kind: 'continuity',
-        conversationRef: null,
-        resumable: false,
-        providerContinuity: null,
-      },
-      terminalEvent('non-resumable'),
-    ]);
+    expect(events).toEqual([terminalEvent('non-resumable')]);
   });
 
-  it('maps session-unavailable errors to a terminal fault after the opening continuity and does not reach a downstream terminal', async () => {
+  it('maps session-unavailable errors to a terminal fault without synthesizing opening continuity', async () => {
     const unavailable = new Error('session missing');
     let invocations = 0;
     const downstreamReachedTerminal = false;
@@ -213,12 +197,6 @@ describe('sessionContinuity', () => {
     expect(invocations).toBe(1);
     expect(downstreamReachedTerminal).toBe(false);
     expect(events).toEqual([
-      {
-        kind: 'continuity',
-        conversationRef: 'persisted-1',
-        resumable: true,
-        providerContinuity: { thread: 'persisted-1' },
-      },
       {
         kind: 'terminal',
         terminal: {
@@ -255,17 +233,9 @@ describe('sessionContinuity', () => {
       )(provider)(BASE_REQUEST, createRuntime()),
     );
 
-    expect(events).toHaveLength(2);
-    expect(events[1]).toBe(downstreamTerminal);
-    expect(events).toEqual([
-      {
-        kind: 'continuity',
-        conversationRef: 'stable',
-        resumable: true,
-        providerContinuity: { thread: 'stable' },
-      },
-      downstreamTerminal,
-    ]);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toBe(downstreamTerminal);
+    expect(events).toEqual([downstreamTerminal]);
   });
 
   it('emits final continuity from live bridge checkpoints before the downstream terminal', async () => {
@@ -310,12 +280,6 @@ describe('sessionContinuity', () => {
     expect(events).toEqual([
       {
         kind: 'continuity',
-        conversationRef: null,
-        resumable: false,
-        providerContinuity: { phase: 'opening' },
-      },
-      {
-        kind: 'continuity',
         conversationRef: 'live-1',
         resumable: true,
         providerContinuity: { thread: 'live-1', phase: 'updated' },
@@ -352,12 +316,6 @@ describe('sessionContinuity', () => {
     );
 
     expect(events).toEqual([
-      {
-        kind: 'continuity',
-        conversationRef: 'conversation-1',
-        resumable: true,
-        providerContinuity: { closeKind: 'open' },
-      },
       {
         kind: 'continuity',
         conversationRef: 'conversation-1',

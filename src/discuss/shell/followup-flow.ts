@@ -75,7 +75,7 @@ async function collectFollowUpAnswer(
       return attempt.message;
     }
 
-    if (attempt.nonResumable) {
+    if (!(attempt.continuity?.resumable ?? true)) {
       await recordJobFinished(ctx, {
         sessionId,
         agentName: item.agent,

@@ -104,7 +104,11 @@ describe('jobs queries', () => {
           workflow: {
             steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
           },
-          nonResumable: false,
+          continuity: {
+            conversationRef: 'thread-completed',
+            resumable: true,
+            providerContinuity: { threadId: 'thread-completed' },
+          },
         },
       },
       {
@@ -205,7 +209,6 @@ describe('jobs queries', () => {
         launch: { state: 'ready' },
         result: {
           content: 'done',
-          nonResumable: false,
           warnings: ['soft warning'],
           usage: {
             inputTokens: 12,
@@ -215,6 +218,11 @@ describe('jobs queries', () => {
           workflow: {
             steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
           },
+        },
+        continuity: {
+          conversationRef: 'thread-completed',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-completed' },
         },
       },
       runtime: {
@@ -229,8 +237,12 @@ describe('jobs queries', () => {
       },
       exit: {
         content: 'done',
-        nonResumable: false,
         warnings: ['soft warning'],
+        continuity: {
+          conversationRef: 'thread-completed',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-completed' },
+        },
       },
     });
 

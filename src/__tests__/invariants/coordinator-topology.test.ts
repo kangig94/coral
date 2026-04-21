@@ -52,6 +52,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/log.ts',
   'src/coordinator/paths.ts',
   'src/coordinator/recording/observer.ts',
+  'src/coordinator/services/continuity-consumer.ts',
   'src/coordinator/services/execution-shared.ts',
   'src/coordinator/services/job-abort-service.ts',
   'src/coordinator/services/job-launch-service.ts',

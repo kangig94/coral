@@ -35,11 +35,38 @@ export function sessionContinuity<TState>(contract: SessionContinuityContract<TS
       let state = providerState;
       let lastSnapshot = normalizeSnapshot(opening);
       let pendingTransportClosed: ProviderTransportClose | undefined;
+      const pendingContinuity: ContinuitySnapshot[] = [];
       let active = true;
+
+      const queueSnapshot = (snapshot: ContinuitySnapshot): void => {
+        const normalized = normalizeSnapshot(snapshot);
+        if (isDeepStrictEqual(lastSnapshot, normalized)) {
+          return;
+        }
+
+        lastSnapshot = normalized;
+        pendingContinuity.push(normalized);
+      };
+
+      const flushPendingTransportClose = (): void => {
+        if (pendingTransportClosed === undefined) {
+          return;
+        }
+        if (contract.applyTransportClosed) {
+          state = contract.applyTransportClosed(state, pendingTransportClosed);
+        }
+        pendingTransportClosed = undefined;
+      };
+
+      const flushFinalSnapshot = (): void => {
+        flushPendingTransportClose();
+        queueSnapshot(contract.snapshot(state));
+      };
 
       const continuityBridge = createContinuityBridge({
         checkpoint(update) {
           state = contract.applyUpdate(state, update);
+          queueSnapshot(contract.snapshot(state));
         },
         transportClosed(closed) {
           pendingTransportClosed = closed;
@@ -49,48 +76,56 @@ export function sessionContinuity<TState>(contract: SessionContinuityContract<TS
 
       const wrappedRuntime: ProviderRuntime = { ...runtime, continuityBridge };
 
-      const finalizeSnapshot = (): ContinuitySnapshot | null => {
-        if (pendingTransportClosed !== undefined) {
-          if (contract.applyTransportClosed) {
-            state = contract.applyTransportClosed(state, pendingTransportClosed);
-          }
-          pendingTransportClosed = undefined;
-        }
-
-        const snapshot = normalizeSnapshot(contract.snapshot(state));
-        if (isDeepStrictEqual(lastSnapshot, snapshot)) {
-          return null;
-        }
-
-        lastSnapshot = snapshot;
-        return snapshot;
-      };
-
-      yield continuityEvent(lastSnapshot);
-
       try {
         for await (const event of next(request, wrappedRuntime)) {
+          while (pendingContinuity.length > 0) {
+            const snapshot = pendingContinuity.shift();
+            if (snapshot) {
+              yield continuityEvent(snapshot);
+            }
+          }
+
           if (event.kind !== 'terminal') {
             yield event;
             continue;
           }
 
-          const finalSnapshot = finalizeSnapshot();
-          if (finalSnapshot) {
-            yield continuityEvent(finalSnapshot);
+          flushFinalSnapshot();
+          while (pendingContinuity.length > 0) {
+            const snapshot = pendingContinuity.shift();
+            if (snapshot) {
+              yield continuityEvent(snapshot);
+            }
           }
 
           yield event;
           return;
         }
 
-        const finalSnapshot = finalizeSnapshot();
-        if (finalSnapshot) {
-          yield continuityEvent(finalSnapshot);
+        flushFinalSnapshot();
+        while (pendingContinuity.length > 0) {
+          const snapshot = pendingContinuity.shift();
+          if (snapshot) {
+            yield continuityEvent(snapshot);
+          }
         }
       } catch (err) {
         if (!contract.isSessionUnavailable(err)) {
           throw err;
+        }
+
+        if (request.action === 'resume') {
+          state = contract.applyUpdate(state, {
+            conversationRef: null,
+            resumable: true,
+          });
+          flushFinalSnapshot();
+          while (pendingContinuity.length > 0) {
+            const snapshot = pendingContinuity.shift();
+            if (snapshot) {
+              yield continuityEvent(snapshot);
+            }
+          }
         }
 
         yield {

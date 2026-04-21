@@ -119,10 +119,6 @@ export interface ProviderRuntime {
   acquireServer?: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge?: ContractProviderRuntime['continuityBridge'];
-  checkpointRecovery?: (update: {
-    conversationRef?: string;
-    providerMeta: ProviderRecoveryMeta;
-  }) => void;
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;
@@ -188,16 +184,11 @@ export function requireAppServerRuntime(
   providerName: string,
 ): {
   acquireServer: NonNullable<ProviderRuntime['acquireServer']>;
-  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
 } {
   if (!runtime.acquireServer) {
     throw new Error(`${providerName} provider requires ProviderRuntime.acquireServer().`);
   }
-  if (!runtime.checkpointRecovery) {
-    throw new Error(`${providerName} provider requires ProviderRuntime.checkpointRecovery().`);
-  }
   return {
     acquireServer: runtime.acquireServer,
-    checkpointRecovery: runtime.checkpointRecovery,
   };
 }

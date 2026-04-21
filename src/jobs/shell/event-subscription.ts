@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobProgress, JobTerminal } from '../views.js';
 
@@ -73,7 +74,7 @@ function toJobEvent(
     content?: string;
     durationMs?: number;
     exitCode?: number | null;
-    nonResumable?: boolean;
+    continuity?: JobContinuitySnapshot | null;
     warnings?: string[];
     usage?: Record<string, unknown>;
     workflow?: { steps: Array<Record<string, unknown>> };
@@ -91,12 +92,12 @@ function toJobEvent(
         content: body.content ?? '',
         durationMs: body.durationMs,
         exitCode: body.exitCode,
-        nonResumable: body.nonResumable,
         warnings: body.warnings,
         usage: body.usage as JobTerminal['usage'],
         workflow: body.workflow as JobTerminal['workflow'],
         outcome: body.outcome,
       },
+      continuity: body.continuity ?? null,
     };
   }
 

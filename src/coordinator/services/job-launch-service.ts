@@ -1,9 +1,8 @@
-import type { ProviderExecutor } from '../../providers/provider-contracts.js';
+import type { ProviderSpec } from '../../providers/contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { resolveEffort } from '../../shared/schemas.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import { toLegacyProviderExecutor } from '../../providers/spec-compat.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import { getSessionById } from '../../sessions/shell/resolve.js';
@@ -55,8 +54,6 @@ export class JobLaunchService {
 
     const preflightError = await runProviderPreflight(spec, toPreflightRuntime(this.deps.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
-    const provider = toLegacyProviderExecutor(spec);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile> | null = null;
     if (input.agent) {
@@ -121,7 +118,7 @@ export class JobLaunchService {
       coralEnv: effectiveCoralEnv,
     };
 
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
+    return this.launchProviderJob(spec, session.sessionId, admitted.jobId, request, admitted.admission, {
       pool,
       projectRoot: ctx.projectRoot,
       parentWorkflowJobId: input.parentWorkflowJobId,
@@ -132,8 +129,6 @@ export class JobLaunchService {
   async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
-    const provider = toLegacyProviderExecutor(spec);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const session = this.deps.sessionManager.get(providerName, input.sessionId);
     if (!session) {
@@ -163,20 +158,18 @@ export class JobLaunchService {
       };
     }
 
-    return this.resumeResolved(providerName, provider, session, effectiveInput, ctx);
+    return this.resumeResolved(providerName, spec, session, effectiveInput, ctx);
   }
 
   async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
-    const provider = toLegacyProviderExecutor(spec);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceSession = this.deps.sessionManager.get(providerName, input.sessionId);
     if (!sourceSession) {
       return rejectLaunch('session_not_found', `Session not found: ${input.sessionId}. Use exec to start a new session.`);
     }
-    return this.forkResolved(providerName, provider, sourceSession, input, ctx);
+    return this.forkResolved(providerName, spec, sourceSession, input, ctx);
   }
 
   async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
@@ -185,10 +178,8 @@ export class JobLaunchService {
 
     const spec = this.deps.providerRegistry.get(resolved.providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
-    const provider = toLegacyProviderExecutor(spec);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
-    return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
+    return this.resumeResolved(resolved.providerName, spec, resolved.session, input, ctx);
   }
 
   async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
@@ -197,10 +188,8 @@ export class JobLaunchService {
 
     const spec = this.deps.providerRegistry.get(resolved.providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
-    const provider = toLegacyProviderExecutor(spec);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
-    return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
+    return this.forkResolved(resolved.providerName, spec, resolved.session, input, ctx);
   }
 
   async coralDispatch(
@@ -317,7 +306,7 @@ export class JobLaunchService {
 
   private async resumeResolved(
     providerName: string,
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     session: SessionEntry,
     input: ResumeIntent,
     ctx: CallerContext,
@@ -374,7 +363,7 @@ export class JobLaunchService {
 
   private async forkResolved(
     providerName: string,
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     sourceSession: SessionEntry,
     input: ForkIntent,
     ctx: CallerContext,
@@ -482,7 +471,7 @@ export class JobLaunchService {
   }
 
   private launchProviderJob(
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,

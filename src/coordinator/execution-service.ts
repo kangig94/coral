@@ -1,10 +1,17 @@
 import { withCallerContext } from './caller-context.js';
 import type { CallerContext } from '../shared/request-context.js';
-import type { ExecutionLaunchPool as LaunchPool, ExecutionServiceDeps, ListResult, ProjectRequestPort, RecoveryCapableService } from './contracts.js';
+import type {
+  ExecutionLaunchPool as LaunchPool,
+  ExecutionServiceDeps,
+  JobContinuitySnapshot,
+  ListResult,
+  ProjectRequestPort,
+  RecoveryCapableService,
+} from './contracts.js';
 import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, JobTerminal, LaunchDecision, LaunchState, WaitStreamEvent, WaitStreamRequest } from '../jobs/api.js';
 import type { PipelineAST, WorkflowCommand, WorkflowSessionHandle } from '../workflow/api.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProviderRecoveryMeta, ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
 import type { ProviderContinuityBlob } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/api.js';
 import { SessionManager } from '../sessions/shell/store.js';
@@ -66,9 +73,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       jobPools: this.jobPools,
       appendEvents,
       acquireServer: (spec, options) => this.recoveryService.acquireServer(spec, options),
-      checkpointRecovery: (jobId, update) => this.recoveryService.checkpointRecovery(jobId, update),
-      finalizeProviderSession: (providerName, request, sessionId, jobId, result) =>
-        this.recoveryService.finalizeProviderSession(providerName, request, sessionId, jobId, result),
     });
     const waitCoordinator = new WaitCoordinator({
       progressStore: this.progressStore,
@@ -254,13 +258,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.acquireServer(spec, options);
   }
 
-  checkpointRecovery(
-    jobId: string,
-    update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta },
-  ): void {
-    this.recoveryService.checkpointRecovery(jobId, update);
-  }
-
   private finishQueuedAbort(
     jobId: string,
     sessionId: string,
@@ -295,7 +292,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     yield* this.waitService.waitStream(req);
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
     return this.waitService.waitStreamOnce(jobId, timeoutMs);
   }
 }

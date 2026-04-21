@@ -78,7 +78,7 @@ function cloneEntry(entry: SessionEntry): SessionEntry {
 function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>): ContinuitySnapshot {
   return {
     conversationRef: entry.conversationRef ?? null,
-    resumable: entry.state !== 'non_resumable' && typeof entry.conversationRef === 'string',
+    resumable: entry.state === 'ready',
     providerContinuity: entry.providerContinuity ?? null,
   };
 }
@@ -478,6 +478,61 @@ export class SessionManager {
       }
 
       this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+      this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
+      return true;
+    } finally {
+      release();
+    }
+  }
+
+  async checkpointJobContinuityAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+      snapshot: ContinuitySnapshot;
+    },
+  ): Promise<{ ok: true; nextVersion: number } | { ok: false }> {
+    const release = await this.acquireSessionLock(sessionId);
+    try {
+      const { expectedActiveJobId, expectedVersion, snapshot } = options;
+      const entry = this.readEntry(sessionId, { forceFresh: true });
+      if (!entry) return { ok: false };
+      if (entry.activeJobId !== expectedActiveJobId) return { ok: false };
+      if (entry.version !== expectedVersion) return { ok: false };
+
+      const previous = cloneEntry(entry);
+      entry.conversationRef = snapshot.conversationRef ?? undefined;
+      entry.providerContinuity = snapshot.providerContinuity ?? undefined;
+      entry.state = snapshot.resumable ? 'ready' : 'non_resumable';
+      entry.lastUsedAt = nowIsoString(this.time);
+
+      const stored = this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshot), previous);
+      return { ok: true, nextVersion: stored.version };
+    } finally {
+      release();
+    }
+  }
+
+  async releaseJobClaimAtomic(
+    sessionId: string,
+    options: {
+      expectedActiveJobId: string;
+      expectedVersion: number;
+    },
+  ): Promise<boolean> {
+    const release = await this.acquireSessionLock(sessionId);
+    try {
+      const { expectedActiveJobId, expectedVersion } = options;
+      const entry = this.readEntry(sessionId, { forceFresh: true });
+      if (!entry) return false;
+      if (entry.activeJobId !== expectedActiveJobId) return false;
+      if (entry.version !== expectedVersion) return false;
+
+      entry.activeJobId = undefined;
+      entry.lastJobId = expectedActiveJobId;
+      entry.lastUsedAt = nowIsoString(this.time);
+      this.persistEntry(entry);
       this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
       return true;
     } finally {

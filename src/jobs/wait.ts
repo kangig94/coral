@@ -1,4 +1,5 @@
 import type { JobTerminal } from './views.js';
+import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
 
 export type WaitCursor = {
   jobs: Record<string, number>;
@@ -60,5 +61,6 @@ export type WaitStreamEvent =
       remainingJobIds: string[];
       resultPath: string;
       result: JobTerminal;
+      continuity?: JobContinuitySnapshot | null;
     }
   | { type: 'waiting'; waitingJobIds: string[] };

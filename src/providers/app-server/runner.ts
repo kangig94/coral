@@ -15,13 +15,12 @@ export function runAppServerTurn<TState>(
   runtime: ProviderRuntime,
 ): AsyncIterable<ProviderEventBody> {
   return streamProviderEvents(async (emit) => {
-    const { acquireServer, checkpointRecovery } = requireAppServerRuntime(runtime, driver.name);
+    const { acquireServer } = requireAppServerRuntime(runtime, driver.name);
     const spec = driver.buildServerSpec(request, runtime.persistedContinuity);
     const lease = await acquireServer(spec);
     const ctx: DriverContext = {
       lease,
       runtime,
-      checkpointRecovery,
       emitProgress: (message: string) => {
         emit(providerProgressEvent(message, nowIsoString()));
       },

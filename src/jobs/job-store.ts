@@ -8,6 +8,7 @@ import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
+import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../shared/format-progress.js';
@@ -67,7 +68,6 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
     outcome: exit.outcome,
     ...(exit.durationMs === undefined ? {} : { durationMs: exit.durationMs }),
     ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
-    ...(exit.nonResumable === undefined ? {} : { nonResumable: exit.nonResumable }),
     ...(exit.warnings === undefined ? {} : { warnings: [...exit.warnings] }),
     ...(exit.usage === undefined ? {} : { usage: { ...exit.usage } }),
     ...(exit.workflow === undefined
@@ -207,6 +207,19 @@ export class JobStore {
     return {
       ...status,
       launch: { ...status.launch },
+      ...(status.continuity === undefined
+        ? {}
+        : {
+            continuity:
+              status.continuity === null
+                ? null
+                : {
+                    ...status.continuity,
+                    ...(status.continuity.providerContinuity === undefined
+                      ? {}
+                      : { providerContinuity: { ...status.continuity.providerContinuity } }),
+                  },
+          }),
       ...(status.result === undefined
         ? {}
         : {
@@ -645,10 +658,17 @@ export class JobStore {
     return this.readProgressTail(jobId);
   }
 
-  appendTerminal(jobId: string, sessionId: string, result: JobTerminal, phase: JobPhase): number {
+  appendTerminal(
+    jobId: string,
+    sessionId: string,
+    result: JobTerminal,
+    phase: JobPhase,
+    options: { continuity?: JobContinuitySnapshot | null } = {},
+  ): number {
     const detail = this.detail(jobId);
     const hasLaunchProjection = detail.launch !== null;
     const status = detail.status ?? this.drafts.get(jobId);
+    const continuity = options.continuity ?? null;
     this.appendEvent({
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: jobId },
@@ -667,7 +687,7 @@ export class JobStore {
         warnings: result.warnings,
         usage: result.usage,
         workflow: result.workflow,
-        nonResumable: result.nonResumable,
+        continuity,
         ...(result.outcome.kind === 'provider_exit'
           ? {
               code: result.outcome.code,
@@ -691,6 +711,15 @@ export class JobStore {
                 },
               }),
         };
+        draft.continuity =
+          continuity === null
+            ? null
+            : {
+                ...continuity,
+                ...(continuity.providerContinuity === undefined
+                  ? {}
+                  : { providerContinuity: { ...continuity.providerContinuity } }),
+              };
         draft.launch = {
           state: phase === 'completed' ? 'ready' : 'error',
           updatedAt: nowIsoString(this.runtime.time),
@@ -708,8 +737,13 @@ export class JobStore {
     return this.readProgressTail(jobId);
   }
 
-  markTerminalStatus(jobId: string, result: JobTerminal, phase: JobPhase): void {
-    this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase);
+  markTerminalStatus(
+    jobId: string,
+    result: JobTerminal,
+    phase: JobPhase,
+    options: { continuity?: JobContinuitySnapshot | null } = {},
+  ): void {
+    this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase, options);
   }
 
   replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgress[] {

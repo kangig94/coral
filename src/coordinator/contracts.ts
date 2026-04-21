@@ -36,6 +36,12 @@ type ExecIntent = JobLaunchRequest;
 type ResumeIntent = JobResumeRequest;
 type ForkIntent = JobForkRequest;
 
+export type JobContinuitySnapshot = {
+  conversationRef: string | null;
+  resumable: boolean;
+  providerContinuity?: ProviderContinuityBlob;
+};
+
 interface CoordinatorSessionOps {
   start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision>;
   resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision>;
@@ -45,7 +51,7 @@ interface CoordinatorSessionOps {
 interface CoordinatorJobOps {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }>;
+  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
   list(providerName: string): ListResult;
 }
@@ -169,11 +175,7 @@ export interface RecoveryCapableService {
     result: JobTerminal,
     phase: JobPhase,
     options?: {
-      continuity?: {
-        conversationRef: string | null;
-        resumable: boolean;
-        providerContinuity?: ProviderContinuityBlob;
-      };
+      continuity?: JobContinuitySnapshot;
     },
   ): void;
 }

@@ -19,7 +19,7 @@ import {
 } from './outcome.js';
 import { usageSummarySchema } from '../providers/protocol.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
-import { workflowResultMetaSchema } from './views.js';
+import { jobContinuitySnapshotSchema, workflowResultMetaSchema } from './views.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -64,7 +64,7 @@ export const jobTerminalRecordedBodySchema = z
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
     workflow: workflowResultMetaSchema.optional(),
-    nonResumable: z.boolean().optional(),
+    continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .strict();
 

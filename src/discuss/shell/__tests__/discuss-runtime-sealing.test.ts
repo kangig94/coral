@@ -414,9 +414,9 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       launch: { state: 'ready', updatedAt: '2035-04-15T01:02:05.000Z' },
       result: {
         content: 'Recovered content from runtime storage',
-        nonResumable: false,
         outcome: { kind: 'completed' },
       },
+      continuity: null,
     };
     writeJson(harness.runtime, resolve(harness.runtime.paths.jobsDir(), jobId, 'status.json'), status);
     expect(readStatusRecord(jobId)).toBeNull();
@@ -433,7 +433,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       purpose: 'bid',
     });
 
-    expect(result).toEqual({ content: 'Recovered content from runtime storage', nonResumable: false });
+    expect(result).toEqual({ content: 'Recovered content from runtime storage', continuity: null });
     expect(harness.service.start).not.toHaveBeenCalled();
   });
 

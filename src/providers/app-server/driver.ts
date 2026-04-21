@@ -107,7 +107,6 @@ export interface AppServerSessionDriver<TState> {
 export interface DriverContext {
   lease: ProviderServerLease;
   runtime: ProviderRuntime;
-  checkpointRecovery: NonNullable<ProviderRuntime['checkpointRecovery']>;
   emitProgress(message: string): void;
 }
 

@@ -86,7 +86,10 @@ function makeRuntime(lease?: ProviderServerLease): {
       signal: controller.signal,
       runCli,
       acquireServer: lease ? vi.fn(async () => lease) : undefined,
-      checkpointRecovery: vi.fn(),
+      continuityBridge: {
+        checkpoint: vi.fn(),
+        transportClosed: vi.fn(),
+      },
     },
   };
 }

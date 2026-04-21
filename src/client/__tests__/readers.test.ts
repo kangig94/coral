@@ -420,6 +420,7 @@ describe('readProgressLog', () => {
           durationMs: 1,
           outcome: { kind: 'completed' },
         },
+        continuity: null,
       },
     ]);
   });

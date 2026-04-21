@@ -10,7 +10,7 @@ import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
 import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 import type { LegacyIngestOptions } from '../shell/legacy-ingest.js';
-import type { ProviderTerminalEventBody } from '../../providers/protocol.js';
+import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { FaultPayload } from '../../providers/fault.js';
 import type { TerminalOutcome } from '../outcome.js';
 
@@ -163,12 +163,33 @@ export function materializeProviderTerminal(
   options: LegacyIngestOptions,
 ): JobTerminal {
   return {
-    content: terminal.content,
-    durationMs: terminal.durationMs,
-    nonResumable: terminal.nonResumable,
-    exitCode: terminal.exitCode,
-    warnings: terminal.warnings,
-    usage: terminal.usage,
-    outcome: materializeLegacyOutcome(progressStore, terminal.outcome, options),
+    content: terminal.terminal.content,
+    ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+    ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
+    ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
+    ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
+    outcome: materializeProviderOutcome(progressStore, terminal.terminal.outcome, options),
   };
+}
+
+function materializeProviderOutcome(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  outcome: ProviderTerminalEventBody['terminal']['outcome'],
+  options: LegacyIngestOptions,
+): TerminalOutcome {
+  switch (outcome.kind) {
+    case 'completed':
+      return { kind: 'completed' };
+    case 'aborted':
+      return { kind: 'aborted', reason: outcome.reason };
+    case 'failed':
+      return materializeLegacyOutcome(
+        progressStore,
+        {
+          kind: 'legacy_fault',
+          fault: faultPayloadToLegacyFault(outcome.fault),
+        },
+        options,
+      );
+  }
 }

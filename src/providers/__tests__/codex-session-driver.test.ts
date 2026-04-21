@@ -33,7 +33,10 @@ function makeLease(
 }
 
 function makeRuntime(controller = new AbortController()): ProviderRuntime & {
-  checkpointRecovery: ReturnType<typeof vi.fn>;
+  continuityBridge: {
+    checkpoint: ReturnType<typeof vi.fn>;
+    transportClosed: ReturnType<typeof vi.fn>;
+  };
   emitProgress: (message: string) => void;
   emitProgressMock: ReturnType<typeof vi.fn>;
 } {
@@ -41,13 +44,19 @@ function makeRuntime(controller = new AbortController()): ProviderRuntime & {
   return {
     signal: controller.signal,
     runCli: vi.fn(),
-    checkpointRecovery: vi.fn(),
+    continuityBridge: {
+      checkpoint: vi.fn(),
+      transportClosed: vi.fn(),
+    },
     emitProgress(message: string) {
       emitProgressMock(message);
     },
     emitProgressMock,
   } as ProviderRuntime & {
-    checkpointRecovery: ReturnType<typeof vi.fn>;
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
     emitProgress: (message: string) => void;
     emitProgressMock: ReturnType<typeof vi.fn>;
   };
@@ -57,7 +66,10 @@ function makeContext(
   request: ProviderRequest,
   lease: ProviderServerLease,
   runtime: ProviderRuntime & {
-    checkpointRecovery: ReturnType<typeof vi.fn>;
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
     emitProgress: (message: string) => void;
     emitProgressMock: ReturnType<typeof vi.fn>;
   },
@@ -65,7 +77,6 @@ function makeContext(
   return {
     lease,
     runtime,
-    checkpointRecovery: runtime.checkpointRecovery,
     emitProgress(message: string) {
       runtime.emitProgress(message);
     },
@@ -76,7 +87,10 @@ async function initializeState(
   request: ProviderRequest,
   lease: ProviderServerLease,
   runtime: ProviderRuntime & {
-    checkpointRecovery: ReturnType<typeof vi.fn>;
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
     emitProgress: (message: string) => void;
     emitProgressMock: ReturnType<typeof vi.fn>;
   },
@@ -198,23 +212,21 @@ describe('codexSessionDriver', () => {
 
     const outcome = await codexSessionDriver.awaitTurnOutcome(state);
 
-    expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(1, {
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenNthCalledWith(1, {
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
       },
     });
-    expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(2, {
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenNthCalledWith(2, {
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-          turnId: 'late-turn-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
+        turnId: 'late-turn-1',
       },
     });
 
@@ -224,13 +236,12 @@ describe('codexSessionDriver', () => {
       content: 'Late turn answer',
       conversationRef: 'thread-1',
     });
-    expect(runtime.checkpointRecovery).toHaveBeenLastCalledWith({
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenLastCalledWith({
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
       },
     });
   });

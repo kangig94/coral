@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import {
@@ -58,7 +59,6 @@ export type JobKind = 'provider' | 'workflow';
 export interface JobTerminal {
   content: string;
   durationMs?: number;
-  nonResumable?: boolean;
   exitCode?: number | null;
   warnings?: string[];
   usage?: UsageSummary;
@@ -70,7 +70,6 @@ export const jobTerminalSchema = z
   .object({
     content: z.string(),
     durationMs: z.number().optional(),
-    nonResumable: z.boolean().optional(),
     exitCode: z.number().nullable().optional(),
     warnings: z.array(z.string()).optional(),
     usage: usageSummarySchema.optional(),
@@ -79,7 +78,16 @@ export const jobTerminalSchema = z
   })
   .strict();
 
+export const jobContinuitySnapshotSchema = z
+  .object({
+    conversationRef: z.string().nullable(),
+    resumable: z.boolean(),
+    providerContinuity: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
 export interface JobExit extends JobTerminal {
+  continuity?: JobContinuitySnapshot | null;
   signal?: string | null;
   endTime: string;
 }
@@ -99,6 +107,7 @@ export interface JobStatus {
     updatedAt: string;
   };
   result?: JobTerminal;
+  continuity?: JobContinuitySnapshot | null;
 }
 
 export const jobStatusSchema = z
@@ -119,6 +128,7 @@ export const jobStatusSchema = z
       })
       .passthrough(),
     result: jobTerminalSchema.optional(),
+    continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .passthrough();
 
@@ -187,4 +197,5 @@ export interface JobProgress {
   ts: string;
   message?: string;
   result?: JobTerminal;
+  continuity?: JobContinuitySnapshot | null;
 }

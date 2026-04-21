@@ -193,7 +193,7 @@ async function collectBidOutcome(
       });
     }
 
-    if (attempt.nonResumable) {
+    if (!(attempt.continuity?.resumable ?? true)) {
       await recordJobFinished(ctx, {
         sessionId,
         agentName,

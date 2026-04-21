@@ -229,20 +229,7 @@ export function finalizeDeadAdoptedJob({
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
       const payload: JobTerminal = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
-      service.completeRecoveredJob(
-        jobId,
-        launchRecord.sessionId,
-        payload,
-        phase,
-        persistedPayload.nonResumable === true
-          ? {
-              continuity: {
-                conversationRef: null,
-                resumable: false,
-              },
-            }
-          : undefined,
-      );
+      service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase);
       return;
     }
 
@@ -285,12 +272,11 @@ function materializeRecoveredProviderTerminal(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   terminal: ProviderTerminalBody,
   options: { jobId: string; sessionId: string },
-  continuity?: { conversationRef: string | null; resumable: boolean; providerContinuity?: unknown },
+  _continuity?: { conversationRef: string | null; resumable: boolean; providerContinuity?: unknown },
 ): JobTerminal {
   return {
     content: terminal.terminal.content,
     ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
-    ...(continuity?.resumable === false ? { nonResumable: true } : {}),
     ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
     ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
     ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),

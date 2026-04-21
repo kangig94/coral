@@ -12,6 +12,7 @@ import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import { resultPathFor } from './result-artifact.js';
+import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
 
 const ABORTED = Symbol('wait-aborted');
 
@@ -72,6 +73,10 @@ export class WaitCoordinator {
 
   private readQueryStatus(jobId: string): JobStatus | null {
     return this.deps.loadJobProjectionDetail?.(jobId).status ?? this.deps.progressStore.readStatus(jobId);
+  }
+
+  private readQueryContinuity(jobId: string): JobContinuitySnapshot | null {
+    return this.readQueryStatus(jobId)?.continuity ?? null;
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
@@ -248,6 +253,7 @@ export class WaitCoordinator {
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+            continuity: event.continuity ?? this.readQueryContinuity(jobId),
           };
           return;
         }
@@ -270,6 +276,7 @@ export class WaitCoordinator {
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' } },
+            continuity: currentStatus.continuity ?? null,
           };
           return;
         }
@@ -349,6 +356,7 @@ export class WaitCoordinator {
           remainingJobIds: [...pending].filter((id) => id !== jobId),
           resultPath: resultPathFor(jobId),
           result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+          continuity: event.continuity ?? this.readQueryContinuity(jobId),
         };
         return;
       }
@@ -360,6 +368,7 @@ export class WaitCoordinator {
           remainingJobIds: [...pending].filter((id) => id !== jobId),
           resultPath: resultPathFor(jobId),
           result: status.result ?? { content: '', outcome: { kind: 'completed' } },
+          continuity: status.continuity ?? null,
         };
         return;
       }
@@ -425,6 +434,7 @@ export class WaitCoordinator {
           remainingJobIds: [...pending].filter((id) => id !== event.jobId),
           resultPath: resultPathFor(event.jobId),
           result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+          continuity: event.continuity ?? this.readQueryContinuity(event.jobId),
         };
         return;
       }
@@ -435,7 +445,7 @@ export class WaitCoordinator {
     }
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
     const request: WaitRequest = { jobIds: [jobId] };
     if (timeoutMs !== undefined) {
       request.timeoutSeconds = timeoutMs / 1000;
@@ -445,7 +455,7 @@ export class WaitCoordinator {
       if (event.type === 'terminal' && event.jobId === jobId) {
         return {
           content: event.result.content,
-          nonResumable: event.result.nonResumable ?? false,
+          continuity: this.readQueryContinuity(jobId) ?? event.continuity ?? null,
         };
       }
       if (event.type === 'waiting') {

@@ -121,13 +121,10 @@ function checkpoint(state: ClaudeTurnState): void {
     ...(state.brokerTurnId ? { brokerTurnId: state.brokerTurnId } : {}),
   });
 
-  state.ctx.checkpointRecovery({
-    ...(state.conversationRef ? { conversationRef: state.conversationRef } : {}),
-    providerMeta: {
-      ...providerContinuity,
-      ...(state.conversationRef ? { sessionId: state.conversationRef } : {}),
-      providerContinuity,
-    },
+  state.ctx.runtime.continuityBridge?.checkpoint({
+    conversationRef: state.conversationRef ?? null,
+    resumable: true,
+    providerContinuity,
   });
 }
 

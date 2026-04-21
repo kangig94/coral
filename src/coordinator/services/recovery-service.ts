@@ -1,6 +1,5 @@
 import type {
   ProviderContinuityBlob,
-  ProviderRecoveryMeta,
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/provider-contracts.js';
@@ -15,7 +14,6 @@ import {
   type JobTerminal,
   writeWorkflowResult,
 } from '../../jobs/api.js';
-import type { ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../shared/utils.js';
@@ -24,7 +22,6 @@ import {
   getProviderAppServer,
   getProviderRecovery,
   migrateLegacyContinuity,
-  toLegacyProviderExecutor,
 } from '../../providers/spec-compat.js';
 import type {
   ExecutionLaunchCoordinator,
@@ -97,37 +94,6 @@ export class RecoveryService {
       });
     }
     return lease;
-  }
-
-  checkpointRecovery(jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }): void {
-    const runtimeRecord = this.deps.progressStore.readRuntimeRecord(jobId);
-    if (!isAppServerRuntime(runtimeRecord)) {
-      throw new Error(`checkpointRecovery(${jobId}) requires an app-server runtime record`);
-    }
-    const providerMetaUpdate = update.providerMeta as Partial<AppServerRuntime['providerMeta']>;
-
-    const nextRecord: AppServerRuntime = {
-      ...runtimeRecord,
-      providerMeta: {
-        ...runtimeRecord.providerMeta,
-        ...providerMetaUpdate,
-        recoveryPolicy: APP_SERVER_RECOVERY_POLICY,
-      },
-    };
-    this.deps.progressStore.writeRuntimeRecord(jobId, nextRecord);
-
-    const status = this.deps.progressStore.readStatus(jobId);
-    if (status && isProviderContinuityBlob(nextRecord.providerMeta.providerContinuity)) {
-      this.deps.sessionManager.checkpointProviderContinuity(status.sessionId, {
-        providerContinuity: nextRecord.providerMeta.providerContinuity,
-        conversationRef: update.conversationRef,
-      });
-      return;
-    }
-
-    if (status && update.conversationRef) {
-      this.deps.sessionManager.setConversationRef(status.sessionId, update.conversationRef);
-    }
   }
 
   async interruptAppServerJob(
@@ -309,11 +275,7 @@ export class RecoveryService {
     this.deps.launchOrchestrator.writeJobTerminal(
       launchRecord.jobId,
       launchRecord.sessionId,
-      {
-        content: interruptedReport,
-        outcome,
-        ...(probeOutcome === 'missing' || probeOutcome === 'unavailable' ? { nonResumable: true } : {}),
-      },
+      { content: interruptedReport, outcome },
       'error',
     );
     this.deps.progressStore.writeResultMd(launchRecord.jobId, interruptedReport);
@@ -346,7 +308,7 @@ export class RecoveryService {
 
     this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
-    const provider = toLegacyProviderExecutor(this.deps.providerRegistry.get(launchRecord.provider));
+    const provider = this.deps.providerRegistry.get(launchRecord.provider);
     if (provider) {
       this.deps.launchOrchestrator.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
     }
@@ -399,7 +361,9 @@ export class RecoveryService {
       };
     },
   ): void {
-    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase);
+    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
+      continuity: options?.continuity ?? null,
+    });
     this.deps.progressStore.writeResultMd(jobId, result.content);
     writeWorkflowResult(this.deps.runtime.storage, jobId, result.content);
     this.deps.abortRegistry.remove(jobId);
@@ -417,59 +381,6 @@ export class RecoveryService {
       this.deps.sessionManager.setConversationRef(sessionId, continuity.conversationRef);
     }
     if (continuity && !continuity.resumable) {
-      this.deps.sessionManager.setNonResumable(sessionId);
-    }
-    this.deps.sessionManager.releaseJob(sessionId, jobId);
-  }
-
-  async finalizeProviderSession(
-    providerName: string,
-    request: ProviderRequest,
-    sessionId: string,
-    jobId: string,
-    result: ProviderTerminalEventBody,
-  ): Promise<void> {
-    const providerEntry = this.deps.providerRegistry.get(providerName);
-    const appServer = getProviderAppServer(providerEntry);
-    const runtimeRecord = this.deps.progressStore.readRuntimeRecord(jobId);
-    if (appServer && isAppServerRuntime(runtimeRecord)) {
-      const continuity = this.resolveAppServerContinuity(
-        providerName,
-        runtimeRecord,
-        this.deps.sessionManager.get(providerName, sessionId),
-      );
-
-      if (request.action === 'resume' && result.nonResumable && !continuity) {
-        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
-          type: 'clear_non_resumable',
-        });
-        return;
-      }
-
-      if (result.conversationRef && !continuity) {
-        await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
-          type: 'set_resumable',
-          conversationRef: result.conversationRef,
-        });
-        return;
-      }
-
-      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
-        type: 'preserve',
-      });
-      return;
-    }
-
-    if (request.action === 'resume' && result.nonResumable) {
-      await this.finalizeSessionContinuityMutation(providerName, sessionId, jobId, {
-        type: 'clear_non_resumable',
-      });
-      return;
-    }
-
-    if (result.conversationRef) {
-      this.deps.sessionManager.setConversationRef(sessionId, result.conversationRef);
-    } else if (result.nonResumable) {
       this.deps.sessionManager.setNonResumable(sessionId);
     }
     this.deps.sessionManager.releaseJob(sessionId, jobId);

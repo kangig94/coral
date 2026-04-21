@@ -198,7 +198,7 @@ function getPersistentRedirectReason(
     return null;
   }
 
-  if (!runtime.acquireServer || !runtime.checkpointRecovery) {
+  if (!runtime.acquireServer || !runtime.continuityBridge) {
     return 'This Claude session already established persistent continuity and cannot fall back to one-shot execution. Start a new Coral session.';
   }
 

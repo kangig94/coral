@@ -64,15 +64,26 @@ function makeLease(options: { unsubscribeThrows?: boolean } = {}): ProviderServe
 
 function makeRuntime(lease: ProviderServerLease, controller = new AbortController()): ProviderRuntime & {
   acquireServer: ReturnType<typeof vi.fn>;
-  checkpointRecovery: ReturnType<typeof vi.fn>;
+  continuityBridge: {
+    checkpoint: ReturnType<typeof vi.fn>;
+    transportClosed: ReturnType<typeof vi.fn>;
+  };
 } {
-  const checkpointRecovery = vi.fn();
   return {
     signal: controller.signal,
     runCli: vi.fn(),
     acquireServer: vi.fn(async () => lease),
-    checkpointRecovery,
+    continuityBridge: {
+      checkpoint: vi.fn(),
+      transportClosed: vi.fn(),
+    },
     persistedContinuity: undefined,
+  } as ProviderRuntime & {
+    acquireServer: ReturnType<typeof vi.fn>;
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
   };
 }
 

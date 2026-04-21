@@ -94,7 +94,7 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
-  it('runs the composed stack end-to-end and emits opening continuity before the terminal', async () => {
+  it('runs the composed stack end-to-end and emits live continuity deltas before the terminal', async () => {
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') {
         return { thread: { id: 'thread-1' } };
@@ -149,7 +149,7 @@ describe('codexThreadProvider', () => {
 
     const events = await eventsPromise;
 
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(5);
     expect(events[0]).toEqual({
       kind: 'continuity',
       conversationRef: 'thread-1',
@@ -157,6 +157,7 @@ describe('codexThreadProvider', () => {
       providerContinuity: {
         cwd: '/workspace/persisted',
         threadId: 'thread-1',
+        turnId: 'turn-1',
       },
     });
     expect(events[1]).toEqual({
@@ -164,10 +165,20 @@ describe('codexThreadProvider', () => {
       message: 'Thread ready (thread-1).',
     });
     expect(events[2]).toEqual({
+      kind: 'continuity',
+      conversationRef: 'thread-1',
+      resumable: true,
+      providerContinuity: {
+        cwd: '/workspace/persisted',
+        threadId: 'thread-1',
+        turnId: undefined,
+      },
+    });
+    expect(events[3]).toEqual({
       kind: 'progress',
       message: 'Turn completed.',
     });
-    expect(events[3]).toMatchObject({
+    expect(events[4]).toMatchObject({
       kind: 'terminal',
       terminal: {
         content: 'Final answer',
@@ -206,21 +217,8 @@ describe('codexThreadProvider', () => {
 
     const events = await eventsPromise;
 
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(3);
     expect(events[0]).toEqual({
-      kind: 'continuity',
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: {
-        cwd: '/workspace/persisted',
-        threadId: 'thread-1',
-      },
-    });
-    expect(events[1]).toEqual({
-      kind: 'progress',
-      message: 'Thread ready (thread-1).',
-    });
-    expect(events[2]).toEqual({
       kind: 'continuity',
       conversationRef: 'thread-1',
       resumable: true,
@@ -230,7 +228,11 @@ describe('codexThreadProvider', () => {
         turnId: 'turn-1',
       },
     });
-    expect(events[3]).toMatchObject({
+    expect(events[1]).toEqual({
+      kind: 'progress',
+      message: 'Thread ready (thread-1).',
+    });
+    expect(events[2]).toMatchObject({
       kind: 'terminal',
       terminal: {
         outcome: {

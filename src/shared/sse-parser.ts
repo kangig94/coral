@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jobTerminalSchema } from '../jobs/views.js';
+import { jobContinuitySnapshotSchema, jobTerminalSchema } from '../jobs/views.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;
@@ -41,6 +41,7 @@ const waitTerminalEventSchema = z
     remainingJobIds: z.array(z.string()),
     resultPath: z.string(),
     result: jobTerminalSchema,
+    continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .strict();
 

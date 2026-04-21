@@ -83,17 +83,30 @@ function makeRuntime(
   lease: ProviderServerLease | null,
   overrides: Partial<ProviderRuntime> = {},
   persistedContinuity?: Record<string, unknown>,
-): ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn> } {
+): ProviderRuntime & {
+  continuityBridge: {
+    checkpoint: ReturnType<typeof vi.fn>;
+    transportClosed: ReturnType<typeof vi.fn>;
+  };
+} {
   const controller = new AbortController();
-  const checkpointRecovery = vi.fn();
+  const continuityBridge = {
+    checkpoint: vi.fn(),
+    transportClosed: vi.fn(),
+  };
   return {
     signal: controller.signal,
     runCli: vi.fn(),
     acquireServer: lease ? vi.fn(async () => lease) : undefined,
-    checkpointRecovery,
+    continuityBridge,
     persistedContinuity: persistedContinuity ?? undefined,
     ...overrides,
-  } as ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn> };
+  } as ProviderRuntime & {
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
+  };
 }
 
 describe('claude adapter: bootstrap drift when persistent continuity exists', () => {
@@ -120,7 +133,7 @@ describe('claude adapter: bootstrap drift when persistent continuity exists', ()
     );
 
     expect(runtime.acquireServer).not.toHaveBeenCalled();
-    expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
+    expect(runtime.continuityBridge.checkpoint).not.toHaveBeenCalled();
     expect(result.nonResumable === true || result.outcome.kind !== 'completed').toBe(true);
   });
 
@@ -239,14 +252,12 @@ describe('claude adapter: non-fork requests use the persistent path', () => {
 
     await expect(execution).resolves.toMatchObject({ content: 'persistent answer' });
     expect((runtime as unknown as { runCli: ReturnType<typeof vi.fn> }).runCli).not.toHaveBeenCalled();
-    expect(runtime.checkpointRecovery).toHaveBeenCalledWith(
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenCalledWith(
       expect.objectContaining({
-        providerMeta: expect.objectContaining({
+        resumable: true,
+        providerContinuity: expect.objectContaining({
+          brokerSessionKey: BROKER_SESSION_KEY,
           envHash: expect.stringMatching(/^sha256:/),
-          providerContinuity: expect.objectContaining({
-            brokerSessionKey: BROKER_SESSION_KEY,
-            envHash: expect.stringMatching(/^sha256:/),
-          }),
         }),
       }),
     );
@@ -382,19 +393,16 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
 
     await sessionEnsureStarted;
     await vi.waitFor(() => {
-      expect(runtime.checkpointRecovery).toHaveBeenCalled();
+      expect(runtime.continuityBridge.checkpoint).toHaveBeenCalled();
     });
 
-    const firstCall = runtime.checkpointRecovery.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
-    const meta = firstCall?.providerMeta as Record<string, unknown> | undefined;
+    const firstCall = runtime.continuityBridge.checkpoint.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    const providerContinuity = firstCall?.providerContinuity as Record<string, unknown> | undefined;
 
     expect(firstCall).toBeDefined();
-    expect(meta?.bootstrapSignature).toBeDefined();
+    expect(providerContinuity?.bootstrapSignature).toBeDefined();
     expect(
-      meta?.conversationRef === null ||
-        meta?.conversationRef === undefined ||
-        meta?.sessionId === null ||
-        meta?.sessionId === undefined,
+      firstCall?.conversationRef === null || firstCall?.conversationRef === undefined,
     ).toBe(true);
 
     lease.emit({
@@ -442,10 +450,11 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
 
     await execution;
 
-    const allCalls = runtime.checkpointRecovery.mock.calls as Array<[Record<string, unknown>]>;
+    const allCalls = runtime.continuityBridge.checkpoint.mock.calls as Array<[Record<string, unknown>]>;
     const withSessionId = allCalls.find((call) => {
-      const meta = call[0]?.providerMeta as Record<string, unknown> | undefined;
-      return meta?.conversationRef === 'sess-late-1' || meta?.sessionId === 'sess-late-1';
+      const payload = call[0];
+      const providerContinuity = payload?.providerContinuity as Record<string, unknown> | undefined;
+      return payload?.conversationRef === 'sess-late-1' || providerContinuity?.conversationRef === 'sess-late-1';
     });
 
     expect(withSessionId).toBeDefined();
@@ -478,10 +487,10 @@ describe('claude adapter: checkpoint timing for bootstrap signature', () => {
     const execution = collectProviderTerminalEvent(claudeProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
-      const calls = runtime.checkpointRecovery.mock.calls as Array<[Record<string, unknown>]>;
+      const calls = runtime.continuityBridge.checkpoint.mock.calls as Array<[Record<string, unknown>]>;
       const found = calls.some((call) => {
-        const meta = call[0]?.providerMeta as Record<string, unknown> | undefined;
-        return meta?.brokerTurnId === 'broker-turn-42';
+        const providerContinuity = call[0]?.providerContinuity as Record<string, unknown> | undefined;
+        return providerContinuity?.brokerTurnId === 'broker-turn-42';
       });
       if (!found) throw new Error('brokerTurnId checkpoint not found yet');
     }, { timeout: 4000 });

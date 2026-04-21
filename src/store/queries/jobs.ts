@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
@@ -72,7 +73,7 @@ type JobExitProjection = {
   exitCode?: number | null;
   signal?: string | null;
   endTime: string;
-  nonResumable?: boolean;
+  continuity?: JobContinuitySnapshot | null;
   warnings?: string[];
   usage?: JobTerminal['usage'];
   workflow?: JobTerminal['workflow'];
@@ -87,6 +88,7 @@ type JobProgressProjection = {
   ts: string;
   message?: string;
   result?: JobTerminal;
+  continuity?: JobContinuitySnapshot | null;
 };
 
 type ProjectionRow = {
@@ -116,6 +118,7 @@ type JobStatusEventsByType = {
 };
 type DecodedTerminalRow = {
   record: JobTerminal;
+  continuity: JobContinuitySnapshot | null;
   signal?: string | null;
 };
 
@@ -432,11 +435,11 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
       durationMs: body.durationMs,
       outcome: body.outcome,
       ...(body.exitCode === undefined ? {} : { exitCode: body.exitCode }),
-      ...(body.nonResumable === undefined ? {} : { nonResumable: body.nonResumable }),
       ...(body.warnings === undefined ? {} : { warnings: body.warnings }),
       ...(body.usage === undefined ? {} : { usage: body.usage }),
       ...(body.workflow === undefined ? {} : { workflow: body.workflow }),
     },
+    continuity: body.continuity ?? null,
     ...(body.signal === undefined ? {} : { signal: body.signal }),
   };
 }
@@ -444,6 +447,7 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
 function toJobExitProjection(row: EventRow, terminal: DecodedTerminalRow): JobExitProjection {
   return {
     ...terminal.record,
+    continuity: terminal.continuity,
     signal: terminal.signal,
     endTime: row.ts,
   };
@@ -474,6 +478,7 @@ function projectionRowToStatus(
       updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     },
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
+    ...(terminalRecord ? { continuity: terminalRecord.continuity } : {}),
   };
 }
 
@@ -680,15 +685,22 @@ export function readJobProgress(
       sessionId,
       seq: row.seq,
       eventId: row.per_job_index,
-      type: 'terminal' as const,
-      ts: row.ts,
-      result: decodeTerminalRecord({
-        seq: row.seq,
+        type: 'terminal' as const,
         ts: row.ts,
-        type: row.type,
-        body_version: row.body_version,
-        body: row.body,
-      }, ctx)?.record ?? { content: '', outcome: { kind: 'completed' } },
+        result: decodeTerminalRecord({
+          seq: row.seq,
+          ts: row.ts,
+          type: row.type,
+          body_version: row.body_version,
+          body: row.body,
+        }, ctx)?.record ?? { content: '', outcome: { kind: 'completed' } },
+        continuity: decodeTerminalRecord({
+          seq: row.seq,
+          ts: row.ts,
+          type: row.type,
+          body_version: row.body_version,
+          body: row.body,
+        }, ctx)?.continuity ?? null,
     }];
   });
 }

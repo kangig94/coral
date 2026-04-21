@@ -384,6 +384,108 @@ describe('sessions shell store', () => {
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('pending');
   });
 
+  it('checkpointJobContinuityAtomic preserves activeJobId and returns the next version', async () => {
+    const { db, mgr, workDir } = setupWithJournal('checkpoint-job-continuity');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    try {
+      await expect(
+        mgr.checkpointJobContinuityAtomic(entry.sessionId, {
+          expectedActiveJobId: 'job-1',
+          expectedVersion: claimed.version,
+          snapshot: {
+            conversationRef: 'thread-1',
+            resumable: true,
+            providerContinuity: { threadId: 'thread-1' },
+          },
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        nextVersion: claimed.version + 1,
+      });
+
+      expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+        activeJobId: 'job-1',
+        state: 'ready',
+        conversationRef: 'thread-1',
+        version: claimed.version + 1,
+      });
+
+      const rows = db
+        .prepare(
+          `SELECT type, body
+             FROM events
+            WHERE stream_kind = 'session' AND stream_id = ?
+            ORDER BY seq ASC`,
+        )
+        .all(entry.sessionId) as Array<{ type: string; body: Uint8Array | Buffer }>;
+
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.continuity.checkpointed',
+      ]);
+      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toEqual({
+        conversationRef: 'thread-1',
+        resumable: true,
+        providerContinuity: { threadId: 'thread-1' },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('releaseJobClaimAtomic clears the claim only at the latest version and does not write continuity', async () => {
+    const { db, mgr, workDir } = setupWithJournal('release-job-claim');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    try {
+      await expect(
+        mgr.releaseJobClaimAtomic(entry.sessionId, {
+          expectedActiveJobId: 'job-1',
+          expectedVersion: claimed.version - 1,
+        }),
+      ).resolves.toBe(false);
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
+
+      await expect(
+        mgr.releaseJobClaimAtomic(entry.sessionId, {
+          expectedActiveJobId: 'job-1',
+          expectedVersion: claimed.version,
+        }),
+      ).resolves.toBe(true);
+
+      expect(mgr.get('codex', entry.sessionId)).toMatchObject({
+        activeJobId: undefined,
+        lastJobId: 'job-1',
+      });
+
+      const rows = db
+        .prepare(
+          `SELECT type
+             FROM events
+            WHERE stream_kind = 'session' AND stream_id = ?
+            ORDER BY seq ASC`,
+        )
+        .all(entry.sessionId) as Array<{ type: string }>;
+
+      expect(rows.map((row) => row.type)).toEqual(['session.opened']);
+    } finally {
+      db.close();
+    }
+  });
+
   it('increments version on each write', () => {
     const { mgr, workDir } = setup('version-increments');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);

@@ -3,6 +3,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgress, LaunchState, WaitStreamEvent, WaitStreamRequest } from '../../jobs/api.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
+import type { JobContinuitySnapshot } from '../contracts.js';
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
@@ -75,7 +76,7 @@ export class JobWaitService {
     yield* this.deps.waitCoordinator.waitForJobs(req);
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; nonResumable: boolean }> {
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
     return this.deps.waitCoordinator.waitStreamOnce(jobId, timeoutMs);
   }
 }

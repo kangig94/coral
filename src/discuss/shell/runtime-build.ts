@@ -12,6 +12,7 @@ import type { JobStatus } from '../../jobs/views.js';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
+import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
 import type {
   AgentConfig,
   DiscussContext,
@@ -61,7 +62,7 @@ export type AttemptSuccess = {
   attempt: number;
   jobId: string;
   content: string;
-  nonResumable: boolean;
+  continuity: JobContinuitySnapshot | null;
 };
 
 export type AttemptFailure = {
@@ -282,7 +283,7 @@ export async function executeAgentAttempt(
         attempt,
         jobId: activeJobId,
         content: status.result?.content ?? '',
-        nonResumable: status.result?.nonResumable ?? false,
+        continuity: status.continuity ?? null,
       };
     } else if (!isLivePhase(status.phase)) {
       await recordJobFinished(ctx, {
@@ -301,7 +302,7 @@ export async function executeAgentAttempt(
           attempt,
           jobId: activeJobId,
           content: result.content,
-          nonResumable: result.nonResumable,
+          continuity: result.continuity,
         };
       } catch (error: unknown) {
         const message = errorMessage(error);
@@ -434,7 +435,7 @@ export async function executeAgentAttempt(
       attempt,
       jobId: launch.job,
       content: result.content,
-      nonResumable: result.nonResumable,
+      continuity: result.continuity,
     };
   } catch (error: unknown) {
     const message = errorMessage(error);
@@ -458,7 +459,7 @@ export async function executeAgentAttempt(
 export async function runPlainTurn(
   ctx: DiscussContext,
   params: RunPlainTurnParams,
-): Promise<{ content: string; nonResumable: boolean }> {
+): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
   const attempt = await executeAgentAttempt(ctx, params);
   if (!isAttemptSuccess(attempt)) {
     throw new Error(attempt.message);
@@ -470,19 +471,19 @@ export async function runPlainTurn(
     purpose: params.purpose,
     jobId: attempt.jobId,
     attempt: attempt.attempt,
-    outcome: attempt.nonResumable ? 'non_resumable' : 'completed',
+    outcome: !(attempt.continuity?.resumable ?? true) ? 'non_resumable' : 'completed',
   });
 
   return {
     content: attempt.content,
-    nonResumable: attempt.nonResumable,
+    continuity: attempt.continuity,
   };
 }
 
 export async function runFacilitatorTurn(
   ctx: DiscussContext,
   params: RunFacilitatorTurnParams,
-): Promise<{ content: string; nonResumable: boolean }> {
+): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, params.sessionId);
   if (!snapshot) {
     throw new Error(`Discuss session not found: ${params.sessionId}`);

@@ -85,18 +85,29 @@ function makeRuntime(
   lease: ProviderServerLease,
   overrides: Partial<ProviderRuntime> = {},
 ): ProviderRuntime & {
-  checkpointRecovery: ReturnType<typeof vi.fn>;
+  continuityBridge: {
+    checkpoint: ReturnType<typeof vi.fn>;
+    transportClosed: ReturnType<typeof vi.fn>;
+  };
 } {
   const controller = new AbortController();
-  const checkpointRecovery = vi.fn();
+  const continuityBridge = {
+    checkpoint: vi.fn(),
+    transportClosed: vi.fn(),
+  };
 
   return {
     signal: controller.signal,
     runCli: vi.fn(),
     acquireServer: vi.fn(async () => lease),
-    checkpointRecovery,
+    continuityBridge,
     ...overrides,
-  } as ProviderRuntime & { checkpointRecovery: ReturnType<typeof vi.fn> };
+  } as ProviderRuntime & {
+    continuityBridge: {
+      checkpoint: ReturnType<typeof vi.fn>;
+      transportClosed: ReturnType<typeof vi.fn>;
+    };
+  };
 }
 
 async function loadProvider() {
@@ -243,26 +254,24 @@ describe('codex adapter app-server flow', () => {
     const execution = collectProviderTerminalEvent(codexProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
-      expect(runtime.checkpointRecovery).toHaveBeenCalledTimes(2);
+      expect(runtime.continuityBridge.checkpoint).toHaveBeenCalledTimes(2);
     });
 
-    expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(1, {
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenNthCalledWith(1, {
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
       },
     });
-    expect(runtime.checkpointRecovery).toHaveBeenNthCalledWith(2, {
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenNthCalledWith(2, {
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
       },
     });
     expect(lease.unsubscribe).not.toHaveBeenCalled();
@@ -292,13 +301,12 @@ describe('codex adapter app-server flow', () => {
       content: 'Final answer',
       conversationRef: 'thread-1',
     });
-    expect(runtime.checkpointRecovery).toHaveBeenLastCalledWith({
+    expect(runtime.continuityBridge.checkpoint).toHaveBeenLastCalledWith({
       conversationRef: 'thread-1',
-      providerMeta: {
-        providerContinuity: {
-          cwd: '/tmp/test',
-          threadId: 'thread-1',
-        },
+      resumable: true,
+      providerContinuity: {
+        cwd: '/tmp/test',
+        threadId: 'thread-1',
       },
     });
     expect(lease.unsubscribe).toHaveBeenCalledTimes(1);
@@ -330,14 +338,13 @@ describe('codex adapter app-server flow', () => {
     const execution = collectProviderTerminalEvent(codexProvider.execute(makeRequest(), runtime));
 
     await vi.waitFor(() => {
-      expect(runtime.checkpointRecovery).toHaveBeenCalledWith({
+      expect(runtime.continuityBridge.checkpoint).toHaveBeenCalledWith({
         conversationRef: 'thread-1',
-        providerMeta: {
-          providerContinuity: {
-            cwd: '/tmp/test',
-            threadId: 'thread-1',
-            turnId: 'turn-1',
-          },
+        resumable: true,
+        providerContinuity: {
+          cwd: '/tmp/test',
+          threadId: 'thread-1',
+          turnId: 'turn-1',
         },
       });
     });
@@ -401,7 +408,7 @@ describe('codex adapter app-server flow', () => {
       },
     });
 
-    expect(runtime.checkpointRecovery).not.toHaveBeenCalled();
+    expect(runtime.continuityBridge.checkpoint).not.toHaveBeenCalled();
     expect(lease.rpcMock.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });

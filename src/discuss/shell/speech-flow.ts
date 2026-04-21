@@ -46,7 +46,7 @@ export async function collectSpeech(
     timeoutMs: SPEECH_TIMEOUT_MS,
   });
 
-  if (!isAttemptSuccess(attempt) || attempt.nonResumable) {
+  if (!isAttemptSuccess(attempt) || !(attempt.continuity?.resumable ?? true)) {
     if (isAttemptSuccess(attempt)) {
       await recordJobFinished(ctx, {
         sessionId,

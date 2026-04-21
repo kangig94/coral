@@ -4,6 +4,7 @@ import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
 import type { EnvPort, IdPort, TimePort } from '../../runtime/ports.js';
 import type { JobStatus } from '../../jobs/views.js';
+import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
 
 export type { WatchEvent, WatchState } from '../watch.js';
 
@@ -63,7 +64,7 @@ export type DiscussLaunchDecision =
 
 export type DiscussWaitResult = {
   content: string;
-  nonResumable: boolean;
+  continuity: JobContinuitySnapshot | null;
 };
 
 export type DiscussService = {

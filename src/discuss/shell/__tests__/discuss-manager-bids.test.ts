@@ -28,11 +28,11 @@ describe('Discuss bid collection', () => {
       .fn()
       .mockResolvedValueOnce({
         content: '{"score": 61, "thought": "I should frame the tradeoff."}',
-        nonResumable: false,
+        continuity: null,
       })
       .mockResolvedValueOnce({
         content: '{"score": 37, "thought": "I have a narrower follow-up."}',
-        nonResumable: false,
+        continuity: null,
       });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
 
@@ -65,10 +65,10 @@ describe('Discuss bid collection', () => {
     const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
     const waitStreamOnce = vi
       .fn()
-      .mockResolvedValueOnce({ content: 'not json at all', nonResumable: false })
+      .mockResolvedValueOnce({ content: 'not json at all', continuity: null })
       .mockResolvedValueOnce({
         content: '```json\n{"score": 72, "thought": "The last speech missed costs."}\n```',
-        nonResumable: false,
+        continuity: null,
       });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
     await persistSession(harness, {
@@ -110,11 +110,11 @@ describe('Discuss bid collection', () => {
       .fn()
       .mockImplementationOnce(async () => {
         await alphaReady;
-        return { content: '{"score": 61, "thought": "alpha"}', nonResumable: false };
+        return { content: '{"score": 61, "thought": "alpha"}', continuity: null };
       })
       .mockImplementationOnce(async () => {
         await betaReady;
-        return { content: '{"score": 37, "thought": "beta"}', nonResumable: false };
+        return { content: '{"score": 37, "thought": "beta"}', continuity: null };
       });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -154,8 +154,8 @@ describe('Discuss bid collection', () => {
       .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
-      .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', nonResumable: false })
-      .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', nonResumable: false });
+      .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', continuity: null })
+      .mockResolvedValueOnce({ content: '{"score": 37, "thought": "beta"}', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
 
     const session = await startDiscussSession(

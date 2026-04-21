@@ -7,3 +7,4 @@ tmp/
 .claude/coral
 .claude/settings.local.json
 build/
+.claude/scheduled_tasks.lock

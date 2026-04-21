@@ -72,12 +72,14 @@ export function toLegacyProviderExecutor(entry: ProviderCatalogEntry | undefined
           break;
         case 'continuity':
           continuity = event;
-          runtime.checkpointRecovery?.({
-            ...(event.conversationRef === null ? {} : { conversationRef: event.conversationRef }),
-            providerMeta:
-              event.providerContinuity === undefined
+          runtime.continuityBridge?.checkpoint({
+            conversationRef: event.conversationRef,
+            resumable: event.resumable,
+            ...(
+              event.providerContinuity === undefined || event.providerContinuity === null
                 ? {}
-                : { providerContinuity: event.providerContinuity },
+                : { providerContinuity: event.providerContinuity as ProviderContinuityBlob }
+            ),
           });
           break;
         case 'terminal':
@@ -274,7 +276,6 @@ function toLegacyRuntime(runtime: ProviderRuntime): OldProviderRuntime {
     acquireServer: runtime.acquireServer,
     persistedContinuity: runtime.persistedContinuity,
     continuityBridge: runtime.continuityBridge,
-    checkpointRecovery: () => {},
   };
 }
 

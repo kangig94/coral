@@ -42,7 +42,7 @@ export async function handleSynthesis(
       purpose: PURPOSE_SYNTHESIS,
     });
 
-    if (result.nonResumable) {
+    if (!(result.continuity?.resumable ?? true)) {
       return { shouldResume: false };
     }
 

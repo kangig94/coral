@@ -44,6 +44,7 @@ import { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { toProviderSpec } from '../../../providers/spec-compat.js';
 import { getInternals } from './__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
@@ -127,7 +128,7 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => mockState.getNewProvider(name);
+  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
   return new ExecutionService(ctx, {
     runtime,
     progressStore: options.progressStore ?? createProgressStore(),
@@ -285,7 +286,7 @@ function makeProvider(options?: {
   execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult | { content: string }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: Provider;
+  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
@@ -297,11 +298,11 @@ function makeProvider(options?: {
     execute,
     ...(preflight ? { preflight } : {}),
   };
-  return { provider, execute, preflight };
+  return { provider: toProviderSpec(provider)!, execute, preflight };
 }
 
-function makeCodexAppServerProvider(): Provider {
-  return {
+function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderSpec>> {
+  return toProviderSpec({
     name: 'codex',
     execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
@@ -355,7 +356,7 @@ function makeCodexAppServerProvider(): Provider {
               continuityMutation: continuity,
             },
     },
-  };
+  })!;
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
@@ -372,8 +373,8 @@ function makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   shared: true;
-}): Provider {
-  return {
+}): NonNullable<ReturnType<typeof toProviderSpec>> {
+  return toProviderSpec({
     name: 'claude',
     execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
     appServerLifecycle: {
@@ -397,7 +398,7 @@ function makeSharedClaudeAppServerProvider(spec: {
         continuityMutation: probeResult.updatedContinuity,
       }),
     },
-  };
+  })!;
 }
 
 async function occupyProviderSlots(

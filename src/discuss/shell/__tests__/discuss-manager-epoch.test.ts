@@ -71,7 +71,7 @@ describe('Discuss epoch evaluation', () => {
         summary: 'The panel is still split on freight exemptions.',
         must_answer: [{ to: 'alpha', question: 'What freight exemption would you accept?' }],
       }),
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     const snapshot = await persistSession(harness, {
@@ -115,13 +115,13 @@ describe('Discuss epoch evaluation', () => {
             { to: 'beta', question: 'How would you phase delivery access?' },
           ],
         }),
-        nonResumable: false,
+        continuity: null,
       })
-      .mockResolvedValueOnce({ content: 'Allow timed morning freight windows.', nonResumable: false })
-      .mockResolvedValueOnce({ content: 'Start with the transit core and expand quarterly.', nonResumable: false })
+      .mockResolvedValueOnce({ content: 'Allow timed morning freight windows.', continuity: null })
+      .mockResolvedValueOnce({ content: 'Start with the transit core and expand quarterly.', continuity: null })
       .mockResolvedValueOnce({
         content: 'The discussion converged after clarifying freight access and rollout timing.',
-        nonResumable: false,
+        continuity: null,
       });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
     const snapshot = await persistSession(harness, {

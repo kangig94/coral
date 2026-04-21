@@ -44,7 +44,7 @@ describe('Discuss synthesis', () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'The panel supported a phased pedestrianization plan centered on transit access.',
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -77,7 +77,7 @@ describe('Discuss synthesis', () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Recovered synthesis text.',
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {

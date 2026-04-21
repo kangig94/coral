@@ -47,7 +47,7 @@ describe('Discuss speech collection', { retry: 2 }, () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Pedestrianization should start with the transit-heavy core and freight exemptions.',
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -116,8 +116,8 @@ describe('Discuss speech collection', { retry: 2 }, () => {
       .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
-      .mockResolvedValueOnce({ content: '{"score": 44, "thought": "alpha"}', nonResumable: false })
-      .mockResolvedValueOnce({ content: '{"score": 58, "thought": "beta"}', nonResumable: false });
+      .mockResolvedValueOnce({ content: '{"score": 44, "thought": "alpha"}', continuity: null })
+      .mockResolvedValueOnce({ content: '{"score": 58, "thought": "beta"}', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
       sessionId: 'discuss-1',
@@ -202,7 +202,7 @@ describe('Discuss speech collection', { retry: 2 }, () => {
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Start with the transit-heavy core.',
-      nonResumable: false,
+      continuity: null,
     });
     const harness = createDiscussHarness(createExecutionServiceStub({ resume, waitStreamOnce }));
     await persistSession(harness, {

@@ -1,11 +1,14 @@
 import { bindProviderRunner } from '../../providers/cli-runner.js';
 import type {
-  ProviderExecutor,
-  ProviderRecoveryMeta,
+  JobDiagnostics as ProviderJobDiagnostics,
+  JobTerminal as ProviderJobTerminal,
+  ProviderEventBody,
+  ProviderRequest,
   ProviderRuntime,
+  ProviderSpec,
   ProviderServerLease,
   ProviderServerSpec,
-} from '../../providers/provider-contracts.js';
+} from '../../providers/contract.js';
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { getCallerContext } from '../../coordinator/caller-context.js';
@@ -13,13 +16,13 @@ import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
-import type { ProviderEventBody, ProviderRequest, ProviderTerminalEventBody } from '../../providers/protocol.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
 import { CliBusyError } from '../../coordinator/live/admission.js';
 import type {
+  JobContinuitySnapshot,
   ExecutionLaunchCoordinator as LaunchCoordinator,
   ExecutionLaunchPool as LaunchPool,
   ExecutionQueuedHandle as QueuedHandle,
@@ -29,6 +32,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
+import { consumeJobStream } from '../../coordinator/services/continuity-consumer.js';
 import { materializeProviderTerminal } from '../reconcile/job-helpers.js';
 import {
   SessionClaimError,
@@ -53,11 +57,11 @@ function isAbortError(error: unknown): boolean {
 }
 
 function runProviderExecution(
-  provider: ProviderExecutor,
+  provider: ProviderSpec,
   request: ProviderRequest,
   runtime: ProviderRuntime,
 ): AsyncIterable<ProviderEventBody> {
-  return typeof provider === 'function' ? provider(request, runtime) : provider.execute(request, runtime);
+  return provider.run(request, runtime);
 }
 
 export interface LaunchOrchestratorDeps {
@@ -74,14 +78,6 @@ export interface LaunchOrchestratorDeps {
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
-  checkpointRecovery: (jobId: string, update: { conversationRef?: string; providerMeta: ProviderRecoveryMeta }) => void;
-  finalizeProviderSession: (
-    providerName: string,
-    request: ProviderRequest,
-    sessionId: string,
-    jobId: string,
-    result: ProviderTerminalEventBody,
-  ) => Promise<void>;
 }
 
 export class LaunchOrchestrator {
@@ -241,7 +237,7 @@ export class LaunchOrchestrator {
   }
 
   launchProviderJob(
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -303,7 +299,7 @@ export class LaunchOrchestrator {
   }
 
   runAsync(
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -351,7 +347,7 @@ export class LaunchOrchestrator {
   }
 
   runRecoveredQueuedJob(
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     launchRecord: JobLaunch,
     admission: QueuedHandle,
     pool: LaunchPool,
@@ -407,13 +403,19 @@ export class LaunchOrchestrator {
     this.deps.progressStore.updatePhase(jobId, 'running');
   }
 
-  writeJobTerminal(jobId: string, sessionId: string, result: JobTerminal, phase: JobPhase): void {
+  writeJobTerminal(
+    jobId: string,
+    sessionId: string,
+    result: JobTerminal,
+    phase: JobPhase,
+    options: { continuity?: JobContinuitySnapshot | null } = {},
+  ): void {
     const { progressStore } = this.deps;
     try {
-      progressStore.appendTerminal(jobId, sessionId, result, phase);
+      progressStore.appendTerminal(jobId, sessionId, result, phase, options);
     } catch {
       try {
-        progressStore.markTerminalStatus(jobId, result, phase);
+        progressStore.markTerminalStatus(jobId, result, phase, options);
       } catch {
         /* best-effort terminal write */
       }
@@ -421,7 +423,7 @@ export class LaunchOrchestrator {
   }
 
   private async executeJob(
-    provider: ProviderExecutor,
+    provider: ProviderSpec,
     request: ProviderRequest,
     jobId: string,
     sessionId: string,
@@ -430,73 +432,68 @@ export class LaunchOrchestrator {
   ): Promise<void> {
     try {
       const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
-      let terminal: ProviderTerminalEventBody | null = null;
-
-      for await (const event of runProviderExecution(provider, request, runtime)) {
-        if (terminal) {
-          throw new Error(`Provider ${provider.name} emitted ${event.type} after launch.terminal`);
-        }
-
-        if (event.type === 'launch.progress') {
+      let latestContinuity: JobContinuitySnapshot | null = null;
+      const consumed = await consumeJobStream({
+        jobId,
+        sessionId,
+        stream: runProviderExecution(provider, request, runtime),
+        sessionApi: {
+          readClaimVersion: (claimedSessionId, expectedActiveJobId) =>
+            this.readClaimVersion(provider.name, claimedSessionId, expectedActiveJobId),
+          checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
+            const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
+            if (result.ok) {
+              latestContinuity = {
+                conversationRef: options.snapshot.conversationRef,
+                resumable: options.snapshot.resumable,
+                ...(options.snapshot.providerContinuity === null || options.snapshot.providerContinuity === undefined
+                  ? {}
+                  : { providerContinuity: options.snapshot.providerContinuity }),
+              };
+            }
+            return result;
+          },
+        },
+        appendProgress: (message) => {
           const currentStatus = this.deps.progressStore.readStatus(jobId);
           if (canAdvanceLaunchState(currentStatus)) {
             this.markJobRunning(jobId);
           }
-          this.appendProgressEvent(jobId, sessionId, event.message);
-          continue;
-        }
-
-        terminal = event;
-      }
-
-      if (!terminal) {
-        throw new Error(`Provider ${provider.name} completed without emitting launch.terminal`);
-      }
-
-      await this.handleJobCompletion(provider.name, request, sessionId, jobId, terminal);
+          this.appendProgressEvent(jobId, sessionId, message);
+        },
+        appendTerminal: (terminal, diagnostics) => {
+          this.appendProviderTerminal(jobId, sessionId, request.cwd, terminal, diagnostics, latestContinuity);
+        },
+      });
+      await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
     } catch (error: unknown) {
       this.handleProviderJobError(jobId, sessionId, signal, error);
     }
   }
 
-  private async handleJobCompletion(
+  private async handleConsumedJobCompletion(
     providerName: string,
-    request: ProviderRequest,
     sessionId: string,
     jobId: string,
-    result: ProviderTerminalEventBody,
+    content: string,
   ): Promise<void> {
     const { abortRegistry, jobPools, progressStore } = this.deps;
-    if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
-      this.markJobReady(jobId);
-    }
-
-    const metadata = this.resolveEventMetadata(jobId, request.cwd);
-    const terminalResult = materializeProviderTerminal(progressStore, result, {
-      jobId,
-      sessionId,
-      namespace: metadata.namespace,
-      project: metadata.project,
-      correlationId: metadata.correlationId,
-    });
-    const phase = phaseForOutcome(terminalResult.outcome);
-
-    const currentStatus = progressStore.readStatus(jobId);
-    if (currentStatus && isTerminalPhase(currentStatus.phase)) {
-      return;
-    }
-
-    this.writeJobTerminal(jobId, sessionId, terminalResult, phase);
-    progressStore.writeResultMd(jobId, result.content);
-    writeWorkflowResult(this.deps.runtime.storage, jobId, result.content);
-    abortRegistry.remove(jobId);
-    jobPools.delete(jobId);
     try {
-      await this.deps.finalizeProviderSession(providerName, request, sessionId, jobId, result);
+      progressStore.writeResultMd(jobId, content);
+      writeWorkflowResult(this.deps.runtime.storage, jobId, content);
     } catch (error: unknown) {
-      this.deps.sessionManager.releaseJob(sessionId, jobId);
-      backendLog.warn(`Provider session finalization failed for ${jobId}: ${errorMessage(error)}`);
-      throw error;
+      backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
+    } finally {
+      abortRegistry.remove(jobId);
+      jobPools.delete(jobId);
+
+      const released = await this.deps.sessionManager.releaseJobClaimAtomic(sessionId, {
+        expectedActiveJobId: jobId,
+        expectedVersion: this.readClaimVersion(providerName, sessionId, jobId),
+      });
+      if (!released) {
+        backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
+      }
     }
   }
 
@@ -567,10 +564,53 @@ export class LaunchOrchestrator {
       acquireServer: (spec) => this.deps.acquireServer(spec, { jobId, signal }),
       persistedContinuity: this.deps.sessionManager.get(providerName, sessionId)?.providerContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
-      checkpointRecovery: (update) => {
-        this.deps.checkpointRecovery(jobId, update);
-      },
     };
+  }
+
+  private appendProviderTerminal(
+    jobId: string,
+    sessionId: string,
+    projectRoot: string | undefined,
+    terminal: ProviderJobTerminal,
+    diagnostics: ProviderJobDiagnostics,
+    continuity: JobContinuitySnapshot | null,
+  ): void {
+    const { progressStore } = this.deps;
+    if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
+      this.markJobReady(jobId);
+    }
+
+    const metadata = this.resolveEventMetadata(jobId, projectRoot);
+    const terminalResult = materializeProviderTerminal(
+      progressStore,
+      {
+        kind: 'terminal',
+        terminal,
+        diagnostics,
+      },
+      {
+        jobId,
+        sessionId,
+        namespace: metadata.namespace,
+        project: metadata.project,
+        correlationId: metadata.correlationId,
+      },
+    );
+    const phase = phaseForOutcome(terminalResult.outcome);
+    const currentStatus = progressStore.readStatus(jobId);
+    if (currentStatus && isTerminalPhase(currentStatus.phase)) {
+      return;
+    }
+
+    this.writeJobTerminal(jobId, sessionId, terminalResult, phase, { continuity });
+  }
+
+  private readClaimVersion(providerName: string, sessionId: string, jobId: string): number {
+    const session = this.deps.sessionManager.get(providerName, sessionId);
+    if (!session || session.activeJobId !== jobId) {
+      throw new Error(`Expected claimed session ${sessionId} for job ${jobId}.`);
+    }
+    return session.version;
   }
 
   private markJobLaunching(jobId: string): void {
