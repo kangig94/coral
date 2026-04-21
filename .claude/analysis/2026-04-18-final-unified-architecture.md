@@ -909,19 +909,28 @@ const claudeExecProvider = compose(
 );
 
 const claudeAppServerProvider = compose(
-  appServerSession(buildClaudeProviderServerSpec, mapClaudeInterrupt),
   sessionContinuity(claudeBrokerContinuity),
+  appServerSession(buildClaudeProviderServerSpec, mapClaudeInterrupt),
   claudeBrokerTurnKernel,
 );
 
 const codexThreadProvider = compose(
-  appServerSession(buildCodexProviderServerSpec, mapCodexInterrupt),
   sessionContinuity(codexThreadContinuity),
+  appServerSession(buildCodexProviderServerSpec, mapCodexInterrupt),
   codexTurnKernel,
 );
 ```
 
 Adding a new provider is declaring its middleware stack.
+
+**Phase 6 amendment (2026-04-21)**: for app-server providers, `sessionContinuity`
+is outermost (not `appServerSession`). This preserves §8.3 invariants #1/#3/#5:
+a single continuity authority observes the full downstream stream including
+transport-close from `appServerSession` via `runtime.continuityBridge`, so
+`continuity` bodies have one emitter. `appServerSession` surfaces typed
+close-state through the bridge but never emits `continuity` itself and never
+rewrites downstream terminal outcome. See
+`.coral/projects/.../phase6-provider-middleware.md` § Amendments for rationale.
 
 ### 8.2 Envelope vs body split
 

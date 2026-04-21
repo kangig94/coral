@@ -300,3 +300,45 @@ Resolved 14 deferred Phase 5 findings (3 BLOCKING + 8 STRONG from /simplify) plu
 - All grep counts: 0 matches outside `__tests__/` and `__helpers__/` per AC13 layering audit
 
 Per memory rule #1 (fresh-only): zero `Legacy*` types, zero compat shims, zero migration paths added; `001_initial.sql` edited in place; all internal version markers stay at initial values (`schema_version='1'`, `journal_version='1'`, `bodyVersion=1`, no upcasters added).
+
+## Phase 6 — Provider Middleware (complete)
+
+Tag: `phase-6-complete` @ rewrite branch.
+
+Phase 6 collapses the three-path provider model into one composed stack per arch §8. Each provider's cross-cutting concerns (parse guarding, session continuity, app-server lifecycle) become orthogonal middleware files. Session continuity becomes stream-owned: the `terminal` body never mutates session state (arch §8.3 invariant #5). One producer per fault type (arch §16 invariant #14). Registry returns `ProviderSpec` descriptors (`{ name, run, preflight?, appServer?, recovery?, cleanup? }`).
+
+**Delivered**:
+
+- `src/providers/contract.ts` — `Provider = (req, runtime) => AsyncIterable<ProviderEventBody>`, `ProviderMiddleware = (next: Provider) => Provider`, `compose(...parts)`, `ProviderSpec`, native `ProviderEventBody` union on `kind: 'progress' | 'continuity' | 'terminal'`, native `ProviderAppServerContract` / `ProviderRecoveryContract` (split between live-turn vs durable-artifact facets).
+- `src/providers/middleware/adapter-parse-guard.ts` — sole producer of `adapter_output_unparseable` fault per arch §16 invariant #14.
+- `src/providers/middleware/session-continuity.ts` — sole producer of `provider_session_unavailable` + sole emitter of `continuity` bodies. Allocates fresh `ProviderContinuityBridge` per invocation, shallow-wraps runtime via `Object.assign({}, runtime, { continuityBridge })`, deactivates in `finally` (silent no-op prod / `CORAL_DEV_ASSERTIONS=1` throws).
+- `src/providers/middleware/app-server-session.ts` — replaces `app-server/runner.ts` functionally. Owns `acquireServer → lease → subscribe → race(turn, closed) → release`. Never rewrites downstream terminal outcome (the `runner.ts:66-83` anti-pattern is gone). Surfaces typed transport-close via `runtime.continuityBridge.transportClosed(...)`.
+- `src/providers/fault.ts` — three builders (`adapterOutputUnparseable`, `providerSessionUnavailable`, `providerRequestFailed`) + native `FaultPayload` union. Native `TerminalOutcome` type.
+- `src/providers/terminal.ts` — `buildJobTerminal()` + `buildJobDiagnostics()` absorb `result-mapping.ts`.
+- `src/providers/cli-runner.ts` — canonical generic CLI seam (absorbs `runner-port.ts` + `bindProviderRunner` from `launch.ts`).
+- `src/providers/claude/{exec-kernel,session-kernel,exec-provider,provider-facets}.ts` — exec + session kernels + composed providers + single `claude` run dispatcher per AC7. Dispatcher preserves today's broker-default routing: `exec`/`resume` → `claudeSessionProvider`, `fork` → `claudeExecProvider`; pre-dispatch reject for fork × broker markers (`brokerSessionKey || bootstrapSignature`). `CORAL_DEV_ASSERTIONS=1` assertion in dispatcher catches corrupt-state regressions.
+- `src/providers/claude-appserver/{controller,protocol,server}.ts` — 2-way split per §10.1a: `controller.ts` (1156 LOC) owns `SingleSessionController` + mutable state cohesively; `protocol.ts` (391 LOC) owns wire-format parsing.
+- `src/providers/codex/{thread-kernel,thread-provider,provider-facets}.ts` — codex leaf with `compose(sessionContinuity, appServerSession, kernel)`.
+- `src/sessions/shell/store.ts` NEW atomic APIs: `checkpointJobContinuityAtomic(sessionId, { expectedActiveJobId, expectedVersion, snapshot }) → Promise<{ ok, nextVersion } | { ok: false }>` + `releaseJobClaimAtomic(sessionId, { expectedActiveJobId, expectedVersion }) → Promise<boolean>`.
+- `src/coordinator/services/continuity-consumer.ts` NEW — consumes provider stream; for each `progress` body → appends to journal; for each `continuity` body → `checkpointJobContinuityAtomic` (threads `expectedVersion` forward); for the single `terminal` body → appends to journal and returns. No terminal-side session mutation.
+- `src/coordinator/contracts.ts` — shared `JobContinuitySnapshot` type; `waitStreamOnce()` now returns `{ content, continuity: JobContinuitySnapshot | null }`.
+- 6 discuss-shell migration sites (runtime-build.ts × 8, context.ts, speech-flow, bid-flow, followup-flow, synthesis-flow) + 7 downstream `nonResumable` files (jobs/views, events, job-store, shell/event-subscription, reconcile/job-helpers, reconcile/snapshot, store/queries/jobs) dropped `nonResumable` from terminal data and surface `continuity.resumable` separately. Null-continuity rule split: live `continuity: null` → `resumable: true` (preserves current default); recovery `continuity: undefined` → preserve session state (matches today `recovery_parse_failed` no-op).
+- `src/providers/bootstrap-scripted-override.ts` NEW owns env-spec schema + parser + `resolveScriptedProviderOverride(env): ProviderSpec | null`. `src/testing/scripted-provider.ts` is canonical test surface (re-exports schema/env + adds `createScriptedProvider`). Prod code imports ZERO from `src/testing/*` (arch §16 invariant #30).
+- `src/providers/__tests__/fault-producer-invariant.test.ts` NEW — programmatic audit of single-producer invariant for each fault kind.
+- `src/providers/__tests__/phase6-smoke.test.ts` NEW — end-to-end composed-stack smoke for `claude` + `codex` with mocked `runCli` / `acquireServer`. NO real CLI subprocess.
+- `src/coordinator/__tests__/integration/continuity-lifecycle.integration.test.ts` NEW — 8 verify clauses for AC15 (mid-stream session-ref, strict schema rejection, abort-before-terminal, transport-close recovery via bridge, separate recovery continuity, waitStreamOnce shape, recovery-null-preserve, live-null-resumable-default).
+
+**Three-path removal (grep gate returns ZERO production hits)**:
+
+- DELETED 13 files: `src/providers/scripted-provider.ts`, `protocol.ts`, `claude/adapter.ts`, `claude/session-driver.ts`, `codex/adapter.ts`, `codex/session-driver.ts`, `app-server/runner.ts`, `result-mapping.ts`, `runner-port.ts`, `provider-contracts.ts`, `claude-appserver/session.ts` (shim from Batch 4), `spec-compat.ts` (transitional from Batch 5 M1), plus 5 obsolete test files.
+- `finalizeProviderSession` + `checkpointRecovery` session-side effects retired — `grep -rn "finalizeProviderSession|checkpointRecovery" src/` returns 0 production hits.
+
+**Retirement ledger** (Phase 7 Cleanup carry-forward):
+- `src/shared/legacy-terminal-outcome-compat.ts` — coordinator recovery + reconcile + legacy-ingest still depend; deletion would materially expand Phase 6 scope. Retire in Phase 7 once journal outcome projection migrates.
+- `src/providers/claude/claude-executor.ts` — exec-kernel.ts still depends; rename/collapse in Phase 7 if valuable.
+
+**Composition-order amendment** (GOD doc §8.1): `compose(sessionContinuity(...), appServerSession(...), kernel)` — `sessionContinuity` is outermost for app-server providers. Preserves §8.3 invariants #1/#3/#5: one continuity authority observes the full downstream stream (including transport-close from `appServerSession` via `runtime.continuityBridge`); `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome. Recorded in `.claude/analysis/2026-04-18-final-unified-architecture.md` § 8.1.
+
+**Verification**: `npm run lint` clean; `npm run build` clean; `npm test` 1760+ pass (2 skipped). `phase-2-boundary-quarantine` green. `fault-producer-invariant` green. `phase6-smoke` green. All three grep gates return ZERO production hits: (1) no imports from `adapter.js` / `session-driver.js` / `app-server/runner.js`; (2) no `finalizeProviderSession` / `checkpointRecovery` references; (3) no `src/testing/*` imports from `src/providers/` / `src/coordinator/` / `src/jobs/`.
+
+Per memory rule #1 (fresh-only): zero Legacy* types added, zero compat shims beyond the two documented Phase-7 carry-forwards (legacy-terminal-outcome-compat.ts + claude-executor.ts).
