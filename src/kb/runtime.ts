@@ -22,6 +22,7 @@ import type {
   KbIndexMutationLane,
   KbIndexState,
   KbPersistCorpusStateResult,
+  KbRuntimeActivationSnapshot,
   KbRuntime,
   KbTextArtifactsSnapshot,
 } from './contracts.js';
@@ -597,6 +598,7 @@ export interface CreateKbRuntimeOptions {
   runtimeDir: string;
   db?: BetterSqlite3.Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
+  getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   readOnlyOrama?: boolean;
 }
 
@@ -930,6 +932,7 @@ class KbRuntimeImpl implements KbRuntime {
   private mutationLock: Promise<void> = Promise.resolve();
   private baseProjection = createOramaBaseProjection(this);
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
+  private readonly equipmentViewResolver?: () => KbRuntimeActivationSnapshot | null;
   private upgradeGuardDone = false;
   private corpusPublishCallbacks: KbCorpusPublishCallbacks = NOOP_CORPUS_PUBLISH_CALLBACKS;
   private activeMutationContext: MutationLockContext | null = null;
@@ -969,12 +972,13 @@ class KbRuntimeImpl implements KbRuntime {
     processPublishQueue: () => this.processPublishQueue(),
   });
 
-  constructor({ markdownRoot, runtimeDir, db, corpusPublishCallbacks, readOnlyOrama }: CreateKbRuntimeOptions) {
+  constructor({ markdownRoot, runtimeDir, db, corpusPublishCallbacks, getEquipmentView, readOnlyOrama }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.runtimeDir = runtimeDir;
     this.db = db ?? createFallbackKbDb(runtimeDir);
     this.readOnlyOrama = readOnlyOrama === true;
     this.corpusStateMirror = createCorpusStateMirror(this.db);
+    this.equipmentViewResolver = getEquipmentView;
 
     mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -983,6 +987,15 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.manifestAuthority.seedFromFullCollectors(this);
+  }
+
+  getEquipmentView(): KbRuntimeActivationSnapshot {
+    return this.equipmentViewResolver?.() ?? {
+      retrieval: this.baseProjection,
+      snapshotId: null,
+      contentSeq: 0,
+      contentManifestHash: null,
+    };
   }
 
   notesDir(): string {

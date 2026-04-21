@@ -65,6 +65,7 @@ export {
   createNeedleBackend,
   NEEDLE_CONSUMER_ID,
 } from './search/needle-backend.js';
+export { createOramaBaseProjection } from './search/orama-backend.js';
 export {
   KB_BARE_READ_ORDER,
   expandKbReadSelector,

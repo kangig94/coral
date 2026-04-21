@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 
 import { kbRoot } from '../infra/paths.js';
 import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
-import type { KbCorpusPublishCallbacks, KbRuntime } from './contracts.js';
+import type { KbCorpusPublishCallbacks, KbRuntimeActivationSnapshot, KbRuntime } from './contracts.js';
 import type { GitSyncRuntimePicks } from './curate/types.js';
 import {
   kbRuntimeDir,
@@ -20,6 +20,7 @@ export type CreateKbSubsystemOptions = {
   db?: Database;
   pluginRoot: string;
   spawnCli: SpawnCliFn;
+  getEquipmentView?: () => KbRuntimeActivationSnapshot | null;
   persistCorpusState?: KbCorpusPublishCallbacks['persistCorpusState'];
   notifyCorpusMutation?: KbCorpusPublishCallbacks['notifyCorpusMutation'];
   onCorpusPublishFailure?: KbCorpusPublishCallbacks['onPublishFailure'];
@@ -33,6 +34,7 @@ export async function createKbSubsystem({
   processPort,
   storagePort,
   envPort,
+  getEquipmentView,
   persistCorpusState,
   notifyCorpusMutation,
   onCorpusPublishFailure,
@@ -41,6 +43,7 @@ export async function createKbSubsystem({
   const kb = createKbRuntime({
     markdownRoot: kbRoot(),
     runtimeDir: kbRuntimeDir(),
+    ...(getEquipmentView === undefined ? {} : { getEquipmentView }),
     ...(db === undefined ? {} : { db }),
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {

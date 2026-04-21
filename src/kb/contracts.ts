@@ -5,6 +5,7 @@ import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
+import type { VectorRetrieval } from './search/contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -72,6 +73,13 @@ export interface KbCachedOramaIndex {
   tokenizer: KbOramaTokenizer;
 }
 
+export interface KbRuntimeActivationSnapshot {
+  retrieval: VectorRetrieval;
+  snapshotId: string | null;
+  contentSeq: number;
+  contentManifestHash: string | null;
+}
+
 export interface KbInboundSyncOptions {
   structuredDiff?: boolean;
 }
@@ -80,6 +88,7 @@ export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
+  getEquipmentView(): KbRuntimeActivationSnapshot;
   readIndex(): KbIndex | null;
   persistIndexToDisk(index: KbIndex): KbIndex;
   writeIndex(index: KbIndex): KbIndex;

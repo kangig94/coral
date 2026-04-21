@@ -9,7 +9,6 @@ import { jobsReconcile } from '../../jobs/api.js';
 import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/api.js';
-import { NEEDLE_CONSUMER_ID } from '../../kb/api.js';
 import { workflowRecover } from '../../workflow/api.js';
 
 const tempRoots: string[] = [];
@@ -260,16 +259,7 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime();
     const order: string[] = [];
-    const originalRegister = ConsumerDriver.prototype.register;
-    const register = vi.spyOn(ConsumerDriver.prototype, 'register').mockImplementation(function (
-      this: ConsumerDriver,
-      reg,
-    ) {
-      if (reg.id === NEEDLE_CONSUMER_ID) {
-        order.push('needle.register');
-      }
-      return originalRegister.call(this, reg);
-    });
+    const register = vi.spyOn(ConsumerDriver.prototype, 'register');
     const notifyCorpus = vi
       .spyOn(ConsumerDriver.prototype, 'notifyCorpus')
       .mockImplementation((_snapshot: CorpusSnapshot) => {
@@ -303,19 +293,13 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      expect(register).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: NEEDLE_CONSUMER_ID,
-          authority: 'corpus',
-        }),
-      );
       expect(notifyCorpus).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(false);
       expect(order).toContain('retryPendingCorpusPublication');
       expect(order).toContain('withMutationLock:start');
       expect(order).toContain('runEntrySeqUpgradeGuardIfNeeded');
       expect(order).toContain('ensureOramaIndex');
       expect(order).toContain('withMutationLock:end');
-      expect(order).toContain('needle.register');
       expect(order).toContain('notifyCorpus');
       expect(order).toContain('curateScheduler.start');
       expect(order).toContain('listenFn');
@@ -323,9 +307,7 @@ describe('coordinator startup ordering', () => {
       expect(order.indexOf('withMutationLock:start')).toBeLessThan(order.indexOf('runEntrySeqUpgradeGuardIfNeeded'));
       expect(order.indexOf('runEntrySeqUpgradeGuardIfNeeded')).toBeLessThan(order.indexOf('ensureOramaIndex'));
       expect(order.indexOf('ensureOramaIndex')).toBeLessThan(order.indexOf('withMutationLock:end'));
-      expect(order.indexOf('withMutationLock:end')).toBeLessThan(order.indexOf('needle.register'));
-      expect(order.indexOf('needle.register')).toBeLessThan(order.indexOf('notifyCorpus'));
-      expect(order.indexOf('needle.register')).toBeLessThan(order.indexOf('curateScheduler.start'));
+      expect(order.indexOf('withMutationLock:end')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('listenFn'));
     } finally {

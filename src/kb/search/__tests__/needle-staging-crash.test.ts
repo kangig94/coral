@@ -6,12 +6,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as EmbeddingModule from '../embedding.js';
 import type * as NeedleStoreModule from '../needle-store.js';
 
-import { ConsumerDriver } from '../../../coordinator/consumer-driver.js';
+import { ConsumerDriver, type ConsumerHandle } from '../../../coordinator/consumer-driver.js';
 import { createNotifyCorpusMutation } from '../../../coordinator/corpus-notify.js';
+import { createEquipmentSlot, createSlotRegistry } from '../../../coordinator/equipment/slots.js';
+import { runtimeActivationFromHandle } from '../../../coordinator/equipment/runtime-activation.js';
 import { applyMigrations } from '../../../store/migrations.js';
 import { persistCorpusState, readCorpusState } from '../../../store/corpus-state.js';
+import type { KbRuntime } from '../../contracts.js';
 import { reindex } from '../../ops/reindex.js';
 import { createKbRuntime, captureKbCorpusSnapshot } from '../../runtime.js';
+import type { VectorRetrieval } from '../contract.js';
 import {
   __setNeedleBackendStagingHookForTests,
   closeNeedleBackend,
@@ -19,6 +23,7 @@ import {
   NEEDLE_CONSUMER_ID,
   NeedleBackendSimulatedCrashError,
 } from '../needle-backend.js';
+import { createOramaBaseProjection } from '../orama-backend.js';
 
 const FIXED_NOW = new Date('2026-04-21T00:00:00.000Z');
 const tempRoots: string[] = [];
@@ -170,6 +175,39 @@ function createDb(): InstanceType<typeof Database> {
   return db;
 }
 
+function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: InstanceType<typeof Database>): {
+  kb: KbRuntime;
+  equip(owner: VectorRetrieval, handle: ConsumerHandle): void;
+} {
+  let resolveEquipmentView: (() => ReturnType<typeof runtimeActivationFromHandle> | null) | null = null;
+  let kb!: KbRuntime;
+  // eslint-disable-next-line prefer-const -- self-referential closure via resolveEquipmentView
+  kb = createKbRuntime({
+    markdownRoot,
+    runtimeDir,
+    db,
+    getEquipmentView: () => resolveEquipmentView?.() ?? null,
+  });
+
+  const registry = createSlotRegistry();
+  const slot = createEquipmentSlot<VectorRetrieval>({
+    id: 'kb.vector',
+    defaultOwner: () => createOramaBaseProjection(kb),
+  });
+  registry.declare(slot);
+
+  return {
+    kb,
+    equip(owner: VectorRetrieval, handle: ConsumerHandle) {
+      slot.equip(owner, handle);
+      resolveEquipmentView = () => {
+        const slotView = registry.list().find((entry) => entry.id === slot.id);
+        return slotView?.handle ? runtimeActivationFromHandle(slot.currentOwner(), slotView.handle) : null;
+      };
+    },
+  };
+}
+
 function writeNeedleAddon(runtimeDir: string): void {
   mkdirSync(join(runtimeDir, 'needle'), { recursive: true });
   writeFileSync(join(runtimeDir, 'needle', 'coral-needle.node'), 'mock-needle-addon', 'utf-8');
@@ -297,8 +335,9 @@ describe('needle staging crash replay', () => {
     writeSource(markdownRoot, 'sqlite-overview', 'SQLite Overview', 'Source text for vector staging.');
 
     const db = createDb();
-    const firstRuntime = createKbRuntime({ markdownRoot, runtimeDir, db });
-    let secondRuntime: ReturnType<typeof createKbRuntime> | null = null;
+    const firstRuntimeHarness = createRuntimeHarness(markdownRoot, runtimeDir, db);
+    const firstRuntime = firstRuntimeHarness.kb;
+    let secondRuntime: KbRuntime | null = null;
     const firstDriver = new ConsumerDriver({
       db,
       now: () => FIXED_NOW,
@@ -313,7 +352,7 @@ describe('needle staging crash replay', () => {
       });
       const notifyCorpusMutation = createNotifyCorpusMutation(firstDriver);
       const firstBackend = createNeedleBackend(firstRuntime);
-      firstDriver.register(firstBackend);
+      firstRuntimeHarness.equip(firstBackend, firstDriver.register(firstBackend));
 
       let crashedStagingDir = '';
       __setNeedleBackendStagingHookForTests(({ stagingDir }) => {
@@ -362,12 +401,14 @@ describe('needle staging crash replay', () => {
       await closeNeedleBackend(firstRuntime);
       await firstDriver.shutdown();
 
-      secondRuntime = createKbRuntime({ markdownRoot, runtimeDir, db });
+      const secondRuntimeHarness = createRuntimeHarness(markdownRoot, runtimeDir, db);
+      secondRuntime = secondRuntimeHarness.kb;
       secondDriver = new ConsumerDriver({
         db,
         now: () => FIXED_NOW,
       });
-      secondDriver.register(createNeedleBackend(secondRuntime));
+      const secondBackend = createNeedleBackend(secondRuntime);
+      secondRuntimeHarness.equip(secondBackend, secondDriver.register(secondBackend));
 
       secondDriver.notifyCorpus(readCorpusState(db));
       await secondDriver.drainAll();

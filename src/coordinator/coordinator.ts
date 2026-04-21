@@ -39,7 +39,10 @@ import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { createNeedleBackend } from '../kb/api.js';
+import { createOramaBaseProjection } from '../kb/api.js';
+import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
+import { runtimeActivationFromHandle } from './equipment/runtime-activation.js';
+import type { VectorRetrieval } from '../kb/search/contract.js';
 export { createBackendCore } from './composition/create-backend-core.js';
 export { listInstantiatedExecutionServices } from './composition/execution-services.js';
 export type {
@@ -104,6 +107,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const readCtx = { schemas: reducers.schemas, upcasters };
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
+  const equipmentSlots = createSlotRegistry();
+  let resolveEquipmentView: (() => ReturnType<typeof runtimeActivationFromHandle> | null) | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
@@ -160,6 +165,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
         db: getStoreDb(),
+        getEquipmentView: () => resolveEquipmentView?.() ?? null,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => new Date(runtime.time.now()),
@@ -172,6 +178,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
       });
+      const vectorSlot = createEquipmentSlot<VectorRetrieval>({
+        id: 'kb.vector',
+        defaultOwner: () => createOramaBaseProjection(kbSubsystem.kb),
+      });
+      equipmentSlots.declare(vectorSlot);
+      resolveEquipmentView = () => {
+        const slotView = equipmentSlots.list().find((slot) => slot.id === vectorSlot.id);
+        return slotView?.handle ? runtimeActivationFromHandle(vectorSlot.currentOwner(), slotView.handle) : null;
+      };
       if (kbSubsystem.curateScheduler) {
         kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
           scheduler: kbSubsystem.curateScheduler,
@@ -187,16 +202,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         await kbSubsystem.kb.ensureOramaIndex();
       });
       const driver = getConsumerDriver();
-      // Boot step 3: register the vector projection consumer against the now-current corpus state.
-      driver.register(
-        createNeedleBackend(kbSubsystem.kb, {
-          pluginRoot: coreOptions.pluginRoot ?? runtime.env.cwd(),
-        }),
-      );
-      // Boot step 4: replay the persisted corpus snapshot into downstream consumers.
+      // Boot step 3: replay the persisted corpus snapshot into downstream consumers.
       driver.notifyCorpus(kbSubsystem.kb.getCorpusStateSnapshot());
       if (kbSubsystem.curateScheduler) {
-        // Boot step 5: start background curation only after the read projections are aligned.
+        // Boot step 4: start background curation only after the read projections are aligned.
         await kbSubsystem.curateScheduler.start();
       }
       return kbSubsystem;

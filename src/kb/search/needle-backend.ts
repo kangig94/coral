@@ -22,6 +22,7 @@ const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
 
 export interface NeedleBackendOptions {
   consumerId?: string;
+  addonPath?: string;
   pluginRoot?: string;
 }
 
@@ -241,10 +242,12 @@ function aggregateVectorHits(
 
 export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistration {
   readonly authority = 'corpus';
+  readonly backendKind = 'needle';
   readonly corpusInterest = 'content';
   readonly registrationKind = 'equipment';
   readonly id: string;
 
+  private addonPath?: string;
   private pluginRoot?: string;
   private activeHandle: ActiveNeedleHandle | null = null;
   private readonly retiredHandles = new Set<ActiveNeedleHandle>();
@@ -254,10 +257,14 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
     options: NeedleBackendOptions = {},
   ) {
     this.id = options.consumerId ?? NEEDLE_CONSUMER_ID;
+    this.addonPath = options.addonPath;
     this.pluginRoot = options.pluginRoot;
   }
 
   configure(options: NeedleBackendOptions = {}): void {
+    if (options.addonPath !== undefined) {
+      this.addonPath = options.addonPath;
+    }
     if (options.pluginRoot !== undefined) {
       this.pluginRoot = options.pluginRoot;
     }
@@ -404,6 +411,9 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
   }
 
   private resolveInstalledAddonPath(): string | null {
+    if (this.addonPath !== undefined) {
+      return existsSync(this.addonPath) ? this.addonPath : null;
+    }
     return resolveInstalledAddonPath(this.runtime.runtimeDir);
   }
 

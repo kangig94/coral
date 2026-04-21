@@ -4,10 +4,17 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as EmbeddingModule from '../embedding.js';
-import type * as NeedleBackendModule from '../needle-backend.js';
-import type { EntityGraph } from '../../entry-types.js';
+import type { ConsumerHandle, ConsumerHandleStatus } from '../../../coordinator/consumer-driver.js';
+import { createEquipmentSlot, createSlotRegistry } from '../../../coordinator/equipment/slots.js';
+import { runtimeActivationFromHandle } from '../../../coordinator/equipment/runtime-activation.js';
+import type { KbRuntime } from '../../contracts.js';
+import type { EntityGraph, KbEntryId } from '../../entry-types.js';
 import { createHybridFusion } from '../hybrid.js';
-import type { TextRetrievalResult, VectorRetrievalResult } from '../contract.js';
+import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from '../contract.js';
+import { createOramaBaseProjection } from '../orama-backend.js';
+
+const equipmentViewResolvers = new WeakMap<KbRuntime, () => ReturnType<typeof runtimeActivationFromHandle> | null>();
+type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -15,7 +22,6 @@ const mockState = vi.hoisted(() => ({
 
 const hybridMockState = vi.hoisted(() => ({
   createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
-  createNeedleBackend: null as null | ((...args: any[]) => any),
 }));
 
 vi.mock('node:os', async () => {
@@ -34,17 +40,6 @@ vi.mock('../embedding.js', async () => {
       hybridMockState.createEmbeddingProvider === null
         ? actual.createEmbeddingProvider(...args)
         : hybridMockState.createEmbeddingProvider(...args),
-  };
-});
-
-vi.mock('../needle-backend.js', async () => {
-  const actual = await vi.importActual<typeof NeedleBackendModule>('../needle-backend.js');
-  return {
-    ...actual,
-    createNeedleBackend: (...args: Parameters<typeof actual.createNeedleBackend>) =>
-      hybridMockState.createNeedleBackend === null
-        ? actual.createNeedleBackend(...args)
-        : hybridMockState.createNeedleBackend(...args),
   };
 });
 
@@ -69,10 +64,14 @@ function createRuntime(
   createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
   paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  return createKbRuntime({
+  let kb!: ReturnType<typeof createKbRuntime>;
+  // eslint-disable-next-line prefer-const -- self-referential closure via equipmentViewResolvers.get(kb)
+  kb = createKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
     runtimeDir: paths.kbRuntimeDir(),
+    getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
+  return kb;
 }
 
 function seedNeedleRouteState(
@@ -87,7 +86,7 @@ function seedNeedleRouteState(
     contentManifestHash: string;
     metadataManifestHash: string;
   },
-): void {
+): Extract<ConsumerHandleStatus, { authority: 'corpus' }> {
   kb.db
     .prepare(
       `
@@ -118,49 +117,16 @@ function seedNeedleRouteState(
       '2026-04-01T00:00:00.000Z',
     );
 
-  kb.db
-    .prepare(
-      `
-        INSERT INTO equipment_cursors (
-          consumer_id,
-          authority,
-          lane,
-          corpus_interest,
-          cursor,
-          snapshot_id,
-          content_seq,
-          metadata_seq,
-          content_manifest_hash,
-          metadata_manifest_hash,
-          equipped_at
-        ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(consumer_id) DO UPDATE SET
-          authority = excluded.authority,
-          lane = excluded.lane,
-          corpus_interest = excluded.corpus_interest,
-          cursor = excluded.cursor,
-          snapshot_id = excluded.snapshot_id,
-          content_seq = excluded.content_seq,
-          metadata_seq = excluded.metadata_seq,
-          content_manifest_hash = excluded.content_manifest_hash,
-          metadata_manifest_hash = excluded.metadata_manifest_hash,
-          equipped_at = excluded.equipped_at
-      `,
-    )
-    .run(
-      'kb-needle',
-      'corpus',
-      'content',
-      'content',
-      snapshot.snapshotId,
-      snapshot.contentSeq,
-      snapshot.metadataSeq,
-      snapshot.contentManifestHash,
-      snapshot.metadataManifestHash,
-      '2026-04-01T00:00:00.000Z',
-    );
-
   kb.invalidateCorpusStateSnapshot?.();
+
+  return {
+    authority: 'corpus',
+    snapshotId: snapshot.snapshotId,
+    contentSeq: snapshot.contentSeq,
+    contentManifestHash: snapshot.contentManifestHash,
+    pending: false,
+    lastApplyError: null,
+  };
 }
 
 function writeNote(
@@ -199,13 +165,54 @@ ${body}
   );
 }
 
-function mockHybridSearch(searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>) {
+function createCorpusHandle(
+  initial: Partial<Extract<ConsumerHandleStatus, { authority: 'corpus' }>>,
+): ConsumerHandle {
+  const status: Extract<ConsumerHandleStatus, { authority: 'corpus' }> = {
+    authority: 'corpus',
+    snapshotId: null,
+    contentSeq: 0,
+    contentManifestHash: null,
+    pending: false,
+    lastApplyError: null,
+    ...initial,
+  };
+
+  return {
+    id: 'mock-needle-handle',
+    registrationKind: 'equipment',
+    async stop() {},
+    async unregister() {},
+    status: () => ({ ...status }),
+  };
+}
+
+function equipVectorSlot(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
+  const registry = createSlotRegistry();
+  const slot = createEquipmentSlot<VectorRetrieval>({
+    id: 'kb.vector',
+    defaultOwner: () => createOramaBaseProjection(runtime),
+  });
+  registry.declare(slot);
+  slot.equip(retrieval, handle);
+  equipmentViewResolvers.set(runtime, () => {
+    const slotView = registry.list().find((entry) => entry.id === slot.id);
+    return slotView?.handle ? runtimeActivationFromHandle(slot.currentOwner(), slotView.handle) : null;
+  });
+}
+
+function installMockHybridSearch(
+  kb: KbRuntime & {
+    readIndex: () => { entries: Record<string, any> } | null;
+  },
+  routeState: Extract<ConsumerHandleStatus, { authority: 'corpus' }>,
+  searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>,
+) {
   hybridMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
     embedQuery: vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
   });
-  hybridMockState.createNeedleBackend = vi.fn().mockImplementation((kb) => ({
-    isSearchReady: () => true,
-    isSnapshotStale: () => false,
+  equipVectorSlot(kb, {
+    backendKind: 'needle',
     search: async (
       embedding: number[],
       topK: number,
@@ -226,7 +233,7 @@ function mockHybridSearch(searchVector: (query: Float32Array, candidateK: number
 
       return { hits: hits.slice(0, topK) };
     },
-  }));
+  }, createCorpusHandle(routeState));
 }
 
 function resultNotes(results: { note: string }[]): string[] {
@@ -241,7 +248,7 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
 
 type MockNeedleChunkHit = {
   chunkId: string;
-  entryId: string;
+  entryId: KbEntryId;
   score: number;
 };
 
@@ -276,7 +283,7 @@ function aggregateMockNeedleHits(
   const aggregated = new Map<
     string,
     {
-      entryId: string;
+      entryId: KbEntryId;
       slug: string;
       kind: 'note' | 'source';
       title: string;
@@ -372,7 +379,6 @@ describe('hybrid reciprocal rank fusion', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     hybridMockState.createEmbeddingProvider = null;
-    hybridMockState.createNeedleBackend = null;
     vi.resetModules();
   });
 
@@ -427,8 +433,9 @@ describe('hybrid reciprocal rank fusion', () => {
     } satisfies EntityGraph);
 
     await reindex(kb);
-    seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb));
-    mockHybridSearch(
+    installMockHybridSearch(
+      kb,
+      seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)),
       vi.fn().mockResolvedValue([
         { chunkId: 'semantic:0', entryId: 'note:semantic-vector', score: 0.99 },
       ]),

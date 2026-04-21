@@ -1,4 +1,5 @@
 import type { KbRuntime } from '../contracts.js';
+import { readCorpusState } from '../../store/corpus-state.js';
 import type {
   GraphRetrieval,
   GraphRetrievalResult,
@@ -8,7 +9,6 @@ import type {
   VectorRetrieval,
 } from './contract.js';
 import { createHybridFusion } from './hybrid.js';
-import { createNeedleBackend } from './needle-backend.js';
 import { createOramaBaseProjection } from './orama-backend.js';
 
 export interface SearchRouter {
@@ -36,17 +36,45 @@ class NullGraphRetrieval implements GraphRetrieval {
   }
 }
 
+function backendKindOf(retrieval: VectorRetrieval): 'needle' | 'orama' {
+  return (retrieval as VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' }).backendKind === 'needle'
+    ? 'needle'
+    : 'orama';
+}
+
+function activationMatchesCorpus(
+  runtime: KbRuntime,
+  activation: ReturnType<KbRuntime['getEquipmentView']>,
+): boolean {
+  if (activation.snapshotId === null || activation.contentManifestHash === null) {
+    return false;
+  }
+
+  const latest = readCorpusState(runtime.db);
+  return (
+    activation.contentSeq === latest.contentSeq &&
+    activation.contentManifestHash === latest.contentManifestHash
+  );
+}
+
 /** Chooses the active vector backend, falling back to Orama when Needle is not fresh. */
 export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBaseProjection(runtime)): ResolvedVectorRoute {
-  const needle = createNeedleBackend(runtime);
-  if (needle.isSearchReady()) {
+  const activation = runtime.getEquipmentView();
+  if (backendKindOf(activation.retrieval) !== 'needle') {
     return {
-      retrieval: needle,
+      retrieval: fallback,
+      backend: 'orama',
+    };
+  }
+
+  if (activationMatchesCorpus(runtime, activation)) {
+    return {
+      retrieval: activation.retrieval,
       backend: 'needle',
     };
   }
 
-  if (needle.isSnapshotStale()) {
+  if (activation.snapshotId !== null || activation.contentManifestHash !== null) {
     return {
       retrieval: fallback,
       backend: 'orama',
