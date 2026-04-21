@@ -26,6 +26,7 @@
     "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:lifecycle": "vitest run --config vitest.e2e-lifecycle.config.ts",
     "test:simulation": "vitest run --config vitest.simulation.config.ts"
   },
   "dependencies": {
