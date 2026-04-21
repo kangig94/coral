@@ -38,6 +38,7 @@ import {
   parseSummaryFromBody,
 } from '../frontmatter.js';
 import { classifyIncident, type IncidentClassification } from './classify.js';
+import { REPAIR_INCIDENT_ID, type RepairIncidentId } from './incident-ids.js';
 import type { DetectedIncident } from './types.js';
 
 const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
@@ -51,7 +52,7 @@ type RepairAction = 'fixed' | 'enqueued' | 'skipped';
 
 export interface RepairResult {
   locus: DetectedIncident['locus'];
-  canonical: string;
+  canonical: DetectedIncident['canonical'];
   entryId: string;
   action: RepairAction;
   timestamp: string;
@@ -94,16 +95,33 @@ type PreparedMarkdownFix = {
 
 type LockedAutoFixOutcome = { kind: 'fixed' } | { kind: 'manual' } | { kind: 'skipped' };
 
-const REPAIR_HINTS: Readonly<Record<string, string>> = {
-  'file-syntax/conflict-markers': 'Resolve the merge conflict and keep one authoritative document.',
-  'file-syntax/malformed-markdown': 'Repair markdown structure manually and leave the file with balanced fences and valid headings.',
-  'frontmatter-shape/unterminated-yaml': 'Close the YAML frontmatter at the correct boundary and ensure markdown body starts after it.',
-  'frontmatter-shape/yaml-parse-error': 'Repair YAML syntax manually until the top-level frontmatter parses as a mapping.',
-  'frontmatter-shape/missing-required-fields': 'Restore the missing required identity fields without inventing new authority.',
-  'identity-sequence/entryseq-collision': 'Resolve the conflicting entrySeq ownership manually so only one entry claims each positive integer.',
-  'identity-sequence/entryseq-format': 'Normalize entrySeq to one unquoted positive base-10 integer token.',
-  'reference-integrity/orphan-entity-graph-refs': 'Remove evidence references that no longer point at active corpus entries.',
-  'reference-integrity/orphan-principle-refs': 'Remove missing principle references from note frontmatter or restore the principle documents.',
+export const REPAIR_HINTS = {
+  [REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS]: 'Resolve the merge conflict and keep one authoritative document.',
+  [REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN]:
+    'Repair markdown structure manually and leave the file with balanced fences and valid headings.',
+  [REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML]:
+    'Close the YAML frontmatter at the correct boundary and ensure markdown body starts after it.',
+  [REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR]:
+    'Repair YAML syntax manually until the top-level frontmatter parses as a mapping.',
+  [REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.MISSING_REQUIRED_FIELDS]:
+    'Restore the missing required identity fields without inventing new authority.',
+  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION]:
+    'Resolve the conflicting entrySeq ownership manually so only one entry claims each positive integer.',
+  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]:
+    'Normalize entrySeq to one unquoted positive base-10 integer token.',
+  [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS]:
+    'Remove evidence references that no longer point at active corpus entries.',
+  [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS]:
+    'Remove missing principle references from note frontmatter or restore the principle documents.',
+} as const satisfies Readonly<Record<RepairIncidentId, string>>;
+
+const AUTO_FIX_HANDLERS: Readonly<
+  Partial<Record<RepairIncidentId, (kb: KbRuntime, incident: DetectedIncident) => LockedAutoFixOutcome>>
+> = {
+  [REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT]: (kb: KbRuntime, incident: DetectedIncident) =>
+    applyEntrySeqFormatFixLocked(kb, incident),
+  [REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS]: (kb: KbRuntime) =>
+    applyOrphanEntityGraphFixLocked(kb),
 };
 
 const noopSpawnCli: SpawnCliFn = async () => {
@@ -189,7 +207,10 @@ function logRepairResult(result: RepairResult): void {
 }
 
 function resolveRepairClassification(incident: DetectedIncident): IncidentClassification {
-  if (incident.canonical === 'identity-sequence/entryseq-format' && !isNormalizableEntrySeqIncident(incident)) {
+  if (
+    incident.canonical === REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT &&
+    !isNormalizableEntrySeqIncident(incident)
+  ) {
     return 'needs-manual';
   }
 
@@ -211,14 +232,8 @@ function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
 }
 
 function applyAutoFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {
-  switch (incident.canonical) {
-    case 'identity-sequence/entryseq-format':
-      return applyEntrySeqFormatFixLocked(kb, incident);
-    case 'reference-integrity/orphan-entity-graph-refs':
-      return applyOrphanEntityGraphFixLocked(kb);
-    default:
-      return { kind: 'manual' };
-  }
+  const handler = AUTO_FIX_HANDLERS[incident.canonical];
+  return handler === undefined ? { kind: 'manual' } : handler(kb, incident);
 }
 
 function applyEntrySeqFormatFixLocked(kb: KbRuntime, incident: DetectedIncident): LockedAutoFixOutcome {

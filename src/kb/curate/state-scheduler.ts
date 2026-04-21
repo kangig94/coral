@@ -12,7 +12,8 @@ type CurateSchedulerState = {
   lastRunDay: string | null;
   lastAttemptedThrough: CurateCursor | null;
   retryNotBefore: string | null;
-  consecutiveFailures: number;
+  consecutiveClaimFailures: number;
+  consecutiveCommunityBatchFailures: number;
   communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   initialized: boolean;
@@ -31,7 +32,8 @@ const schedulerRowSchema = z.object({
   last_attempted_through_entry_id: kbEntryIdSchema.nullable(),
   last_attempted_through_entry_kind: z.enum(['note', 'source']).nullable(),
   retry_not_before: z.string().nullable(),
-  consecutive_failures: z.number().int().nonnegative(),
+  consecutive_claim_failures: z.number().int().nonnegative(),
+  consecutive_community_batch_failures: z.number().int().nonnegative(),
   community_topology_hash: z.string().nullable(),
   community_summary_topology_hash: z.string().nullable(),
   initialized: z.union([z.literal(0), z.literal(1)]),
@@ -46,7 +48,8 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
     lastRunDay: null,
     lastAttemptedThrough: null,
     retryNotBefore: null,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     initialized: false,
@@ -105,7 +108,8 @@ function rowToCurateSchedulerState(row: CurateSchedulerRow | undefined): CurateS
       parsed.last_attempted_through_entry_kind,
     ),
     retryNotBefore: parsed.retry_not_before,
-    consecutiveFailures: parsed.consecutive_failures,
+    consecutiveClaimFailures: parsed.consecutive_claim_failures,
+    consecutiveCommunityBatchFailures: parsed.consecutive_community_batch_failures,
     communityTopologyHash: parsed.community_topology_hash ?? undefined,
     communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
     initialized: parsed.initialized === 1,
@@ -128,7 +132,8 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
        last_attempted_through_entry_id,
        last_attempted_through_entry_kind,
        retry_not_before,
-       consecutive_failures,
+       consecutive_claim_failures,
+       consecutive_community_batch_failures,
        community_topology_hash,
        community_summary_topology_hash,
        initialized,
@@ -158,6 +163,7 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
       'note' | 'source' | null,
       string | null,
       number,
+      number,
       string | null,
       string | null,
       0 | 1,
@@ -176,7 +182,8 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
             last_attempted_through_entry_id = ?,
             last_attempted_through_entry_kind = ?,
             retry_not_before = ?,
-            consecutive_failures = ?,
+            consecutive_claim_failures = ?,
+            consecutive_community_batch_failures = ?,
             community_topology_hash = ?,
             community_summary_topology_hash = ?,
             initialized = ?,
@@ -193,7 +200,8 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     state.lastAttemptedThrough?.entryId ?? null,
     lastAttemptedThroughEntryKind,
     state.retryNotBefore,
-    state.consecutiveFailures,
+    state.consecutiveClaimFailures,
+    state.consecutiveCommunityBatchFailures,
     state.communityTopologyHash ?? null,
     state.communitySummaryTopologyHash ?? null,
     state.initialized ? 1 : 0,

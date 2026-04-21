@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
-import { createDeferred as _createDeferred } from '../../../shared/test-deferred.js';
+import { createDeferred as _createDeferred } from '../../../simulation/core/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type {
   JobLaunch as _JobLaunch,
@@ -43,7 +43,6 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../../../coordinator/live/admission.js';
-import type { AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
 import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
@@ -53,6 +52,7 @@ import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { getInternals } from './__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
@@ -84,12 +84,6 @@ vi.mock('../agent-resolution.js', async () => {
     resolveAgent: mockState.resolveAgent,
   };
 });
-
-type ServiceInternals = {
-  abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
-  sessionManager: SessionManager;
-};
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
@@ -129,10 +123,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
 
 function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
   launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
-function getInternals(service: ExecutionService): ServiceInternals {
-  return service as unknown as ServiceInternals;
 }
 
 function createService(
@@ -469,7 +459,9 @@ function _createClaimedJob(
   progressStore: ProgressStore;
   sessionManager: SessionManager;
 } {
-  const { progressStore, sessionManager } = getInternals(service);
+  const { progressStore, sessionManager } =
+    /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+    getInternals(service);
   const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
@@ -615,7 +607,9 @@ describe('ExecutionService abort', () => {
     trackJob(first.job);
     trackJob(second.job);
     const result = service.abort([first.job, 'missing-job']);
-    const { abortRegistry } = getInternals(service);
+    const { abortRegistry } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
 
     expect(result).toEqual({
       aborted: [first.job],
@@ -639,7 +633,9 @@ describe('ExecutionService abort', () => {
     trackJob(decision.job);
 
     const abortResult = service.abort([decision.job]);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
 
     expect(abortResult).toEqual({
       aborted: [decision.job],

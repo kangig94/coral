@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote, loadKbSource } from '../../../read.js';
-import { runRepairFixtureCase } from './helpers.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from './helpers.js';
 
 describe('repair fixtures: frontmatter shape', () => {
-  it('covers frontmatter-shape/unterminated-yaml end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'frontmatter-shape-unterminated-yaml',
       classification: 'needs-manual',
@@ -12,9 +13,8 @@ describe('repair fixtures: frontmatter shape', () => {
         expect(() => loadKbNote(harness.path('notes/unterminated-yaml-note.md'))).toThrow('Missing YAML frontmatter');
       },
       expectedIncidents: [
-        {
-          locus: 'frontmatter-shape',
-          canonical: 'frontmatter-shape/unterminated-yaml',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML,
           entryId: 'note:unterminated-yaml-note',
           assertSignals(signals) {
             expect(signals).toMatchObject({
@@ -22,12 +22,12 @@ describe('repair fixtures: frontmatter shape', () => {
             });
             expect((signals as { bytesAfterOpener?: unknown }).bytesAfterOpener).toBeGreaterThan(0);
           },
-        },
+        }),
       ],
     });
   });
 
-  it('covers frontmatter-shape/yaml-parse-error end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'frontmatter-shape-yaml-parse-error',
       classification: 'needs-manual',
@@ -35,21 +35,20 @@ describe('repair fixtures: frontmatter shape', () => {
         expect(() => loadKbNote(harness.path('notes/yaml-parse-error-note.md'))).toThrow(/yaml/i);
       },
       expectedIncidents: [
-        {
-          locus: 'frontmatter-shape',
-          canonical: 'frontmatter-shape/yaml-parse-error',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR,
           entryId: 'note:yaml-parse-error-note',
           assertSignals(signals) {
             expect(signals).toEqual({
               message: expect.any(String),
             });
           },
-        },
+        }),
       ],
     });
   });
 
-  it('covers frontmatter-shape/missing-required-fields end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.MISSING_REQUIRED_FIELDS} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'frontmatter-shape-missing-required-fields',
       classification: 'needs-manual',
@@ -59,9 +58,8 @@ describe('repair fixtures: frontmatter shape', () => {
         );
       },
       expectedIncidents: [
-        {
-          locus: 'frontmatter-shape',
-          canonical: 'frontmatter-shape/missing-required-fields',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.MISSING_REQUIRED_FIELDS,
           entryId: 'source:missing-required-fields-source',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -70,7 +68,7 @@ describe('repair fixtures: frontmatter shape', () => {
               frontmatterStatus: 'parsed',
             });
           },
-        },
+        }),
       ],
     });
   });

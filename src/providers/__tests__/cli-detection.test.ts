@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { detectCodexCli, resetCodexCliCache, detectClaudeCli, resetClaudeCliCache } from '../cli-detection.js';
+import { createClaudeDetectorForTest, createCodexDetectorForTest } from './__helpers__/cli-detection-fixtures.js';
 
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
@@ -27,12 +27,21 @@ function mockExecByArgs(responders: Record<string, (cb: ExecFileCallback) => voi
 
 describe('detectCodexCli', () => {
   let originalApiKey: string | undefined;
+  let codexDetector = createCodexDetectorForTest();
+
+  function detectCodexCli() {
+    return codexDetector.detect();
+  }
+
+  function resetCodexCliCache(): void {
+    codexDetector.resetCache();
+  }
 
   beforeEach(() => {
     originalApiKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
-    resetCodexCliCache();
     mockExecFile.mockReset();
+    codexDetector = createCodexDetectorForTest();
   });
 
   afterEach(() => {
@@ -327,12 +336,17 @@ describe('detectCodexCli', () => {
 
 describe('detectClaudeCli', () => {
   let originalApiKey: string | undefined;
+  let claudeDetector = createClaudeDetectorForTest();
+
+  function detectClaudeCli() {
+    return claudeDetector.detect();
+  }
 
   beforeEach(() => {
     originalApiKey = process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
-    resetClaudeCliCache();
     mockExecFile.mockReset();
+    claudeDetector = createClaudeDetectorForTest();
   });
 
   afterEach(() => {

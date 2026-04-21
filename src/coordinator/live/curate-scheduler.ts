@@ -114,6 +114,5 @@ export function createCoordinatorCurateScheduler(options: {
     isRunning() {
       return options.scheduler.isRunning();
     },
-    _testInternals: options.scheduler._testInternals,
   };
 }

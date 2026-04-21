@@ -1,9 +1,10 @@
 import { normalizePrincipleReference } from '../../frontmatter.js';
 import { parseKbEntryId } from '../../../entry-types.js';
 import type { DetectedIncident, Detector } from '../types.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
 
-const ORPHAN_ENTITY_GRAPH_REFS_CANONICAL = 'reference-integrity/orphan-entity-graph-refs';
-const ORPHAN_PRINCIPLE_REFS_CANONICAL = 'reference-integrity/orphan-principle-refs';
+const ORPHAN_ENTITY_GRAPH_REFS_CANONICAL = REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS;
+const ORPHAN_PRINCIPLE_REFS_CANONICAL = REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS;
 
 export const referenceIntegrityDetector: Detector = {
   detect(corpus) {

@@ -161,7 +161,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
         startedAt: now,
       },
       lastAttemptedThrough: through,
-      consecutiveFailures: freshPendingSuffix ? 0 : state.consecutiveFailures,
+      consecutiveClaimFailures: freshPendingSuffix ? 0 : state.consecutiveClaimFailures,
       ...(firstPassClaim ? { lastRunDay: today } : {}),
     });
 

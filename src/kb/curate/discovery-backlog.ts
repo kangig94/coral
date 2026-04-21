@@ -22,6 +22,20 @@ function backlogEntryId(entry: Pick<PendingDiscovery, 'principle' | 'statement'>
   return createHash('sha256').update(`${entry.principle}\u0000${entry.statement}`, 'utf8').digest('hex');
 }
 
+function canonicalNoteIds(noteIds: readonly string[]): string[] {
+  return [...new Set(noteIds)].sort((left, right) => left.localeCompare(right));
+}
+
+function canonicalPendingDiscovery(entry: PendingDiscovery): PendingDiscovery {
+  return {
+    principle: entry.principle,
+    statement: entry.statement,
+    notes: canonicalNoteIds(entry.notes),
+    createdAt: entry.createdAt,
+    reason: entry.reason ?? undefined,
+  };
+}
+
 function rowToPendingDiscovery(
   row: CurateDiscoveryBacklogRow,
   notes: readonly string[],
@@ -67,7 +81,8 @@ export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscove
 }
 
 export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
-  const entryId = backlogEntryId(entry);
+  const canonicalEntry = canonicalPendingDiscovery(entry);
+  const entryId = backlogEntryId(canonicalEntry);
   const inserted = prepareCached<[string, string, string, string, string | null]>(
     target,
     `INSERT OR IGNORE INTO curate_discovery_backlog (
@@ -77,13 +92,19 @@ export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: Pend
        queued_at,
        reason
      ) VALUES (?, ?, ?, ?, ?)`,
-  ).run(entryId, entry.principle, entry.statement, entry.createdAt, entry.reason ?? null);
+  ).run(
+    entryId,
+    canonicalEntry.principle,
+    canonicalEntry.statement,
+    canonicalEntry.createdAt,
+    canonicalEntry.reason ?? null,
+  );
 
   if (inserted.changes === 0) {
     return;
   }
 
-  for (const noteId of [...new Set(entry.notes)].sort((left, right) => left.localeCompare(right))) {
+  for (const noteId of canonicalEntry.notes) {
     prepareCached<[string, string]>(
       target,
       `INSERT OR IGNORE INTO curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
@@ -109,5 +130,82 @@ export function replaceCurateDiscoveryBacklog(
   prepareCached<[]>(target, `DELETE FROM curate_discovery_backlog`).run();
   for (const entry of entries) {
     addCurateDiscoveryBacklogEntry(target, entry);
+  }
+}
+
+function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingDiscovery): void {
+  const canonicalEntry = canonicalPendingDiscovery(entry);
+  prepareCached<[string, string | null, string]>(
+    target,
+    `UPDATE curate_discovery_backlog
+        SET queued_at = ?,
+            reason = ?
+      WHERE entry_id = ?`,
+  ).run(canonicalEntry.createdAt, canonicalEntry.reason ?? null, backlogEntryId(canonicalEntry));
+}
+
+function addCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
+  prepareCached<[string, string]>(
+    target,
+    `INSERT OR IGNORE INTO curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
+  ).run(backlogId, noteId);
+}
+
+function removeCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
+  prepareCached<[string, string]>(
+    target,
+    `DELETE FROM curate_discovery_backlog_notes
+      WHERE backlog_entry_id = ? AND note_id = ?`,
+  ).run(backlogId, noteId);
+}
+
+export function syncCurateDiscoveryBacklog(
+  target: SqliteTarget,
+  entries: ReadonlyArray<PendingDiscovery>,
+): void {
+  const existingById = new Map(
+    readCurateDiscoveryBacklog(target).map((entry) => {
+      const canonicalEntry = canonicalPendingDiscovery(entry);
+      return [backlogEntryId(canonicalEntry), canonicalEntry] as const;
+    }),
+  );
+  const nextById = new Map<string, PendingDiscovery>();
+  for (const entry of entries) {
+    const canonicalEntry = canonicalPendingDiscovery(entry);
+    const entryId = backlogEntryId(canonicalEntry);
+    if (!nextById.has(entryId)) {
+      nextById.set(entryId, canonicalEntry);
+    }
+  }
+
+  for (const [entryId, existing] of existingById) {
+    if (!nextById.has(entryId)) {
+      removeCurateDiscoveryBacklogEntry(target, existing);
+    }
+  }
+
+  for (const [entryId, entry] of nextById) {
+    const existing = existingById.get(entryId);
+    if (existing === undefined) {
+      addCurateDiscoveryBacklogEntry(target, entry);
+      continue;
+    }
+
+    if (existing.createdAt !== entry.createdAt || (existing.reason ?? undefined) !== (entry.reason ?? undefined)) {
+      updateCurateDiscoveryBacklogEntry(target, entry);
+    }
+
+    const existingNotes = new Set(existing.notes);
+    const nextNotes = new Set(entry.notes);
+    for (const noteId of existing.notes) {
+      if (!nextNotes.has(noteId)) {
+        removeCurateDiscoveryBacklogNote(target, entryId, noteId);
+      }
+    }
+    for (const noteId of entry.notes) {
+      if (!existingNotes.has(noteId)) {
+        addCurateDiscoveryBacklogNote(target, entryId, noteId);
+      }
+    }
   }
 }

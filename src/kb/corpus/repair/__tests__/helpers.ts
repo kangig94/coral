@@ -14,7 +14,8 @@ import { fileSyntaxDetector } from '../detect/file-syntax.js';
 import { frontmatterShapeDetector } from '../detect/frontmatter-shape.js';
 import { identitySequenceDetector } from '../detect/identity-sequence.js';
 import { referenceIntegrityDetector } from '../detect/reference-integrity.js';
-import { applyDetectedIncidentFixes } from '../fix.js';
+import { REPAIR_HINTS, applyDetectedIncidentFixes } from '../fix.js';
+import { repairIncidentLocus, type RepairIncidentId } from '../incident-ids.js';
 import {
   createCorpusEntityGraphScan,
   createCorpusMarkdownFileScan,
@@ -31,25 +32,6 @@ const DETECTORS = [
   referenceIntegrityDetector,
 ] as const;
 
-const EXPECTED_REPAIR_HINTS: Readonly<Record<string, string>> = {
-  'file-syntax/conflict-markers': 'Resolve the merge conflict and keep one authoritative document.',
-  'file-syntax/malformed-markdown':
-    'Repair markdown structure manually and leave the file with balanced fences and valid headings.',
-  'frontmatter-shape/unterminated-yaml':
-    'Close the YAML frontmatter at the correct boundary and ensure markdown body starts after it.',
-  'frontmatter-shape/yaml-parse-error':
-    'Repair YAML syntax manually until the top-level frontmatter parses as a mapping.',
-  'frontmatter-shape/missing-required-fields':
-    'Restore the missing required identity fields without inventing new authority.',
-  'identity-sequence/entryseq-collision':
-    'Resolve the conflicting entrySeq ownership manually so only one entry claims each positive integer.',
-  'identity-sequence/entryseq-format': 'Normalize entrySeq to one unquoted positive base-10 integer token.',
-  'reference-integrity/orphan-entity-graph-refs':
-    'Remove evidence references that no longer point at active corpus entries.',
-  'reference-integrity/orphan-principle-refs':
-    'Remove missing principle references from note frontmatter or restore the principle documents.',
-};
-
 export interface RepairFixtureHarness {
   readonly fixture: string;
   readonly tempDir: string;
@@ -64,7 +46,7 @@ export interface RepairFixtureHarness {
 
 export interface ExpectedDetectedIncident {
   locus: DetectedIncident['locus'];
-  canonical: string;
+  canonical: RepairIncidentId;
   entryId: string;
   assertSignals(signals: DetectedIncident['signals']): void;
 }
@@ -112,6 +94,19 @@ export function createRepairFixtureHarness(fixture: string): RepairFixtureHarnes
   };
 }
 
+export function expectedDetectedIncident(input: {
+  canonical: RepairIncidentId;
+  entryId: string;
+  assertSignals(signals: DetectedIncident['signals']): void;
+}): ExpectedDetectedIncident {
+  return {
+    locus: repairIncidentLocus(input.canonical),
+    canonical: input.canonical,
+    entryId: input.entryId,
+    assertSignals: input.assertSignals,
+  };
+}
+
 export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise<void> {
   const harness = createRepairFixtureHarness(testCase.fixture);
 
@@ -151,7 +146,7 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
       expect(queued?.reason).toBe(incident.canonical);
       expect(queued?.locus).toBe(incident.locus);
       expect(queued?.canonicalIncident).toBe(incident.canonical);
-      expect(queued?.repairHint).toBe(EXPECTED_REPAIR_HINTS[incident.canonical]);
+      expect(queued?.repairHint).toBe(REPAIR_HINTS[incident.canonical]);
       expect(queued?.retryCount).toBe(0);
       expect(Date.parse(queued?.detectedAt ?? '')).not.toBeNaN();
       expect(Date.parse(queued?.retryNotBefore ?? '')).not.toBeNaN();

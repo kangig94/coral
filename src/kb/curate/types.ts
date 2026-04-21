@@ -1,6 +1,6 @@
 import type { RuntimeEnvPort, RuntimeProcessPort, RuntimeStoragePort } from '../../runtime/ports.js';
-import type { KbIndex, KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
-import type { CurateCursor, PendingDiscovery } from './state.js';
+import type { KbEntryId, EntityType, RelationshipType } from '../entry-types.js';
+import type { CurateCursor } from './state.js';
 
 export type SpawnCliResult = {
   stdout: string;
@@ -132,19 +132,4 @@ export type CurateHandle = {
   scheduleDeferredCommit(): void;
   stop(): Promise<void>;
   isRunning(): boolean;
-  _testInternals?: {
-    claimCurateRun(today: string): Promise<CurateClaim | null>;
-    runClassificationBatches(claim: CurateClaim, index: KbIndex): Promise<ClassificationAssignment[]>;
-    commitMetadataTargets(targets: MetadataTarget[]): Promise<void>;
-    runPrincipleDiscovery(processedThrough: CurateCursor): Promise<void>;
-    recordCurateFailure(through: CurateCursor | null, error: unknown): Promise<void>;
-    clearCurateRetryState(): Promise<void>;
-    recordDiscoveryAttempt(highSeq: number, nextOffset: number): Promise<void>;
-    addPendingDiscovery(entry: PendingDiscovery): Promise<void>;
-    removePendingDiscovery(entry: PendingDiscovery): Promise<void>;
-    runCommunitySubphase(): Promise<boolean>;
-    calculateCommunityBatchBackoffTicks(consecutiveFailures: number): number;
-    getPendingCommunitySkipTicks(): number;
-    migrateCurateStateIfNeeded(): Promise<void>;
-  };
 };

@@ -18,7 +18,7 @@ import {
   type ClaudeBrokerNotification,
   type SessionEnsureParams,
 } from '../claude-appserver/protocol.js';
-import { createDeferred } from '../../shared/test-deferred.js';
+import { createDeferred } from '../../simulation/core/test-deferred.js';
 
 const BOOTSTRAP: SessionEnsureParams = {
   cwd: '/workspace',

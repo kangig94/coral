@@ -331,14 +331,14 @@ export async function runCommunitySubphase(
       communityTopologyHash: prepared.topologyHash,
       communitySummaryTopologyHash: prepared.topologyHash,
       communitySummaryInputFingerprints: prepared.summaryFingerprints,
-      consecutiveFailures: 0,
+      consecutiveCommunityBatchFailures: 0,
     };
     const shouldWriteState =
       prepared.capturedBaselineState.communityTopologyHash !== nextState.communityTopologyHash ||
       prepared.capturedBaselineState.communitySummaryTopologyHash !== nextState.communitySummaryTopologyHash ||
       JSON.stringify(prepared.capturedBaselineSummaryFingerprints ?? {}) !==
         JSON.stringify(nextState.communitySummaryInputFingerprints ?? {}) ||
-      prepared.capturedBaselineState.consecutiveFailures !== 0;
+      prepared.capturedBaselineState.consecutiveCommunityBatchFailures !== 0;
 
     if (generateCommunityFiles(kb, prepared.generatedCommunityDocs, prepared.priorGeneratedCommunities)) {
       wroteCommunityFiles = true;

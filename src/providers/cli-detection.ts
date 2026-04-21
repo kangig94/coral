@@ -8,12 +8,12 @@ export type CliInfo =
   | { available: true; version: string; authState: 'unknown' }
   | { available: true; version: string; authState: 'unauthenticated'; authError: string };
 
-type AuthProbeResult =
+export type AuthProbeResult =
   | { authState: 'authenticated' }
   | { authState: 'unknown' }
   | { authState: 'unauthenticated'; authError: string };
 
-type CliDetectorConfig = {
+export type CliDetectorConfig = {
   binaryName: string;
   versionArgs: readonly string[];
   notFoundMessage: string;
@@ -24,7 +24,7 @@ type CliDetectorConfig = {
   parseAuthOutput?: (stdout: string) => AuthProbeResult | null;
 };
 
-function createCliDetector(config: CliDetectorConfig): {
+export function createCliDetector(config: CliDetectorConfig): {
   detect: () => Promise<CliInfo>;
   resetCache: () => void;
 } {
@@ -133,7 +133,7 @@ function createCliDetector(config: CliDetectorConfig): {
 
 // ── Codex ──────────────────────────────────────
 
-const codexDetector = createCliDetector({
+export const CODEX_DETECTOR_CONFIG: CliDetectorConfig = {
   binaryName: 'codex',
   versionArgs: ['--version'],
   notFoundMessage: 'Codex CLI not found. Install it with: npm install -g @openai/codex',
@@ -141,12 +141,7 @@ const codexDetector = createCliDetector({
   authCommand: ['whoami'],
   authErrorPattern: /not logged in|unauthorized|unauthenticated|no api key|missing.*api.*key|authentication required/i,
   authErrorMessage: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
-});
-
-/** @internal Test-only export for exercising shared CLI detection behavior. */
-export const detectCodexCli = codexDetector.detect;
-/** @internal Test-only export for clearing shared CLI detection state in tests. */
-export const resetCodexCliCache = codexDetector.resetCache;
+};
 
 // ── Claude ─────────────────────────────────────
 
@@ -182,7 +177,7 @@ function parseClaudeAuthStatus(stdout: string): AuthProbeResult | null {
   return null;
 }
 
-const claudeDetector = createCliDetector({
+export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = {
   binaryName: 'claude',
   versionArgs: ['--version'],
   notFoundMessage: 'Claude CLI not found. Install it from the Claude Code distribution.',
@@ -192,8 +187,7 @@ const claudeDetector = createCliDetector({
     /not logged in|unauthorized|unauthenticated|authentication required|login required|no api key|missing.*api.*key/i,
   authErrorMessage: CLAUDE_AUTH_ERROR_MESSAGE,
   parseAuthOutput: parseClaudeAuthStatus,
-});
+};
 
+const claudeDetector = createCliDetector(CLAUDE_DETECTOR_CONFIG);
 export const detectClaudeCli = claudeDetector.detect;
-/** @internal Test-only export for clearing Claude CLI detection state in tests. */
-export const resetClaudeCliCache = claudeDetector.resetCache;

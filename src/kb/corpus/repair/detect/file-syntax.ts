@@ -1,7 +1,8 @@
 import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../types.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
 
-const CONFLICT_MARKER_CANONICAL = 'file-syntax/conflict-markers';
-const MALFORMED_MARKDOWN_CANONICAL = 'file-syntax/malformed-markdown';
+const CONFLICT_MARKER_CANONICAL = REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS;
+const MALFORMED_MARKDOWN_CANONICAL = REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN;
 
 const CONFLICT_MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)(?: .*)?$/;
 const FENCE_PATTERN = /^(?:```|~~~)[^\r\n]*$/;

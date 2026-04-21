@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote } from '../../../read.js';
-import { runRepairFixtureCase } from './helpers.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from './helpers.js';
 
 describe('repair fixtures: file syntax', () => {
-  it('covers file-syntax/conflict-markers end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'file-syntax-conflict-markers',
       classification: 'needs-manual',
@@ -14,9 +15,8 @@ describe('repair fixtures: file syntax', () => {
         expect(loaded.body).toContain('>>>>>>> theirs');
       },
       expectedIncidents: [
-        {
-          locus: 'file-syntax',
-          canonical: 'file-syntax/conflict-markers',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS,
           entryId: 'note:conflict-markers-note',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -27,12 +27,12 @@ describe('repair fixtures: file syntax', () => {
               ],
             });
           },
-        },
+        }),
       ],
     });
   });
 
-  it('covers file-syntax/malformed-markdown end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'file-syntax-malformed-markdown',
       classification: 'needs-manual',
@@ -42,9 +42,8 @@ describe('repair fixtures: file syntax', () => {
         expect(loaded.body).not.toContain('\n```\n');
       },
       expectedIncidents: [
-        {
-          locus: 'file-syntax',
-          canonical: 'file-syntax/malformed-markdown',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN,
           entryId: 'note:malformed-markdown-note',
           assertSignals(signals) {
             expect(signals).toMatchObject({
@@ -57,7 +56,7 @@ describe('repair fixtures: file syntax', () => {
             expect(signals).not.toHaveProperty('atxHeaders');
             expect(signals).not.toHaveProperty('setextUnderlines');
           },
-        },
+        }),
       ],
     });
   });

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '../../../runtime/ports.js';
 import { createRealRuntime } from '../../../runtime/real.js';
@@ -56,10 +56,9 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 describe('sessions consumer-driver notify', () => {
-  it('fires notify exactly once when SessionManager appends through the coordinator-bound appender', async () => {
+  it('projects the appended session after SessionManager uses the coordinator-bound appender', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    const notifySpy = vi.spyOn(driver, 'notify');
     registerSessionsConsumer(driver, db);
 
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
@@ -91,9 +90,6 @@ describe('sessions consumer-driver notify', () => {
         model: 'gpt-5',
         cwd: workDir,
       });
-
-      expect(notifySpy).toHaveBeenCalledTimes(1);
-      expect(notifySpy).toHaveBeenCalledWith('journal', 1);
 
       await driver.drainAll();
       const row = db

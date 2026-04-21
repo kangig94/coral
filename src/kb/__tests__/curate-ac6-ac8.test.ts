@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCurateTestHandle, type CurateTestHandle } from '../curate/__tests__/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle, type SpawnCliFn } from '../curate/scheduler.js';
 import type { KbRuntime } from '../contracts.js';
 import { CURATE_STATE_MIGRATION_VERSION, readCurateState, writeCurateState } from '../curate/state.js';
@@ -145,7 +146,7 @@ describe('curate AC6/AC8', () => {
   let tempDir: string;
   let runtime: KbRuntime;
   let scheduler: CurateHandle;
-  let internals: NonNullable<CurateHandle['_testInternals']>;
+  let internals: CurateTestHandle;
   let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
   function useScheduler(spawnCli: SpawnCliFn): void {
@@ -157,7 +158,11 @@ describe('curate AC6/AC8', () => {
       envPort: gitSyncRuntime.env,
       scheduleDebounceMs: 0,
     });
-    internals = scheduler._testInternals!;
+    internals = createCurateTestHandle({
+      kb: runtime,
+      spawnCli,
+      schedule: () => scheduler.schedule(),
+    });
   }
 
   beforeEach(() => {
@@ -386,7 +391,8 @@ describe('curate AC6/AC8', () => {
       communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       communitySummaryInputFingerprints: undefined,
-      consecutiveFailures: 0,
+      consecutiveClaimFailures: 0,
+      consecutiveCommunityBatchFailures: 0,
       initialized: true,
       migrationVersion: CURATE_STATE_MIGRATION_VERSION,
     });

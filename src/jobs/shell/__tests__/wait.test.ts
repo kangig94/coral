@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
-import { createDeferred as _createDeferred } from '../../../shared/test-deferred.js';
+import { createDeferred as _createDeferred } from '../../../simulation/core/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type {
   JobLaunch as _JobLaunch,
@@ -43,7 +43,6 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../../../coordinator/live/admission.js';
-import type { AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
 import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
@@ -53,6 +52,7 @@ import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { getInternals } from './__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
@@ -84,12 +84,6 @@ vi.mock('../agent-resolution.js', async () => {
     resolveAgent: mockState.resolveAgent,
   };
 });
-
-type ServiceInternals = {
-  abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
-  sessionManager: SessionManager;
-};
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
@@ -129,10 +123,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
 
 function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
   launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
-function getInternals(service: ExecutionService): ServiceInternals {
-  return service as unknown as ServiceInternals;
 }
 
 function createService(
@@ -469,7 +459,9 @@ function createClaimedJob(
   progressStore: ProgressStore;
   sessionManager: SessionManager;
 } {
-  const { progressStore, sessionManager } = getInternals(service);
+  const { progressStore, sessionManager } =
+    /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+    getInternals(service);
   const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
@@ -617,7 +609,9 @@ describe('ExecutionService wait', () => {
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId = `test-await-launch-${Date.now()}`;
     progressStore.initJob({
       jobId,
@@ -740,7 +734,9 @@ describe('ExecutionService wait', () => {
 
   it('waitStream yields progress and terminal events in order', async () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const status: JobStatus = {
       jobId: 'job-1',
       sessionId: 'session-1',
@@ -801,7 +797,9 @@ describe('ExecutionService wait', () => {
 
   it('waitStream yields terminal from status when no terminal event is replayed', async () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     vi.spyOn(progressStore, 'readStatus').mockReturnValue({
       jobId: 'job-1',
       sessionId: 'session-1',
@@ -835,7 +833,9 @@ describe('ExecutionService wait', () => {
 
   it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const runningStatus: JobStatus = {
       jobId: 'job-1',
       sessionId: 'session-1',
@@ -888,7 +888,9 @@ describe('ExecutionService wait', () => {
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
       vi.spyOn(progressStore, 'replayFrom').mockReturnValue([
@@ -923,7 +925,9 @@ describe('ExecutionService wait', () => {
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
       vi.spyOn(progressStore, 'replayFrom')
@@ -965,7 +969,9 @@ describe('ExecutionService wait', () => {
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
       vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
@@ -1004,7 +1010,9 @@ describe('ExecutionService wait', () => {
       vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
       const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
       const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
 
@@ -1047,7 +1055,9 @@ describe('ExecutionService wait', () => {
 
       vi.setSystemTime(startMs);
       const streamService = createService(ctx);
-      const { progressStore: streamStore } = getInternals(streamService);
+      const { progressStore: streamStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(streamService);
       const streamRunning = makeStatusRecord(ctx, 'job-1', 'running');
       const streamTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
 
@@ -1083,7 +1093,9 @@ describe('ExecutionService wait', () => {
 
       vi.setSystemTime(startMs);
       const onceService = createService(ctx);
-      const { progressStore: onceStore } = getInternals(onceService);
+      const { progressStore: onceStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(onceService);
       const onceRunning = makeStatusRecord(ctx, 'job-1', 'running');
       const onceTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
 
@@ -1117,7 +1129,9 @@ describe('ExecutionService wait', () => {
     let currentTime = startMs;
 
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
     const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
 
@@ -1157,7 +1171,9 @@ describe('ExecutionService wait', () => {
     });
 
     const onTimeService = createService(ctx);
-    const { progressStore: onTimeStore } = getInternals(onTimeService);
+    const { progressStore: onTimeStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(onTimeService);
 
     vi.spyOn(onTimeStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
     vi.spyOn(onTimeStore, 'replayFrom').mockReturnValue([makeTerminalReplay('job-1', { ts: '' })]);
@@ -1179,7 +1195,9 @@ describe('ExecutionService wait', () => {
 
     currentTime = startMs;
     const lateService = createService(ctx);
-    const { progressStore: lateStore } = getInternals(lateService);
+    const { progressStore: lateStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(lateService);
     const missingTsTerminal = {
       jobId: 'job-1',
       sessionId: 'job-1-session',
@@ -1221,7 +1239,9 @@ describe('ExecutionService wait', () => {
     });
 
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
 
     vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
     vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
@@ -1275,7 +1295,9 @@ describe('ExecutionService wait', () => {
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
       vi.spyOn(progressStore, 'replayFrom')
@@ -1343,7 +1365,9 @@ describe('ExecutionService wait', () => {
       createdJobIds.add(jobIdB);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jobId = args[0] as string;
@@ -1403,7 +1427,9 @@ describe('ExecutionService wait', () => {
         vi.spyOn(runtime.time, 'now').mockImplementation(() => Date.now());
 
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId: string) => {
           if (jobId === jobIdA) return makeStatusRecord(ctx, jobIdA, 'running', { sessionId: 'session-a' });
@@ -1445,7 +1471,9 @@ describe('ExecutionService wait', () => {
       createdJobIds.add(jobId);
 
       const service = createService(ctx);
-      const { progressStore } = getInternals(service);
+      const { progressStore } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation((...args: unknown[]) => {
         const jid = args[0] as string;

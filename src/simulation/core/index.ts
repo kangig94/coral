@@ -39,7 +39,6 @@ import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
 
-export { createDeferred, type Deferred } from '../../shared/test-deferred.js';
 export {
   InMemoryStorage,
   normalizePathForStorage,

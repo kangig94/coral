@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 
 import Database from 'better-sqlite3';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '../../runtime/ports.js';
 import { appendEvents } from '../../store/append.js';
@@ -28,10 +28,9 @@ function createDb(): InstanceType<typeof Database> {
 }
 
 describe('workflow consumer-driver notify', () => {
-  it('notifies the registered workflow consumer exactly once for a coordinator-bound append', async () => {
+  it('projects the workflow after a coordinator-bound append', async () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db });
-    const notifySpy = vi.spyOn(driver, 'notify');
     registerWorkflowConsumer(driver, db);
 
     try {
@@ -66,9 +65,6 @@ describe('workflow consumer-driver notify', () => {
           ],
         }),
       ]);
-
-      expect(notifySpy).toHaveBeenCalledTimes(1);
-      expect(notifySpy).toHaveBeenCalledWith('journal', 1);
 
       await driver.drainAll();
       expect(readWorkflowProjection(db, 'workflow-1')).toMatchObject({

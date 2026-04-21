@@ -388,7 +388,8 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
     initialized: true,
     migrationVersion: 1,
   });

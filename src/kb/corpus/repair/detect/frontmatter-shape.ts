@@ -1,9 +1,10 @@
 import { errorMessage } from '../../../../shared/utils.js';
 import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../types.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
 
-const UNTERMINATED_YAML_CANONICAL = 'frontmatter-shape/unterminated-yaml';
-const YAML_PARSE_ERROR_CANONICAL = 'frontmatter-shape/yaml-parse-error';
-const MISSING_REQUIRED_FIELDS_CANONICAL = 'frontmatter-shape/missing-required-fields';
+const UNTERMINATED_YAML_CANONICAL = REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.UNTERMINATED_YAML;
+const YAML_PARSE_ERROR_CANONICAL = REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.YAML_PARSE_ERROR;
+const MISSING_REQUIRED_FIELDS_CANONICAL = REPAIR_INCIDENT_ID.FRONTMATTER_SHAPE.MISSING_REQUIRED_FIELDS;
 
 type MissingField = 'entrySeq' | 'slug' | 'title';
 

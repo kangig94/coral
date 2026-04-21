@@ -59,7 +59,8 @@ export type CurateState = {
   communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   communitySummaryInputFingerprints?: Record<string, string>;
-  consecutiveFailures: number;
+  consecutiveClaimFailures: number;
+  consecutiveCommunityBatchFailures: number;
   initialized: boolean;
   migrationVersion: number;
 };
@@ -99,7 +100,8 @@ export function defaultCurateState(): CurateState {
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
     initialized: false,
     migrationVersion: 0,
   };
@@ -113,7 +115,8 @@ export function resetCurateStateForBackfill(state: CurateState): CurateState {
     lastAttemptedThrough: null,
     retryNotBefore: null,
     lastRunDay: null,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
   });
 }
 
@@ -266,8 +269,8 @@ function retryBaseCooldownMs(error: unknown): number {
   return CURATE_TRANSIENT_RETRY_MS;
 }
 
-function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveFailures: number): number {
-  return Math.min(baseCooldownMs * 2 ** consecutiveFailures, CURATE_MAX_RETRY_MS);
+function calculateRetryCooldownMs(baseCooldownMs: number, consecutiveClaimFailures: number): number {
+  return Math.min(baseCooldownMs * 2 ** consecutiveClaimFailures, CURATE_MAX_RETRY_MS);
 }
 
 export function applyRecordCurateFailure(
@@ -289,7 +292,7 @@ export function applyRecordCurateFailure(
 
   const sameAttempt =
     state.lastAttemptedThrough !== null && compareCursor(state.lastAttemptedThrough, attemptedThrough) === 0;
-  const priorFailures = sameAttempt ? state.consecutiveFailures : 0;
+  const priorFailures = sameAttempt ? state.consecutiveClaimFailures : 0;
 
   return {
     ...state,
@@ -298,12 +301,12 @@ export function applyRecordCurateFailure(
       Date.now() + calculateRetryCooldownMs(retryBaseCooldownMs(error), priorFailures),
     ).toISOString(),
     activeClaim: null,
-    consecutiveFailures: priorFailures + 1,
+    consecutiveClaimFailures: priorFailures + 1,
   };
 }
 
 export function applyClearCurateRetryState(state: CurateState): CurateState | null {
-  if (state.activeClaim === null && state.retryNotBefore === null && state.consecutiveFailures === 0) {
+  if (state.activeClaim === null && state.retryNotBefore === null && state.consecutiveClaimFailures === 0) {
     return null;
   }
 
@@ -311,7 +314,7 @@ export function applyClearCurateRetryState(state: CurateState): CurateState | nu
     ...state,
     retryNotBefore: null,
     activeClaim: null,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
   };
 }
 

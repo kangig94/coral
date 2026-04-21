@@ -142,7 +142,8 @@ describe('migrations idempotency', () => {
         'last_attempted_through_entry_id',
         'last_attempted_through_entry_kind',
         'retry_not_before',
-        'consecutive_failures',
+        'consecutive_claim_failures',
+        'consecutive_community_batch_failures',
         'community_topology_hash',
         'community_summary_topology_hash',
         'initialized',
@@ -152,7 +153,7 @@ describe('migrations idempotency', () => {
 
       const curateSchedulerA = dbFromSchema
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
         )
         .get() as {
           id: number;
@@ -166,7 +167,8 @@ describe('migrations idempotency', () => {
           last_attempted_through_entry_id: string | null;
           last_attempted_through_entry_kind: string | null;
           retry_not_before: string | null;
-          consecutive_failures: number;
+          consecutive_claim_failures: number;
+          consecutive_community_batch_failures: number;
           community_topology_hash: string | null;
           community_summary_topology_hash: string | null;
           initialized: number;
@@ -174,7 +176,7 @@ describe('migrations idempotency', () => {
         };
       const curateSchedulerB = dbFromMigration
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
         )
         .get() as {
           id: number;
@@ -188,7 +190,8 @@ describe('migrations idempotency', () => {
           last_attempted_through_entry_id: string | null;
           last_attempted_through_entry_kind: string | null;
           retry_not_before: string | null;
-          consecutive_failures: number;
+          consecutive_claim_failures: number;
+          consecutive_community_batch_failures: number;
           community_topology_hash: string | null;
           community_summary_topology_hash: string | null;
           initialized: number;
@@ -206,7 +209,8 @@ describe('migrations idempotency', () => {
         last_attempted_through_entry_id: null,
         last_attempted_through_entry_kind: null,
         retry_not_before: null,
-        consecutive_failures: 0,
+        consecutive_claim_failures: 0,
+        consecutive_community_batch_failures: 0,
         community_topology_hash: null,
         community_summary_topology_hash: null,
         initialized: 0,

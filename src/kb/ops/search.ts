@@ -122,6 +122,19 @@ type SearchResponseWarnings = {
   warnings?: string[];
 };
 
+type TextSearchState = {
+  queryCtx: QueryContext;
+  selectedHits: ResolvedKbSearchHit[];
+  communitiesFresh: boolean;
+  graphFresh: boolean;
+};
+
+type TextGraphSearchState = TextSearchState & {
+  router: ReturnType<typeof createRouter>;
+  graphResult: GraphRetrievalResult;
+  textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit>;
+};
+
 const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
 
 function denormalizeSlug(slug: string): string {
@@ -368,8 +381,12 @@ function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): bool
   return JSON.stringify(loadedGraph) === JSON.stringify(stableEntityGraph(currentGraph));
 }
 
+function isGraphSearchFresh(index: KbIndex, currentGraph: EntityGraph | null): currentGraph is EntityGraph {
+  return currentGraph !== null && Object.keys(currentGraph.entityMeta).length > 0 && graphStateMatchesIndex(index, currentGraph);
+}
+
 function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGraph | null): GraphSearchContext | null {
-  if (currentGraph === null || Object.keys(currentGraph.entityMeta).length === 0 || !graphStateMatchesIndex(index, currentGraph)) {
+  if (!isGraphSearchFresh(index, currentGraph)) {
     return null;
   }
 
@@ -1058,115 +1075,286 @@ export async function searchKb(
     return emptySearchResponse(mode);
   }
 
-  const queryTokens = tokenizeQuery(oramaTerm, tokenizer);
+  let queryCtx: QueryContext | undefined;
+  let communitiesFresh: boolean | undefined;
+  let currentGraphLoaded = false;
+  let currentGraph: EntityGraph | null = null;
+  let graphFresh: boolean | undefined;
+  let graphContextLoaded = false;
+  let graphContext: GraphSearchContext | null = null;
+  let textStatePromise: Promise<TextSearchState> | undefined;
+  let textGraphStatePromise: Promise<TextGraphSearchState> | undefined;
 
-  const queryCtx: QueryContext = { rawQuery, oramaTerm, queryTokens, tokenizer };
-  const communitiesFresh = areCommunityDocumentsFresh(rt, index);
-  const graphContext = buildGraphSearchContext(index, rt.readEntityGraph());
-  const graphFresh = graphContext !== null;
-  const resolvedHits: ResolvedKbSearchHit[] = [];
-  if (queryTokens.length > 0) {
-    let limit = topK;
-    let hits = await searchOrama(db, oramaTerm, limit);
-    let exhausted = hits.length < limit;
-    resolvedHits.push(...hits.map((hit) => resolveHit(hit, index)));
+  const getQueryContext = (): QueryContext => {
+    if (queryCtx !== undefined) {
+      return queryCtx;
+    }
+    queryCtx = {
+      rawQuery,
+      oramaTerm,
+      queryTokens: tokenizeQuery(oramaTerm, tokenizer),
+      tokenizer,
+    };
+    return queryCtx;
+  };
 
-    while (shouldContinueWidening(hits, resolvedHits, communitiesFresh, scope, topK, exhausted)) {
-      const prevCount = hits.length;
-      limit = Math.max(limit + 1, limit * 2);
-      hits = await searchOrama(db, oramaTerm, limit);
-      exhausted = hits.length < limit;
-      for (let i = prevCount; i < hits.length; i += 1) {
-        resolvedHits.push(resolveHit(hits[i], index));
+  const getCommunitiesFresh = (): boolean => {
+    if (communitiesFresh !== undefined) {
+      return communitiesFresh;
+    }
+    communitiesFresh = areCommunityDocumentsFresh(rt, index);
+    return communitiesFresh;
+  };
+
+  const getCurrentGraph = (): EntityGraph | null => {
+    if (!currentGraphLoaded) {
+      currentGraph = rt.readEntityGraph();
+      currentGraphLoaded = true;
+    }
+    return currentGraph;
+  };
+
+  const getGraphFresh = (): boolean => {
+    if (graphFresh !== undefined) {
+      return graphFresh;
+    }
+    if (graphContextLoaded) {
+      graphFresh = graphContext !== null;
+      return graphFresh;
+    }
+    graphFresh = isGraphSearchFresh(index, getCurrentGraph());
+    return graphFresh;
+  };
+
+  const getGraphContext = (): GraphSearchContext | null => {
+    if (!graphContextLoaded) {
+      graphContext = buildGraphSearchContext(index, getCurrentGraph());
+      graphContextLoaded = true;
+      graphFresh = graphContext !== null;
+    }
+    return graphContext;
+  };
+
+  const getTextState = async (): Promise<TextSearchState> => {
+    if (textStatePromise !== undefined) {
+      return textStatePromise;
+    }
+
+    textStatePromise = (async () => {
+      const nextQueryCtx = getQueryContext();
+      const nextCommunitiesFresh = getCommunitiesFresh();
+      const resolvedHits: ResolvedKbSearchHit[] = [];
+
+      if (nextQueryCtx.queryTokens.length > 0) {
+        let limit = topK;
+        let hits = await searchOrama(db, oramaTerm, limit);
+        let exhausted = hits.length < limit;
+        resolvedHits.push(...hits.map((hit) => resolveHit(hit, index)));
+
+        while (shouldContinueWidening(hits, resolvedHits, nextCommunitiesFresh, scope, topK, exhausted)) {
+          const prevCount = hits.length;
+          limit = Math.max(limit + 1, limit * 2);
+          hits = await searchOrama(db, oramaTerm, limit);
+          exhausted = hits.length < limit;
+          for (let i = prevCount; i < hits.length; i += 1) {
+            resolvedHits.push(resolveHit(hits[i], index));
+          }
+        }
       }
-    }
-  }
 
-  const searchableHits = filterSearchableHits(resolvedHits, communitiesFresh);
-  const selectedHits = scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, scope);
-  const router = createRouter(rt, {
-    graph: new RuntimeGraphRetrieval(index, graphContext),
-  });
-  const graphResult = await router.graph.search(rawQuery, scope);
-  const graphHits = graphResult.hits;
-  const textHits: Array<ResolvedKbSearchHit | HybridKbSearchHit> =
-    graphHits.length === 0 ? selectedHits : fuseRetrievalRoles(router.hybrid, selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, graphResult);
+      const searchableHits = filterSearchableHits(resolvedHits, nextCommunitiesFresh);
+      return {
+        queryCtx: nextQueryCtx,
+        selectedHits: scope === 'all' ? rerankHits(searchableHits) : filterHitsByScope(searchableHits, scope),
+        communitiesFresh: nextCommunitiesFresh,
+        graphFresh: getGraphFresh(),
+      };
+    })();
 
-  if (scope === 'communities') {
-    if (mode === 'hybrid') {
-      return buildHybridResponse(
-        fuseRetrievalRoles(router.hybrid, selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, graphResult),
-        queryCtx,
-        topK,
-        index,
-        communitiesFresh,
-        graphFresh,
-      );
+    return textStatePromise;
+  };
+
+  const getTextGraphState = async (): Promise<TextGraphSearchState> => {
+    if (textGraphStatePromise !== undefined) {
+      return textGraphStatePromise;
     }
-    if (mode === 'vector') {
-      return buildVectorResponse([], topK);
-    }
-    return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh);
-  }
+
+    textGraphStatePromise = (async () => {
+      const textState = await getTextState();
+      const router = createRouter(rt, {
+        graph: new RuntimeGraphRetrieval(index, getGraphContext()),
+      });
+      const nextGraphResult = await router.graph.search(rawQuery, scope);
+
+      return {
+        ...textState,
+        graphFresh: getGraphFresh(),
+        router,
+        graphResult: nextGraphResult,
+        textHits:
+          nextGraphResult.hits.length === 0
+            ? textState.selectedHits
+            : fuseRetrievalRoles(router.hybrid, textState.selectedHits, EMPTY_VECTOR_RETRIEVAL_RESULT.hits, nextGraphResult),
+      };
+    })();
+
+    return textGraphStatePromise;
+  };
 
   if (mode === 'text') {
-    return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh);
+    const textState = await getTextState();
+    return buildTextResponse(
+      textState.selectedHits,
+      textState.queryCtx,
+      topK,
+      index,
+      textState.communitiesFresh,
+      textState.graphFresh,
+    );
   }
 
   if (mode === 'vector') {
+    if (scope === 'communities') {
+      return buildVectorResponse([], topK);
+    }
+
     const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
       allowNeedleFallbackToOrama: true,
     });
     if (vectorResult.fallbackToText) {
-      return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+      const textState = await getTextState();
+      return buildTextResponse(
+        textState.selectedHits,
+        textState.queryCtx,
+        topK,
+        index,
+        textState.communitiesFresh,
+        textState.graphFresh,
+        vectorResult.responseWarnings,
+      );
     }
     return buildVectorResponse(vectorResult.hits, topK, vectorResult.responseWarnings);
   }
 
   if (mode === 'hybrid') {
+    if (scope === 'communities') {
+      const textGraphState = await getTextGraphState();
+      return buildHybridResponse(
+        fuseRetrievalRoles(
+          textGraphState.router.hybrid,
+          textGraphState.selectedHits,
+          EMPTY_VECTOR_RETRIEVAL_RESULT.hits,
+          textGraphState.graphResult,
+        ),
+        textGraphState.queryCtx,
+        topK,
+        index,
+        textGraphState.communitiesFresh,
+        textGraphState.graphFresh,
+      );
+    }
+
     const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
       allowNeedleFallbackToOrama: true,
     });
     if (vectorResult.fallbackToText) {
-      return buildTextResponse(selectedHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+      const textState = await getTextState();
+      return buildTextResponse(
+        textState.selectedHits,
+        textState.queryCtx,
+        topK,
+        index,
+        textState.communitiesFresh,
+        textState.graphFresh,
+        vectorResult.responseWarnings,
+      );
     }
+
+    const textGraphState = await getTextGraphState();
     return buildHybridResponse(
-      fuseRetrievalRoles(router.hybrid, selectedHits, vectorResult.hits, graphResult),
-      queryCtx,
+      fuseRetrievalRoles(
+        textGraphState.router.hybrid,
+        textGraphState.selectedHits,
+        vectorResult.hits,
+        textGraphState.graphResult,
+      ),
+      textGraphState.queryCtx,
       topK,
       index,
-      communitiesFresh,
-      graphFresh,
+      textGraphState.communitiesFresh,
+      textGraphState.graphFresh,
       vectorResult.responseWarnings,
     );
   }
 
+  if (scope === 'communities') {
+    const textState = await getTextState();
+    return buildTextResponse(
+      textState.selectedHits,
+      textState.queryCtx,
+      topK,
+      index,
+      textState.communitiesFresh,
+      textState.graphFresh,
+    );
+  }
+
   const vectorRoute = resolveVectorRoute(rt);
+  const textGraphState = await getTextGraphState();
   if (vectorRoute.backend !== 'needle') {
     const responseWarnings = vectorRoute.warning === undefined ? {} : { warning: vectorRoute.warning };
-    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, responseWarnings);
+    return buildTextResponse(
+      textGraphState.textHits,
+      textGraphState.queryCtx,
+      topK,
+      index,
+      textGraphState.communitiesFresh,
+      textGraphState.graphFresh,
+      responseWarnings,
+    );
   }
 
   const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
     allowNeedleFallbackToOrama: false,
   });
   if (vectorResult.fallbackToText) {
-    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+    return buildTextResponse(
+      textGraphState.textHits,
+      textGraphState.queryCtx,
+      topK,
+      index,
+      textGraphState.communitiesFresh,
+      textGraphState.graphFresh,
+      vectorResult.responseWarnings,
+    );
   }
 
-  const fusedHits = fuseRetrievalRoles(router.hybrid, selectedHits, vectorResult.hits, graphResult);
+  const fusedHits = fuseRetrievalRoles(
+    textGraphState.router.hybrid,
+    textGraphState.selectedHits,
+    vectorResult.hits,
+    textGraphState.graphResult,
+  );
   const usedVector = fusedHits.slice(0, topK).some((hit) => hit.vectorRank !== undefined);
   if (!usedVector) {
-    return buildTextResponse(textHits, queryCtx, topK, index, communitiesFresh, graphFresh, vectorResult.responseWarnings);
+    return buildTextResponse(
+      textGraphState.textHits,
+      textGraphState.queryCtx,
+      topK,
+      index,
+      textGraphState.communitiesFresh,
+      textGraphState.graphFresh,
+      vectorResult.responseWarnings,
+    );
   }
 
   return buildHybridResponse(
     fusedHits,
-    queryCtx,
+    textGraphState.queryCtx,
     topK,
     index,
-    communitiesFresh,
-    graphFresh,
+    textGraphState.communitiesFresh,
+    textGraphState.graphFresh,
     vectorResult.responseWarnings,
   );
 }

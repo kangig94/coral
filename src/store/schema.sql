@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS curate_scheduler (
   last_attempted_through_entry_id TEXT,
   last_attempted_through_entry_kind TEXT,
   retry_not_before           TEXT,
-  consecutive_failures       INTEGER NOT NULL DEFAULT 0,
+  consecutive_claim_failures INTEGER NOT NULL DEFAULT 0,
+  consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
   community_topology_hash    TEXT,
   community_summary_topology_hash TEXT,
   initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1)),
@@ -207,10 +208,11 @@ INSERT OR IGNORE INTO curate_scheduler (
   last_attempted_through_entry_id,
   last_attempted_through_entry_kind,
   retry_not_before,
-  consecutive_failures,
+  consecutive_claim_failures,
+  consecutive_community_batch_failures,
   community_topology_hash,
   community_summary_topology_hash,
   initialized,
   migration_version
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, 0, 0);
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, 0, 0);

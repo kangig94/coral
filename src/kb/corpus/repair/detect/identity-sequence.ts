@@ -1,7 +1,8 @@
 import type { CorpusMarkdownFileScan, DetectedIncident, Detector } from '../types.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
 
-const ENTRYSEQ_COLLISION_CANONICAL = 'identity-sequence/entryseq-collision';
-const ENTRYSEQ_FORMAT_CANONICAL = 'identity-sequence/entryseq-format';
+const ENTRYSEQ_COLLISION_CANONICAL = REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION;
+const ENTRYSEQ_FORMAT_CANONICAL = REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT;
 
 const QUOTED_DECIMAL_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(["'])([0-9]+)\1\s*(?:#.*)?(?=\r?\n|$)/;
 const LEADING_ZERO_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(0[0-9]+)\s*(?:#.*)?(?=\r?\n|$)/;

@@ -16,7 +16,7 @@ import type {
   RuntimeSpawnOptions,
   RuntimeTimerHandle,
 } from '../../runtime/ports.js';
-import { createDeferred, type Deferred } from '../../shared/test-deferred.js';
+import { createDeferred, type Deferred } from './test-deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { type VirtualTime } from './virtual-time.js';

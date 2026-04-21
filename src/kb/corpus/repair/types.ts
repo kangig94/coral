@@ -18,15 +18,18 @@ import {
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug } from '../../validation.js';
+import type { RepairIncidentId, RepairIncidentLocus } from './incident-ids.js';
 
-export type RepairLocus = 'file-syntax' | 'frontmatter-shape' | 'identity-sequence' | 'reference-integrity';
+export type { RepairIncidentId, RepairLocus } from './incident-ids.js';
 
-export interface DetectedIncident {
-  locus: RepairLocus;
-  canonical: string;
-  entryId: string;
-  signals: Record<string, unknown>;
-}
+export type DetectedIncident = {
+  [IncidentId in RepairIncidentId]: {
+    locus: RepairIncidentLocus<IncidentId>;
+    canonical: IncidentId;
+    entryId: string;
+    signals: Record<string, unknown>;
+  };
+}[RepairIncidentId];
 
 export interface Detector {
   detect(corpus: CorpusScanView): DetectedIncident[];

@@ -17,7 +17,7 @@ import type * as InfraPathsMod from '../../../infra/paths.js';
 import type * as HttpHandlerMod from '../handler.js';
 import type * as WorkflowApiMod from '../../../workflow/api.js';
 import type { ProviderServerHandle } from '../../../coordinator/__tests__/server-test-deps.js';
-import { createDeferred } from '../../../shared/test-deferred.js';
+import { createDeferred } from '../../../simulation/core/test-deferred.js';
 
 import { readDiscussEventLog } from '../../../client/readers.js';
 import { makeEvent } from '../../../discuss/events.js';

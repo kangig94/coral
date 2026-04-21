@@ -20,11 +20,12 @@ import {
   type DiscoveryProposal,
   type SpawnCliFn,
 } from '../curate/scheduler.js';
+import { createCurateTestHandle, type CurateTestHandle } from '../curate/__tests__/__helpers__/test-handle.js';
 import { readCurateState, writeCurateState, type CurateState } from '../curate/state.js';
 import { parseFrontmatter } from '../corpus/frontmatter.js';
 import { createKbRuntime } from '../runtime.js';
 import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '../entry-types.js';
-import { createDeferred } from '../../shared/test-deferred.js';
+import { createDeferred } from '../../simulation/core/test-deferred.js';
 import { createRealRuntime } from '../../runtime/real.js';
 
 vi.mock('../curate/usage-budget.js', () => ({
@@ -50,7 +51,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     communitySummaryInputFingerprints: undefined,
-    consecutiveFailures: 0,
+    consecutiveClaimFailures: 0,
+    consecutiveCommunityBatchFailures: 0,
     initialized: false,
     migrationVersion: 0,
     ...overrides,
@@ -180,7 +182,7 @@ const noopSpawnCli: SpawnCliFn = async () => ({
 let tempDir: string;
 let runtime: KbRuntime;
 let scheduler: CurateHandle;
-let internals: NonNullable<CurateHandle['_testInternals']>;
+let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
 function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli, scheduleDebounceMs = 0): void {
@@ -192,7 +194,11 @@ function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli, scheduleDebounceMs = 
     envPort: gitSyncRuntime.env,
     scheduleDebounceMs,
   });
-  internals = scheduler._testInternals!;
+  internals = createCurateTestHandle({
+    kb: runtime,
+    spawnCli,
+    schedule: () => scheduler.schedule(),
+  });
 }
 
 function writeNote(
@@ -1473,7 +1479,7 @@ describe('curate', () => {
             through: cursor('coral-retry', 9),
             startedAt: '2026-03-25T11:58:00.000Z',
           },
-          consecutiveFailures: 1,
+          consecutiveClaimFailures: 1,
         }),
       );
 
@@ -1482,14 +1488,14 @@ describe('curate', () => {
         lastAttemptedThrough: cursor('coral-retry', 9),
         retryNotBefore: '2026-03-25T16:00:00.000Z',
         activeClaim: null,
-        consecutiveFailures: 2,
+        consecutiveClaimFailures: 2,
       });
 
       await internals.clearCurateRetryState();
       expect(readCurateState(runtime)).toMatchObject({
         retryNotBefore: null,
         activeClaim: null,
-        consecutiveFailures: 0,
+        consecutiveClaimFailures: 0,
       });
     });
 
@@ -2039,7 +2045,7 @@ describe('curate', () => {
         lastAttemptedThrough: cursor('coral-stop-10', 10),
         retryNotBefore: null,
         activeClaim: null,
-        consecutiveFailures: 0,
+        consecutiveClaimFailures: 0,
       });
       expect(vi.getTimerCount()).toBe(0);
       expect(scheduler.isRunning()).toBe(false);
@@ -2156,7 +2162,7 @@ describe('curate', () => {
         vi.advanceTimersByTime(1);
         await Promise.resolve();
         await Promise.resolve();
-        if (readCurateState(runtime).consecutiveFailures === 1) {
+        if (readCurateState(runtime).consecutiveClaimFailures === 1) {
           break;
         }
       }
@@ -2165,7 +2171,7 @@ describe('curate', () => {
       expect(readCurateState(runtime)).toMatchObject({
         lastAttemptedThrough: cursor('coral-failure-10', 10),
         activeClaim: null,
-        consecutiveFailures: 1,
+        consecutiveClaimFailures: 1,
       });
       expect(readCurateState(runtime).retryNotBefore).not.toBeNull();
     });
@@ -2282,7 +2288,10 @@ describe('curate', () => {
         ],
       };
       await runtime.writeEntityGraph(graph);
-      writeCurateState(runtime, createCurateState({ initialized: true }));
+      writeCurateState(runtime, createCurateState({
+        initialized: true,
+        consecutiveClaimFailures: 3,
+      }));
 
       const spawn = vi.fn<SpawnCliFn>(async () => ({
         stdout: 'Shared themes across the community.',
@@ -2305,6 +2314,8 @@ describe('curate', () => {
       expect(state).toMatchObject({
         communityTopologyHash: expect.any(String),
         communitySummaryTopologyHash: expect.any(String),
+        consecutiveClaimFailures: 3,
+        consecutiveCommunityBatchFailures: 0,
       });
       expect(state.pendingRepair).toBeNull();
       expect(state.communitySummaryInputFingerprints).toBeDefined();
@@ -2349,7 +2360,11 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(runtime, createCurateState({ initialized: true }));
+      writeCurateState(runtime, createCurateState({
+        initialized: true,
+        consecutiveClaimFailures: 2,
+        consecutiveCommunityBatchFailures: 4,
+      }));
 
       useScheduler(async () => {
         throw new Error('summary failed');
@@ -2381,6 +2396,10 @@ describe('curate', () => {
       expect(
         filesAfterRecovery.every((entry) => readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary')),
       ).toBe(true);
+      expect(readCurateState(runtime)).toMatchObject({
+        consecutiveClaimFailures: 2,
+        consecutiveCommunityBatchFailures: 0,
+      });
       expect(Object.keys(readCurateState(runtime).communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
     });
 
@@ -2439,20 +2458,17 @@ describe('curate', () => {
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(readCurateState(runtime).consecutiveFailures).toBe(1);
-      expect(internals.getPendingCommunitySkipTicks()).toBe(2);
+      expect(readCurateState(runtime).consecutiveCommunityBatchFailures).toBe(1);
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(internals.getPendingCommunitySkipTicks()).toBe(1);
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(internals.getPendingCommunitySkipTicks()).toBe(0);
 
       await vi.advanceTimersByTimeAsync(100);
       expect(spawn).toHaveBeenCalledTimes(2);
-      expect(readCurateState(runtime).consecutiveFailures).toBe(0);
+      expect(readCurateState(runtime).consecutiveCommunityBatchFailures).toBe(0);
 
       await settleCurateRuntime(scheduler);
       expect(

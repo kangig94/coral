@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
-import { createDeferred } from '../../../shared/test-deferred.js';
+import { createDeferred } from '../../../simulation/core/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '../../views.js';
 import type { WaitStreamEvent } from '../../wait.js';
@@ -35,7 +35,6 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../../../coordinator/live/admission.js';
-import { type AbortRegistry } from '../abort-registry.js';
 import { TypedEventBus } from '../../../coordinator/control.js';
 import { ProgressStore } from '../../job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../../../coordinator/live/provider-hosts/pool.js';
@@ -45,6 +44,7 @@ import { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { getInternals } from './__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
@@ -76,12 +76,6 @@ vi.mock('../agent-resolution.js', async () => {
     resolveAgent: mockState.resolveAgent,
   };
 });
-
-type ServiceInternals = {
-  abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
-  sessionManager: SessionManager;
-};
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
@@ -121,10 +115,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
 
 function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
   launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
-function getInternals(service: ExecutionService): ServiceInternals {
-  return service as unknown as ServiceInternals;
 }
 
 function createService(
@@ -461,7 +451,9 @@ function _createClaimedJob(
   progressStore: ProgressStore;
   sessionManager: SessionManager;
 } {
-  const { progressStore, sessionManager } = getInternals(service);
+  const { progressStore, sessionManager } =
+    /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+    getInternals(service);
   const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
@@ -647,7 +639,9 @@ describe('ExecutionService launch', () => {
     trackJob(decision.job);
 
     const terminal = await waitForTerminalEvent(service, decision.job);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobDir = join(JOBS_DIR, decision.job);
     const runtimeRecord = progressStore.readRuntimeRecord(decision.job) as _DurableCliRuntimeRecord | null;
     const history = progressStore.readJobProgress(decision.job);
@@ -671,7 +665,9 @@ describe('ExecutionService launch', () => {
     });
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
-    const { progressStore, sessionManager } = getInternals(service);
+    const { progressStore, sessionManager } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     vi.spyOn(sessionManager, 'setConversationRef').mockImplementation(() => {
       throw new Error('finalize failed');
     });
@@ -697,7 +693,9 @@ describe('ExecutionService launch', () => {
     const server = createFakeProviderServerHandle({ generation: 41 });
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId1 = `app-server-runtime-${randomUUID()}`;
     const jobId2 = `app-server-runtime-${randomUUID()}`;
     trackJob(jobId1);
@@ -834,7 +832,9 @@ describe('ExecutionService launch', () => {
     });
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId1 = `shared-app-server-${randomUUID()}`;
     const jobId2 = `shared-app-server-${randomUUID()}`;
     trackJob(jobId1);
@@ -944,7 +944,9 @@ describe('ExecutionService launch', () => {
     });
     setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
-    const { progressStore, abortRegistry } = getInternals(service);
+    const { progressStore, abortRegistry } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     trackJob(jobId);
     mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
@@ -1288,7 +1290,9 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'queued') throw new Error('expected queued launch');
     trackJob(decision.job);
 
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     expect(progressStore.readStatus(decision.job)).toMatchObject({
       jobId: decision.job,
       sessionId: decision.session,

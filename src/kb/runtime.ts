@@ -909,7 +909,7 @@ function detectInboundSyncMutation(
   return {
     lane,
     changedEntryIds: [...changedEntryIds].sort(),
-    requiresFullInstall: communitiesChanged || entityGraphChanged,
+    requiresFullInstall: principlesChanged || communitiesChanged || entityGraphChanged,
   };
 }
 

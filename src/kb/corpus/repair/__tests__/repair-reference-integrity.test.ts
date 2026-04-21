@@ -3,10 +3,11 @@ import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote } from '../../../read.js';
-import { runRepairFixtureCase } from './helpers.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from './helpers.js';
 
 describe('repair fixtures: reference integrity', () => {
-  it('covers reference-integrity/orphan-entity-graph-refs end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'reference-integrity-orphan-entity-graph-refs',
       classification: 'auto-fixable',
@@ -31,9 +32,8 @@ describe('repair fixtures: reference integrity', () => {
         ]);
       },
       expectedIncidents: [
-        {
-          locus: 'reference-integrity',
-          canonical: 'reference-integrity/orphan-entity-graph-refs',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS,
           entryId: 'entity-graph:.entity-graph.json',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -53,12 +53,12 @@ describe('repair fixtures: reference integrity', () => {
               ],
             });
           },
-        },
+        }),
       ],
     });
   });
 
-  it('covers reference-integrity/orphan-principle-refs end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'reference-integrity-orphan-principle-refs',
       classification: 'needs-manual',
@@ -68,16 +68,15 @@ describe('repair fixtures: reference integrity', () => {
         expect(existsSync(harness.path('principles/missing-principle.md'))).toBe(false);
       },
       expectedIncidents: [
-        {
-          locus: 'reference-integrity',
-          canonical: 'reference-integrity/orphan-principle-refs',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_PRINCIPLE_REFS,
           entryId: 'note:orphan-principle-note',
           assertSignals(signals) {
             expect(signals).toEqual({
               orphanPrinciples: ['missing-principle'],
             });
           },
-        },
+        }),
       ],
     });
   });

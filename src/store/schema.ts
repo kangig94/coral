@@ -41,7 +41,8 @@ export interface CurateSchedulerRow {
   last_attempted_through_entry_id: string | null;
   last_attempted_through_entry_kind: string | null;
   retry_not_before: string | null;
-  consecutive_failures: number;
+  consecutive_claim_failures: number;
+  consecutive_community_batch_failures: number;
   community_topology_hash: string | null;
   community_summary_topology_hash: string | null;
   initialized: number;

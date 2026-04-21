@@ -13,12 +13,7 @@ import {
   clearCurateRetryStateLocked,
   recordCurateFailure,
 } from './operations.js';
-import {
-  addPendingDiscovery,
-  recordDiscoveryAttempt,
-  removePendingDiscovery,
-  runPrincipleDiscovery,
-} from './principles.js';
+import { runPrincipleDiscovery } from './principles.js';
 import {
   claimCurateRun,
   hasPendingEntriesBeyondCursor,
@@ -134,10 +129,10 @@ export function createCurateScheduler({
 
     await kb.withMutationLock(() => {
       const state = readCurateState(kb);
-      nextFailures = state.consecutiveFailures + 1;
+      nextFailures = state.consecutiveCommunityBatchFailures + 1;
       writeCurateState(kb, {
         ...state,
-        consecutiveFailures: nextFailures,
+        consecutiveCommunityBatchFailures: nextFailures,
       });
     });
 
@@ -161,7 +156,7 @@ export function createCurateScheduler({
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,
       });
-      if (readCurateState(kb).consecutiveFailures === 0) {
+      if (readCurateState(kb).consecutiveCommunityBatchFailures === 0) {
         pendingCommunitySkipTicks = 0;
       }
       return wroteCommunityFiles;
@@ -171,8 +166,8 @@ export function createCurateScheduler({
       }
 
       backendLog.error('kb_curate: community batch failed', error);
-      const consecutiveFailures = await incrementCommunityBatchFailures();
-      pendingCommunitySkipTicks = calculateCommunityBatchBackoffTicks(consecutiveFailures);
+      const communityBatchFailures = await incrementCommunityBatchFailures();
+      pendingCommunitySkipTicks = calculateCommunityBatchBackoffTicks(communityBatchFailures);
       schedule();
       return false;
     }
@@ -333,8 +328,8 @@ export function createCurateScheduler({
     await migrateCurateStateIfNeeded(kb);
     const state = readCurateState(kb);
     pendingCommunitySkipTicks =
-      state.retryNotBefore === null && state.consecutiveFailures > 0
-        ? calculateCommunityBatchBackoffTicks(state.consecutiveFailures)
+      state.consecutiveCommunityBatchFailures > 0
+        ? calculateCommunityBatchBackoffTicks(state.consecutiveCommunityBatchFailures)
         : 0;
     runtimeStarted = true;
     armRetryWake(state);
@@ -401,48 +396,9 @@ export function createCurateScheduler({
     isRunning() {
       return queuedRun || activeRun !== null || retryWakeTimer !== null || debounceTimer !== null;
     },
-    _testInternals: {
-      claimCurateRun(today) {
-        return claimCurateRun(kb, today);
-      },
-      runClassificationBatches(claim, index) {
-        return runClassificationBatches(kb, spawnCli, claim, index);
-      },
-      commitMetadataTargets(targets) {
-        return commitMetadataTargets(kb, targets);
-      },
-      runPrincipleDiscovery(processedThrough) {
-        return runPrincipleDiscovery(kb, spawnCli, processedThrough, { schedule });
-      },
-      recordCurateFailure(through, error) {
-        return recordCurateFailure(kb, through, error);
-      },
-      clearCurateRetryState() {
-        return clearCurateRetryState(kb);
-      },
-      recordDiscoveryAttempt(highSeq, nextOffset) {
-        return recordDiscoveryAttempt(kb, highSeq, nextOffset);
-      },
-      addPendingDiscovery(entry) {
-        return addPendingDiscovery(kb, entry);
-      },
-      removePendingDiscovery(entry) {
-        return removePendingDiscovery(kb, entry);
-      },
-      runCommunitySubphase() {
-        return runCommunitySubphase(kb, spawnCli, { shouldStop: () => stopped });
-      },
-      calculateCommunityBatchBackoffTicks,
-      getPendingCommunitySkipTicks() {
-        return pendingCommunitySkipTicks;
-      },
-      async migrateCurateStateIfNeeded() {
-        await migrateCurateStateIfNeeded(kb);
-      },
-    },
   };
 }
 
-export function calculateCommunityBatchBackoffTicks(consecutiveFailures: number): number {
-  return Math.min(2 ** Math.max(consecutiveFailures, 0), COMMUNITY_BATCH_BACKOFF_TICK_CAP);
+export function calculateCommunityBatchBackoffTicks(failureCount: number): number {
+  return Math.min(2 ** Math.max(failureCount, 0), COMMUNITY_BATCH_BACKOFF_TICK_CAP);
 }

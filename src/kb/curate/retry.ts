@@ -85,6 +85,21 @@ function pendingRepairToRow(entry: PendingRepair): CurateRetryQueueRow {
   });
 }
 
+function samePendingRepairRow(left: CurateRetryQueueRow, right: CurateRetryQueueRow): boolean {
+  return (
+    left.entry_id === right.entry_id &&
+    left.entry_seq === right.entry_seq &&
+    left.reason === right.reason &&
+    left.observed_at === right.observed_at &&
+    left.locus === right.locus &&
+    left.canonical_incident === right.canonical_incident &&
+    left.signals_json === right.signals_json &&
+    left.repair_hint === right.repair_hint &&
+    left.retry_not_before === right.retry_not_before &&
+    left.retry_count === right.retry_count
+  );
+}
+
 export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
   const rows = prepareCached<[], CurateRetryQueueRow>(
     target,
@@ -194,5 +209,29 @@ export function replaceCurateRetryQueue(target: SqliteTarget, entries: ReadonlyA
 
   for (const entry of entries) {
     upsertCurateRetryEntry(target, entry);
+  }
+}
+
+export function syncCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArray<PendingRepair>): void {
+  const existingById = new Map(readCurateRetryQueue(target).map((entry) => [entry.entryId, entry] as const));
+  const nextById = new Map<string, PendingRepair>();
+  for (const entry of entries) {
+    nextById.set(entry.entryId, entry);
+  }
+
+  for (const entryId of existingById.keys()) {
+    if (!nextById.has(entryId)) {
+      deleteCurateRetryEntry(target, entryId);
+    }
+  }
+
+  for (const [entryId, entry] of nextById) {
+    const existing = existingById.get(entryId);
+    if (
+      existing === undefined ||
+      !samePendingRepairRow(pendingRepairToRow(existing), pendingRepairToRow(entry))
+    ) {
+      upsertCurateRetryEntry(target, entry);
+    }
   }
 }

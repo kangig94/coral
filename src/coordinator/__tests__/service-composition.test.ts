@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
-import { createDeferred } from '../../shared/test-deferred.js';
+import { createDeferred } from '../../simulation/core/test-deferred.js';
 import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import {
@@ -26,7 +26,6 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../live/admission.js';
-import { type AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { TypedEventBus } from '../control.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
@@ -36,6 +35,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
+import { getInternals } from '../../jobs/shell/__tests__/__helpers__/service-fixture.js';
 
 type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
 
@@ -67,12 +67,6 @@ vi.mock('../../jobs/shell/agent-resolution.js', async () => {
     resolveAgent: mockState.resolveAgent,
   };
 });
-
-type ServiceInternals = {
-  abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
-  sessionManager: SessionManager;
-};
 
 const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
@@ -112,10 +106,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
 
 function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
   launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
-function getInternals(service: ExecutionService): ServiceInternals {
-  return service as unknown as ServiceInternals;
 }
 
 function createService(
@@ -1115,7 +1105,9 @@ describe('ExecutionService', () => {
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
     const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
     expect(existsSync(terminal.resultPath)).toBe(true);
@@ -1232,7 +1224,9 @@ describe('ExecutionService', () => {
     if (decision.status !== 'running') throw new Error('expected running');
     trackJob(decision.job);
     expect(getActiveJobIds()).toEqual(activeJobIds);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     expect(progressStore.readStatus(decision.job)).toMatchObject({
       jobId: decision.job,
       sessionId: decision.session,
@@ -1287,7 +1281,9 @@ describe('ExecutionService', () => {
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
     const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
@@ -1356,7 +1352,9 @@ describe('ExecutionService', () => {
     const terminal = await waitForTerminalEvent(service, decision.job);
     const markdownAtTerminal = readFileSync(terminal.resultPath, 'utf-8');
     const session = new SessionManager(ctx.projectRoot, runtime).get('codex', decision.session);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const status = progressStore.readStatus(decision.job);
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
@@ -1394,7 +1392,9 @@ describe('ExecutionService', () => {
     mockState.getNewProvider.mockReturnValue(provider);
 
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const appendTerminal = vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
@@ -1426,7 +1426,9 @@ describe('ExecutionService', () => {
 
   it('does not synthesize status-only terminal persistence for finishQueuedAbort when appendTerminal throws', () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
@@ -1459,7 +1461,9 @@ describe('ExecutionService', () => {
 
   it('does not synthesize status-only terminal persistence for failJob when appendTerminal throws', () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
@@ -1530,7 +1534,9 @@ describe('ExecutionService', () => {
 
   it('does not synthesize status-only terminal persistence for finishWorkflowJob when appendTerminal throws', () => {
     const service = createService(ctx);
-    const { progressStore } = getInternals(service);
+    const { progressStore } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
     progressStore.initJob({
@@ -1607,7 +1613,9 @@ describe('ExecutionService', () => {
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
     ({ phase, result, markdown }) => {
       const service = createService(ctx);
-      const { progressStore, sessionManager } = getInternals(service);
+      const { progressStore, sessionManager } =
+        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+        getInternals(service);
       const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
       trackJob(jobId);
@@ -1673,7 +1681,9 @@ describe('ExecutionService', () => {
 
   it('finishWorkflowJob still orders artifact write before best-effort terminal fallback and non_resumable state', () => {
     const service = createService(ctx);
-    const { progressStore, sessionManager } = getInternals(service);
+    const { progressStore, sessionManager } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
     const session = sessionManager.allocate('codex', 'workflow-fallback', 'workflow', ctx.projectRoot);
     const jobId = `workflow-fallback-order-${randomUUID()}`;
     const phase = 'error' as const;
@@ -1793,7 +1803,9 @@ describe('ExecutionService', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `recover-queued-${randomUUID()}`;
         const sessionId = `session-recover-${randomUUID()}`;
@@ -1821,7 +1833,9 @@ describe('ExecutionService', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `recover-rebind-${randomUUID()}`;
         const sessionId = `session-rebind-${randomUUID()}`;
@@ -1849,7 +1863,9 @@ describe('ExecutionService', () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `recover-hydrate-${randomUUID()}`;
         const sessionId = `session-hydrate-${randomUUID()}`;
@@ -1881,7 +1897,9 @@ describe('ExecutionService', () => {
         const { provider } = makeProvider({ execute: () => never });
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
         const occupyIds = await occupyProviderSlots(service, ctx, 'codex');
 
         const jobId = `recover-exec-${randomUUID()}`;
@@ -1920,7 +1938,9 @@ describe('ExecutionService', () => {
     describe('adoptRunningJob', () => {
       it('adopts a running job with a live PID and returns a cleanup handle', () => {
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `adopt-running-${randomUUID()}`;
         const sessionId = `session-adopt-${randomUUID()}`;
@@ -1953,7 +1973,9 @@ describe('ExecutionService', () => {
 
       it('restores pool mapping and active permit', () => {
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `adopt-pool-${randomUUID()}`;
         const sessionId = `session-pool-${randomUUID()}`;
@@ -1985,7 +2007,9 @@ describe('ExecutionService', () => {
 
       it('rebinds namespace', () => {
         const service = createService(ctx);
-        const { progressStore } = getInternals(service);
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `adopt-rebind-${randomUUID()}`;
         const sessionId = `session-rebind-${randomUUID()}`;
@@ -2016,7 +2040,9 @@ describe('ExecutionService', () => {
       it('routes abort through runtime.process.kill', () => {
         const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {});
         const service = createService(ctx);
-        const { progressStore, abortRegistry } = getInternals(service);
+        const { progressStore, abortRegistry } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `adopt-abort-${randomUUID()}`;
         const sessionId = `session-adopt-abort-${randomUUID()}`;
@@ -2051,7 +2077,9 @@ describe('ExecutionService', () => {
     describe('completeRecoveredJob', () => {
       it('writes terminal result and releases session', () => {
         const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
 
         const jobId = `complete-recovered-${randomUUID()}`;
         trackJob(jobId);
@@ -2100,7 +2128,9 @@ describe('ExecutionService', () => {
         const spawnProviderServerMock = vi.fn();
         spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
         const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
         const jobId = `app-server-waiting-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
@@ -2187,7 +2217,9 @@ describe('ExecutionService', () => {
           }).handle,
         );
         const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
         const jobId = `app-server-verified-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
@@ -2265,7 +2297,9 @@ describe('ExecutionService', () => {
           }).handle,
         );
         const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
         const jobId = `app-server-missing-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
@@ -2356,7 +2390,9 @@ describe('ExecutionService', () => {
           }).handle,
         );
         const service = createService(ctx);
-        const { progressStore, sessionManager } = getInternals(service);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
         const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);

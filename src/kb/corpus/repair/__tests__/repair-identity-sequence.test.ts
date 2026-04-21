@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { loadKbNote, loadKbSource } from '../../../read.js';
-import { runRepairFixtureCase } from './helpers.js';
+import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
+import { expectedDetectedIncident, runRepairFixtureCase } from './helpers.js';
 
 describe('repair fixtures: identity sequence', () => {
-  it('covers identity-sequence/entryseq-collision end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'identity-sequence-entryseq-collision',
       classification: 'needs-manual',
@@ -13,9 +14,8 @@ describe('repair fixtures: identity sequence', () => {
         expect(loadKbSource(harness.path('sources/collision-beta.md')).frontmatter.entrySeq).toBe(21);
       },
       expectedIncidents: [
-        {
-          locus: 'identity-sequence',
-          canonical: 'identity-sequence/entryseq-collision',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
           entryId: 'note:collision-alpha',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -23,10 +23,9 @@ describe('repair fixtures: identity sequence', () => {
               colliders: ['note:collision-alpha', 'source:collision-beta'],
             });
           },
-        },
-        {
-          locus: 'identity-sequence',
-          canonical: 'identity-sequence/entryseq-collision',
+        }),
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_COLLISION,
           entryId: 'source:collision-beta',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -34,12 +33,12 @@ describe('repair fixtures: identity sequence', () => {
               colliders: ['note:collision-alpha', 'source:collision-beta'],
             });
           },
-        },
+        }),
       ],
     });
   });
 
-  it('covers identity-sequence/entryseq-format end to end', async () => {
+  it(`covers ${REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT} end to end`, async () => {
     await runRepairFixtureCase({
       fixture: 'identity-sequence-entryseq-format',
       classification: 'auto-fixable',
@@ -55,9 +54,8 @@ describe('repair fixtures: identity sequence', () => {
         expect(loadKbNote(harness.path('notes/entryseq-format-note.md')).frontmatter.entrySeq).toBe(31);
       },
       expectedIncidents: [
-        {
-          locus: 'identity-sequence',
-          canonical: 'identity-sequence/entryseq-format',
+        expectedDetectedIncident({
+          canonical: REPAIR_INCIDENT_ID.IDENTITY_SEQUENCE.ENTRYSEQ_FORMAT,
           entryId: 'note:entryseq-format-note',
           assertSignals(signals) {
             expect(signals).toEqual({
@@ -67,7 +65,7 @@ describe('repair fixtures: identity sequence', () => {
               normalizedValue: 31,
             });
           },
-        },
+        }),
       ],
     });
   });

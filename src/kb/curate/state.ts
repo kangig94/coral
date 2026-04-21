@@ -1,5 +1,3 @@
-import { join } from 'node:path';
-
 import type {
   CurateActiveClaimRow,
   CurateCommunitySummaryInputFingerprintRow,
@@ -19,18 +17,19 @@ import {
 } from '../corpus/mutation-helpers.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import type { KbRuntime } from '../contracts.js';
+import type { KbIndexState, KbRuntime } from '../contracts.js';
 import {
   isNoteEntry,
   isSourceEntry,
   noteEntryId,
   sourceEntryId,
+  type KbIndex,
   type KbNoteFrontmatter,
   type KbSourceFrontmatter,
 } from '../entry-types.js';
 import { parsePositiveInteger } from '../validation.js';
-import { readCurateDiscoveryBacklog, replaceCurateDiscoveryBacklog } from './discovery-backlog.js';
-import { readCurateRetryQueue, replaceCurateRetryQueue } from './retry.js';
+import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from './discovery-backlog.js';
+import { readCurateRetryQueue, syncCurateRetryQueue } from './retry.js';
 import {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -79,7 +78,7 @@ type CurateStateRuntime = Pick<
   | 'writeIndexState'
 >;
 
-type ScannedNote = {
+export type ScannedNote = {
   note: string;
   path: string;
   content: string;
@@ -87,11 +86,31 @@ type ScannedNote = {
   frontmatter: KbNoteFrontmatter;
 };
 
-type ScannedSource = {
+export type ScannedSource = {
   slug: string;
   path: string;
   content: string;
   frontmatter: KbSourceFrontmatter;
+};
+
+export type CurateMigrationScanFailure = {
+  kind: 'note' | 'source';
+  name: string;
+  path: string;
+  error: unknown;
+};
+
+export type CurateMigrationScan = {
+  scannedNotes: ScannedNote[];
+  scannedSources: ScannedSource[];
+  scanFailures: CurateMigrationScanFailure[];
+  detectedAt: string;
+};
+
+export type CurateMigrationAssignment = {
+  highestAssignedEntrySeq: number;
+  rewrittenNotes: ScannedNote[];
+  rewrittenSources: ScannedSource[];
 };
 
 function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
@@ -119,25 +138,60 @@ function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] 
   };
 }
 
+function sameActiveClaim(
+  left: CurateState['activeClaim'],
+  right: CurateState['activeClaim'],
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+
+  return compareCursor(left.through, right.through) === 0 && left.startedAt === right.startedAt;
+}
+
 function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['activeClaim']): void {
-  prepareCached<[]>(target, `DELETE FROM curate_active_claim WHERE id = 1`).run();
+  const existing = readActiveClaim(target);
+  if (sameActiveClaim(existing, activeClaim)) {
+    return;
+  }
+
   if (activeClaim === null) {
+    prepareCached<[]>(target, `DELETE FROM curate_active_claim WHERE id = 1`).run();
+    return;
+  }
+
+  const throughEntryKind = cursorEntryKind(activeClaim.through);
+  if (existing === null) {
+    prepareCached<[number, string, 'note' | 'source', string]>(
+      target,
+      `INSERT INTO curate_active_claim (
+         id,
+         through_seq,
+         through_entry_id,
+         through_entry_kind,
+         started_at
+       ) VALUES (1, ?, ?, ?, ?)`,
+    ).run(
+      activeClaim.through.entrySeq,
+      activeClaim.through.entryId,
+      throughEntryKind,
+      activeClaim.startedAt,
+    );
     return;
   }
 
   prepareCached<[number, string, 'note' | 'source', string]>(
     target,
-    `INSERT INTO curate_active_claim (
-       id,
-       through_seq,
-       through_entry_id,
-       through_entry_kind,
-       started_at
-     ) VALUES (1, ?, ?, ?, ?)`,
+    `UPDATE curate_active_claim
+        SET through_seq = ?,
+            through_entry_id = ?,
+            through_entry_kind = ?,
+            started_at = ?
+      WHERE id = 1`,
   ).run(
     activeClaim.through.entrySeq,
     activeClaim.through.entryId,
-    cursorEntryKind(activeClaim.through),
+    throughEntryKind,
     activeClaim.startedAt,
   );
 }
@@ -160,20 +214,39 @@ function writeCommunitySummaryInputFingerprints(
   target: CurateStateTarget,
   fingerprints: Record<string, string> | undefined,
 ): void {
-  prepareCached<[]>(target, `DELETE FROM curate_community_summary_input_fingerprints`).run();
-  if (fingerprints === undefined) {
-    return;
+  const existing = readCommunitySummaryInputFingerprints(target) ?? {};
+  const next = fingerprints ?? {};
+
+  for (const communitySlug of Object.keys(existing)) {
+    if (!(communitySlug in next)) {
+      prepareCached<[string]>(
+        target,
+        `DELETE FROM curate_community_summary_input_fingerprints
+          WHERE community_slug = ?`,
+      ).run(communitySlug);
+    }
   }
 
-  const insert = prepareCached<[string, string]>(
-    target,
-    `INSERT INTO curate_community_summary_input_fingerprints (
-       community_slug,
-       fingerprint
-     ) VALUES (?, ?)`,
-  );
-  for (const [communitySlug, fingerprint] of Object.entries(fingerprints).sort(([left], [right]) => left.localeCompare(right))) {
-    insert.run(communitySlug, fingerprint);
+  for (const [communitySlug, fingerprint] of Object.entries(next).sort(([left], [right]) => left.localeCompare(right))) {
+    if (!(communitySlug in existing)) {
+      prepareCached<[string, string]>(
+        target,
+        `INSERT INTO curate_community_summary_input_fingerprints (
+           community_slug,
+           fingerprint
+         ) VALUES (?, ?)`,
+      ).run(communitySlug, fingerprint);
+      continue;
+    }
+
+    if (existing[communitySlug] !== fingerprint) {
+      prepareCached<[string, string]>(
+        target,
+        `UPDATE curate_community_summary_input_fingerprints
+            SET fingerprint = ?
+          WHERE community_slug = ?`,
+      ).run(fingerprint, communitySlug);
+    }
   }
 }
 
@@ -335,7 +408,8 @@ export function readCurateState(target: CurateStateTarget): CurateState {
     communityTopologyHash: scheduler.communityTopologyHash,
     communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
     communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(target),
-    consecutiveFailures: scheduler.consecutiveFailures,
+    consecutiveClaimFailures: scheduler.consecutiveClaimFailures,
+    consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
     initialized: scheduler.initialized,
     migrationVersion: scheduler.migrationVersion,
   });
@@ -354,24 +428,204 @@ export function writeCurateState(target: CurateStateTarget, state: CurateState):
       lastRunDay: normalized.lastRunDay,
       lastAttemptedThrough: normalized.lastAttemptedThrough,
       retryNotBefore: normalized.retryNotBefore,
-      consecutiveFailures: normalized.consecutiveFailures,
+      consecutiveClaimFailures: normalized.consecutiveClaimFailures,
+      consecutiveCommunityBatchFailures: normalized.consecutiveCommunityBatchFailures,
       communityTopologyHash: normalized.communityTopologyHash,
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,
       migrationVersion: normalized.migrationVersion,
     });
-    replaceCurateRetryQueue(target, normalized.pendingRepair ?? []);
-    replaceCurateDiscoveryBacklog(target, normalized.pendingDiscoveries);
+    syncCurateRetryQueue(target, normalized.pendingRepair ?? []);
+    syncCurateDiscoveryBacklog(target, normalized.pendingDiscoveries);
     writeActiveClaim(target, normalized.activeClaim);
     writeCommunitySummaryInputFingerprints(target, normalized.communitySummaryInputFingerprints);
   })();
 }
 
-/**
- * Legacy test helper retained as a non-authoritative debug path now that curate state lives in SQLite.
- */
-export function curateStatePath(target: Pick<KbRuntime, 'runtimeDir'> | string): string {
-  return typeof target === 'string' ? join(target, 'curate-state.retired') : join(target.runtimeDir, 'curate-state.retired');
+export function scanCorpus(
+  kb: Pick<KbRuntime, 'notesDir' | 'notePath' | 'sourcesDir' | 'sourcePath'>,
+  detectedAt = new Date().toISOString(),
+): CurateMigrationScan {
+  const scannedNotes: ScannedNote[] = [];
+  const scannedSources: ScannedSource[] = [];
+  const scanFailures: CurateMigrationScanFailure[] = [];
+
+  for (const note of sortedNoteNames(kb)) {
+    try {
+      scannedNotes.push(scanNote(kb, note));
+    } catch (error: unknown) {
+      scanFailures.push({
+        kind: 'note',
+        name: note,
+        path: kb.notePath(note),
+        error,
+      });
+    }
+  }
+
+  for (const slug of sortedSourceNames(kb)) {
+    try {
+      scannedSources.push(scanSource(kb, slug));
+    } catch (error: unknown) {
+      scanFailures.push({
+        kind: 'source',
+        name: slug,
+        path: kb.sourcePath(slug),
+        error,
+      });
+    }
+  }
+
+  return {
+    scannedNotes,
+    scannedSources,
+    scanFailures,
+    detectedAt,
+  };
+}
+
+export function detectRepairs(
+  scanFailures: CurateMigrationScanFailure[],
+  detectedAt: string,
+): PendingRepair[] {
+  const pendingRepair: PendingRepair[] = [];
+
+  for (const failure of scanFailures) {
+    const repair = readMalformedEntryRepair(failure.path, failure.kind, failure.name, detectedAt);
+    if (repair !== null) {
+      pendingRepair.push(repair);
+    }
+    backendLog.warn(
+      `Skipping malformed KB ${failure.kind} ${failure.name} during state migration: ${errorMessage(failure.error)}`,
+    );
+  }
+
+  return pendingRepair;
+}
+
+export function assignEntrySeqs(
+  indexState: KbIndexState,
+  scannedNotes: ScannedNote[],
+  scannedSources: ScannedSource[],
+  pendingRepair: PendingRepair[],
+): CurateMigrationAssignment {
+  let highestExistingEntrySeq = indexState.mutationSeq;
+  for (const scannedNote of scannedNotes) {
+    if (scannedNote.frontmatter.entrySeq !== undefined) {
+      highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedNote.frontmatter.entrySeq);
+    }
+  }
+  for (const scannedSource of scannedSources) {
+    if (scannedSource.frontmatter.entrySeq !== undefined) {
+      highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedSource.frontmatter.entrySeq);
+    }
+  }
+  for (const repair of pendingRepair) {
+    if (repair.entrySeq !== null) {
+      highestExistingEntrySeq = Math.max(highestExistingEntrySeq, repair.entrySeq);
+    }
+  }
+
+  let nextEntrySeq = highestExistingEntrySeq + 1;
+  let highestAssignedEntrySeq = highestExistingEntrySeq;
+  const rewrittenNotes: ScannedNote[] = [];
+  const rewrittenSources: ScannedSource[] = [];
+
+  for (const scannedNote of scannedNotes) {
+    if (scannedNote.frontmatter.entrySeq === undefined) {
+      scannedNote.frontmatter = {
+        ...scannedNote.frontmatter,
+        entrySeq: nextEntrySeq,
+      };
+      rewrittenNotes.push(scannedNote);
+      nextEntrySeq += 1;
+    }
+
+    highestAssignedEntrySeq = Math.max(highestAssignedEntrySeq, scannedNote.frontmatter.entrySeq ?? 0);
+  }
+
+  for (const scannedSource of scannedSources) {
+    if (scannedSource.frontmatter.entrySeq === undefined) {
+      scannedSource.frontmatter = {
+        ...scannedSource.frontmatter,
+        entrySeq: nextEntrySeq,
+      };
+      rewrittenSources.push(scannedSource);
+      nextEntrySeq += 1;
+    }
+
+    highestAssignedEntrySeq = Math.max(highestAssignedEntrySeq, scannedSource.frontmatter.entrySeq ?? 0);
+  }
+
+  return {
+    highestAssignedEntrySeq,
+    rewrittenNotes,
+    rewrittenSources,
+  };
+}
+
+export function rewriteFrontmatter(rewrittenNotes: ScannedNote[], rewrittenSources: ScannedSource[]): void {
+  for (const scannedNote of rewrittenNotes) {
+    writeFileAtomic(scannedNote.path, replaceFrontmatter(scannedNote.content, scannedNote.frontmatter));
+  }
+
+  for (const scannedSource of rewrittenSources) {
+    writeFileAtomic(scannedSource.path, replaceSourceFrontmatter(scannedSource.content, scannedSource.frontmatter));
+  }
+}
+
+export function syncIndex(
+  kb: Pick<KbRuntime, 'writeIndex'>,
+  nextIndex: KbIndex,
+  scannedNotes: ScannedNote[],
+  scannedSources: ScannedSource[],
+): void {
+  let indexChanged = false;
+
+  for (const scannedNote of scannedNotes) {
+    indexChanged =
+      syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, nextIndex) || indexChanged;
+  }
+
+  for (const scannedSource of scannedSources) {
+    indexChanged = syncIndexSource(scannedSource.slug, scannedSource.frontmatter, nextIndex) || indexChanged;
+  }
+
+  if (indexChanged) {
+    kb.writeIndex(nextIndex);
+  }
+}
+
+export function reconcileSeqs(
+  kb: Pick<KbRuntime, 'writeIndexState'>,
+  indexState: KbIndexState,
+  highestAssignedEntrySeq: number,
+): void {
+  if (highestAssignedEntrySeq > indexState.mutationSeq) {
+    kb.writeIndexState({
+      ...indexState,
+      contentSeq: highestAssignedEntrySeq,
+      metadataSeq: highestAssignedEntrySeq,
+      mutationSeq: highestAssignedEntrySeq,
+      textIndexedSeq: highestAssignedEntrySeq,
+    });
+  }
+}
+
+export function persistState(
+  kb: Pick<KbRuntime, 'db'>,
+  state: CurateState,
+  scannedNotes: ScannedNote[],
+  scannedSources: ScannedSource[],
+  pendingRepair: PendingRepair[],
+): void {
+  writeCurateState(kb, {
+    ...state,
+    processedThrough: inferProcessedThrough(state, scannedNotes, scannedSources),
+    pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
+    initialized: true,
+    migrationVersion: CURATE_STATE_MIGRATION_VERSION,
+  });
 }
 
 export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promise<void> {
@@ -383,106 +637,19 @@ export async function migrateCurateStateIfNeeded(kb: CurateStateRuntime): Promis
 
     const nextIndex = cloneKbIndex(kb.readIndex());
     const indexState = kb.readIndexState();
-    const scannedNotes: ScannedNote[] = [];
-    const scannedSources: ScannedSource[] = [];
-    const pendingRepair: PendingRepair[] = [];
-    const detectedAt = new Date().toISOString();
+    const { scannedNotes, scannedSources, scanFailures, detectedAt } = scanCorpus(kb);
+    const pendingRepair = detectRepairs(scanFailures, detectedAt);
+    const { highestAssignedEntrySeq, rewrittenNotes, rewrittenSources } = assignEntrySeqs(
+      indexState,
+      scannedNotes,
+      scannedSources,
+      pendingRepair,
+    );
 
-    for (const note of sortedNoteNames(kb)) {
-      try {
-        scannedNotes.push(scanNote(kb, note));
-      } catch (error: unknown) {
-        const repair = readMalformedEntryRepair(kb.notePath(note), 'note', note, detectedAt);
-        if (repair !== null) {
-          pendingRepair.push(repair);
-        }
-        backendLog.warn(`Skipping malformed KB note ${note} during state migration: ${errorMessage(error)}`);
-      }
-    }
-
-    for (const slug of sortedSourceNames(kb)) {
-      try {
-        scannedSources.push(scanSource(kb, slug));
-      } catch (error: unknown) {
-        const repair = readMalformedEntryRepair(kb.sourcePath(slug), 'source', slug, detectedAt);
-        if (repair !== null) {
-          pendingRepair.push(repair);
-        }
-        backendLog.warn(`Skipping malformed KB source ${slug} during state migration: ${errorMessage(error)}`);
-      }
-    }
-
-    let highestExistingEntrySeq = indexState.mutationSeq;
-    for (const scannedNote of scannedNotes) {
-      if (scannedNote.frontmatter.entrySeq !== undefined) {
-        highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedNote.frontmatter.entrySeq);
-      }
-    }
-    for (const scannedSource of scannedSources) {
-      if (scannedSource.frontmatter.entrySeq !== undefined) {
-        highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedSource.frontmatter.entrySeq);
-      }
-    }
-    for (const repair of pendingRepair) {
-      if (repair.entrySeq !== null) {
-        highestExistingEntrySeq = Math.max(highestExistingEntrySeq, repair.entrySeq);
-      }
-    }
-
-    let nextEntrySeq = highestExistingEntrySeq + 1;
-    let highestAssignedEntrySeq = highestExistingEntrySeq;
-    let indexChanged = false;
-
-    for (const scannedNote of scannedNotes) {
-      if (scannedNote.frontmatter.entrySeq === undefined) {
-        scannedNote.frontmatter = {
-          ...scannedNote.frontmatter,
-          entrySeq: nextEntrySeq,
-        };
-        nextEntrySeq += 1;
-        writeFileAtomic(scannedNote.path, replaceFrontmatter(scannedNote.content, scannedNote.frontmatter));
-      }
-
-      highestAssignedEntrySeq = Math.max(highestAssignedEntrySeq, scannedNote.frontmatter.entrySeq ?? 0);
-      indexChanged =
-        syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, nextIndex) || indexChanged;
-    }
-
-    for (const scannedSource of scannedSources) {
-      if (scannedSource.frontmatter.entrySeq === undefined) {
-        scannedSource.frontmatter = {
-          ...scannedSource.frontmatter,
-          entrySeq: nextEntrySeq,
-        };
-        nextEntrySeq += 1;
-        writeFileAtomic(scannedSource.path, replaceSourceFrontmatter(scannedSource.content, scannedSource.frontmatter));
-      }
-
-      highestAssignedEntrySeq = Math.max(highestAssignedEntrySeq, scannedSource.frontmatter.entrySeq ?? 0);
-      indexChanged = syncIndexSource(scannedSource.slug, scannedSource.frontmatter, nextIndex) || indexChanged;
-    }
-
-    if (indexChanged) {
-      kb.writeIndex(nextIndex);
-    }
-
-    if (highestAssignedEntrySeq > indexState.mutationSeq) {
-      kb.writeIndexState({
-        ...indexState,
-        contentSeq: highestAssignedEntrySeq,
-        metadataSeq: highestAssignedEntrySeq,
-        mutationSeq: highestAssignedEntrySeq,
-        textIndexedSeq: highestAssignedEntrySeq,
-      });
-    }
-
-    writeCurateState(kb, {
-      ...state,
-      processedThrough: inferProcessedThrough(state, scannedNotes, scannedSources),
-      pendingRepair: pendingRepair.length === 0 ? null : pendingRepair,
-      initialized: true,
-      migrationVersion: CURATE_STATE_MIGRATION_VERSION,
-    });
+    rewriteFrontmatter(rewrittenNotes, rewrittenSources);
+    syncIndex(kb, nextIndex, scannedNotes, scannedSources);
+    reconcileSeqs(kb, indexState, highestAssignedEntrySeq);
+    persistState(kb, state, scannedNotes, scannedSources, pendingRepair);
   });
 }
 
