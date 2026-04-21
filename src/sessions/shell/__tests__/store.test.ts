@@ -306,6 +306,40 @@ describe('sessions shell store', () => {
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
   });
 
+  it('restores the persisted entry after append failure and returns it on the next cached read', () => {
+    const workDir = join(tmpHome, 'rollback-after-append-failure');
+    mkdirSync(workDir, { recursive: true });
+
+    const appendFailure = new Error('append failed');
+    let shouldThrow = false;
+    const mgr = new SessionManager(workDir, runtime, () => {
+      if (shouldThrow) {
+        throw appendFailure;
+      }
+    });
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const sessionPath = join(resolveSessionDir(tmpHome), `${entry.sessionId}.json`);
+    const persistedBeforeFailure = JSON.parse(readFileSync(sessionPath, 'utf-8')) as unknown;
+    const entryBeforeFailure = mgr.readById(entry.sessionId);
+
+    if (!entryBeforeFailure) {
+      throw new Error('Expected stored session before append failure');
+    }
+
+    shouldThrow = true;
+
+    expect(() =>
+      mgr.checkpoint(entry.sessionId, {
+        conversationRef: 'thread-rollback',
+        resumable: true,
+        providerContinuity: { threadId: 'thread-rollback' },
+      }),
+    ).toThrow('append failed');
+
+    expect(JSON.parse(readFileSync(sessionPath, 'utf-8'))).toEqual(persistedBeforeFailure);
+    expect(mgr.readById(entry.sessionId)).toEqual(entryBeforeFailure);
+  });
+
   it('finalizeJobContinuityAtomic releases the claim and stores a resumable conversationRef', async () => {
     const { mgr, workDir } = setup('finalize-resumable');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);

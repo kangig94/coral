@@ -67,10 +67,6 @@ function normalizeEntry(entry: SessionEntry): SessionEntry {
   };
 }
 
-function cloneEntry(entry: SessionEntry): SessionEntry {
-  return JSON.parse(JSON.stringify(entry)) as SessionEntry;
-}
-
 function snapshotFromEntry(entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>): ContinuitySnapshot {
   return {
     conversationRef: entry.conversationRef ?? null,
@@ -347,83 +343,108 @@ export class SessionManager {
   }
 
   checkpoint(sessionId: string, snapshot: ContinuitySnapshot): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) return;
-    const previous = cloneEntry(entry);
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) return;
 
-    entry.providerContinuity = snapshot.providerContinuity ?? undefined;
-    entry.conversationRef = snapshot.conversationRef ?? undefined;
-    entry.state = snapshot.resumable ? 'ready' : 'non_resumable';
-    entry.lastUsedAt = nowIsoString(this.time);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      providerContinuity: snapshot.providerContinuity ?? undefined,
+      conversationRef: snapshot.conversationRef ?? undefined,
+      state: snapshot.resumable ? 'ready' : 'non_resumable',
+      lastUsedAt: nowIsoString(this.time),
+    };
 
-    this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshot), previous);
+    this.persistAndAppend(nextEntry, sessionCheckpointedEvent(nextEntry, snapshot), currentEntry);
   }
 
   interrupt(sessionId: string, fault: SessionInterruptedFault): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) {
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) {
       this.appendSessionEvent(sessionInterruptedEvent(sessionId, fault));
       return;
     }
 
-    const previous = cloneEntry(entry);
-    entry.lastUsedAt = nowIsoString(this.time);
-    this.persistAndAppend(entry, sessionInterruptedEvent(sessionId, fault), previous);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      lastUsedAt: nowIsoString(this.time),
+    };
+
+    this.persistAndAppend(nextEntry, sessionInterruptedEvent(sessionId, fault), currentEntry);
   }
 
   close(sessionId: string, reason: SessionCloseReason): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) {
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) {
       this.appendSessionEvent(sessionClosedEvent(sessionId, reason));
       return;
     }
 
-    const previous = cloneEntry(entry);
-    entry.lastUsedAt = nowIsoString(this.time);
-    this.persistAndAppend(entry, sessionClosedEvent(sessionId, reason), previous);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      lastUsedAt: nowIsoString(this.time),
+    };
+
+    this.persistAndAppend(nextEntry, sessionClosedEvent(sessionId, reason), currentEntry);
   }
 
   /** Set conversationRef and transition state from pending -> ready. */
   setConversationRef(sessionId: string, conversationRef: string): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) return;
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) return;
 
-    const previous = cloneEntry(entry);
-    entry.conversationRef = conversationRef;
-    entry.state = 'ready';
-    entry.lastUsedAt = nowIsoString(this.time);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      conversationRef,
+      state: 'ready',
+      lastUsedAt: nowIsoString(this.time),
+    };
 
-    this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+    this.persistAndAppend(
+      nextEntry,
+      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
+      currentEntry,
+    );
   }
 
   checkpointProviderContinuity(
     sessionId: string,
     update: { providerContinuity: ProviderContinuityBlob; conversationRef?: string },
   ): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) return;
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) return;
 
-    const previous = cloneEntry(entry);
-    entry.providerContinuity = update.providerContinuity;
-    if (update.conversationRef) {
-      entry.conversationRef = update.conversationRef;
-      entry.state = 'ready';
-    }
-    entry.lastUsedAt = nowIsoString(this.time);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      providerContinuity: update.providerContinuity,
+      ...(update.conversationRef
+        ? { conversationRef: update.conversationRef, state: 'ready' as const }
+        : {}),
+      lastUsedAt: nowIsoString(this.time),
+    };
 
-    this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+    this.persistAndAppend(
+      nextEntry,
+      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
+      currentEntry,
+    );
   }
 
   /** Transition session to non_resumable (provider completed without yielding a conversationRef). */
   setNonResumable(sessionId: string): void {
-    const entry = this.readEntry(sessionId);
-    if (!entry) return;
+    const currentEntry = this.readEntry(sessionId);
+    if (!currentEntry) return;
 
-    const previous = cloneEntry(entry);
-    entry.state = 'non_resumable';
-    entry.lastUsedAt = nowIsoString(this.time);
+    const nextEntry: SessionEntry = {
+      ...currentEntry,
+      state: 'non_resumable',
+      lastUsedAt: nowIsoString(this.time),
+    };
 
-    this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+    this.persistAndAppend(
+      nextEntry,
+      sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
+      currentEntry,
+    );
   }
 
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
@@ -452,28 +473,42 @@ export class SessionManager {
     const release = await this.acquireSessionLock(sessionId);
     try {
       const { expectedActiveJobId, expectedVersion, mutation } = options;
-      const entry = this.readEntry(sessionId, { forceFresh: true });
-      if (!entry) return false;
-      if (entry.activeJobId !== expectedActiveJobId) return false;
-      if (entry.version !== expectedVersion) return false;
+      const currentEntry = this.readEntry(sessionId, { forceFresh: true });
+      if (!currentEntry) return false;
+      if (currentEntry.activeJobId !== expectedActiveJobId) return false;
+      if (currentEntry.version !== expectedVersion) return false;
 
-      const previous = cloneEntry(entry);
-      entry.activeJobId = undefined;
-      entry.lastJobId = expectedActiveJobId;
-      entry.lastUsedAt = nowIsoString(this.time);
-      if (mutation.providerContinuity) {
-        entry.providerContinuity = mutation.providerContinuity;
-      }
+      const baseNextEntry: SessionEntry = {
+        ...currentEntry,
+        activeJobId: undefined,
+        lastJobId: expectedActiveJobId,
+        lastUsedAt: nowIsoString(this.time),
+        ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
+      };
+      const nextEntry: SessionEntry = (() => {
+        switch (mutation.type) {
+          case 'set_resumable':
+            return {
+              ...baseNextEntry,
+              conversationRef: mutation.conversationRef,
+              state: 'ready',
+            };
+          case 'clear_non_resumable':
+            return {
+              ...baseNextEntry,
+              conversationRef: undefined,
+              state: 'non_resumable',
+            };
+          case 'preserve':
+            return baseNextEntry;
+        }
+      })();
 
-      if (mutation.type === 'set_resumable') {
-        entry.conversationRef = mutation.conversationRef;
-        entry.state = 'ready';
-      } else if (mutation.type === 'clear_non_resumable') {
-        entry.conversationRef = undefined;
-        entry.state = 'non_resumable';
-      }
-
-      this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshotFromEntry(entry)), previous);
+      this.persistAndAppend(
+        nextEntry,
+        sessionCheckpointedEvent(nextEntry, snapshotFromEntry(nextEntry)),
+        currentEntry,
+      );
       this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
       return true;
     } finally {
@@ -492,18 +527,24 @@ export class SessionManager {
     const release = await this.acquireSessionLock(sessionId);
     try {
       const { expectedActiveJobId, expectedVersion, snapshot } = options;
-      const entry = this.readEntry(sessionId, { forceFresh: true });
-      if (!entry) return { ok: false };
-      if (entry.activeJobId !== expectedActiveJobId) return { ok: false };
-      if (entry.version !== expectedVersion) return { ok: false };
+      const currentEntry = this.readEntry(sessionId, { forceFresh: true });
+      if (!currentEntry) return { ok: false };
+      if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
+      if (currentEntry.version !== expectedVersion) return { ok: false };
 
-      const previous = cloneEntry(entry);
-      entry.conversationRef = snapshot.conversationRef ?? undefined;
-      entry.providerContinuity = snapshot.providerContinuity ?? undefined;
-      entry.state = snapshot.resumable ? 'ready' : 'non_resumable';
-      entry.lastUsedAt = nowIsoString(this.time);
+      const nextEntry: SessionEntry = {
+        ...currentEntry,
+        conversationRef: snapshot.conversationRef ?? undefined,
+        providerContinuity: snapshot.providerContinuity ?? undefined,
+        state: snapshot.resumable ? 'ready' : 'non_resumable',
+        lastUsedAt: nowIsoString(this.time),
+      };
 
-      const stored = this.persistAndAppend(entry, sessionCheckpointedEvent(entry, snapshot), previous);
+      const stored = this.persistAndAppend(
+        nextEntry,
+        sessionCheckpointedEvent(nextEntry, snapshot),
+        currentEntry,
+      );
       return { ok: true, nextVersion: stored.version };
     } finally {
       release();
