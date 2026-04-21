@@ -14,6 +14,10 @@ export interface EquipmentPathOptions {
   readonly baseDir?: string;
 }
 
+function equipmentRoot(opts?: EquipmentPathOptions): string {
+  return join(coralRoot(opts?.baseDir), 'data', 'equipment');
+}
+
 export function equipmentPaths(flavor: BuildFlavor, opts?: EquipmentPathOptions): EquipmentPaths {
   const base = flavor === 'dev' ? 'data-dev/equipment' : 'data/equipment';
   return {
@@ -22,7 +26,7 @@ export function equipmentPaths(flavor: BuildFlavor, opts?: EquipmentPathOptions)
 }
 
 export function equipmentDataDir(name: string, opts?: EquipmentPathOptions): string {
-  return join(coralRoot(opts?.baseDir), 'data', 'equipment', name);
+  return join(equipmentRoot(opts), name);
 }
 
 export function equipmentInstallLockPath(name: string, opts?: EquipmentPathOptions): string {

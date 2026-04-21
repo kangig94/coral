@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Equip installer — downloads Coral companion tooling and runtime dependencies for Claude Code.
-// Usage: node install.mjs [--list | [--update] <package>]
+// Usage: node install.mjs [--list | [--update] <package> | uninstall <package>]
 // Outputs a single JSON line to stdout.
 
 import { execFileSync, execSync } from 'node:child_process';
@@ -25,20 +25,29 @@ import {
   equipmentInstallLockPath,
 } from './equipment-paths.mjs';
 import {
+  tryListEquipment,
+  unregisterEquipment as unregisterCoordinatorEquipment,
+} from './coordinator-client.mjs';
+import {
   acquireDirectoryLock,
   isDirectoryLockTimeoutError,
 } from './fs-lock.mjs';
 
 const TOOLS_DIR = join(homedir(), '.claude', 'tools');
-const KB_ARCH_MAP = { x64: 'amd64', arm64: 'arm64' };
+const NEEDLE_ARCH_MAP = { x64: 'amd64', arm64: 'arm64' };
 const EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS = 250;
 const UNWRITABLE_ERRNOS = new Set(['EACCES', 'EROFS', 'EPERM', 'ENOSPC']);
 
-function kbPlatformKey() {
-  return `${platform()}-${KB_ARCH_MAP[arch()] || arch()}`;
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-const KB_SECURITY_NOTICE = 'Store API keys in ~/.coral/.env, not in settings.json.';
-const KB_ONBOARDING_CHOICES = [
+
+function needlePlatformKey() {
+  return `${platform()}-${NEEDLE_ARCH_MAP[arch()] || arch()}`;
+}
+
+const NEEDLE_SECURITY_NOTICE = 'Store API keys in ~/.coral/.env, not in settings.json.';
+const NEEDLE_ONBOARDING_CHOICES = [
   {
     id: 'local-nomic-embed-text',
     label: 'Local model: nomic-embed-text',
@@ -66,7 +75,7 @@ function kbRuntimeDirFromEnv() {
   return join(homedir(), '.coral', 'data', 'kb');
 }
 
-function kbEquipmentDirFromEnv() {
+function needleEquipmentDirFromEnv() {
   return equipmentDataDir('needle');
 }
 
@@ -87,16 +96,19 @@ const CATALOG = {
     },
     pip: 'codegraphcontext',
   },
-  kb: {
-    kind: 'needle',
+  needle: {
     name: 'Knowledge Base Vector Runtime',
     description: 'Installs coral-needle native addon for vector search',
     repo: 'kangig94/coral-needle',
     needleVersion: '0.2.0',
-    targetDir: () => kbEquipmentDirFromEnv(),
-    postInstall: ['backend_shutdown', 'kb_reindex'],
+    targetDir: () => needleEquipmentDirFromEnv(),
+    postInstall: ['register_equipment'],
   },
 };
+
+function isNeedleCatalogEntry(entry) {
+  return typeof entry.needleVersion === 'string';
+}
 
 function emit(data) {
   process.stdout.write(JSON.stringify(data) + '\n');
@@ -148,17 +160,29 @@ function writeMeta(pkg, version, method) {
 }
 
 function targetMetaPath(targetDir) {
+  return join(targetDir, '.needle-meta.json');
+}
+
+function legacyTargetMetaPath(targetDir) {
   return join(targetDir, '.kb-meta.json');
 }
 
 function readTargetMeta(targetDir) {
-  try { return JSON.parse(readFileSync(targetMetaPath(targetDir), 'utf-8')); }
-  catch { return null; }
+  for (const path of [targetMetaPath(targetDir), legacyTargetMetaPath(targetDir)]) {
+    try {
+      return JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
+      // Try the next metadata path.
+    }
+  }
+
+  return null;
 }
 
 function writeTargetMeta(targetDir, version, method) {
   if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true });
   writeFileSync(targetMetaPath(targetDir), JSON.stringify({ version, method }));
+  rmSync(legacyTargetMetaPath(targetDir), { force: true });
 }
 
 function fetchLatest(repo) {
@@ -173,13 +197,13 @@ function fetchLatest(repo) {
   }
 }
 
-function resolveKbTargetVersion(entry, requestedVersion) {
+function resolveNeedleTargetVersion(entry, requestedVersion) {
   const needleVersion = entry.needleVersion;
   if (!needleVersion) {
-    throw new Error('kb catalog entry is missing needleVersion');
+    throw new Error('needle catalog entry is missing needleVersion');
   }
   if (requestedVersion && requestedVersion !== needleVersion) {
-    throw new Error(`kb expects needleVersion ${needleVersion}, not ${requestedVersion}`);
+    throw new Error(`needle expects packaged version ${needleVersion}, not ${requestedVersion}`);
   }
   return needleVersion;
 }
@@ -191,15 +215,102 @@ function buildKbOnboarding(runtimeDir) {
     providerEnvKey: 'CORAL_EMBEDDING_PROVIDER',
     modelEnvKey: 'CORAL_EMBEDDING_MODEL',
     apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
-    securityNotice: KB_SECURITY_NOTICE,
+    securityNotice: NEEDLE_SECURITY_NOTICE,
     localRuntime: {
       targetDir: runtimeDir,
       bootstrapPackageJson: true,
       packageManager: 'npm',
       packageName: 'onnxruntime-node',
     },
-    choices: KB_ONBOARDING_CHOICES,
+    choices: NEEDLE_ONBOARDING_CHOICES,
   };
+}
+
+function extractStructuredError(error) {
+  const direct = isRecord(error)
+    && typeof error.code === 'string'
+    && typeof error.userMessage === 'string'
+    && typeof error.remediation === 'string'
+    ? {
+        code: error.code,
+        userMessage: error.userMessage,
+        remediation: error.remediation,
+        context: isRecord(error.context) ? error.context : undefined,
+      }
+    : null;
+
+  if (direct !== null) {
+    return direct;
+  }
+
+  if (error instanceof Error) {
+    return extractStructuredError(error.cause);
+  }
+
+  return null;
+}
+
+function emitCoordinatorError(error, fallbackMessage) {
+  const structured = extractStructuredError(error);
+  if (structured !== null) {
+    emit({
+      status: 'error',
+      code: structured.code,
+      userMessage: structured.userMessage,
+      remediation: structured.remediation,
+      ...(structured.context === undefined ? {} : { context: structured.context }),
+    });
+    return;
+  }
+
+  emit({
+    status: 'error',
+    message: fallbackMessage ?? (error instanceof Error ? error.message : String(error)),
+  });
+}
+
+function resolveLocalNeedleStatus(entry) {
+  const targetDir = entry.targetDir();
+  if (existsSync(equipmentInstallLockPath('needle'))) {
+    return 'installing';
+  }
+
+  return existsSync(equipmentAddonPath('needle')) || readTargetMeta(targetDir) !== null
+    ? 'inactive'
+    : 'not_equipped';
+}
+
+function resolveNeedleCatalogStatus(entry, equipmentView) {
+  const localStatus = resolveLocalNeedleStatus(entry);
+  if (!isRecord(equipmentView) || typeof equipmentView.status !== 'string') {
+    return localStatus;
+  }
+
+  if (equipmentView.status === 'inactive' && localStatus === 'not_equipped') {
+    return 'not_equipped';
+  }
+
+  return equipmentView.status;
+}
+
+async function buildCatalogPackages() {
+  const coordinatorEquipment = await tryListEquipment({});
+  const equipmentByName = new Map(
+    Array.isArray(coordinatorEquipment?.equipment)
+      ? coordinatorEquipment.equipment
+          .filter((item) => isRecord(item) && typeof item.name === 'string')
+          .map((item) => [item.name, item])
+      : [],
+  );
+
+  return Object.entries(CATALOG).map(([id, item]) => ({
+    id,
+    name: item.name,
+    description: item.description,
+    ...(isNeedleCatalogEntry(item)
+      ? { status: resolveNeedleCatalogStatus(item, equipmentByName.get(id)) }
+      : {}),
+  }));
 }
 
 function tarFieldToString(buffer) {
@@ -239,14 +350,14 @@ function extractTarEntry(archivePath, expectedName) {
   throw new Error(`${expectedName} was not found in ${archivePath}`);
 }
 
-function installKbPrebuild(entry, targetDir, version, platKey) {
+function installNeedlePrebuild(entry, targetDir, version, platKey) {
   const releaseTag = `v${version}`;
   const assetName = `coral-needle-${releaseTag}-${platKey}.tar.gz`;
-  const tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-prebuild-'));
+  const tempDir = mkdtempSync(join(tmpdir(), 'coral-needle-prebuild-'));
 
   try {
     const archivePath = join(tempDir, assetName);
-    const addonPath = equipmentAddonPath(entry.kind);
+    const addonPath = equipmentAddonPath('needle');
     const partialAddonPath = `${addonPath}.part`;
     download(`https://github.com/${entry.repo}/releases/download/${releaseTag}/${assetName}`, archivePath);
     mkdirSync(dirname(addonPath), { recursive: true });
@@ -272,7 +383,7 @@ function ensureCmake() {
 
   const uv = findCmd('uv');
   if (!uv) {
-    throw new Error('cmake is required for KB source builds and uv is not installed.');
+    throw new Error('cmake is required for needle source builds and uv is not installed.');
   }
 
   execFileSync(uv, ['tool', 'install', 'cmake'], {
@@ -293,7 +404,7 @@ function ensureCmake() {
   throw new Error('cmake is still unavailable after uv tool install cmake.');
 }
 
-function installKbSourceBuild(entry, targetDir, version) {
+function installNeedleSourceBuild(entry, targetDir, version) {
   const cmake = ensureCmake();
   const buildDir = mkdtempSync(join(tmpdir(), 'coral-needle-build-'));
 
@@ -327,7 +438,7 @@ function installKbSourceBuild(entry, targetDir, version) {
       throw new Error('cmake build completed without producing coral-needle.node.');
     }
 
-    const addonPath = equipmentAddonPath(entry.kind);
+    const addonPath = equipmentAddonPath('needle');
     const partialAddonPath = `${addonPath}.part`;
     mkdirSync(dirname(addonPath), { recursive: true });
     rmSync(partialAddonPath, { force: true });
@@ -359,7 +470,7 @@ function buildTargetResult(status, method, targetDir, entry, extra) {
     method,
     targetDir,
     ...(entry.postInstall ? { postInstall: entry.postInstall } : {}),
-    ...(entry.kind === 'needle' ? { onboarding: buildKbOnboarding(kbRuntimeDirFromEnv()) } : {}),
+    ...(isNeedleCatalogEntry(entry) ? { onboarding: buildKbOnboarding(kbRuntimeDirFromEnv()) } : {}),
     ...extra,
   };
 }
@@ -367,20 +478,42 @@ function buildTargetResult(status, method, targetDir, entry, extra) {
 async function main() {
   // Parse arguments
   const argv = process.argv.slice(2);
+  const hasUninstallSubcommand = argv[0] === 'uninstall';
+  const uninstallTarget = hasUninstallSubcommand ? argv[1] : null;
   const update = argv.includes('--update');
   const rawPkg = argv.find((arg) => !arg.startsWith('-'));
 
+  if (hasUninstallSubcommand) {
+    if (!uninstallTarget) {
+      emit({ status: 'error', message: 'Package name required with uninstall' });
+      return 1;
+    }
+
+    try {
+      const result = await unregisterCoordinatorEquipment({ name: uninstallTarget });
+      emit({
+        ...result,
+        name: uninstallTarget,
+      });
+      return 0;
+    } catch (error) {
+      emitCoordinatorError(error, `Could not uninstall ${uninstallTarget}`);
+      return 1;
+    }
+  }
+
   // List catalog
   if (argv.includes('--list') || (!rawPkg && !update)) {
-    emit({
-      status: 'catalog',
-      packages: Object.entries(CATALOG).map(([id, item]) => ({
-        id,
-        name: item.name,
-        description: item.description,
-      })),
-    });
-    return 0;
+    try {
+      emit({
+        status: 'catalog',
+        packages: await buildCatalogPackages(),
+      });
+      return 0;
+    } catch (error) {
+      emitCoordinatorError(error, 'Could not list equipment catalog');
+      return 1;
+    }
   }
 
   if (!rawPkg) {
@@ -402,8 +535,8 @@ async function main() {
 
   let targetVersion;
   try {
-    targetVersion = entry.kind === 'needle'
-      ? resolveKbTargetVersion(entry, requestedVersion)
+    targetVersion = isNeedleCatalogEntry(entry)
+      ? resolveNeedleTargetVersion(entry, requestedVersion)
       : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
   } catch (error) {
     emit({
@@ -418,9 +551,9 @@ async function main() {
   const errors = [];
   const statusLabel = update ? 'updated' : 'installed';
 
-  if (entry.kind === 'needle') {
+  if (isNeedleCatalogEntry(entry)) {
     const targetDir = entry.targetDir();
-    const addonPath = equipmentAddonPath(entry.kind);
+    const addonPath = equipmentAddonPath('needle');
     const installedMeta = readTargetMeta(targetDir);
     const isCurrentInstall = existsSync(addonPath)
       && installedMeta?.version === targetVersion
@@ -437,7 +570,7 @@ async function main() {
       return 0;
     }
 
-    const installLockPath = equipmentInstallLockPath(entry.kind);
+    const installLockPath = equipmentInstallLockPath('needle');
     try {
       mkdirSync(targetDir, { recursive: true });
       mkdirSync(dirname(installLockPath), { recursive: true });
@@ -445,9 +578,9 @@ async function main() {
       if (isUnwritableInstallPathError(error)) {
         emitSetupError(
           'equipment_install_path_unwritable',
-          `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+          'Cannot write to the Coral equipment install path for needle.',
           'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-          { name: entry.kind },
+          { name: 'needle' },
         );
         return 1;
       }
@@ -461,37 +594,37 @@ async function main() {
       if (isDirectoryLockTimeoutError(error)) {
         emitSetupError(
           'equipment_install_lock_contended',
-          `Another /equip is in progress for ${entry.kind}.`,
+          'Another /equip is in progress for needle.',
           'Wait for the in-flight install to complete or remove the stale lock file.',
-          { name: entry.kind },
+          { name: 'needle' },
         );
         return 1;
       }
       if (isUnwritableInstallPathError(error)) {
         emitSetupError(
           'equipment_install_path_unwritable',
-          `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+          'Cannot write to the Coral equipment install path for needle.',
           'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-          { name: entry.kind },
+          { name: 'needle' },
         );
         return 1;
       }
       throw error;
     }
 
-    const needlePlatKey = kbPlatformKey();
+    const needlePlatKey = needlePlatformKey();
     try {
       try {
-        installKbPrebuild(entry, targetDir, targetVersion, needlePlatKey);
+        installNeedlePrebuild(entry, targetDir, targetVersion, needlePlatKey);
         emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
         return 0;
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
           emitSetupError(
             'equipment_install_path_unwritable',
-            `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+            'Cannot write to the Coral equipment install path for needle.',
             'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-            { name: entry.kind },
+            { name: 'needle' },
           );
           return 1;
         }
@@ -499,16 +632,16 @@ async function main() {
       }
 
       try {
-        installKbSourceBuild(entry, targetDir, targetVersion);
+        installNeedleSourceBuild(entry, targetDir, targetVersion);
         emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
         return 0;
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
           emitSetupError(
             'equipment_install_path_unwritable',
-            `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+            'Cannot write to the Coral equipment install path for needle.',
             'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-            { name: entry.kind },
+            { name: 'needle' },
           );
           return 1;
         }
@@ -520,7 +653,7 @@ async function main() {
         suggestions.push(`No prebuild available for ${needlePlatKey}. Source build also failed.`);
       }
       if (!findCmd('curl') && !findCmd('wget')) {
-        suggestions.push('Install curl or wget so the KB prebuild can be downloaded');
+        suggestions.push('Install curl or wget so the needle prebuild can be downloaded');
       }
       if (!findCmd('cmake') && !findCmd('uv')) {
         suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
