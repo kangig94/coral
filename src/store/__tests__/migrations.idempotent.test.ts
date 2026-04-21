@@ -122,7 +122,7 @@ describe('migrations idempotency', () => {
         'metadata_manifest_hash',
         'equipped_at',
       ]);
-      expect(new Set(equipmentCursorColumnsB)).toEqual(new Set(equipmentCursorColumnsA));
+      expect(equipmentCursorColumnsB).toEqual(equipmentCursorColumnsA);
 
       const curateSchedulerColumnsA = (
         dbFromSchema.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>

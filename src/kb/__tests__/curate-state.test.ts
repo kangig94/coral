@@ -335,7 +335,7 @@ describe('curate state', () => {
   });
 
   it('writes curate state atomically without leaving a temp file and round-trips through readCurateState', () => {
-    const retiredCurateStatePath = join(runtime.runtimeDir, 'curate-state.retired');
+    const retiredCurateStatePath = join(runtime.runtimeDir, '.coral', 'curate-state.retired');
     const state = createCurateState({
       processedThrough: cursor('coral-atomic', 7),
       pendingDiscoveries: [

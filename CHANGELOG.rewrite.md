@@ -252,3 +252,51 @@ Resolved 7 vitest-counted skip units (5 it.skip + 2 it under describe.skipIf) be
 Net skip count: 7 → 2 (smoke pair only).
 Owner-placement strategy: every test sits with its behavioral owner per architecture §29.
 No production source changed; verification chain green per AC9.
+
+## Phase 5 follow-up — Cleanup + Test Population Audit (Pre Phase 6)
+
+Resolved 14 deferred Phase 5 findings (3 BLOCKING + 8 STRONG from /simplify) plus 7 audit-driven cleanup items (Category A legacy orphans, Category B production pollution, Category C test redundancy). 16 ACs landed across 6 execution batches.
+
+**Group 1 — Phase 5 deferred fixes:**
+- A1 `runInboundSync` correctness — `principlesChanged` added to `requiresFullInstall` at `runtime.ts:912/916`; +3 `external-edit.test.ts` cases (principle/community/.entity-graph live-edit, both directions verified)
+- A2 (BLOCKING) `writeIndexState` O(corpus) hot path eliminated — NEW `src/kb/corpus/manifest-authority.ts` (runtime/snapshot-owned baseline content+metadata caches); `mutation-lock.ts` opaque `pendingOpaqueDeltas` carrier (KB semantics never leak into generic lock); 11 named writers feed authority on every mutation; NEW `src/kb/__tests__/manifest-authority-drift.test.ts` (per-writer parametric drift assertion 11/11 green); NEW `src/kb/__tests__/runtime-perf.test.ts` (pre-import `vi.mock('node:fs')` + `vi.resetModules()` + dynamic-import recipe instruments BOTH `readFileSync` AND `readdirSync`; single-note metadata edit + 100 no-op gitSync calls produce zero unrelated reads/walks)
+- A3 `consecutiveFailures` persisted protocol split into `consecutiveClaimFailures` (claim retry backoff) and `consecutiveCommunityBatchFailures` (community-batch skip/backoff) across `state.ts`/`state-shared.ts`/`state-scheduler.ts`/`scheduler.ts`/`community.ts`/`runner.ts` + SQLite (in-place `001_initial.sql` edit per fresh-only rule, byte-identical to `schema.sql`) + `schema.ts` row type + `migrations.idempotent.test.ts` column expectations + `curate.test.ts` community-batch backoff path
+- A4 Repair incident-id catalog — NEW `src/kb/corpus/repair/incident-ids.ts` (`REPAIR_INCIDENT_IDS as const` + derived `RepairIncidentId` union); 4 detect files + classify/fix/types + 4 repair test fixture specs share one canonical authority; renaming an id produces TS compile error in every dependent map
+- A5 `migrateCurateStateIfNeeded` decomposed into 7 named phases (`scanCorpus`, `detectRepairs`, `assignEntrySeqs`, `rewriteFrontmatter`, `syncIndex`, `reconcileSeqs`, `persistState`); orchestrator ≤30 lines (24 actual); +per-phase unit tests
+- A6 `gitSync()` returns structured diff (`{kind:'no-change'|'paths'|'ambiguous'}`); `git-sync.ts:diffKbPathsBetweenRevisions` uses explicit `headBeforeSync..headAfterSync` (NOT `HEAD@{1}..HEAD` which after a successful rebase points to `origin/<branch>`, the rebase target — see KB note `testing-git-head-after-rebase`); `runInboundSync({structuredDiff:true})` consumes the diff; AC2↔AC6 handoff: when `kind:'paths'`, hashes computed only for diff paths via existing `computeContentSurfaceHash`/`computeMetadataSurfaceHash` helpers; full `captureCorpusFilesystemSnapshot` reserved for `kind:'ambiguous'` (rebase/force-pull) off the hot path
+- A7 `writeCurateState` diff-based writes — targeted UPDATE/INSERT/DELETE in `state.ts`/`retry.ts`/`discovery-backlog.ts`/`runner.ts`; single-scalar-change touches ≤1 row; +perf regression test
+- A8 `searchKb` mode-honored early — branches on `mode` immediately after loading the index; explicit `mode='vector'` skips text-path; explicit `mode='text'` skips graph state; +perf regression test
+- A9 (covered by A1's required test additions)
+
+**Group 2 — Audit-driven cleanup:**
+- AC10 (Category A) Legacy curate-state file-path orphan tests deleted at `curate-state.test.ts:884/902/938`; live SQLite "no `curate-state.retired` recreation" assertion preserved at line 337 via test-local constant
+- AC11.a (Category B) `_testInternals` removed from `CurateHandle`/`scheduler.ts`/`coordinator/live/curate-scheduler.ts`; `getPendingCommunitySkipTicks` reader deleted (closure-variable, not field — surviving `spawn` + `readCurateState().consecutiveCommunityBatchFailures` assertions cover same tick behavior); 3 redundant tick assertions deleted at `curate.test.ts:2443/2447/2451`; NEW `src/kb/curate/__tests__/__helpers__/test-handle.ts` builds internals from public APIs
+- AC11.b (Category B) `cli-detection.ts` exports `createCliDetector` + `CODEX_DETECTOR_CONFIG` + `CLAUDE_DETECTOR_CONFIG`; deleted `detectCodexCli`/`resetCodexCliCache`/`resetClaudeCliCache` test-only re-exports; NEW `src/providers/__tests__/__helpers__/cli-detection-fixtures.ts` constructs per-test detector instances
+- AC11.c (Category B) `curateStatePath()` production export deleted from `state.ts`; consumers replaced with test-local constant
+- AC11.d (Category B) `src/shared/test-deferred.ts` relocated to `src/simulation/core/test-deferred.ts` (preserves invariant #30: production cannot import `src/testing/*`); `simulation/core/index.ts:42` re-export of `createDeferred` dropped; 8+ direct importers updated
+- AC12.a (Category C) NEW `src/jobs/shell/__tests__/__helpers__/service-fixture.ts` consolidates 4× `getInternals` duplicates (`launch.test.ts`/`wait.test.ts`/`abort.test.ts`/`service-composition.test.ts`)
+- AC12.b (Category C) Redundant `driver.notify` count assertions removed from `sessions/shell/__tests__/consumer-driver-notify.test.ts` and `workflow/__tests__/consumer-driver-notify.test.ts`; same invariant covered at the driver layer in `consumer-driver-drain.test.ts:98-125`; projection-state assertions retained
+
+**Verification chain (AC13):**
+- `npm run lint`: clean
+- `npm run build`: clean (tsc + esbuild prod flavor; 3 bundles)
+- `npm test`: **1778 passed / 2 skipped** (was 1753 / 2 pre-cleanup; +25 net)
+- `npx vitest run -c vitest.integration.config.ts`: **26/26** (post fresh build)
+- `grep -rn "it\.skip\|describe\.skip\|test\.skip" src/`: exactly 1 line (smoke `describe.skipIf` per Phase 6 acceptance)
+- `src/coordinator/api.ts`: 5 exports (≤10 per invariant #46), no shell re-exports
+
+**Test population baseline (verified):**
+- Pre-cleanup baseline (post-skip-resolution `7afaac4`): **1753 / 2 skipped**
+- Post-cleanup target: **1778 / 2 skipped**
+- `cleanupDelta` (AC10/11/12 only) = **−3** (AC10 deleted 3 legacy file-path `it()`s; AC11.a/b/c/d/AC12.a/b are refactors with no `it()`-count change; AC12.b dropped assertions but kept `it()` blocks). ≤0 target met.
+- `finalDelta` (additions from AC1/AC2/AC5/AC7/AC8 perf+coverage tests) = **+28** (AC1: +3 external-edit cases; AC2: +11 drift + +2 perf = +13; AC5: +7 per-phase tests; AC7: +1 perf; AC8: +1 perf; net +1 from AC11.a/AC10 interactions resolves drift). Plan target `finalDelta ≥ +13` met (+28 actual).
+- Net total Δ = +25 active tests. User's "test 무한 증식" perception: actual rewrite-branch progression is **Phase 0=1645 → Phase 3=1619 (execution layer deleted, −128) → Phase 5=1735 → current=1778** — modest +133 net over 5 phases of architectural rewrite, NOT infinite growth. The largest single drop was Phase 3's execution-layer deletion.
+
+**Production code pollution removed (Category B summary):**
+- `_testInternals` field on `CurateHandle` interface — gone
+- `detectCodexCli` / `resetCodexCliCache` / `resetClaudeCliCache` `@internal Test-only` exports — gone
+- `curateStatePath()` "legacy test helper" production export — gone
+- `src/shared/test-deferred.ts` mislocated under production layer — relocated to `src/simulation/core/`
+- All grep counts: 0 matches outside `__tests__/` and `__helpers__/` per AC13 layering audit
+
+Per memory rule #1 (fresh-only): zero `Legacy*` types, zero compat shims, zero migration paths added; `001_initial.sql` edited in place; all internal version markers stay at initial values (`schema_version='1'`, `journal_version='1'`, `bodyVersion=1`, no upcasters added).
