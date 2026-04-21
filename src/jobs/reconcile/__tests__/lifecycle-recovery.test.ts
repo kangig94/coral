@@ -1047,7 +1047,22 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: namespace,
     });
-    stubAppServerRuntime(progressStore, 'app-server-job', 'fakeprovider');
+    // Inline runtime-record write (vs. the shared stubAppServerRuntime helper) is required
+    // here because the helper does not accept providerContinuity payload; this test verifies
+    // that the threadId field propagates through finalizeInterruptedAppServerJob.
+    progressStore.writeRuntimeRecord('app-server-job', {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: {
+        provider: 'fakeprovider',
+        leaseState: 'acquired',
+        providerContinuity: {
+          provider: 'fakeprovider',
+          threadId: 'thread-1',
+        },
+        recoveryPolicy: 'session_continuity_only',
+      },
+    });
 
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
@@ -1060,7 +1075,12 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
         expect.objectContaining({ jobId: 'app-server-job' }),
-        expect.objectContaining({ transport: 'app-server' }),
+        expect.objectContaining({
+          transport: 'app-server',
+          providerMeta: expect.objectContaining({
+            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
+          }),
+        }),
         { reason: 'restart' },
       );
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();

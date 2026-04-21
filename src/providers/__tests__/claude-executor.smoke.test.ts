@@ -45,6 +45,8 @@ const runCli: ProviderCliRunner = (request: ProviderCliRequest) =>
     child.stdin.end();
   });
 
+// Env-gated smoke per plan Phase 6 acceptance ("Real-CLI E2E moved to cleanup").
+// Set CORAL_SMOKE_TEST=1 to run against a real Claude CLI install.
 describe.skipIf(!process.env.CORAL_SMOKE_TEST)('claude-executor smoke', () => {
   it('runs one-shot execution using stdin prompt transport', async () => {
     const result = await executeClaudeOneShot('Reply with exactly: OK', { environment: {}, runCli });

@@ -10,6 +10,7 @@ import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/api.js';
 import { NEEDLE_CONSUMER_ID } from '../../kb/api.js';
+import { workflowRecover } from '../../workflow/api.js';
 
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
@@ -56,6 +57,7 @@ function createMockKb(order?: string[]) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 
   for (const root of tempRoots.splice(0).reverse()) {
@@ -119,6 +121,124 @@ describe('coordinator startup ordering', () => {
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(order.lastIndexOf('waitFreshUntil:resolved'));
     } finally {
+      await coordinator.shutdown('test-cleanup');
+      await coordinator.waitForShutdown();
+    }
+  });
+
+  it('publishes backend info only after Journal startup recovery completes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
+    const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
+    tempRoots.push(home, pluginRoot);
+
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      'utf-8',
+    );
+
+    vi.stubEnv('HOME', home);
+
+    const runtime = createRealRuntime();
+    const order: string[] = [];
+    const journalConsumerIds = new Set(['jobs', 'sessions', 'discuss', 'workflow']);
+    const observedJournalConsumers = new Set<string>();
+    const originalRegister = ConsumerDriver.prototype.register;
+    const register = vi.spyOn(ConsumerDriver.prototype, 'register').mockImplementation(function (
+      this: ConsumerDriver,
+      reg,
+    ) {
+      const result = originalRegister.call(this, reg);
+      if (reg.authority === 'journal' && journalConsumerIds.has(reg.id)) {
+        order.push(`register:${reg.id}`);
+        observedJournalConsumers.add(reg.id);
+        if (observedJournalConsumers.size === journalConsumerIds.size) {
+          order.push('registerJournalConsumers');
+        }
+      }
+      return result;
+    });
+    const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async (
+      _target,
+      consumerId,
+    ) => {
+      order.push(`waitFreshUntil:${consumerId}`);
+    });
+    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
+      order.push('jobsReconcile.runStartup');
+    });
+    const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async () => {
+      order.push('workflowRecover.resumeAll');
+      return [];
+    });
+    const recoverPersistedDiscussFn = vi.fn(async () => {
+      order.push('recoverPersistedDiscussFn');
+      return [];
+    });
+    const writeBackendInfoFn = vi.fn(() => {
+      order.push('writeBackendInfoFn');
+    });
+
+    const coordinator = createCoordinatorServer({
+      runtime,
+      pluginRoot,
+      createKbSubsystemFn: async () => {
+        const kbSubsystem = {
+          kb: createMockKb(),
+          curateScheduler: {
+            start: vi.fn(async () => {}),
+            schedule: vi.fn(),
+            scheduleDeferredCommit: vi.fn(),
+            isRunning: () => false,
+            stop: vi.fn(async () => {}),
+          },
+        };
+        order.push('kbSubsystem ready');
+        return kbSubsystem;
+      },
+      recoverPersistedDiscussFn,
+      writeBackendInfoFn,
+      createServerFn: (handler) => createServer(handler),
+      listenFn: async () => {
+        order.push('listenFn (bind)');
+        return { port: 0, host: '127.0.0.1' };
+      },
+      closeServerFn: async () => {},
+      registerBuiltInProvidersFn: () => {},
+    });
+
+    try {
+      await coordinator.start();
+      order.push("setLifecycle('running')");
+
+      const waitFreshOrder = [
+        order.indexOf('waitFreshUntil:jobs'),
+        order.indexOf('waitFreshUntil:sessions'),
+        order.indexOf('waitFreshUntil:discuss'),
+        order.indexOf('waitFreshUntil:workflow'),
+      ];
+
+      expect(coordinator.getLifecycle()).toBe('running');
+      expect(waitFreshUntil).toHaveBeenCalledTimes(4);
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(1, expect.any(Number), 'jobs', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(2, expect.any(Number), 'sessions', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(3, expect.any(Number), 'discuss', expect.any(Number));
+      expect(waitFreshUntil).toHaveBeenNthCalledWith(4, expect.any(Number), 'workflow', expect.any(Number));
+      expect(order.indexOf('kbSubsystem ready')).toBeLessThan(order.indexOf('listenFn (bind)'));
+      expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
+      expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
+      expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
+      expect(order.indexOf('recoverPersistedDiscussFn')).toBeLessThan(order.indexOf('workflowRecover.resumeAll'));
+      expect(order.indexOf('workflowRecover.resumeAll')).toBeLessThan(order.indexOf('writeBackendInfoFn'));
+      expect(order.indexOf('writeBackendInfoFn')).toBeLessThan(order.indexOf("setLifecycle('running')"));
+      expect(writeBackendInfoFn).toHaveBeenCalledTimes(1);
+    } finally {
+      register.mockRestore();
+      waitFreshUntil.mockRestore();
+      runStartup.mockRestore();
+      resumeAll.mockRestore();
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();
     }

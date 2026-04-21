@@ -237,3 +237,18 @@ The following review findings were reviewed and deliberately not applied:
 - `npx vitest run --config vitest.integration.config.ts` — 26 passed (9 files)
 - `coordinator/api.ts` export count — 5 (invariant #46, ≤10)
 - `phase-4-complete` tag unchanged; rollback target `phase-3-complete`.
+
+## Phase 5 follow-up — Skip Resolution (Pre Phase 6)
+
+Resolved 7 vitest-counted skip units (5 it.skip + 2 it under describe.skipIf) before Phase 6 begins.
+
+- A `claude-executor.smoke.test.ts:49` describe.skipIf — KEPT, inline comment naming CORAL_SMOKE_TEST per Phase 6 acceptance "Real-CLI E2E moved to cleanup".
+- B `server.test.ts:669` empty `it.skip('uses injected fetchFn for lock ownership health checks')` — REPLACED by `src/coordinator/__tests__/backend-defaults.test.ts` (9 explicit cases covering healthy/contended/stale, including namespace-mismatch and bundleHash-mismatch stale branches plus the non-object-body and fetch-rejects contended branches, via injected fetchFn and asserting URL+token+namespace).
+- C `server.test.ts:4768` `'drops the recovery registry before writing backend info'` — REWRITTEN as 'publishes backend info only after Journal startup recovery completes' in `src/coordinator/__tests__/startup-ordering.test.ts`.
+- D `server.test.ts:4879` `'routes recovered app-server jobs through continuity finalization …'` — DELETED. Routing-call assertion absorbed into `src/jobs/reconcile/__tests__/lifecycle-recovery.test.ts` it 14 via an inline app-server runtime record carrying `providerContinuity.threadId`; `src/coordinator/__tests__/service-composition.test.ts:2177` remains the downstream proof that verified continuity persists as `conversationRef`.
+- E `server.test.ts:4999` `'stops the startup tail when shutdown begins during recovery adoption'` — REWRITTEN in `src/jobs/reconcile/__tests__/recovery-coordinator-shutdown.test.ts`, owner = `runRecoveryAdoption` with explicit startup-tail observability.
+- F `server.test.ts:5147` `'cleans up an adopted running job on shutdown after the recovery poller is live …'` — REWRITTEN in the same sibling suite, owner = `teardown()` clearing `recoveryPollIntervals` via `runtime.time.clearInterval` + `state.teardownRequested` suppression of late completion.
+
+Net skip count: 7 → 2 (smoke pair only).
+Owner-placement strategy: every test sits with its behavioral owner per architecture §29.
+No production source changed; verification chain green per AC9.
