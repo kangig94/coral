@@ -1367,6 +1367,7 @@ class KbRuntimeImpl implements KbRuntime {
           captureCorpusFilesystemSnapshot(this),
         );
         if (mutationDiff.lane !== null) {
+          // Legacy non-structured-diff fallback: only test callers reach here; production scheduler always passes structuredDiff:true. Kept so tests that omit options get correct authority seeding.
           this.manifestAuthority.seedFromFullCollectors(this);
         }
       }

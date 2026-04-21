@@ -57,6 +57,7 @@ export function createManifestAuthority(): ManifestAuthority {
   }
 
   function invalidateLaneHash(lane: ManifestAuthorityLane): void {
+    // Manifest hash is recomputed lazily on next getCurrentManifestHash; invalidating on any write avoids stale reads without paying re-derivation cost on hot writes.
     if (lane === 'content') {
       cachedContentManifestHash = null;
       return;
@@ -175,6 +176,7 @@ export function captureNoteManifestDeltas(slug: string, raw: string): ManifestAu
       lane: 'metadata',
       manifestId: noteMetadataManifestId(slug),
       surfaceHash: computeMetadataSurfaceHash({
+        // KbNoteFrontmatter satisfies CanonicalFrontmatterRecord structurally; cast avoids widening the metadata-hash input type.
         frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
       }),
     });
@@ -220,6 +222,7 @@ export function captureSourceManifestDeltas(slug: string, raw: string): Manifest
         lane: 'metadata',
         manifestId: sourceMetadataManifestId(slug),
         surfaceHash: computeMetadataSurfaceHash({
+          // KbSourceFrontmatter satisfies CanonicalFrontmatterRecord structurally; cast avoids widening the metadata-hash input type.
           frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
         }),
       },

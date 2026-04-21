@@ -133,15 +133,15 @@ export function createCliDetector(config: CliDetectorConfig): {
 
 // ── Codex ──────────────────────────────────────
 
-export const CODEX_DETECTOR_CONFIG: CliDetectorConfig = {
+export const CODEX_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   binaryName: 'codex',
-  versionArgs: ['--version'],
+  versionArgs: Object.freeze(['--version']),
   notFoundMessage: 'Codex CLI not found. Install it with: npm install -g @openai/codex',
   authEnvVar: 'OPENAI_API_KEY',
-  authCommand: ['whoami'],
+  authCommand: Object.freeze(['whoami']),
   authErrorPattern: /not logged in|unauthorized|unauthenticated|no api key|missing.*api.*key|authentication required/i,
   authErrorMessage: 'Codex CLI is not authenticated. Run "codex login" or set the OPENAI_API_KEY environment variable.',
-};
+});
 
 // ── Claude ─────────────────────────────────────
 
@@ -177,17 +177,17 @@ function parseClaudeAuthStatus(stdout: string): AuthProbeResult | null {
   return null;
 }
 
-export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = {
+export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   binaryName: 'claude',
-  versionArgs: ['--version'],
+  versionArgs: Object.freeze(['--version']),
   notFoundMessage: 'Claude CLI not found. Install it from the Claude Code distribution.',
   authEnvVar: 'ANTHROPIC_API_KEY',
-  authCommand: ['auth', 'status', '--json'],
+  authCommand: Object.freeze(['auth', 'status', '--json']),
   authErrorPattern:
     /not logged in|unauthorized|unauthenticated|authentication required|login required|no api key|missing.*api.*key/i,
   authErrorMessage: CLAUDE_AUTH_ERROR_MESSAGE,
   parseAuthOutput: parseClaudeAuthStatus,
-};
+});
 
 const claudeDetector = createCliDetector(CLAUDE_DETECTOR_CONFIG);
 export const detectClaudeCli = claudeDetector.detect;

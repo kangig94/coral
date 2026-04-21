@@ -18,6 +18,7 @@ export const REPAIR_INCIDENT_ID = {
   },
 } as const;
 
+// Iterated at compile time only — type derivation source for RepairIncidentId. Keep exported so external code can introspect the catalog if needed.
 export const REPAIR_INCIDENT_IDS = [
   REPAIR_INCIDENT_ID.FILE_SYNTAX.CONFLICT_MARKERS,
   REPAIR_INCIDENT_ID.FILE_SYNTAX.MALFORMED_MARKDOWN,

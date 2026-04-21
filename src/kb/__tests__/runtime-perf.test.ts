@@ -96,6 +96,7 @@ function renderSource({
 }
 
 async function loadPerfModules(): Promise<LoadedPerfModules> {
+  // vi.mock is hoisted; resetModules clears the import cache so re-imports get fresh module instances while keeping the mock factory registered and fsSpyState intact.
   vi.resetModules();
   const runtime = await import('../runtime.js');
   const metadataCommit = await import('../curate/metadata-commit.js');
@@ -247,6 +248,7 @@ describe('runtime hot-path perf regressions (AC2/AC6)', () => {
       runtimeDir: tempRoot,
     });
     kb.readIndex();
+    clearFsObservability();
 
     const execSync = vi.fn((command: string, args: string[]) => {
       expect(command).toBe('git');
@@ -302,8 +304,6 @@ describe('runtime hot-path perf regressions (AC2/AC6)', () => {
         get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
       },
     });
-
-    clearFsObservability();
 
     for (let index = 0; index < 100; index += 1) {
       await kb.runInboundSync(() => controller.gitSync(), { structuredDiff: true });

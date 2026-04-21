@@ -1201,6 +1201,8 @@ export async function searchKb(
     return textGraphStatePromise;
   };
 
+  // ── mode dispatch ──
+
   if (mode === 'text') {
     const textState = await getTextState();
     return buildTextResponse(
