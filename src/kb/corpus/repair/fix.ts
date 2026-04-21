@@ -44,6 +44,7 @@ const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
   /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;
 const ENTRYSEQ_LEADING_ZERO_PATTERN =
   /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?:#.*)?)(?=\r?\n|$)/;
+const LENIENT_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)(?:\r?\n---(?:\r?\n|$)|$)/;
 const LENIENT_ENTRYSEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
 
 type RepairAction = 'fixed' | 'enqueued' | 'skipped';
@@ -493,13 +494,26 @@ function readLenientEntrySeq(content: string | null): number | null {
     return null;
   }
 
-  const match = content.match(LENIENT_ENTRYSEQ_PATTERN);
+  const match = extractLenientFrontmatterRegion(content).match(LENIENT_ENTRYSEQ_PATTERN);
   if (match === null) {
     return null;
   }
 
   const parsed = Number.parseInt(match[1] ?? '', 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractLenientFrontmatterRegion(content: string): string {
+  const match = content.match(LENIENT_FRONTMATTER_PATTERN);
+  if (match !== null) {
+    return match[1];
+  }
+
+  if (!content.startsWith('---')) {
+    return content.slice(0, 2048);
+  }
+
+  return content.slice(4, 2048);
 }
 
 function dedupe(values: readonly string[]): string[] {

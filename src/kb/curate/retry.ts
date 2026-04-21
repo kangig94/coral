@@ -37,6 +37,15 @@ const retryRowSchema = z.object({
   retry_count: z.number().int().nonnegative(),
 });
 
+const pendingRepairRowSchema = z.object({
+  entry_id: kbEntryIdSchema,
+  observed_at: z.string().datetime({ offset: true }),
+});
+
+type PendingRepairRow = Pick<CurateRetryQueueRow, 'entry_id' | 'observed_at'>;
+
+export type PendingRepairRetryCandidate = Pick<PendingRepair, 'entryId' | 'detectedAt'>;
+
 function rowToPendingRepair(row: CurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
   return {
@@ -50,6 +59,14 @@ function rowToPendingRepair(row: CurateRetryQueueRow): PendingRepair {
     repairHint: parsed.repair_hint ?? undefined,
     retryNotBefore: parsed.retry_not_before,
     retryCount: parsed.retry_count,
+  };
+}
+
+function rowToPendingRepairRetryCandidate(row: PendingRepairRow): PendingRepairRetryCandidate {
+  const parsed = pendingRepairRowSchema.parse(row);
+  return {
+    entryId: parsed.entry_id,
+    detectedAt: parsed.observed_at,
   };
 }
 
@@ -86,6 +103,18 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
      ORDER BY entry_id ASC`,
   ).all();
   return rows.map((row) => rowToPendingRepair(row));
+}
+
+export function readPendingRepairRows(target: SqliteTarget): PendingRepairRetryCandidate[] {
+  const rows = prepareCached<[], PendingRepairRow>(
+    target,
+    `SELECT
+       entry_id,
+       observed_at
+     FROM curate_retry_queue
+     ORDER BY entry_id ASC`,
+  ).all();
+  return rows.map((row) => rowToPendingRepairRetryCandidate(row));
 }
 
 export function scanDueCurateRetryQueue(

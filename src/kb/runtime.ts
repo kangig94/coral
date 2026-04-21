@@ -5,7 +5,7 @@ import { load, save, type RawData } from '@orama/orama';
 import type BetterSqlite3 from 'better-sqlite3';
 import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
-import { readCurateState, type PendingRepair } from './curate/state.js';
+import { readPendingRepairRows, type PendingRepairRetryCandidate } from './curate/retry.js';
 import {
   type CanonicalFrontmatterRecord,
   computeContentManifestHash,
@@ -1773,7 +1773,7 @@ class KbRuntimeImpl implements KbRuntime {
     return { db, tokenizer };
   }
 
-  private pendingRepairPath(entry: PendingRepair): string | null {
+  private pendingRepairPath(entry: PendingRepairRetryCandidate): string | null {
     if (entry.entryId.startsWith('note:')) {
       return this.notePath(entry.entryId.slice('note:'.length));
     }
@@ -1785,8 +1785,8 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private pendingRepairNeedsRetry(): boolean {
-    const pendingRepair = readCurateState(this).pendingRepair;
-    if (pendingRepair === null) {
+    const pendingRepair = readPendingRepairRows(this);
+    if (pendingRepair.length === 0) {
       return false;
     }
 
