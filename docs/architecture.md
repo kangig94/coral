@@ -51,6 +51,9 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
 | `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
+| `POST /coordinator/equipment` | 200 | Register named equipment into its coordinator-owned slot |
+| `DELETE /coordinator/equipment/:name` | 200 | Unregister named equipment and release its slot |
+| `GET /coordinator/equipment` | 200 | List equipment status by slot from the coordinator-owned lifecycle seam |
 | `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |
 | `POST /jobs/wait` | 200 | SSE job monitoring used by `coral-cli wait` and follow mode |
@@ -133,7 +136,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
 | Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `CoralStore` read helpers for no-coordinator CLI paths. |
-| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, provider-host coordination, and cross-domain assembly. `src/coordinator/api.ts` plus `src/coordinator/composition/**` are explicit coordinator glue and may assemble domain shells/contracts. |
+| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, equipment slot ownership, provider-host coordination, and cross-domain assembly. `src/coordinator/api.ts` plus `src/coordinator/composition/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning facade for job lifecycle: launch, wait, abort, terminal outcomes, and startup reconciliation. |
@@ -144,7 +147,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | Runtime | Single-world Runtime with six I/O subports shared by production and simulation. |
 | Simulation | Deterministic doubles for tests. |
 | Knowledge base | Search, indexing, memo/source flows, and publication into the corpus authority. |
-| Shared / infra | Low-level helpers, settled path resolution, and temporary compat bridges with explicit retirement phases. |
+| Shared / infra | Low-level helpers, settled path resolution, and the remaining legacy-vocabulary boundary: domain upcasters on read, `legacy-ingest` where runtime canonicalization still needs legacy input. |
 
 ## Dependency Sketch
 
@@ -183,7 +186,8 @@ KB runtime
 
 Shared / compat layer
   -> Shared foundation consumed by all layers
-  -> Legacy* compat bridges retire in Phase 6
+  -> Domain upcasters own read-time body transforms
+  -> `legacy-ingest` is the only production module that still speaks legacy vocabularies
 ```
 
 ## Runtime State
@@ -214,7 +218,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 - `failed { causeRef }` — upstream cause resolvable via the Journal (`CauseRef = { stream, seq }`).
 - `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
-The pre-rewrite `CoralFault` union has been retired; the renamed `Legacy*` compat bridges at the provider boundary retire in Phase 6.
+The pre-rewrite `CoralFault` union is retired. Read-time body transforms now live in per-domain upcasters, and `src/jobs/shell/legacy-ingest.ts` is the only production module that still speaks legacy vocabularies.
 
 CLI wait output surfaces the outcome through five exhaustive headers:
 

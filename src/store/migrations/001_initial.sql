@@ -109,7 +109,16 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
   metadata_seq           INTEGER,               -- corpus only
   content_manifest_hash  TEXT,                  -- corpus only
   metadata_manifest_hash TEXT,                  -- corpus only
-  equipped_at            TEXT    NOT NULL       -- ISO 8601 of most recent equip
+  equipped_at            TEXT    NOT NULL,      -- ISO 8601 of most recent equip
+  registration_kind      TEXT    NOT NULL DEFAULT 'base'
+);
+
+CREATE TABLE IF NOT EXISTS equipment_state (
+  name               TEXT PRIMARY KEY,
+  state              TEXT NOT NULL,
+  installed_at       TEXT,
+  last_error_code    TEXT,
+  last_error_message TEXT
 );
 
 -- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).

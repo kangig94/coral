@@ -31,8 +31,9 @@ const TRANSIENT_RETRY_DELAY_MS = 1_000;
 
 type FollowLaunchDecision = AcceptedLaunchResponse;
 type WaitCursorRef = { lastEventId?: string };
+type BackoffScheduler = (delayMs: number) => Promise<void>;
 
-type LaunchAndFollowOptions = {
+type FollowOptions = {
   launchResult: FollowLaunchDecision;
   abortJob: (jobId: string) => Promise<unknown>;
   pluginRoot: string;
@@ -40,6 +41,7 @@ type LaunchAndFollowOptions = {
   emitError: (error: unknown) => void;
   isTTY: boolean;
   columns: number;
+  backoffScheduler?: BackoffScheduler;
 };
 
 function emitLaunch(decision: FollowLaunchDecision): void {
@@ -128,8 +130,13 @@ function openCauseRenderer(projectRoot: string): {
   }
 }
 
-async function waitForRetry(signal: AbortSignal): Promise<boolean> {
+async function waitForRetry(signal: AbortSignal, backoffScheduler?: BackoffScheduler): Promise<boolean> {
   try {
+    if (backoffScheduler) {
+      await backoffScheduler(TRANSIENT_RETRY_DELAY_MS);
+      return !signal.aborted;
+    }
+
     await delay(TRANSIENT_RETRY_DELAY_MS, undefined, { signal });
     return true;
   } catch {
@@ -167,7 +174,7 @@ function mapWaitSubscriptionError(error: unknown): unknown {
   );
 }
 
-export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<number> {
+export async function launchAndFollow(options: FollowOptions): Promise<number> {
   const renderContext: WaitRenderContext = {
     isTTY: options.isTTY,
     columns: options.columns,
@@ -293,7 +300,7 @@ export async function launchAndFollow(options: LaunchAndFollowOptions): Promise<
         }
 
         retriesLeft -= 1;
-        const shouldRetry = await waitForRetry(controller.signal);
+        const shouldRetry = await waitForRetry(controller.signal, options.backoffScheduler);
         if (!shouldRetry || localAbortRequested) {
           return 1;
         }

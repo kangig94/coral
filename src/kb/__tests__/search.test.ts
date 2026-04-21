@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -71,6 +71,10 @@ function createRuntime(
     getEquipmentView: () => equipmentViewResolvers.get(kb)?.() ?? null,
   });
   return kb;
+}
+
+function setMtime(path: string, mtime: Date): void {
+  utimesSync(path, mtime, mtime);
 }
 
 function seedNeedleRouteState(
@@ -828,6 +832,12 @@ describe('kb search', () => {
       )}\n`,
       'utf-8',
     );
+    const indexMtimeMs = statSync(join(kb.runtimeDir, 'index.json')).mtimeMs;
+    let editedGraphMtimeMs = Date.now();
+    while (editedGraphMtimeMs <= indexMtimeMs) {
+      editedGraphMtimeMs = Date.now();
+    }
+    setMtime(kb.entityGraphPath(), new Date(editedGraphMtimeMs));
     await kb.ensureIndex();
     const response = await searchKb(kb, 'vram', 5);
 

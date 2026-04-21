@@ -6,7 +6,9 @@ export default defineConfig({
     exclude: [
       'ref/**',
       'node_modules/**',
-      'src/**/__tests__/integration/**/*.test.ts',
+      'src/coordinator/**/__tests__/integration/**/*.test.ts',
+      'src/workflow/**/__tests__/integration/**/*.test.ts',
+      'src/__tests__/integration/agent-wire-contract.test.ts',
       'src/**/__tests__/e2e/**/*.test.ts',
       'src/simulation/__tests__/simulation*.test.ts',
       'src/simulation/__tests__/simulation-runner.test.ts',

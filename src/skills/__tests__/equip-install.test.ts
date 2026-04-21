@@ -385,6 +385,7 @@ describe('skills/equip/install.mjs needle flow', () => {
   it('keeps the JS helper seam aligned with the TypeScript equipment path helpers', async () => {
     const fixture = createFixture();
     const jsPaths = await import(new URL('../../../skills/equip/equipment-paths.mjs', import.meta.url).href);
+    const devEnv: NodeJS.ProcessEnv = { CORAL_FLAVOR: 'dev' };
 
     expect(jsPaths.equipmentDataDir('needle', { baseDir: fixture.coralBaseDir })).toBe(
       equipmentDataDir('needle', { baseDir: fixture.coralBaseDir }),
@@ -394,6 +395,12 @@ describe('skills/equip/install.mjs needle flow', () => {
     );
     expect(jsPaths.equipmentInstallLockPath('needle', { baseDir: fixture.coralBaseDir })).toBe(
       equipmentInstallLockPath('needle', { baseDir: fixture.coralBaseDir }),
+    );
+    expect(jsPaths.equipmentDataDir('needle', { baseDir: fixture.coralBaseDir, env: devEnv })).toBe(
+      equipmentDataDir('needle', { baseDir: fixture.coralBaseDir, env: devEnv }),
+    );
+    expect(jsPaths.equipmentDataDir('needle', { baseDir: fixture.coralBaseDir, env: devEnv })).toBe(
+      join(fixture.coralBaseDir, 'data-dev', 'equipment', 'needle'),
     );
   });
 
@@ -462,6 +469,29 @@ describe('skills/equip/install.mjs needle flow', () => {
     expect(curlCall).toContain(
       `https://github.com/kangig94/coral-needle/releases/download/v${NEEDLE_VERSION}/coral-needle-v${NEEDLE_VERSION}-${process.platform}-${process.arch === 'x64' ? 'amd64' : process.arch}.tar.gz`,
     );
+  });
+
+  it('installs needle into the dev equipment dir when CORAL_FLAVOR=dev', async () => {
+    const fixture = createFixture();
+    const addonBytes = Buffer.from('native-addon-dev');
+    const devTargetDir = equipmentDataDir('needle', {
+      baseDir: fixture.coralBaseDir,
+      env: { CORAL_FLAVOR: 'dev' },
+    });
+    writeFakeCurl(fixture.binDir);
+    createPrebuildArchive(fixture.archivePath, 'coral-needle.node', addonBytes);
+
+    const result = parseResult(await runInstall(fixture, ['needle'], { CORAL_FLAVOR: 'dev' }));
+
+    expect(result).toMatchObject({
+      status: 'installed',
+      method: 'prebuild',
+      targetDir: devTargetDir,
+      postInstall: ['register_equipment'],
+      version: NEEDLE_VERSION,
+    });
+    expect(readFileSync(join(devTargetDir, 'coral-needle.node'))).toEqual(addonBytes);
+    expect(existsSync(fixture.targetDir)).toBe(false);
   });
 
   it('uses runtime-local needle metadata for already_installed and still reads the legacy kb meta file', async () => {

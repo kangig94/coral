@@ -84,6 +84,10 @@ function coralEnvPathFromEnv() {
   return join(homedir(), '.coral', '.env');
 }
 
+function equipmentInstallRootLabel() {
+  return `${dirname(needleEquipmentDirFromEnv())}/`;
+}
+
 const CATALOG = {
   cgc: {
     name: 'CodeGraphContext',
@@ -596,7 +600,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
           result: buildSetupError(
             'equipment_install_path_unwritable',
             'Cannot write to the Coral equipment install path for needle.',
-            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
             { name: 'needle' },
           ),
         };
@@ -625,7 +629,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
           result: buildSetupError(
             'equipment_install_path_unwritable',
             'Cannot write to the Coral equipment install path for needle.',
-            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
             { name: 'needle' },
           ),
         };
@@ -648,7 +652,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
             result: buildSetupError(
               'equipment_install_path_unwritable',
               'Cannot write to the Coral equipment install path for needle.',
-              'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+              `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
               { name: 'needle' },
             ),
           };
@@ -669,7 +673,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
             result: buildSetupError(
               'equipment_install_path_unwritable',
               'Cannot write to the Coral equipment install path for needle.',
-              'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+              `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
               { name: 'needle' },
             ),
           };

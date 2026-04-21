@@ -39,7 +39,11 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Renamed `Legacy*` compat types bridge the adapter seam until the matching phase retires them.
+Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; read-time legacy transforms live in domain upcasters, and runtime canonicalization of pre-rewrite shapes stays isolated in `legacy-ingest`.
+
+## Equipment
+
+Equipment is a coordinator-owned seam for optional runtime add-ons, not a separate KB domain. The coordinator declares the slot registry and owns exclusive assignment; today `kb.vector` defaults to Orama and may be equipped to Needle. `EquipmentLifecycleService` is the sole transport-visible seam for register / unregister / list operations, and it persists durable install state in `equipment_state` while cursor freshness remains in `equipment_cursors`. The KB router never imports coordinator code to discover the active vector backend; it reads the current activation through the `KbRuntime.getEquipmentView()` port and falls back to the default Orama projection until a fresh Needle consumer is equipped.
 
 ## Knowledge Base
 
@@ -47,11 +51,11 @@ The KB domain owns text and vector search, note mutation, memo and source lifecy
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, provider-host coordination, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
+The coordinator layer owns process lifecycle, startup reconcile sequencing, ConsumerDriver freshness, equipment slot ownership, provider-host coordination, and the corpus notify seam. It is the only place allowed to compose multiple domains together and the only place that speaks to both transport and domain facades at once.
 
 ## Shared and Infrastructure
 
-Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross-process locking, file tailing, child-env construction, legacy compat bridges. Infrastructure resolves canonical paths, build flavor, and backend connection info.
+Shared helpers sit below every domain — schemas, utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and shared equipment paths.
 
 ## Dependency Outline
 
@@ -69,6 +73,7 @@ coordinator API
   -> jobs domain facade
   -> sessions domain facade
   -> provider adapters
+  -> equipment lifecycle service
   -> live launch / host management
   -> provider host manager
 
@@ -83,6 +88,7 @@ discuss shell
 
 KB runtime
   -> corpus publication + notify seam
+  -> read-only equipment activation port (`KbRuntime.getEquipmentView()`)
 
 shared / infra
   -> lowest common layer reused everywhere
@@ -95,5 +101,6 @@ These are the load-bearing boundaries that must not leak:
 - The Runtime interface is the only channel for I/O inside the backend.
 - Each domain facade is the only coordinator-facing surface for its domain.
 - The Journal read surface (`CoralStore`) is publicly exported; write primitives are internal.
+- Equipment slot ownership is coordinator-owned: transport reaches it through `EquipmentLifecycleService`, and KB routing reads activation through `KbRuntime.getEquipmentView()`.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
-- Renamed `Legacy*` compat bridges live at the provider seam with declared retirement phases.
+- Read-time legacy transforms live in domain upcasters; `legacy-ingest` is the only production module that still speaks legacy vocabularies at runtime.

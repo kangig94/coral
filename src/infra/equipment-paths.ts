@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { BuildFlavor } from '../runtime/flavor.js';
-import { coralRoot } from './paths.js';
+import { resolveBuildFlavor } from '../runtime/flavor.js';
+import { coralRoot, getSettledBuildFlavor } from './paths.js';
 
 export interface EquipmentPaths {
   equipmentRoot: string;
@@ -12,10 +13,15 @@ const EQUIPMENT_ADDON_FILENAMES = {
 
 export interface EquipmentPathOptions {
   readonly baseDir?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+function resolveEquipmentFlavor(opts?: EquipmentPathOptions): BuildFlavor {
+  return getSettledBuildFlavor() ?? resolveBuildFlavor(opts?.env ?? process.env);
 }
 
 function equipmentRoot(opts?: EquipmentPathOptions): string {
-  return join(coralRoot(opts?.baseDir), 'data', 'equipment');
+  return equipmentPaths(resolveEquipmentFlavor(opts), opts).equipmentRoot;
 }
 
 export function equipmentPaths(flavor: BuildFlavor, opts?: EquipmentPathOptions): EquipmentPaths {

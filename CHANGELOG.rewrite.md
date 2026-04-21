@@ -336,12 +336,51 @@ Phase 6 collapses the three-path provider model into one composed stack per arch
 - DELETED 17 items total: 12 production files (`src/providers/scripted-provider.ts`, `src/providers/protocol.ts`, `src/providers/claude/adapter.ts`, `src/providers/claude/session-driver.ts`, `src/providers/codex/adapter.ts`, `src/providers/codex/session-driver.ts`, `src/providers/app-server/runner.ts`, `src/providers/result-mapping.ts`, `src/providers/runner-port.ts`, `src/providers/provider-contracts.ts`, `src/providers/claude-appserver/session.ts` as the Phase 4 shim, and `src/providers/spec-compat.ts` as the Batch 5 M1 transitional seam) plus 5 obsolete test files.
 - `finalizeProviderSession` + `checkpointRecovery` session-side effects retired — `grep -rn "finalizeProviderSession|checkpointRecovery" src/` returns 0 production hits.
 
-**Retirement ledger** (Phase 7 Cleanup carry-forward):
-- `src/shared/legacy-terminal-outcome-compat.ts` — coordinator recovery + reconcile + legacy-ingest still depend; deletion would materially expand Phase 6 scope. Retire in Phase 7 once journal outcome projection migrates.
-- `src/providers/claude/claude-executor.ts` — exec-kernel.ts still depends; rename/collapse in Phase 7 if valuable.
-
 **Composition-order amendment** (GOD doc §8.1): `compose(sessionContinuity(...), appServerSession(...), kernel)` — `sessionContinuity` is outermost for app-server providers. Preserves §8.3 invariants #1/#3/#5: one continuity authority observes the full downstream stream (including transport-close from `appServerSession` via `runtime.continuityBridge`); `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome. Recorded in `.claude/analysis/2026-04-18-final-unified-architecture.md` § 8.1.
 
 **Verification**: `npm run lint` clean; `npm run build` clean; `npm test` `1760 passed | 2 skipped`. `phase-2-boundary-quarantine` green. `fault-producer-invariant` green. `phase6-smoke` green. All three grep gates return ZERO production hits: (1) no imports from `adapter.js` / `session-driver.js` / `app-server/runner.js`; (2) no `finalizeProviderSession` / `checkpointRecovery` references; (3) no `src/testing/*` imports from `src/providers/` / `src/coordinator/` / `src/jobs/`.
 
-Per memory rule #1 (fresh-only): zero Legacy* types added, zero compat shims beyond the two documented Phase-7 carry-forwards (legacy-terminal-outcome-compat.ts + claude-executor.ts).
+Per memory rule #1 (fresh-only): zero Legacy* types added and zero new compat shims introduced in the Phase 6 landing; the remaining carry-forwards close in Phase 6 Closure / Phase 7 below.
+
+## Phase 6 Closure (complete)
+
+Tag: `phase-6-closure-complete` @ rewrite branch.
+
+Phase 6 closure finished the carry-forward work intentionally left out of the initial middleware landing. The closure batch removed the remaining executor and compat leftovers, fixed the skipped late-abort regression, and tightened the typed read surface without reopening the three-path design.
+
+**Delivered**:
+
+- AC5 — reproduced the late-abort regression introduced after `phase6/tier-review-fixes`, replaced the raw downstream signal with an abort-aware wrapper in `session-continuity`, removed the skipped integration case, and reduced the baseline skip count from 2 to 1.
+- AC1 — landed the Codex pre-turn mailbox from Amendment A6: lifecycle-compatible admission only, provisional thread-id matching, `PRE_TURN_MAILBOX_CAP=64` FIFO eviction, and `status()` observability in `thread-kernel`.
+- AC4 — deleted `src/providers/claude/claude-executor.ts`; fork CLI launch/parsing moved into `exec-kernel.ts`, with direct kernel coverage replacing the retired executor tests and no CLI surface change.
+- AC3 — deleted `src/shared/legacy-terminal-outcome-compat.ts`; read-time transforms moved into the jobs / sessions / workflow upcaster registrars, while `legacy-ingest` remains the canonical runtime consumer of upcast output.
+- AC2 — typed the cause-ref render path end-to-end: canonical continuity text now reuses `sessions/fault.ts`, exhaustive switches cover `SessionProviderFailureReason`, and the defensive fallback remains for unknown legacy values that bypass the type system.
+
+**Verification**: `npm run lint` clean; `npm run build` clean; targeted closure suites green (`continuity-lifecycle`, `thread-kernel`, `exec-kernel` / `exec-provider`, upcaster / invariant suites, `cause-ref-render`).
+
+## Phase 7 — Equipment + Cleanup (complete)
+
+Tag: `phase-7-complete` @ rewrite branch.
+
+Phase 7 closes the remaining cleanup items and lands coordinator-owned equipment activation as a first-class public surface. The phase records the A1-A6 amendments, wires the new equipment seam through transport and coordinator composition, and aligns the CLI / skill surface on the unified `needle` identity.
+
+**A1-A6 amendments adopted**:
+
+- A1 — `/equip uninstall <name>` replaces a separate `/unequip` surface; transport and coordinator keep the canonical `unregisterEquipment` RPC.
+- A2 — `needle` is the single runtime identity across consumer IDs, install paths, CLI text, and skill catalog entries.
+- A3 — equipment is coordinator-owned through an explicit slot registry plus durable `equipment_state`; `kb.vector` defaults to Orama and is equipped to Needle only through `/equip`.
+- A4 — `ConsumerDriver.register()` returns a `ConsumerHandle`, so activation, stop / unregister, freshness status, and apply-failure reporting use one shared seam.
+- A5 — legacy body transforms now live only in per-domain upcasters; `src/store/upcasters.ts` stays an assembler and active runtime code stays on canonical types.
+- A6 — the Codex pre-turn mailbox from Phase 6 Closure is part of the steady-state architecture, not a temporary patch.
+
+**Delivered (AC6-AC18)**:
+
+- AC6 — recorded the Phase 7 amendments in the architecture / GOD docs so the new CLI naming, identity, slot, handle, upcaster, and mailbox decisions are explicit architectural bindings.
+- AC7-AC8 — `ConsumerDriver` now returns `ConsumerHandle`, and coordinator composition declares a slot registry with a default Orama owner plus the runtime-activation port consumed through `KbRuntime.getEquipmentView()`.
+- AC9-AC11 — transport gained `registerEquipment`, `unregisterEquipment`, and `listEquipment`; coordinator routing now delegates to `EquipmentLifecycleService`; Needle activation and catch-up moved behind a coordinator-owned lifecycle seam with no boot-time auto-registration.
+- AC10 / AC14 — durable equipment lifecycle state landed in `equipment_state`, install locking moved to the shared equipment path, and the public `CoralSetupError` catalog now covers slot, binary, embedding-provider, install-path, and lock-contention failures.
+- AC12-AC13 / AC16-AC17 — the skill / CLI surface now uses `/equip uninstall`, `/equip --list`, unified `needle` naming, RPC-based post-install registration, and exclusive slot enforcement with status-aware list output.
+- AC15 — added opt-in multi-process install-lock race coverage so exactly one competing equip worker wins without corrupting coordinator state.
+- AC18 — updated architecture-layering, coordinator-topology, consumer-driver, and manifest-authority fixtures so the invariant suite matches the landed equipment seam and `ConsumerHandle` shape.
+
+**Verification**: `npm run lint` clean; `npm run build` clean; targeted equipment / skill / race / fixture suites green; full `npm test` reached `1825/1827` with 2 pre-existing timing flakes that still pass in isolation.

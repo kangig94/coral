@@ -50,6 +50,7 @@ export type CodexTurnState = {
   serviceTier: CodexServiceTier | undefined;
   sessionId: string;
   persistedThreadId: string | null;
+  mailboxThreadCandidates: Set<string>;
   threadId: string | null;
   threadIds: Set<string>;
   threadTurnIds: Map<string, string>;
@@ -96,6 +97,13 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     resolveCompletion = resolve;
   });
   const persistedContinuity = readCodexPersistedContinuity(runtime.persistedContinuity);
+  const mailboxThreadCandidates = new Set<string>();
+  if (persistedContinuity.threadId) {
+    mailboxThreadCandidates.add(persistedContinuity.threadId);
+  }
+  if (request.conversationRef) {
+    mailboxThreadCandidates.add(request.conversationRef);
+  }
 
   const state = {
     startedAt: Date.now(),
@@ -104,6 +112,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     serviceTier: resolveCodexServiceTier(request, runtime),
     sessionId: request.sessionId,
     persistedThreadId: persistedContinuity.threadId ?? null,
+    mailboxThreadCandidates,
     threadId: null,
     threadIds: new Set(),
     threadTurnIds: new Map(),
@@ -181,15 +190,19 @@ function registerThread(state: CodexTurnState, threadId: string | null): void {
   state.threadIds.add(threadId);
 }
 
+function registerMailboxThreadCandidate(state: CodexTurnState, threadId: string | null): void {
+  if (!threadId) {
+    return;
+  }
+  state.mailboxThreadCandidates.add(threadId);
+}
+
 function canAdmitNotification(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
   const threadId = extractThreadId(message);
   if (!threadId) {
     return true;
   }
-  if (state.threadId) {
-    return threadId === state.threadId;
-  }
-  return threadId === state.persistedThreadId;
+  return threadId === state.threadId || state.mailboxThreadCandidates.has(threadId);
 }
 
 function admitBufferedNotification(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
@@ -539,6 +552,7 @@ async function initializeThread(
   }
 
   state.threadId = threadId;
+  registerMailboxThreadCandidate(state, threadId);
   registerThread(state, threadId);
   checkpoint(runtime, state, threadId);
   emitProgress(emit, `Thread ready (${threadId}).`);

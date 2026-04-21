@@ -58,7 +58,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
   it('admits only lifecycle-compatible notifications, evicts FIFO over cap, and replays retained matches after turn discovery', () => {
     const state = createCodexTurnStateForTest(
       makeRequest({
-        conversationRef: 'request-thread',
+        conversationRef: 'persisted-thread',
       }),
       makeRuntime({
         cwd: '/workspace/persisted',
@@ -89,7 +89,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     state.threadId = 'persisted-thread';
     state.threadIds.add('persisted-thread');
 
-    applyCodexNotificationForTest(state, webSearchStarted('request-thread', 'request-ref-after-thread-known'), emit);
+    applyCodexNotificationForTest(state, webSearchStarted('foreign-thread', 'foreign-after-thread-known'), emit);
     expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
 
     for (let index = 0; index < PRE_TURN_MAILBOX_CAP; index += 1) {
@@ -122,7 +122,36 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(progressMessages).toContain('Turn started (turn-1).');
     expect(progressMessages).not.toContain('Searching: oldest-matching');
     expect(progressMessages).not.toContain('Searching: foreign-before-thread');
-    expect(progressMessages).not.toContain('Searching: request-ref-after-thread-known');
+    expect(progressMessages).not.toContain('Searching: foreign-after-thread-known');
     expect(progressMessages).not.toContain('Searching: keep-0');
+  });
+
+  it('admits notifications for both request conversationRef and resumed thread id before turn discovery when thread/resume returns a different id', () => {
+    const state = createCodexTurnStateForTest(
+      makeRequest({
+        conversationRef: 'request-thread',
+      }),
+      makeRuntime({
+        cwd: '/workspace/persisted',
+        threadId: 'persisted-thread',
+      }),
+    );
+    const events: ProviderEventBody[] = [];
+    const emit = (event: ProviderEventBody) => {
+      events.push(event);
+    };
+
+    state.threadId = 'resumed-thread';
+
+    applyCodexNotificationForTest(state, webSearchStarted('request-thread', 'request-ref-before-turn'), emit);
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 1, dropped: 0 });
+
+    applyCodexNotificationForTest(state, webSearchStarted('resumed-thread', 'resumed-thread-before-turn'), emit);
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
+
+    applyCodexNotificationForTest(state, webSearchStarted('foreign-thread', 'foreign-before-turn'), emit);
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
+
+    expect(events).toEqual([]);
   });
 });

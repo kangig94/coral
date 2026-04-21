@@ -100,6 +100,7 @@ type TestLaunchAndFollowOptions = {
   emitError: (error: unknown) => void;
   isTTY: boolean;
   columns: number;
+  backoffScheduler?: (delayMs: number) => Promise<void>;
 };
 
 function makeOptions(
@@ -325,12 +326,11 @@ describe('cli follow', () => {
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
-    vi.useFakeTimers();
-
     const { launchAndFollow } = await loadFollowModule();
     const options = makeOptions();
     const progressEvent = makeProgressEvent('Booting');
     const cursorAfterProgress = serializeWaitCursor({ jobs: { 'job-1': 1 } });
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
     mockState.ensure
       .mockResolvedValueOnce(makeBackend('backend-1'))
@@ -350,13 +350,7 @@ describe('cli follow', () => {
         });
       });
 
-    const followPromise = launchAndFollow(options);
-
-    await Promise.resolve();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    await expect(followPromise).resolves.toBe(7);
+    await expect(launchAndFollow({ ...options, backoffScheduler })).resolves.toBe(7);
 
     expect(stdout).toBe(
       `${formatLaunch(options.launchResult)}\n` +
@@ -364,6 +358,8 @@ describe('cli follow', () => {
         `${formatWaitTerminal(makeTerminalEvent({ exitCode: 7 }), cursorAfterProgress, false)}\n`,
     );
     expect(stderr).toBe('');
+    expect(backoffScheduler).toHaveBeenCalledTimes(1);
+    expect(backoffScheduler).toHaveBeenCalledWith(1_000);
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
     expect(mockState.subscribe).toHaveBeenCalledTimes(2);
   });
@@ -388,10 +384,9 @@ describe('cli follow', () => {
   });
 
   it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
-    vi.useFakeTimers();
-
     const { launchAndFollow } = await loadFollowModule();
     const { BackendUnreachableError } = await import('../../shared/utils.js');
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
     mockState.ensure.mockResolvedValue(makeBackend());
     mockState.subscribe
@@ -405,19 +400,16 @@ describe('cli follow', () => {
         process.stderr.write('fetch failed [code=backend_unreachable]\n');
         process.exitCode = 69;
       },
+      backoffScheduler,
     });
-    const followPromise = launchAndFollow(options);
 
-    for (let i = 0; i < 3; i += 1) {
-      await Promise.resolve();
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
-
-    await expect(followPromise).resolves.toBe(69);
+    await expect(launchAndFollow(options)).resolves.toBe(69);
 
     expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
     expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
+    expect(backoffScheduler).toHaveBeenCalledTimes(2);
+    expect(backoffScheduler).toHaveBeenNthCalledWith(1, 1_000);
+    expect(backoffScheduler).toHaveBeenNthCalledWith(2, 1_000);
     expect(mockState.ensure).toHaveBeenCalledTimes(3);
     expect(mockState.subscribe).toHaveBeenCalledTimes(3);
   });
