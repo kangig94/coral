@@ -3,19 +3,19 @@ import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
 
-import { buildJsonRpcError, isRecord } from '../../shared/utils.js';
-import type { PermissionMode } from '../claude/control-protocol.js';
 import {
-  AUTO_ALLOW_PERMISSION_MODES,
   CLAUDE_BROKER_BUSY_RPC_CODE,
-  ClaudeBrokerRpcError,
   type BrokerShutdownResult,
-  type JsonRpcId,
+  buildJsonRpcFailure,
+  buildJsonRpcFailureFromError,
+  buildJsonRpcSuccess,
+  isAutoAllowPermissionMode,
+  parseJsonRpcInboundLine,
   type JsonRpcRequest,
-  type SessionEnsureParams,
-  type SessionProbeParams,
-  type TurnInterruptParams,
-  type TurnStartParams,
+  requireSessionEnsureParams,
+  requireSessionProbeParams,
+  requireTurnInterruptParams,
+  requireTurnStartParams,
 } from './protocol.js';
 import {
   buildClaudeChildEnv,
@@ -23,7 +23,7 @@ import {
   type ClaudeBrokerChild,
   type ClaudeBrokerSession,
   type SpawnClaudeChildOptions,
-} from './session.js';
+} from './controller.js';
 
 interface CreateClaudeBrokerServerOptions {
   input?: NodeJS.ReadableStream;
@@ -54,26 +54,6 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
     output.write(`${JSON.stringify(message)}\n`);
   }
 
-  function sendSuccess(id: JsonRpcId, result: unknown): void {
-    send({ id, result });
-  }
-
-  function sendFailure(id: JsonRpcId, error: unknown): void {
-    if (error instanceof ClaudeBrokerRpcError) {
-      send({
-        id,
-        error: buildJsonRpcError(error.code, error.message, error.data),
-      });
-      return;
-    }
-
-    const message = error instanceof Error ? error.message : 'Claude broker request failed.';
-    send({
-      id,
-      error: buildJsonRpcError(-32000, message),
-    });
-  }
-
   session.subscribeNotifications((notification) => {
     send(notification);
   });
@@ -93,42 +73,36 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
       return;
     }
     if (shutdownRequested && message.method !== 'broker/shutdown') {
-      send({
-        id: message.id,
-        error: buildJsonRpcError(CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is shutting down.'),
-      });
+      send(buildJsonRpcFailure(message.id, CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is shutting down.'));
       return;
     }
 
     try {
       switch (message.method) {
         case 'session/ensure':
-          sendSuccess(message.id, await session.sessionEnsure(requireSessionEnsureParams(message.params)));
+          send(buildJsonRpcSuccess(message.id, await session.sessionEnsure(requireSessionEnsureParams(message.params))));
           return;
         case 'session/probe':
-          sendSuccess(message.id, await session.sessionProbe(requireSessionProbeParams(message.params)));
+          send(buildJsonRpcSuccess(message.id, await session.sessionProbe(requireSessionProbeParams(message.params))));
           return;
         case 'turn/start':
-          sendSuccess(message.id, await session.turnStart(requireTurnStartParams(message.params)));
+          send(buildJsonRpcSuccess(message.id, await session.turnStart(requireTurnStartParams(message.params))));
           return;
         case 'turn/interrupt':
-          sendSuccess(message.id, await session.turnInterrupt(requireTurnInterruptParams(message.params)));
+          send(buildJsonRpcSuccess(message.id, await session.turnInterrupt(requireTurnInterruptParams(message.params))));
           return;
         case 'broker/shutdown': {
           shutdownRequested = true;
           await session.shutdown();
-          sendSuccess(message.id, { ok: true } satisfies BrokerShutdownResult);
+          send(buildJsonRpcSuccess(message.id, { ok: true } satisfies BrokerShutdownResult));
           exit(0);
           return;
         }
         default:
-          send({
-            id: message.id,
-            error: buildJsonRpcError(-32601, `Unsupported broker method: ${message.method}`),
-          });
+          send(buildJsonRpcFailure(message.id, -32601, `Unsupported broker method: ${message.method}`));
       }
     } catch (error) {
-      sendFailure(message.id, error);
+      send(buildJsonRpcFailureFromError(message.id, error));
     }
   }
 
@@ -144,26 +118,15 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
           return;
         }
 
-        let message: JsonRpcRequest<unknown>;
+        let message: ReturnType<typeof parseJsonRpcInboundLine>;
         try {
-          message = JSON.parse(line) as JsonRpcRequest<unknown>;
+          message = parseJsonRpcInboundLine(line);
         } catch (error) {
-          send({
-            id: null,
-            error: buildJsonRpcError(-32700, `Invalid JSON: ${(error as Error).message}`),
-          });
+          send(buildJsonRpcFailureFromError(null, error));
           return;
         }
 
-        if (!isRecord(message) || typeof message.method !== 'string') {
-          send({
-            id: null,
-            error: buildJsonRpcError(-32600, 'Invalid JSON-RPC request.'),
-          });
-          return;
-        }
-
-        if (message.id === undefined) {
+        if (!('id' in message)) {
           return;
         }
 
@@ -270,93 +233,10 @@ export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[]
   if (options.systemPrompt) {
     args.push('--append-system-prompt', options.systemPrompt);
   }
-  if (bypassesPermissions(options.permissionMode)) {
+  if (isAutoAllowPermissionMode(options.permissionMode)) {
     args.push('--dangerously-skip-permissions');
   }
   return args;
-}
-
-function requireSessionEnsureParams(params: unknown): SessionEnsureParams {
-  if (
-    !isRecord(params) ||
-    typeof params.cwd !== 'string' ||
-    typeof params.systemPromptHash !== 'string' ||
-    typeof params.permissionMode !== 'string'
-  ) {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
-  }
-
-  return {
-    cwd: params.cwd,
-    systemPromptHash: params.systemPromptHash,
-    permissionMode: params.permissionMode as PermissionMode,
-    brokerSessionKey: typeof params.brokerSessionKey === 'string' ? params.brokerSessionKey : undefined,
-    conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
-    controllerEnv: readControllerEnv(params.controllerEnv),
-    systemPrompt: typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined,
-  };
-}
-
-function requireSessionProbeParams(params: unknown): SessionProbeParams {
-  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/probe.');
-  }
-  return {
-    brokerSessionKey: params.brokerSessionKey,
-    conversationRef: typeof params.conversationRef === 'string' ? params.conversationRef : undefined,
-  };
-}
-
-function requireTurnStartParams(params: unknown): TurnStartParams {
-  if (
-    !isRecord(params) ||
-    typeof params.brokerSessionKey !== 'string' ||
-    typeof params.brokerTurnId !== 'string' ||
-    typeof params.prompt !== 'string'
-  ) {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/start.');
-  }
-
-  return {
-    brokerSessionKey: params.brokerSessionKey,
-    brokerTurnId: params.brokerTurnId,
-    prompt: params.prompt,
-    model: typeof params.model === 'string' ? params.model : undefined,
-    maxThinkingTokens:
-      typeof params.maxThinkingTokens === 'number' || params.maxThinkingTokens === null
-        ? params.maxThinkingTokens
-        : undefined,
-  };
-}
-
-function requireTurnInterruptParams(params: unknown): TurnInterruptParams {
-  if (!isRecord(params) || typeof params.brokerSessionKey !== 'string') {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/interrupt.');
-  }
-  return {
-    brokerSessionKey: params.brokerSessionKey,
-    brokerTurnId: typeof params.brokerTurnId === 'string' ? params.brokerTurnId : undefined,
-  };
-}
-
-function readControllerEnv(value: unknown): Record<string, string> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
-  }
-
-  const entries = Object.entries(value);
-  if (entries.some(([, entryValue]) => typeof entryValue !== 'string')) {
-    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
-  }
-
-  return Object.fromEntries(entries) as Record<string, string>;
-}
-
-function bypassesPermissions(permissionMode: string): boolean {
-  return AUTO_ALLOW_PERMISSION_MODES.has(permissionMode);
 }
 
 function main(): void {
