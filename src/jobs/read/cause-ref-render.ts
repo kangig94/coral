@@ -1,5 +1,6 @@
 import type { CoralStore, CoralEvent } from '../../store/index.js';
-import { isRecord } from '../../shared/utils.js';
+import { continuitySentenceFragment, type SessionContinuityState, type SessionProviderFailureReason } from '../../sessions/fault.js';
+import { assertNever, isRecord } from '../../shared/utils.js';
 import {
   causeRefSchema,
   describeJobProgressFault,
@@ -60,20 +61,15 @@ function ensureSentence(text: string): string {
   return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
-function continuitySentenceFragment(value: string | undefined): string {
-  switch (value) {
-    case 'verified':
-      return 'continuity verified';
-    case 'missing':
-      return 'continuity missing';
-    case 'unavailable':
-      return 'continuity unavailable';
-    case 'pre_checkpoint_empty':
-      return 'no resumable conversation was available';
-    case 'pre_checkpoint_preserved':
-      return 'existing conversation reference was preserved';
-    default:
-      return 'continuity unavailable';
+// AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch + assertNever.
+// Wrap with a defensive fallback for runtime values that bypass the type system
+// (e.g. legacy journal events carrying an unknown continuity string).
+function safeContinuitySentenceFragment(value: SessionContinuityState): string {
+  try {
+    return continuitySentenceFragment(value);
+  } catch {
+    // noop — assertNever guards at compile time; this catches runtime injections
+    return 'continuity unavailable';
   }
 }
 
@@ -119,23 +115,30 @@ function describeEvent(event: CoralEvent): string {
         : 'Job aborted.';
     case 'session:session.interrupted': {
       if (!isRecord(event.body)) return 'Session interrupted.';
+      const continuity =
+        typeof event.body.continuity === 'string'
+          ? (event.body.continuity as SessionContinuityState)
+          : 'unavailable';
       const triggerText =
         event.body.trigger === 'restart'
           ? 'App-server restarted during the turn'
           : 'App-server handoff occurred during the turn';
-      return `${triggerText}; ${continuitySentenceFragment(
-        typeof event.body.continuity === 'string' ? event.body.continuity : undefined,
-      )}.`;
+      return `${triggerText}; ${safeContinuitySentenceFragment(continuity)}.`;
     }
     case 'session:session.provider_failed': {
       if (!isRecord(event.body)) return 'Session provider failed.';
       if (typeof event.body.provider === 'string' && typeof event.body.reason === 'string') {
+        const provider = event.body.provider;
+        const reason = event.body.reason as SessionProviderFailureReason;
         const message = typeof event.body.message === 'string' ? event.body.message : 'unknown';
-        if (event.body.reason === 'session_unavailable') {
-          return describeSessionUnavailable(event.body.provider, message);
-        }
-        if (event.body.reason === 'request_failed') {
-          return `${event.body.provider} turn failed: ${ensureSentence(message)}`;
+
+        switch (reason) {
+          case 'session_unavailable':
+            return describeSessionUnavailable(provider, message);
+          case 'request_failed':
+            return `${provider} turn failed: ${ensureSentence(message)}`;
+          default:
+            return assertNever(reason);
         }
       }
       return 'Session provider failed.';
