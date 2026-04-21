@@ -23,18 +23,18 @@ import {
 } from '../../jobs/api.js';
 import type { SessionAllocateOptions } from '../../sessions/shell/store.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
-import type { ProjectRequestPort } from '../contracts.js';
 import {
-  describeLegacyCoralFault,
-  type RecoveryFaultCompat,
-} from '../../shared/legacy-terminal-outcome-compat.js';
+  describeSessionInterrupted,
+  type SessionInterruptedFault,
+} from '../../sessions/fault.js';
+import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/api.js';
 import { rejectLaunch, SessionClaimError } from '../../jobs/shell/contracts.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
-import { materializeLegacyOutcome } from '../../jobs/reconcile/job-helpers.js';
+import { materializeSessionInterrupted } from '../../jobs/shell/legacy-ingest.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../shared/controller-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
@@ -143,10 +143,10 @@ export function buildEffectiveCoralEnv(
 }
 
 export function buildInterruptedAppServerReport(
-  fault: Extract<RecoveryFaultCompat, { kind: 'app_server_interrupted' }>,
+  fault: SessionInterruptedFault,
   conversationRef?: string,
 ): string {
-  const lines = [describeLegacyCoralFault(fault), ''];
+  const lines = [describeSessionInterrupted(fault), ''];
 
   if (fault.continuity === 'verified') {
     lines.push('Session is resumable. Use resume to continue.');
@@ -174,13 +174,13 @@ export function buildInterruptedAppServerReport(
   return lines.join('\n');
 }
 
-export function normalizeLegacyFaultOutcome(
+export function materializeInterruptedSessionOutcome(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   jobId: string,
   sessionId: string,
-  fault: RecoveryFaultCompat,
+  fault: SessionInterruptedFault,
 ): TerminalOutcome {
-  return materializeLegacyOutcome(progressStore, { kind: 'legacy_fault', fault }, { jobId, sessionId });
+  return materializeSessionInterrupted(progressStore, fault, { jobId, sessionId });
 }
 
 export function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {

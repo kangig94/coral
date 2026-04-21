@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { causeRefSchema, type CauseRef } from '../jobs/outcome.js';
+import { assertNever } from '../shared/utils.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 export type SessionInterruptTrigger = z.infer<typeof sessionInterruptTriggerSchema>;
@@ -64,3 +65,70 @@ export type SessionFault =
   | SessionInterruptedFault
   | SessionProviderFailedFault
   | SessionAdapterUnparseableFault;
+
+function ensureSentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+function providerDisplayName(provider: string): string {
+  switch (provider) {
+    case 'claude':
+      return 'Claude';
+    case 'codex':
+      return 'Codex';
+    default:
+      return provider;
+  }
+}
+
+export function continuitySentenceFragment(continuity: SessionContinuityState): string {
+  switch (continuity) {
+    case 'verified':
+      return 'continuity verified';
+    case 'missing':
+      return 'continuity missing';
+    case 'unavailable':
+      return 'continuity unavailable';
+    case 'pre_checkpoint_empty':
+      return 'no resumable conversation was available';
+    case 'pre_checkpoint_preserved':
+      return 'existing conversation reference was preserved';
+    default:
+      return assertNever(continuity);
+  }
+}
+
+export function describeSessionInterrupted(fault: SessionInterruptedFault): string {
+  const triggerText =
+    fault.trigger === 'restart'
+      ? 'App-server restarted during the turn'
+      : 'App-server handoff occurred during the turn';
+  return `${triggerText}; ${continuitySentenceFragment(fault.continuity)}.`;
+}
+
+export function describeSessionProviderFailed(fault: SessionProviderFailedFault): string {
+  const provider = providerDisplayName(fault.provider);
+
+  switch (fault.reason) {
+    case 'session_unavailable':
+      return `${provider} session unavailable: ${ensureSentence(fault.message)}`;
+    case 'request_failed': {
+      const message = fault.message.trim();
+      if (!message) {
+        return `${provider} turn failed.`;
+      }
+      if (message.toLowerCase().startsWith(provider.toLowerCase())) {
+        return ensureSentence(message);
+      }
+      return `${provider} turn failed: ${ensureSentence(message)}`;
+    }
+    default:
+      return assertNever(fault.reason);
+  }
+}
+
+export function describeSessionAdapterUnparseable(fault: SessionAdapterUnparseableFault): string {
+  const provider = providerDisplayName(fault.provider);
+  const exit = fault.exitCode === null ? 'unknown' : String(fault.exitCode);
+  return `${provider} produced unparseable output (exit ${exit}): ${fault.parseError}.`;
+}

@@ -1,4 +1,3 @@
-import { legacyWrapperCrashedFault } from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../views.js';
@@ -350,7 +349,10 @@ export function createRecoveryCoordinator({
               markJobAsError(
                 progressStore,
                 status,
-                legacyWrapperCrashedFault(`Recovery adoption failed: ${formatError(error)}`),
+                {
+                  kind: 'wrapper_crashed',
+                  cause: { message: `Recovery adoption failed: ${formatError(error)}` },
+                },
                 log,
               );
             }

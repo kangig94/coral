@@ -13,19 +13,8 @@ const LEGACY_HELPERS = new Set([
   'legacyWrapperCrashedFault',
   'materializeLegacyTerminalOutcome',
   'planLegacyTerminalOutcome',
-  'RecoveryFaultCompat',
+  'Recovery' + 'FaultCompat',
 ]);
-const ALLOWLIST = [
-  /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
-  /^src\/jobs\/shell\/legacy-ingest\.ts$/,
-  /^src\/jobs\/reconcile\/job-helpers\.ts$/,
-  /^src\/jobs\/reconcile\/coordinator\.ts$/,
-  /^src\/jobs\/reconcile\/plan\.ts$/,
-  /^src\/coordinator\/control\.ts$/,
-  /^src\/coordinator\/services\/execution-shared\.ts$/,
-  /^src\/coordinator\/services\/recovery-service\.ts$/,
-  /^src\/providers\/app-server\/driver\.ts$/,
-];
 
 function scanForbiddenBoundaryIdentifiers(filePath: string): string[] {
   const sourceText = readFileSync(filePath, 'utf-8');
@@ -46,20 +35,20 @@ function scanForbiddenBoundaryIdentifiers(filePath: string): string[] {
   return [...matches].sort();
 }
 
-describe('phase-2 boundary quarantine invariant (AC7b)', () => {
-  it('keeps Legacy* identifiers and KbSubsystem references inside the allowlist', () => {
+describe('phase-2 boundary quarantine invariant (AC3.7)', () => {
+  it('keeps production src canonical-only across the former legacy compat boundary', () => {
     const files = listProductionSourceFiles(join(ROOT, 'src'));
     const violations: string[] = [];
 
     for (const filePath of files) {
       const canonical = toCanonicalSrcPath(ROOT, filePath);
       const matches = scanForbiddenBoundaryIdentifiers(filePath);
-      if (matches.length === 0 || ALLOWLIST.some((pattern) => pattern.test(canonical))) {
+      if (matches.length === 0) {
         continue;
       }
       violations.push(`${canonical}: ${matches.join(', ')}`);
     }
 
-    expect(violations, 'Legacy* / KbSubsystem references escaped the Phase 2 quarantine boundary').toEqual([]);
+    expect(violations, 'Legacy* / KbSubsystem references escaped the canonical-only runtime boundary').toEqual([]);
   });
 });

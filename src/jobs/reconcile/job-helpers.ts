@@ -1,47 +1,33 @@
-import {
-  describeLegacyCoralFault,
-  type LegacyCoralFault,
-  type LegacyTerminalOutcome,
-  type RecoveryFaultCompat,
-} from '../../shared/legacy-terminal-outcome-compat.js';
 import { formatError } from '../../shared/utils.js';
+import {
+  describeJobProgressFault,
+  describeTerminalOutcome,
+  type JobLifecycleFault,
+  type JobProgressFault,
+  type TerminalOutcome,
+} from '../outcome.js';
 import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
 import type { ProgressStore } from '../job-store.js';
-import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
-import type { LegacyIngestOptions } from '../shell/legacy-ingest.js';
 import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import {
-  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-  PROVIDER_REQUEST_FAILED_KIND,
-  PROVIDER_SESSION_UNAVAILABLE_KIND,
-  type FaultPayload,
-} from '../../providers/fault.js';
-import type { TerminalOutcome } from '../outcome.js';
+  jobRecoveryNeedsDomainEvent,
+  materializeJobRecoveryFault,
+  materializeProviderFault,
+  type RuntimeIngestOptions,
+} from '../shell/legacy-ingest.js';
 
-export function faultPayloadToLegacyFault(fault: FaultPayload): LegacyCoralFault {
+type JobRecoveryError = JobLifecycleFault | JobProgressFault;
+
+function describeJobRecoveryError(fault: JobRecoveryError): string {
   switch (fault.kind) {
-    case ADAPTER_OUTPUT_UNPARSEABLE_KIND:
-      return {
-        kind: ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-        provider: fault.provider === 'claude' ? 'claude' : 'codex',
-        exitCode: fault.exitCode,
-        stdout: fault.stdout,
-        stderr: fault.stderr,
-        parseError: fault.parseError,
-      };
-    case PROVIDER_SESSION_UNAVAILABLE_KIND:
-      return {
-        kind: PROVIDER_SESSION_UNAVAILABLE_KIND,
-        provider: fault.provider === 'claude' ? 'claude' : 'codex',
-        note: fault.reason,
-      };
-    case PROVIDER_REQUEST_FAILED_KIND:
-      return {
-        kind: PROVIDER_REQUEST_FAILED_KIND,
-        provider: fault.provider === 'claude' ? 'claude' : 'codex',
-        message: fault.message,
-      };
+    case 'stale_status_schema':
+    case 'recovery_parse_failed':
+      return describeJobProgressFault(fault);
+    case 'ghost_launch':
+    case 'wrapper_lost':
+    case 'wrapper_crashed':
+      return describeTerminalOutcome({ kind: 'job_fault', fault });
   }
 }
 
@@ -79,24 +65,24 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
 }
 
 export function markJobAsError(
-  progressStore: ProgressStore,
+  progressStore: Pick<
+    ProgressStore,
+    'appendEventsWithResult' | 'appendTerminal' | 'hasLaunchRecord' | 'markTerminalStatus' | 'readStatus'
+    | 'updateLaunchState' | 'writeLaunchRecord' | 'writeStatus' | 'writeWorkflowResultMdOrThrow'
+  >,
   status: JobStatus,
-  fault: RecoveryFaultCompat,
+  fault: JobRecoveryError,
   log: (message: string) => void,
 ): void {
-  const legacyOutcome: LegacyTerminalOutcome = { kind: 'legacy_fault', fault };
-  const plan = planLegacyTerminalOutcome(legacyOutcome, {
-    jobId: status.jobId,
-    sessionId: status.sessionId,
-  });
-  if (plan.immediateOutcome === null && !progressStore.hasLaunchRecord(status.jobId)) {
+  if (jobRecoveryNeedsDomainEvent(fault) && !progressStore.hasLaunchRecord(status.jobId)) {
     progressStore.writeLaunchRecord(status.jobId, syntheticLaunchRecord(status));
   }
-  const outcome = materializeLegacyOutcome(progressStore, legacyOutcome, {
+
+  const outcome = materializeJobRecoveryFault(progressStore, fault, {
     jobId: status.jobId,
     sessionId: status.sessionId,
   });
-  const message = describeLegacyCoralFault(fault);
+  const message = describeJobRecoveryError(fault);
   const terminalResult: JobTerminal =
     status.jobKind === 'workflow'
       ? { content: '', workflow: { steps: [] }, outcome }
@@ -126,20 +112,6 @@ export function markJobAsError(
   }
 }
 
-export function materializeLegacyOutcome(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  outcome: LegacyTerminalOutcome,
-  options: LegacyIngestOptions,
-): TerminalOutcome {
-  const plan = planLegacyTerminalOutcome(outcome, options);
-  if (plan.immediateOutcome !== null) {
-    return plan.immediateOutcome;
-  }
-
-  const appended = progressStore.appendEventsWithResult(plan.domainEvents);
-  return materializeLegacyTerminalOutcome(plan, appended);
-}
-
 function syntheticLaunchRecord(status: JobStatus): JobLaunch {
   return {
     jobId: status.jobId,
@@ -165,7 +137,7 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
 export function materializeProviderTerminal(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   terminal: ProviderTerminalEventBody,
-  options: LegacyIngestOptions,
+  options: RuntimeIngestOptions,
 ): JobTerminal {
   return {
     content: terminal.terminal.content,
@@ -180,7 +152,7 @@ export function materializeProviderTerminal(
 function materializeProviderOutcome(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   outcome: ProviderTerminalEventBody['terminal']['outcome'],
-  options: LegacyIngestOptions,
+  options: RuntimeIngestOptions,
 ): TerminalOutcome {
   switch (outcome.kind) {
     case 'completed':
@@ -188,13 +160,6 @@ function materializeProviderOutcome(
     case 'aborted':
       return { kind: 'aborted', reason: outcome.reason };
     case 'failed':
-      return materializeLegacyOutcome(
-        progressStore,
-        {
-          kind: 'legacy_fault',
-          fault: faultPayloadToLegacyFault(outcome.fault),
-        },
-        options,
-      );
+      return materializeProviderFault(progressStore, outcome.fault, options);
   }
 }

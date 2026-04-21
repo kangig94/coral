@@ -6,6 +6,10 @@ import type {
 import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
 import { backendLog } from '../../shared/backend-log.js';
 import {
+  describeSessionInterrupted,
+  type SessionInterruptedFault,
+} from '../../sessions/fault.js';
+import {
   isAppServerRuntime,
   isTerminalPhase,
   type AppServerRuntime,
@@ -36,14 +40,10 @@ import {
   FINALIZE_CONTINUITY_MAX_RETRIES,
   buildInterruptedAppServerReport,
   isProviderContinuityBlob,
-  normalizeLegacyFaultOutcome,
+  materializeInterruptedSessionOutcome,
   type InterruptedAppServerReason,
   type InterruptedProbeOutcome,
 } from './execution-shared.js';
-import {
-  describeLegacyCoralFault,
-  type RecoveryFaultCompat,
-} from '../../shared/legacy-terminal-outcome-compat.js';
 
 export interface RecoveryServiceDeps {
   runtime: Runtime;
@@ -222,8 +222,7 @@ export class RecoveryService {
       mutation = { type: 'clear_non_resumable' };
     }
 
-    const fault: Extract<RecoveryFaultCompat, { kind: 'app_server_interrupted' }> = {
-      kind: 'app_server_interrupted',
+    const fault: SessionInterruptedFault = {
       trigger: options.reason,
       continuity:
         probeOutcome === 'verified'
@@ -243,14 +242,18 @@ export class RecoveryService {
     }
 
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
-    const outcome = normalizeLegacyFaultOutcome(
+    const outcome = materializeInterruptedSessionOutcome(
       this.deps.progressStore,
       launchRecord.jobId,
       launchRecord.sessionId,
       fault,
     );
 
-    this.deps.progressStore.updateLaunchState(launchRecord.jobId, 'error', describeLegacyCoralFault(fault));
+    this.deps.progressStore.updateLaunchState(
+      launchRecord.jobId,
+      'error',
+      describeSessionInterrupted(fault),
+    );
     this.deps.launchOrchestrator.writeJobTerminal(
       launchRecord.jobId,
       launchRecord.sessionId,

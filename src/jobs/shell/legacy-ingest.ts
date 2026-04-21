@@ -1,17 +1,25 @@
 import type { AppendedEvent } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/index.js';
-import type {
-  LegacyCoralFault,
-  LegacyTerminalOutcome,
-} from '../../shared/legacy-terminal-outcome-compat.js';
 import {
   ADAPTER_OUTPUT_UNPARSEABLE_KIND,
   PROVIDER_REQUEST_FAILED_KIND,
   PROVIDER_SESSION_UNAVAILABLE_KIND,
+  type FaultPayload,
 } from '../../providers/fault.js';
-import type { CauseRef, JobLifecycleFault, TerminalOutcome } from '../outcome.js';
+import type {
+  CauseRef,
+  JobLifecycleFault,
+  JobLaunchRejected,
+  JobProgressFault,
+  TerminalOutcome,
+} from '../outcome.js';
+import type {
+  SessionAdapterUnparseableFault,
+  SessionInterruptedFault,
+  SessionProviderFailedFault,
+} from '../../sessions/fault.js';
 
-export interface LegacyIngestOptions {
+export interface RuntimeIngestOptions {
   readonly jobId: string;
   readonly sessionId: string;
   readonly namespace?: string;
@@ -21,13 +29,20 @@ export interface LegacyIngestOptions {
   readonly workflowSlotId?: string;
 }
 
-export interface LegacyIngestPlan {
+interface RuntimeIngestPlan {
   readonly domainEvents: readonly CoralEventInput[];
   readonly immediateOutcome: Exclude<TerminalOutcome, { kind: 'failed' }> | null;
   readonly failedCauseEventIndex?: number;
 }
 
-function baseRefs(options: LegacyIngestOptions): NonNullable<CoralEventInput['refs']> {
+type JobRecoveryFault = JobLifecycleFault | JobProgressFault;
+type AppendResultRow = Pick<AppendedEvent, 'seq' | 'stream'>;
+type RuntimeAppendStore = Pick<
+  { appendEventsWithResult(events: readonly CoralEventInput[]): readonly AppendResultRow[] },
+  'appendEventsWithResult'
+>;
+
+function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
     sessionId: options.sessionId,
@@ -37,7 +52,7 @@ function baseRefs(options: LegacyIngestOptions): NonNullable<CoralEventInput['re
 }
 
 function baseEvent(
-  options: LegacyIngestOptions,
+  options: RuntimeIngestOptions,
   stream: CoralEventInput['stream'],
   type: string,
   body: unknown,
@@ -54,21 +69,10 @@ function baseEvent(
   };
 }
 
-function jobFaultFromLegacy(fault: Extract<LegacyCoralFault, { kind: 'ghost_launch' | 'wrapper_lost' | 'wrapper_crashed' }>): JobLifecycleFault {
-  switch (fault.kind) {
-    case 'ghost_launch':
-      return { kind: 'ghost_launch' };
-    case 'wrapper_lost':
-      return { kind: 'wrapper_lost' };
-    case 'wrapper_crashed':
-      return { kind: 'wrapper_crashed', cause: fault.cause };
-  }
-}
-
 function planFailed(
-  options: LegacyIngestOptions,
+  options: RuntimeIngestOptions,
   event: CoralEventInput,
-): LegacyIngestPlan {
+): RuntimeIngestPlan {
   return {
     domainEvents: [event],
     immediateOutcome: null,
@@ -76,82 +80,8 @@ function planFailed(
   };
 }
 
-export function planLegacyTerminalOutcome(
-  outcome: LegacyTerminalOutcome,
-  options: LegacyIngestOptions,
-): LegacyIngestPlan {
-  switch (outcome.kind) {
-    case 'completed':
-      return { domainEvents: [], immediateOutcome: { kind: 'completed' } };
-    case 'aborted':
-      return { domainEvents: [], immediateOutcome: { kind: 'aborted', reason: outcome.reason } };
-    case 'provider_exit':
-      return { domainEvents: [], immediateOutcome: { kind: 'provider_exit', code: outcome.code, ...(outcome.note ? { note: outcome.note } : {}) } };
-    case 'legacy_fault':
-      switch (outcome.fault.kind) {
-        case 'ghost_launch':
-        case 'wrapper_lost':
-        case 'wrapper_crashed':
-          return {
-            domainEvents: [],
-            immediateOutcome: { kind: 'job_fault', fault: jobFaultFromLegacy(outcome.fault) },
-          };
-        case 'stale_status_schema':
-        case 'recovery_parse_failed':
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'job', id: options.jobId }, 'job.progress.emitted', outcome.fault),
-          );
-        case 'launch_rejected':
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'job', id: options.jobId }, 'job.launch.rejected', outcome.fault),
-          );
-        case 'app_server_interrupted':
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.interrupted', outcome.fault),
-          );
-        case ADAPTER_OUTPUT_UNPARSEABLE_KIND:
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', {
-              provider: outcome.fault.provider,
-              exitCode: outcome.fault.exitCode,
-              stdout: outcome.fault.stdout,
-              stderr: outcome.fault.stderr,
-              parseError: outcome.fault.parseError,
-            }),
-          );
-        case PROVIDER_SESSION_UNAVAILABLE_KIND:
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {
-              provider: outcome.fault.provider,
-              reason: 'session_unavailable',
-              message: outcome.fault.note,
-            }),
-          );
-        case PROVIDER_REQUEST_FAILED_KIND:
-          return planFailed(
-            options,
-            baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {
-              provider: outcome.fault.provider,
-              reason: 'request_failed',
-              message: outcome.fault.message,
-            }),
-          );
-        case 'workflow_atom_failed':
-        case 'workflow_aborted':
-          throw new Error(
-            `Legacy workflow fault '${outcome.fault.kind}' must be bridged at the workflow boundary, not jobs/shell/legacy-ingest.ts`,
-          );
-      }
-  }
-}
-
-export function materializeLegacyTerminalOutcome(
-  plan: LegacyIngestPlan,
+function materializePlannedOutcome(
+  plan: RuntimeIngestPlan,
   appendedEvents: readonly Pick<AppendedEvent, 'seq' | 'stream'>[],
 ): TerminalOutcome {
   if (plan.immediateOutcome !== null) {
@@ -160,12 +90,12 @@ export function materializeLegacyTerminalOutcome(
 
   const index = plan.failedCauseEventIndex;
   if (index === undefined) {
-    throw new Error('Legacy ingest plan is missing failedCauseEventIndex.');
+    throw new Error('Runtime ingest plan is missing failedCauseEventIndex.');
   }
 
   const event = appendedEvents[index];
   if (!event) {
-    throw new Error('Legacy ingest outcome requires an appended cause event.');
+    throw new Error('Runtime ingest outcome requires an appended cause event.');
   }
 
   return {
@@ -177,9 +107,140 @@ export function materializeLegacyTerminalOutcome(
   };
 }
 
-export function immediateLegacyTerminalOutcome(outcome: LegacyTerminalOutcome): TerminalOutcome | null {
-  return planLegacyTerminalOutcome(outcome, {
-    jobId: 'legacy-ingest',
-    sessionId: 'legacy-ingest',
-  }).immediateOutcome;
+function appendFailedEvent(
+  progressStore: RuntimeAppendStore,
+  event: CoralEventInput,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  const plan = planFailed(options, event);
+  const appended = progressStore.appendEventsWithResult(plan.domainEvents);
+  return materializePlannedOutcome(plan, appended);
+}
+
+function planJobRecoveryFault(
+  fault: JobRecoveryFault,
+  options: RuntimeIngestOptions,
+): RuntimeIngestPlan {
+  switch (fault.kind) {
+    case 'ghost_launch':
+    case 'wrapper_lost':
+    case 'wrapper_crashed':
+      return {
+        domainEvents: [],
+        immediateOutcome: { kind: 'job_fault', fault },
+      };
+    case 'stale_status_schema':
+    case 'recovery_parse_failed':
+      return planFailed(
+        options,
+        baseEvent(options, { kind: 'job', id: options.jobId }, 'job.progress.emitted', fault),
+      );
+  }
+}
+
+export function jobRecoveryNeedsDomainEvent(fault: JobRecoveryFault): boolean {
+  return fault.kind === 'stale_status_schema' || fault.kind === 'recovery_parse_failed';
+}
+
+export function materializeJobRecoveryFault(
+  progressStore: RuntimeAppendStore,
+  fault: JobRecoveryFault,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  const plan = planJobRecoveryFault(fault, options);
+  if (plan.immediateOutcome !== null) {
+    return plan.immediateOutcome;
+  }
+
+  const appended = progressStore.appendEventsWithResult(plan.domainEvents);
+  return materializePlannedOutcome(plan, appended);
+}
+
+export function materializeJobLaunchRejected(
+  progressStore: RuntimeAppendStore,
+  rejected: JobLaunchRejected,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  return appendFailedEvent(
+    progressStore,
+    baseEvent(options, { kind: 'job', id: options.jobId }, 'job.launch.rejected', rejected),
+    options,
+  );
+}
+
+export function materializeSessionInterrupted(
+  progressStore: RuntimeAppendStore,
+  fault: SessionInterruptedFault,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  return appendFailedEvent(
+    progressStore,
+    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.interrupted', fault),
+    options,
+  );
+}
+
+export function materializeSessionProviderFailed(
+  progressStore: RuntimeAppendStore,
+  fault: SessionProviderFailedFault,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  return appendFailedEvent(
+    progressStore,
+    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', fault),
+    options,
+  );
+}
+
+export function materializeSessionAdapterUnparseable(
+  progressStore: RuntimeAppendStore,
+  fault: SessionAdapterUnparseableFault,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  return appendFailedEvent(
+    progressStore,
+    baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', fault),
+    options,
+  );
+}
+
+export function materializeProviderFault(
+  progressStore: RuntimeAppendStore,
+  fault: FaultPayload,
+  options: RuntimeIngestOptions,
+): TerminalOutcome {
+  switch (fault.kind) {
+    case ADAPTER_OUTPUT_UNPARSEABLE_KIND:
+      return materializeSessionAdapterUnparseable(
+        progressStore,
+        {
+          provider: fault.provider,
+          exitCode: fault.exitCode,
+          stdout: fault.stdout,
+          stderr: fault.stderr,
+          parseError: fault.parseError,
+        },
+        options,
+      );
+    case PROVIDER_SESSION_UNAVAILABLE_KIND:
+      return materializeSessionProviderFailed(
+        progressStore,
+        {
+          provider: fault.provider,
+          reason: 'session_unavailable',
+          message: fault.reason,
+        },
+        options,
+      );
+    case PROVIDER_REQUEST_FAILED_KIND:
+      return materializeSessionProviderFailed(
+        progressStore,
+        {
+          provider: fault.provider,
+          reason: 'request_failed',
+          message: fault.message,
+        },
+        options,
+      );
+  }
 }

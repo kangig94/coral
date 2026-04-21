@@ -15,4 +15,13 @@ export function registerJobsUpcasters(registry: UpcasterRegistry): void {
       ...(body.jobKind === undefined ? { jobKind: 'provider' as const } : {}),
     };
   });
+
+  registry.registerUpcaster('job.launch.rejected', 1, 2, (body) => {
+    if (!isRecord(body) || body.kind !== 'launch_rejected') {
+      return body;
+    }
+
+    const { kind: _kind, ...canonical } = body;
+    return canonical;
+  });
 }

@@ -19,7 +19,6 @@ const LEGACY_IDENTIFIERS = [
 ];
 
 const ALLOWLIST = [
-  /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
   /^src\/jobs\/shell\/legacy-ingest\.ts$/,
   /^src\/providers\/app-server\/driver\.ts$/,
   /^src\/simulation\/(schema|core\/index|normalize)\.ts$/,

@@ -8,7 +8,6 @@ import type { IdleTimer } from './live/idle.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
-import { legacyWrapperCrashedFault } from '../shared/legacy-terminal-outcome-compat.js';
 import {
   createRecoveryCoordinator,
   createReplacementBackendOwnershipChecker,
@@ -183,7 +182,10 @@ export function cleanupStaleJobs(
 export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      markJobAsError(progressStore, status, legacyWrapperCrashedFault(message), () => {});
+      markJobAsError(progressStore, status, {
+        kind: 'wrapper_crashed',
+        cause: { message },
+      }, () => {});
     } catch {
       // fail-isolated: skip this job, continue with others
     }

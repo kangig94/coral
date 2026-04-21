@@ -3,7 +3,7 @@ import { belongsToNamespace } from '../views.js';
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import type { RecoveryFaultCompat } from '../../shared/legacy-terminal-outcome-compat.js';
+import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
 
 /**
  * Invariant — jobIds freshness:
@@ -35,7 +35,7 @@ export interface JobStoreSnapshot {
 
 export type RecoveryAction =
   | { type: 'deleteIncompleteDir'; jobId: string }
-  | { type: 'markError'; jobId: string; fault: RecoveryFaultCompat; status: JobStatus }
+  | { type: 'markError'; jobId: string; fault: JobLifecycleFault | JobProgressFault; status: JobStatus }
   | { type: 'registerQueued'; jobId: string; launchRecord: JobLaunch }
   | {
       type: 'registerRunning';

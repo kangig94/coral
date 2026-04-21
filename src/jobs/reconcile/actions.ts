@@ -6,8 +6,6 @@ import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type {
   ProviderRecoveryContract,
-  ProviderTerminalEventBody as ProviderTerminalBody,
-  TerminalOutcome as ProviderTerminalOutcome,
 } from '../../providers/contract.js';
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
 import type { ProgressStore } from '../job-store.js';
@@ -17,8 +15,9 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from '../../coordinator/contracts.js';
-import { faultPayloadToLegacyFault, markJobAsError, materializeLegacyOutcome } from './job-helpers.js';
+import { markJobAsError, materializeProviderTerminal } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
+import { materializeJobRecoveryFault } from '../shell/legacy-ingest.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
@@ -187,10 +186,10 @@ export function finalizeDeadAdoptedJob({
           fallbackConversationRef: launchRecord.request.conversationRef,
         })
         .then((result) => {
-          const terminal = materializeRecoveredProviderTerminal(progressStore, result.terminal, {
+          const terminal = materializeProviderTerminal(progressStore, result.terminal, {
             jobId,
             sessionId: launchRecord.sessionId,
-          }, result.continuity);
+          });
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
@@ -201,14 +200,11 @@ export function finalizeDeadAdoptedJob({
         })
         .catch((recoverErr: unknown) => {
           log(`Provider recovery failed for job ${jobId}: ${formatError(recoverErr)}\n`);
-          const outcome = materializeLegacyOutcome(
+          const outcome = materializeJobRecoveryFault(
             progressStore,
             {
-              kind: 'legacy_fault',
-              fault: {
-                kind: 'recovery_parse_failed',
-                cause: { message: formatError(recoverErr) },
-              },
+              kind: 'recovery_parse_failed',
+              cause: { message: formatError(recoverErr) },
             },
             { jobId, sessionId: launchRecord.sessionId },
           );
@@ -266,42 +262,4 @@ export function finalizeDeadAdoptedJob({
     },
     'error',
   );
-}
-
-function materializeRecoveredProviderTerminal(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  terminal: ProviderTerminalBody,
-  options: { jobId: string; sessionId: string },
-  _continuity?: { conversationRef: string | null; resumable: boolean; providerContinuity?: unknown },
-): JobTerminal {
-  return {
-    content: terminal.terminal.content,
-    ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
-    ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
-    ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
-    ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
-    outcome: materializeRecoveredProviderOutcome(progressStore, terminal.terminal.outcome, options),
-  };
-}
-
-function materializeRecoveredProviderOutcome(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  outcome: ProviderTerminalOutcome,
-  options: { jobId: string; sessionId: string },
-): TerminalOutcome {
-  switch (outcome.kind) {
-    case 'completed':
-      return { kind: 'completed' };
-    case 'aborted':
-      return { kind: 'aborted', reason: outcome.reason };
-    case 'failed':
-      return materializeLegacyOutcome(
-        progressStore,
-        {
-          kind: 'legacy_fault',
-          fault: faultPayloadToLegacyFault(outcome.fault),
-        },
-        options,
-      );
-  }
 }
