@@ -38,6 +38,7 @@ import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { RpcPorts } from '../../transport/rpc-ports.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
+import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import {
   createLifecycle,
   type LifecycleController,
@@ -325,7 +326,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     void handleRequest(req, res).catch((error) => {
       world.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, { code: 'internal_error', message: 'Internal error' });
+        sendJson(res, 500, buildTransportErrorResponse(error).body);
         return;
       }
       res.destroy();

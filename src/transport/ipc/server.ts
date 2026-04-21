@@ -11,6 +11,7 @@ import { createLineFramer } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc-catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { buildJsonRpcError, formatError, isNoEntryError } from '../../shared/utils.js';
+import { buildTransportErrorResponse } from '../error-response.js';
 
 const INVALID_JSON_RESPONSE = {
   code: 'invalid_request',
@@ -337,7 +338,8 @@ async function dispatchFrame(
     }
     rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
     if (!socket.destroyed && !socket.writableEnded) {
-      writeEnvelope(socket, requestErrorResponse(request.id, 'Internal error'));
+      const response = buildTransportErrorResponse(error);
+      writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data));
       socket.end();
     }
   } finally {

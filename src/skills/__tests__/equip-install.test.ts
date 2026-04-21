@@ -21,11 +21,17 @@ interface InstallerChoice {
   dims: number | null;
 }
 
+interface RequiredEnvRule {
+  provider: string;
+  env: string[];
+}
+
 interface CatalogPackage {
   id: string;
   name: string;
   description: string;
   status?: string;
+  statusDescription?: string;
 }
 
 interface InstallerJson {
@@ -39,7 +45,7 @@ interface InstallerJson {
   equipment?: Array<{ slot: string; name: string; status: string }>;
   onboarding?: {
     envPath?: string;
-    requiredEnv?: string[];
+    requiredEnv?: RequiredEnvRule[];
     providerEnvKey?: string;
     modelEnvKey?: string;
     apiKeyEnvKey?: string;
@@ -55,6 +61,8 @@ interface InstallerJson {
   code?: string;
   userMessage?: string;
   remediation?: string;
+  context?: Record<string, unknown>;
+  suggestions?: string[];
 }
 
 interface Fixture {
@@ -381,6 +389,28 @@ function findCatalogPackage(result: InstallerJson, id: string): CatalogPackage {
   return entry as CatalogPackage;
 }
 
+function resolveRequiredEnvForProvider(
+  onboarding: NonNullable<InstallerJson['onboarding']>,
+  provider: string,
+): string[] {
+  const matchedRule = onboarding.requiredEnv?.find((rule) => rule.provider === provider)
+    ?? onboarding.requiredEnv?.find((rule) => rule.provider === 'default');
+  expect(matchedRule).toBeDefined();
+  return [...(matchedRule as RequiredEnvRule).env];
+}
+
+function isOnboardingSatisfied(
+  onboarding: NonNullable<InstallerJson['onboarding']>,
+  provider: string,
+  env: Record<string, string>,
+): boolean {
+  const requiredEnv = resolveRequiredEnvForProvider(onboarding, provider);
+  return requiredEnv.every((key) => {
+    const value = env[key];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
 describe('skills/equip/install.mjs needle flow', () => {
   it('keeps the JS helper seam aligned with the TypeScript equipment path helpers', async () => {
     const fixture = createFixture();
@@ -420,11 +450,20 @@ describe('skills/equip/install.mjs needle flow', () => {
       version: NEEDLE_VERSION,
       onboarding: {
         envPath: join(fixture.homeDir, '.coral', '.env'),
-        requiredEnv: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
+        requiredEnv: [
+          {
+            provider: 'local-onnx',
+            env: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_MODEL'],
+          },
+          {
+            provider: 'default',
+            env: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
+          },
+        ],
         providerEnvKey: 'CORAL_EMBEDDING_PROVIDER',
         modelEnvKey: 'CORAL_EMBEDDING_MODEL',
         apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
-        securityNotice: 'Store API keys in ~/.coral/.env, not in settings.json.',
+        securityNotice: 'Store CORAL_EMBEDDING_API_KEY in ~/.coral/.env directly, NOT in settings.json.',
         localRuntime: {
           targetDir: fixture.runtimeDir,
           bootstrapPackageJson: true,
@@ -469,6 +508,43 @@ describe('skills/equip/install.mjs needle flow', () => {
     expect(curlCall).toContain(
       `https://github.com/kangig94/coral-needle/releases/download/v${NEEDLE_VERSION}/coral-needle-v${NEEDLE_VERSION}-${process.platform}-${process.arch === 'x64' ? 'amd64' : process.arch}.tar.gz`,
     );
+  });
+
+  it('emits provider-aware onboarding requirements so local setup completes without an API key', async () => {
+    const fixture = createFixture();
+    writeFakeCurl(fixture.binDir);
+    createPrebuildArchive(fixture.archivePath, 'coral-needle.node', Buffer.from('native-addon'));
+
+    const result = parseResult(await runInstall(fixture, ['needle']));
+    const onboarding = result.onboarding as NonNullable<InstallerJson['onboarding']>;
+
+    expect(resolveRequiredEnvForProvider(onboarding, 'local-onnx')).toEqual([
+      'CORAL_EMBEDDING_PROVIDER',
+      'CORAL_EMBEDDING_MODEL',
+    ]);
+    expect(resolveRequiredEnvForProvider(onboarding, 'gemini')).toEqual([
+      'CORAL_EMBEDDING_PROVIDER',
+      'CORAL_EMBEDDING_API_KEY',
+    ]);
+    expect(resolveRequiredEnvForProvider(onboarding, 'openai-compatible')).toEqual([
+      'CORAL_EMBEDDING_PROVIDER',
+      'CORAL_EMBEDDING_API_KEY',
+    ]);
+
+    expect(isOnboardingSatisfied(onboarding, 'local-onnx', {
+      CORAL_EMBEDDING_PROVIDER: 'local-onnx',
+      CORAL_EMBEDDING_MODEL: 'nomic-embed-text',
+    })).toBe(true);
+    expect(isOnboardingSatisfied(onboarding, 'local-onnx', {
+      CORAL_EMBEDDING_PROVIDER: 'local-onnx',
+    })).toBe(false);
+    expect(isOnboardingSatisfied(onboarding, 'gemini', {
+      CORAL_EMBEDDING_PROVIDER: 'gemini',
+    })).toBe(false);
+    expect(isOnboardingSatisfied(onboarding, 'gemini', {
+      CORAL_EMBEDDING_PROVIDER: 'gemini',
+      CORAL_EMBEDDING_API_KEY: 'secret',
+    })).toBe(true);
   });
 
   it('installs needle into the dev equipment dir when CORAL_FLAVOR=dev', async () => {
@@ -547,6 +623,42 @@ describe('skills/equip/install.mjs needle flow', () => {
     });
   });
 
+  it('suggests a concrete next step when uninstall is missing an equipment name', async () => {
+    const fixture = createFixture();
+
+    const result = parseErrorResult(await runInstall(fixture, ['uninstall']));
+
+    expect(result).toEqual({
+      status: 'error',
+      message: 'uninstall requires a package name',
+      suggestions: ["Use '/equip uninstall needle'."],
+    });
+  });
+
+  it('suggests a concrete next step when --update is missing a package name', async () => {
+    const fixture = createFixture();
+
+    const result = parseErrorResult(await runInstall(fixture, ['--update']));
+
+    expect(result).toEqual({
+      status: 'error',
+      message: '--update requires a package name',
+      suggestions: ["Use '/equip --update needle'."],
+    });
+  });
+
+  it('suggests listing the catalog for unknown packages', async () => {
+    const fixture = createFixture();
+
+    const result = parseErrorResult(await runInstall(fixture, ['unknown-package']));
+
+    expect(result).toEqual({
+      status: 'error',
+      message: 'Unknown package unknown-package',
+      suggestions: ["Run '/equip --list' to see available packages."],
+    });
+  });
+
   it('routes register_equipment through the standalone coordinator IPC helper', async () => {
     const fixture = createFixture();
     const coordinator = await startFakeCoordinator(fixture, () => ({
@@ -581,6 +693,35 @@ describe('skills/equip/install.mjs needle flow', () => {
     }
   });
 
+  it('surfaces serialized coordinator setup errors through coordinator-client.mjs', async () => {
+    const fixture = createFixture();
+    const coordinator = await startFakeCoordinator(fixture, () => ({
+      error: {
+        code: -32603,
+        message: 'Another /equip is in progress for needle.',
+        data: {
+          code: 'equipment_install_lock_contended',
+          userMessage: 'Another /equip is in progress for needle.',
+          remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+          context: { name: 'needle' },
+        },
+      },
+    }));
+
+    try {
+      const result = parseErrorResult(await runCoordinatorClient(fixture, ['register', 'needle']));
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'equipment_install_lock_contended',
+        userMessage: 'Another /equip is in progress for needle.',
+        remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+        context: { name: 'needle' },
+      });
+    } finally {
+      await coordinator.close();
+    }
+  });
+
   it('merges coordinator equipment state into --list output', async () => {
     const fixture = createFixture();
     const coordinator = await startFakeCoordinator(fixture, () => ({
@@ -601,6 +742,7 @@ describe('skills/equip/install.mjs needle flow', () => {
       expect(findCatalogPackage(result, 'needle')).toMatchObject({
         id: 'needle',
         status: 'catching_up',
+        statusDescription: 'Registered and replaying the corpus.',
       });
       expect(findCatalogPackage(result, 'cgc')).toMatchObject({
         id: 'cgc',
@@ -636,6 +778,28 @@ describe('skills/equip/install.mjs needle flow', () => {
       expect(findCatalogPackage(result, 'needle')).toMatchObject({
         id: 'needle',
         status: 'not_equipped',
+        statusDescription: 'Needle is not installed.',
+      });
+    } finally {
+      await coordinator.close();
+    }
+  });
+
+  it('returns a retry suggestion when --list cannot use the coordinator helper', async () => {
+    const fixture = createFixture();
+    const coordinator = await startFakeCoordinator(fixture, () => ({
+      error: {
+        code: -32000,
+        message: 'coordinator.listEquipment failed',
+      },
+    }));
+
+    try {
+      const result = parseErrorResult(await runInstall(fixture, ['--list']));
+      expect(result).toEqual({
+        status: 'error',
+        message: 'Could not list equipment catalog',
+        suggestions: ["Check that the Coral coordinator is running, then retry '/equip --list'."],
       });
     } finally {
       await coordinator.close();
@@ -680,6 +844,27 @@ describe('skills/equip/install.mjs needle flow', () => {
       expect(result).toEqual({
         status: 'not_equipped',
         name: 'needle',
+      });
+    } finally {
+      await coordinator.close();
+    }
+  });
+
+  it('returns a retry suggestion when uninstall cannot use the coordinator helper', async () => {
+    const fixture = createFixture();
+    const coordinator = await startFakeCoordinator(fixture, () => ({
+      error: {
+        code: -32000,
+        message: 'coordinator.unregisterEquipment failed',
+      },
+    }));
+
+    try {
+      const result = parseErrorResult(await runInstall(fixture, ['uninstall', 'needle']));
+      expect(result).toEqual({
+        status: 'error',
+        message: 'Could not uninstall needle',
+        suggestions: ["Check that the Coral coordinator is running, then retry '/equip uninstall needle'."],
       });
     } finally {
       await coordinator.close();

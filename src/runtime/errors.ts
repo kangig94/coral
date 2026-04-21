@@ -1,3 +1,5 @@
+import { isRecord } from '../shared/utils.js';
+
 export interface CoralSetupErrorInit {
   code: string;
   userMessage: string;
@@ -6,6 +8,7 @@ export interface CoralSetupErrorInit {
 }
 
 export type CoralSetupErrorContext = Record<string, unknown>;
+export type SerializedCoralSetupError = CoralSetupErrorInit;
 
 export type DocumentedCoralSetupErrorCode =
   | 'equipment_install_lock_contended'
@@ -107,4 +110,35 @@ export class CoralSetupError extends Error {
     this.context = init.context;
     Object.setPrototypeOf(this, CoralSetupError.prototype);
   }
+}
+
+function isSerializedCoralSetupError(error: unknown): error is SerializedCoralSetupError {
+  return (
+    isRecord(error)
+    && typeof error.code === 'string'
+    && typeof error.userMessage === 'string'
+    && typeof error.remediation === 'string'
+  );
+}
+
+export function serializeCoralSetupError(error: unknown): SerializedCoralSetupError | null {
+  if (error instanceof CoralSetupError) {
+    return {
+      code: error.code,
+      userMessage: error.userMessage,
+      remediation: error.remediation,
+      ...(isRecord(error.context) ? { context: error.context } : {}),
+    };
+  }
+
+  if (!isSerializedCoralSetupError(error)) {
+    return null;
+  }
+
+  return {
+    code: error.code,
+    userMessage: error.userMessage,
+    remediation: error.remediation,
+    ...(isRecord(error.context) ? { context: error.context } : {}),
+  };
 }

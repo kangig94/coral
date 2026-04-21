@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Equip installer — downloads Coral companion tooling and runtime dependencies for Claude Code.
-// Usage: node install.mjs [--list | [--update] <package> | uninstall <package>]
+// Usage: node install.mjs [--list | [--update] <package> | uninstall <equipment-name>]
 // Outputs a single JSON line to stdout.
 
 import { execFileSync, execSync } from 'node:child_process';
@@ -47,7 +47,26 @@ function needlePlatformKey() {
   return `${platform()}-${NEEDLE_ARCH_MAP[arch()] || arch()}`;
 }
 
-const NEEDLE_SECURITY_NOTICE = 'Store API keys in ~/.coral/.env, not in settings.json.';
+const NEEDLE_SECURITY_NOTICE = 'Store CORAL_EMBEDDING_API_KEY in ~/.coral/.env directly, NOT in settings.json.';
+const NEEDLE_REQUIRED_ENV = [
+  {
+    provider: 'local-onnx',
+    env: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_MODEL'],
+  },
+  {
+    provider: 'default',
+    env: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
+  },
+];
+const NEEDLE_STATUS_DESCRIPTIONS = {
+  equipped: 'Active in the coordinator.',
+  catching_up: 'Registered and replaying the corpus.',
+  inactive: 'Installed locally but not registered. Run /equip needle to reactivate.',
+  unavailable: 'Binary missing. Run /equip needle to reinstall.',
+  disabled_pending_reinstall: 'Load failed. Run /equip needle to reinstall.',
+  installing: 'Another /equip is currently installing needle.',
+  not_equipped: 'Needle is not installed.',
+};
 const NEEDLE_ONBOARDING_CHOICES = [
   {
     id: 'local-nomic-embed-text',
@@ -216,7 +235,7 @@ function resolveNeedleTargetVersion(entry, requestedVersion) {
 function buildKbOnboarding(runtimeDir) {
   return {
     envPath: coralEnvPathFromEnv(),
-    requiredEnv: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
+    requiredEnv: NEEDLE_REQUIRED_ENV,
     providerEnvKey: 'CORAL_EMBEDDING_PROVIDER',
     modelEnvKey: 'CORAL_EMBEDDING_MODEL',
     apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
@@ -255,7 +274,7 @@ function extractStructuredError(error) {
   return null;
 }
 
-function coordinatorErrorJson(error, fallbackMessage) {
+function coordinatorErrorJson(error, fallbackMessage, suggestions = []) {
   const structured = extractStructuredError(error);
   if (structured !== null) {
     return {
@@ -264,12 +283,23 @@ function coordinatorErrorJson(error, fallbackMessage) {
       userMessage: structured.userMessage,
       remediation: structured.remediation,
       ...(structured.context === undefined ? {} : { context: structured.context }),
+      ...(suggestions.length === 0 ? {} : { suggestions }),
     };
   }
 
   return {
     status: 'error',
     message: fallbackMessage ?? (error instanceof Error ? error.message : String(error)),
+    ...(suggestions.length === 0 ? {} : { suggestions }),
+  };
+}
+
+function buildErrorResult(message, suggestions = [], extra = {}) {
+  return {
+    status: 'error',
+    message,
+    ...(suggestions.length === 0 ? {} : { suggestions }),
+    ...extra,
   };
 }
 
@@ -307,14 +337,26 @@ async function buildCatalogPackages() {
       : [],
   );
 
-  return Object.entries(CATALOG).map(([id, item]) => ({
-    id,
-    name: item.name,
-    description: item.description,
-    ...(isNeedleCatalogEntry(item)
-      ? { status: resolveNeedleCatalogStatus(item, equipmentByName.get(id)) }
-      : {}),
-  }));
+  return Object.entries(CATALOG).map(([id, item]) => {
+    if (!isNeedleCatalogEntry(item)) {
+      return {
+        id,
+        name: item.name,
+        description: item.description,
+      };
+    }
+
+    const status = resolveNeedleCatalogStatus(item, equipmentByName.get(id));
+    return {
+      id,
+      name: item.name,
+      description: item.description,
+      status,
+      ...(Object.hasOwn(NEEDLE_STATUS_DESCRIPTIONS, status)
+        ? { statusDescription: NEEDLE_STATUS_DESCRIPTIONS[status] }
+        : {}),
+    };
+  });
 }
 
 function tarFieldToString(buffer) {
@@ -489,7 +531,10 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
     if (!uninstallTarget) {
       return {
         exitCode: 1,
-        result: { status: 'error', message: 'Package name required with uninstall' },
+        result: buildErrorResult(
+          'uninstall requires a package name',
+          ["Use '/equip uninstall needle'."],
+        ),
       };
     }
 
@@ -505,7 +550,11 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
     } catch (error) {
       return {
         exitCode: 1,
-        result: coordinatorErrorJson(error, `Could not uninstall ${uninstallTarget}`),
+        result: coordinatorErrorJson(
+          error,
+          `Could not uninstall ${uninstallTarget}`,
+          [`Check that the Coral coordinator is running, then retry '/equip uninstall ${uninstallTarget}'.`],
+        ),
       };
     }
   }
@@ -522,7 +571,11 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
     } catch (error) {
       return {
         exitCode: 1,
-        result: coordinatorErrorJson(error, 'Could not list equipment catalog'),
+        result: coordinatorErrorJson(
+          error,
+          'Could not list equipment catalog',
+          ["Check that the Coral coordinator is running, then retry '/equip --list'."],
+        ),
       };
     }
   }
@@ -530,7 +583,10 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
   if (!rawPkg) {
     return {
       exitCode: 1,
-      result: { status: 'error', message: 'Package name required with --update' },
+      result: buildErrorResult(
+        '--update requires a package name',
+        ["Use '/equip --update needle'."],
+      ),
     };
   }
 
@@ -539,7 +595,10 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
   if (!entry) {
     return {
       exitCode: 1,
-      result: { status: 'error', message: `Unknown package: ${pkg}` },
+      result: buildErrorResult(
+        `Unknown package ${pkg}`,
+        ["Run '/equip --list' to see available packages."],
+      ),
     };
   }
 
@@ -556,12 +615,13 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
   } catch (error) {
     return {
       exitCode: 1,
-      result: {
-        status: 'error',
-        message: `Could not install ${pkg}`,
-        errors: [error instanceof Error ? error.message : String(error)],
-        suggestions: [],
-      },
+      result: buildErrorResult(
+        `Could not install ${pkg}`,
+        [`Retry with '/equip ${pkg}' because only the packaged needle version is supported.`],
+        {
+          errors: [error instanceof Error ? error.message : String(error)],
+        },
+      ),
     };
   }
 
