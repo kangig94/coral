@@ -3,20 +3,20 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BackendHealth } from '../../client/backend-health.js';
-import { readBackendInfo, type BackendInfo } from '../../coordinator/discovery.js';
-import { jobsDir, pluginRootNamespace } from '../../infra/paths.js';
-import { isProcessAlive } from '../../shared/node-process.js';
-import type { JobStatus } from '../../jobs/views.js';
-import { appendEvents } from '../../store/append.js';
-import { openStoreDatabase } from '../../store/db.js';
-import { ensureStoreMigrationsDir } from '../../store/migrations.js';
-import { storePaths } from '../../store/paths.js';
-import { composeReducers } from '../../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
-import { jobsRegistry } from '../../jobs/events.js';
-import { createRealRuntime } from '../../runtime/real.js';
-import { ensure } from '../../transport/ipc/ensure.js';
+import type { BackendHealth } from '../../../client/backend-health.js';
+import { readBackendInfo, type BackendInfo } from '../../../coordinator/discovery.js';
+import { jobsDir, pluginRootNamespace } from '../../../infra/paths.js';
+import { isProcessAlive } from '../../../shared/node-process.js';
+import type { JobStatus } from '../../../jobs/views.js';
+import { appendEvents } from '../../../store/append.js';
+import { openStoreDatabase } from '../../../store/db.js';
+import { ensureStoreMigrationsDir } from '../../../store/migrations.js';
+import { storePaths } from '../../../store/paths.js';
+import { composeReducers } from '../../../store/reducers.js';
+import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
+import { jobsRegistry } from '../../../jobs/events.js';
+import { createRealRuntime } from '../../../runtime/real.js';
+import { ensure } from '../../../transport/ipc/ensure.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {

@@ -25,6 +25,7 @@
     "format:check": "prettier --check 'src/**/*.ts'",
     "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration:lifecycle": "vitest run --config vitest.integration-lifecycle.config.ts",
     "test:simulation": "vitest run --config vitest.simulation.config.ts"
   },
   "dependencies": {
