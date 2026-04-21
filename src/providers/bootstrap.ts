@@ -20,124 +20,117 @@ import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from 
 import { ProviderRegistry } from './registry.js';
 import { resolveScriptedProviderOverride } from './bootstrap-scripted-override.js';
 
-function buildClaudeRecovery(
+function buildProviderRecovery(
   lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>,
+  finalizeFromArtifacts: ProviderRecoveryContract['finalizeFromArtifacts'],
+  providerName: string,
 ): ProviderRecoveryContract {
   const { probe, finalizeInterrupted } = lifecycle;
   if (!probe || !finalizeInterrupted) {
-    throw new Error('Claude recovery lifecycle must define probe + finalizeInterrupted');
+    throw new Error(`${providerName} recovery lifecycle must define probe + finalizeInterrupted`);
   }
   return {
     probe: probe.bind(lifecycle),
     finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
-    async finalizeFromArtifacts(options) {
-      const stdout = readArtifact(options.stdoutPath);
-      const stderr = readArtifact(options.stderrPath);
-      const parsed = parseClaudeStreamJson(stdout);
-
-      if (parsed.isError && !parsed.response) {
-        throw new Error('Claude recovery could not parse stream-json output.');
-      }
-
-      const outcome: TerminalOutcome =
-        options.signal !== null
-          ? { kind: 'aborted', reason: 'signal_abort' as const }
-          : parsed.isError || (options.exitCode !== null && options.exitCode !== 0)
-            ? {
-                kind: 'failed' as const,
-                fault: parsed.isError
-                  ? providerRequestFailed({
-                      provider: 'claude',
-                      message: parsed.response || 'Claude request failed.',
-                    })
-                  : adapterOutputUnparseable({
-                      provider: 'claude',
-                      exitCode: options.exitCode,
-                      stdout,
-                      stderr,
-                      parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
-                    }),
-              }
-            : { kind: 'completed' as const };
-
-      return {
-        terminal: {
-          kind: 'terminal',
-          terminal: buildJobTerminal({
-            content: parsed.response,
-            ...(parsed.model === null ? {} : { model: parsed.model }),
-            ...(parsed.durationMs === null ? {} : { durationMs: parsed.durationMs }),
-            ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
-            usage: { costUsd: parsed.costUsd },
-            outcome,
-          }),
-          diagnostics: buildJobDiagnostics({ stdout, stderr }),
-        },
-        continuity:
-          parsed.sessionId !== null
-            ? {
-                conversationRef: parsed.sessionId,
-                resumable: true,
-              }
-            : options.fallbackConversationRef
-              ? undefined
-              : {
-                  conversationRef: null,
-                  resumable: false,
-            },
-      };
-    },
+    finalizeFromArtifacts,
     ...(lifecycle.migrateLegacyContinuity
       ? { migrateLegacyContinuity: lifecycle.migrateLegacyContinuity.bind(lifecycle) }
       : {}),
   };
 }
 
-function buildCodexRecovery(
-  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>,
-): ProviderRecoveryContract {
-  const { probe, finalizeInterrupted } = lifecycle;
-  if (!probe || !finalizeInterrupted) {
-    throw new Error('Codex recovery lifecycle must define probe + finalizeInterrupted');
+async function finalizeClaudeFromArtifacts(
+  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
+  const stdout = readArtifact(options.stdoutPath);
+  const stderr = readArtifact(options.stderrPath);
+  const parsed = parseClaudeStreamJson(stdout);
+
+  if (parsed.isError && !parsed.response) {
+    throw new Error('Claude recovery could not parse stream-json output.');
   }
+
+  const outcome: TerminalOutcome =
+    options.signal !== null
+      ? { kind: 'aborted', reason: 'signal_abort' as const }
+      : parsed.isError || (options.exitCode !== null && options.exitCode !== 0)
+        ? {
+            kind: 'failed' as const,
+            fault: parsed.isError
+              ? providerRequestFailed({
+                  provider: 'claude',
+                  message: parsed.response || 'Claude request failed.',
+                })
+              : adapterOutputUnparseable({
+                  provider: 'claude',
+                  exitCode: options.exitCode,
+                  stdout,
+                  stderr,
+                  parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
+                }),
+          }
+        : { kind: 'completed' as const };
+
   return {
-    probe: probe.bind(lifecycle),
-    finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
-    async finalizeFromArtifacts(options) {
-      const stdout = readArtifact(options.stdoutPath);
-      const stderr = readArtifact(options.stderrPath);
-      return {
-        terminal: {
-          kind: 'terminal',
-          terminal: buildJobTerminal({
-            content: '',
-            ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
-            outcome:
-              options.signal !== null
-                ? { kind: 'aborted', reason: 'signal_abort' as const }
-                : options.exitCode === null || options.exitCode === 0
-                  ? { kind: 'completed' as const }
-                  : {
-                      kind: 'failed' as const,
-                      fault: providerRequestFailed({
-                        provider: 'codex',
-                        message: `Codex exited with code ${options.exitCode} before recovery completed.`,
-                      }),
-                    },
-          }),
-          diagnostics: buildJobDiagnostics({ stdout, stderr }),
-        },
-        continuity: options.fallbackConversationRef
+    terminal: {
+      kind: 'terminal',
+      terminal: buildJobTerminal({
+        content: parsed.response,
+        ...(parsed.model === null ? {} : { model: parsed.model }),
+        ...(parsed.durationMs === null ? {} : { durationMs: parsed.durationMs }),
+        ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
+        usage: { costUsd: parsed.costUsd },
+        outcome,
+      }),
+      diagnostics: buildJobDiagnostics({ stdout, stderr }),
+    },
+    continuity:
+      parsed.sessionId !== null
+        ? {
+            conversationRef: parsed.sessionId,
+            resumable: true,
+          }
+        : options.fallbackConversationRef
           ? undefined
           : {
               conversationRef: null,
               resumable: false,
             },
-      };
+  };
+}
+
+async function finalizeCodexFromArtifacts(
+  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
+  const stdout = readArtifact(options.stdoutPath);
+  const stderr = readArtifact(options.stderrPath);
+  return {
+    terminal: {
+      kind: 'terminal',
+      terminal: buildJobTerminal({
+        content: '',
+        ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
+        outcome:
+          options.signal !== null
+            ? { kind: 'aborted', reason: 'signal_abort' as const }
+            : options.exitCode === null || options.exitCode === 0
+              ? { kind: 'completed' as const }
+              : {
+                  kind: 'failed' as const,
+                  fault: providerRequestFailed({
+                    provider: 'codex',
+                    message: `Codex exited with code ${options.exitCode} before recovery completed.`,
+                  }),
+                },
+      }),
+      diagnostics: buildJobDiagnostics({ stdout, stderr }),
     },
-    ...(lifecycle.migrateLegacyContinuity
-      ? { migrateLegacyContinuity: lifecycle.migrateLegacyContinuity.bind(lifecycle) }
-      : {}),
+    continuity: options.fallbackConversationRef
+      ? undefined
+      : {
+          conversationRef: null,
+          resumable: false,
+        },
   };
 }
 
@@ -154,7 +147,7 @@ const codexProviderSpec: ProviderSpec = {
   run: codexThreadProvider,
   preflight: codexPreflight,
   appServer: codexAppServerLifecycle,
-  recovery: buildCodexRecovery(codexRecoveryLifecycle),
+  recovery: buildProviderRecovery(codexRecoveryLifecycle, finalizeCodexFromArtifacts, 'Codex'),
 };
 
 const claudeProviderSpec: ProviderSpec = {
@@ -162,7 +155,7 @@ const claudeProviderSpec: ProviderSpec = {
   run: claudeProvider,
   preflight: claudePreflight,
   appServer: claudeAppServerLifecycle,
-  recovery: buildClaudeRecovery(claudeRecoveryLifecycle),
+  recovery: buildProviderRecovery(claudeRecoveryLifecycle, finalizeClaudeFromArtifacts, 'Claude'),
   cleanup: claudeArtifactCleanup,
 };
 
