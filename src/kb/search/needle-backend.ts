@@ -242,6 +242,7 @@ function aggregateVectorHits(
 export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistration {
   readonly authority = 'corpus';
   readonly corpusInterest = 'content';
+  readonly registrationKind = 'equipment';
   readonly id: string;
 
   private pluginRoot?: string;

@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
   metadata_seq           INTEGER,               -- corpus only
   content_manifest_hash  TEXT,                  -- corpus only
   metadata_manifest_hash TEXT,                  -- corpus only
-  equipped_at            TEXT    NOT NULL       -- ISO 8601 of most recent equip
+  equipped_at            TEXT    NOT NULL,      -- ISO 8601 of most recent equip
+  registration_kind      TEXT    NOT NULL DEFAULT 'base'
 );
 
 -- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
@@ -180,7 +181,7 @@ CREATE TABLE IF NOT EXISTS curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '1'),
+  ('schema_version', '2'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));

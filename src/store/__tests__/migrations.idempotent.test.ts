@@ -71,7 +71,7 @@ describe('migrations idempotency', () => {
       ).map(({ key, value }) => ({ key, value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value }));
       expect(metaA).toEqual(metaB);
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
+      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
 
       const corpusStateA = dbFromSchema.prepare(
         'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
@@ -121,6 +121,7 @@ describe('migrations idempotency', () => {
         'content_manifest_hash',
         'metadata_manifest_hash',
         'equipped_at',
+        'registration_kind',
       ]);
       expect(equipmentCursorColumnsB).toEqual(equipmentCursorColumnsA);
 

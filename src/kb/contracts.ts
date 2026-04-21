@@ -1,5 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
+import type { ConsumerApplyError, ConsumerRegistrationKind } from '../coordinator/consumer-driver.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
@@ -47,6 +48,8 @@ export interface CorpusConsumerRegistration {
   readonly id: string;
   readonly authority: 'corpus';
   readonly corpusInterest: CorpusInterest;
+  readonly registrationKind?: ConsumerRegistrationKind;
+  readonly onApplyFailure?: (err: ConsumerApplyError) => void;
   apply(ctx: CorpusConsumerApplyContext): Promise<void>;
 }
 

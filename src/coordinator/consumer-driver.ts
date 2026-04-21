@@ -5,7 +5,7 @@ import type {
   CorpusInterest,
   CorpusLaneHint,
   KbCorpusSnapshot as CorpusSnapshot,
-} from '../kb/api.js';
+} from '../kb/contracts.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../shared/backend-log.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../store/corpus-state.js';
@@ -21,6 +21,36 @@ export class FreshnessTimeout extends Error {
 }
 
 export type Authority = 'journal' | 'corpus';
+export type ConsumerRegistrationKind = 'base' | 'equipment';
+
+export interface ConsumerApplyError {
+  readonly message: string;
+  readonly at: string;
+}
+
+export type ConsumerHandleStatus =
+  | {
+      authority: 'journal';
+      cursor: number;
+      pending: boolean;
+      lastApplyError: ConsumerApplyError | null;
+    }
+  | {
+      authority: 'corpus';
+      snapshotId: string | null;
+      contentSeq: number;
+      contentManifestHash: string | null;
+      pending: boolean;
+      lastApplyError: ConsumerApplyError | null;
+    };
+
+export interface ConsumerHandle {
+  readonly id: string;
+  readonly registrationKind: ConsumerRegistrationKind;
+  stop(): Promise<void>;
+  unregister(): Promise<void>;
+  status(): ConsumerHandleStatus;
+}
 
 export interface JournalApplyContext {
   readonly fromSeq: number;
@@ -31,6 +61,8 @@ export interface JournalApplyContext {
 export interface JournalConsumerRegistration {
   readonly id: string;
   readonly authority: 'journal';
+  readonly registrationKind?: ConsumerRegistrationKind;
+  readonly onApplyFailure?: (err: ConsumerApplyError) => void;
   /**
    * Idempotent apply. Architecture §16 invariant #44:
    * - ConsumerDriver does NOT wrap apply() in a transaction.
@@ -41,6 +73,8 @@ export interface JournalConsumerRegistration {
   apply(ctx: JournalApplyContext): Promise<void>;
 }
 
+type ConsumerRegistration = JournalConsumerRegistration | CorpusConsumerRegistration;
+
 interface Waiter {
   target: number;
   resolve: () => void;
@@ -50,17 +84,24 @@ interface Waiter {
 }
 
 interface ConsumerState {
-  readonly reg: JournalConsumerRegistration | CorpusConsumerRegistration;
+  readonly reg: ConsumerRegistration;
+  readonly handle: ConsumerHandle;
+  readonly registrationKind: ConsumerRegistrationKind;
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
   pendingCorpusSnapshot: CorpusSnapshot | null;
   waiters: Set<Waiter>;
+  stopped: boolean;
+  stopPromise: Promise<void> | null;
+  unregistered: boolean;
+  lastApplyError: ConsumerApplyError | null;
 }
 
 interface StoredCursorMetadataRow {
   authority: string;
   lane: string | null;
   corpus_interest: string | null;
+  registration_kind: string | null;
 }
 
 interface JournalCursorRow {
@@ -84,6 +125,10 @@ function isCorpusInterest(value: unknown): value is CorpusInterest {
   return value === 'content' || value === 'metadata' || value === 'both';
 }
 
+function isRegistrationKind(value: unknown): value is ConsumerRegistrationKind {
+  return value === 'base' || value === 'equipment';
+}
+
 function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint | null {
   return interest === 'both' ? null : interest;
 }
@@ -100,15 +145,29 @@ function shouldNotifyCorpusConsumer(
   return laneHint === undefined || interest === 'both' || interest === laneHint;
 }
 
+function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return { message: err.message, at };
+  }
+  if (typeof err === 'string' && err.trim().length > 0) {
+    return { message: err, at };
+  }
+  return { message: 'Consumer apply failed', at };
+}
+
 export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
   private readonly consumers = new Map<string, ConsumerState>();
   private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], StoredCursorMetadataRow>;
-  private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<[string, Authority, string]>;
-  private readonly insertCorpusCursorRowStmt: BetterSqlite3.Statement<
-    [string, Authority, CorpusLaneHint | null, CorpusInterest, string]
+  private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<
+    [string, Authority, string, ConsumerRegistrationKind]
   >;
+  private readonly insertCorpusCursorRowStmt: BetterSqlite3.Statement<
+    [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
+  >;
+  private readonly updateRegistrationKindStmt: BetterSqlite3.Statement<[ConsumerRegistrationKind, string]>;
+  private readonly deleteCursorRowStmt: BetterSqlite3.Statement<[string]>;
   private readonly readJournalCursorStmt: BetterSqlite3.Statement<[string], JournalCursorRow>;
   private readonly readCorpusCursorStmt: BetterSqlite3.Statement<[string], CorpusCursorRow>;
   private readonly advanceJournalCursorStmt: BetterSqlite3.Statement<[number, string, number]>;
@@ -126,13 +185,21 @@ export class ConsumerDriver {
     this.db = opts.db;
     this.now = opts.now ?? (() => new Date());
     this.selectCursorMetadataStmt = this.db.prepare<[string], StoredCursorMetadataRow>(
-      'SELECT authority, lane, corpus_interest FROM equipment_cursors WHERE consumer_id = ?',
+      'SELECT authority, lane, corpus_interest, registration_kind FROM equipment_cursors WHERE consumer_id = ?',
     );
-    this.insertJournalCursorRowStmt = this.db.prepare<[string, Authority, string]>(
-      'INSERT INTO equipment_cursors (consumer_id, authority, cursor, equipped_at) VALUES (?, ?, 0, ?)',
+    this.insertJournalCursorRowStmt = this.db.prepare<[string, Authority, string, ConsumerRegistrationKind]>(
+      `
+        INSERT INTO equipment_cursors (
+          consumer_id,
+          authority,
+          cursor,
+          equipped_at,
+          registration_kind
+        ) VALUES (?, ?, 0, ?, ?)
+      `,
     );
     this.insertCorpusCursorRowStmt = this.db.prepare<
-      [string, Authority, CorpusLaneHint | null, CorpusInterest, string]
+      [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
     >(
       `
         INSERT INTO equipment_cursors (
@@ -146,10 +213,15 @@ export class ConsumerDriver {
           metadata_seq,
           content_manifest_hash,
           metadata_manifest_hash,
-          equipped_at
-        ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?)
+          equipped_at,
+          registration_kind
+        ) VALUES (?, ?, ?, ?, NULL, '', 0, 0, '', '', ?, ?)
       `,
     );
+    this.updateRegistrationKindStmt = this.db.prepare<[ConsumerRegistrationKind, string]>(
+      'UPDATE equipment_cursors SET registration_kind = ? WHERE consumer_id = ?',
+    );
+    this.deleteCursorRowStmt = this.db.prepare<[string]>('DELETE FROM equipment_cursors WHERE consumer_id = ?');
     this.readJournalCursorStmt = this.db.prepare<[string], JournalCursorRow>(
       'SELECT cursor FROM equipment_cursors WHERE consumer_id = ?',
     );
@@ -207,49 +279,56 @@ export class ConsumerDriver {
     );
   }
 
-  register(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
-    if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
-      throw new CoralSetupError({
-        code: 'consumer_lane_invalid',
-        userMessage: `Consumer '${reg.id}' must not declare a corpus lane`,
-        remediation: "Use corpusInterest on the registration; lane is only an internal routing hint on notify().",
-        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
-      });
-    }
-    if (reg.authority === 'corpus' && !isCorpusInterest(reg.corpusInterest)) {
-      throw new CoralSetupError({
-        code: 'consumer_interest_invalid',
-        userMessage: `Corpus consumer '${reg.id}' must declare a valid corpus interest`,
-        remediation: "Register corpus consumers with corpusInterest 'content', 'metadata', or 'both'.",
-        context: { consumerId: reg.id, authority: reg.authority, corpusInterest: reg.corpusInterest },
-      });
-    }
-    if (reg.authority === 'journal' && 'corpusInterest' in reg) {
-      throw new CoralSetupError({
-        code: 'consumer_interest_invalid',
-        userMessage: `Journal consumer '${reg.id}' must not declare a corpus interest`,
-        remediation: 'Remove the corpusInterest field from journal consumers.',
-        context: {
-          consumerId: reg.id,
-          authority: reg.authority,
-          corpusInterest: (reg as { corpusInterest?: unknown }).corpusInterest,
-        },
-      });
+  register(reg: ConsumerRegistration): ConsumerHandle {
+    this.assertValidRegistration(reg);
+
+    const existing = this.consumers.get(reg.id);
+    if (existing) {
+      this.assertExistingRegistrationMatches(existing, reg);
+      const row = this.selectCursorMetadataStmt.get(reg.id);
+      if (row) {
+        const storedKind = this.ensureCursorRow(reg, false);
+        if (storedKind !== existing.registrationKind) {
+          throw new CoralSetupError({
+            code: 'consumer_registration_kind_mismatch',
+            userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
+            remediation: 'Either delete the stored cursor row or reconcile the registrationKind.',
+            context: { consumerId: reg.id, existing: storedKind, requested: existing.registrationKind },
+          });
+        }
+      } else {
+        this.insertCursorRow(reg, existing.registrationKind);
+      }
+      return existing.handle;
     }
 
-    this.ensureCursorRow(reg);
+    const registrationKind = this.ensureCursorRow(reg);
+    // eslint-disable-next-line prefer-const -- state is assigned below after handle construction due to mutual reference
+    let state!: ConsumerState;
+    const handle: ConsumerHandle = {
+      id: reg.id,
+      registrationKind,
+      stop: () => this.stopConsumer(state, new Error(`Consumer '${reg.id}' stopped`)),
+      unregister: () => this.unregisterConsumer(state),
+      status: () => this.statusFor(state),
+    };
 
-    if (this.consumers.has(reg.id)) {
-      return;
-    }
-
-    this.consumers.set(reg.id, {
+    state = {
       reg,
+      handle,
+      registrationKind,
       inFlight: null,
       pendingTarget: null,
       pendingCorpusSnapshot: null,
       waiters: new Set(),
-    });
+      stopped: false,
+      stopPromise: null,
+      unregistered: false,
+      lastApplyError: null,
+    };
+
+    this.consumers.set(reg.id, state);
+    return handle;
   }
 
   notify(authority: 'journal', version: number): void;
@@ -350,21 +429,8 @@ export class ConsumerDriver {
   }
 
   async shutdown(): Promise<void> {
-    await this.drainAll();
-
-    for (const state of this.consumers.values()) {
-      for (const waiter of [...state.waiters]) {
-        if (waiter.settled) {
-          continue;
-        }
-
-        waiter.settled = true;
-        clearTimeout(waiter.timeoutHandle);
-        state.waiters.delete(waiter);
-        waiter.reject(new Error('ConsumerDriver shutting down'));
-      }
-    }
-
+    const states = [...this.consumers.values()];
+    await Promise.all(states.map((state) => this.stopConsumer(state, new Error('ConsumerDriver shutting down'))));
     this.consumers.clear();
   }
 
@@ -372,8 +438,77 @@ export class ConsumerDriver {
     return this.consumers.get(consumerId)?.waiters.size ?? 0;
   }
 
-  private ensureCursorRow(reg: JournalConsumerRegistration | CorpusConsumerRegistration): void {
+  private assertValidRegistration(reg: ConsumerRegistration): void {
+    if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
+      throw new CoralSetupError({
+        code: 'consumer_lane_invalid',
+        userMessage: `Consumer '${reg.id}' must not declare a corpus lane`,
+        remediation: "Use corpusInterest on the registration; lane is only an internal routing hint on notify().",
+        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
+      });
+    }
+    if (reg.authority === 'corpus' && !isCorpusInterest(reg.corpusInterest)) {
+      throw new CoralSetupError({
+        code: 'consumer_interest_invalid',
+        userMessage: `Corpus consumer '${reg.id}' must declare a valid corpus interest`,
+        remediation: "Register corpus consumers with corpusInterest 'content', 'metadata', or 'both'.",
+        context: { consumerId: reg.id, authority: reg.authority, corpusInterest: reg.corpusInterest },
+      });
+    }
+    if (reg.authority === 'journal' && 'corpusInterest' in reg) {
+      throw new CoralSetupError({
+        code: 'consumer_interest_invalid',
+        userMessage: `Journal consumer '${reg.id}' must not declare a corpus interest`,
+        remediation: 'Remove the corpusInterest field from journal consumers.',
+        context: {
+          consumerId: reg.id,
+          authority: reg.authority,
+          corpusInterest: (reg as { corpusInterest?: unknown }).corpusInterest,
+        },
+      });
+    }
+    if (reg.registrationKind !== undefined && !isRegistrationKind(reg.registrationKind)) {
+      throw new CoralSetupError({
+        code: 'consumer_registration_kind_invalid',
+        userMessage: `Consumer '${reg.id}' must declare registrationKind 'base' or 'equipment'`,
+        remediation: "Set registrationKind to 'base' or 'equipment', or omit it for the default base behavior.",
+        context: { consumerId: reg.id, registrationKind: reg.registrationKind },
+      });
+    }
+  }
+
+  private assertExistingRegistrationMatches(state: ConsumerState, reg: ConsumerRegistration): void {
+    if (state.reg.authority !== reg.authority) {
+      throw new CoralSetupError({
+        code: 'consumer_authority_mismatch',
+        userMessage: `Consumer '${reg.id}' registered with conflicting authority`,
+        remediation: 'Either delete the stored cursor row or reconcile the registration.',
+        context: { consumerId: reg.id, existing: state.reg.authority, requested: reg.authority },
+      });
+    }
+
+    if (state.reg.authority === 'corpus' && reg.authority === 'corpus' && state.reg.corpusInterest !== reg.corpusInterest) {
+      throw new CoralSetupError({
+        code: 'consumer_interest_mismatch',
+        userMessage: `Consumer '${reg.id}' registered with conflicting corpus interest`,
+        remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
+        context: { consumerId: reg.id, existing: state.reg.corpusInterest, requested: reg.corpusInterest },
+      });
+    }
+
+    if (reg.registrationKind !== undefined && state.registrationKind !== reg.registrationKind) {
+      throw new CoralSetupError({
+        code: 'consumer_registration_kind_mismatch',
+        userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
+        remediation: 'Either stop and unregister the active consumer or reconcile the registrationKind.',
+        context: { consumerId: reg.id, existing: state.registrationKind, requested: reg.registrationKind },
+      });
+    }
+  }
+
+  private ensureCursorRow(reg: ConsumerRegistration, allowRegistrationKindUpdate = true): ConsumerRegistrationKind {
     const row = this.selectCursorMetadataStmt.get(reg.id);
+    const requestedKind = reg.registrationKind;
 
     if (row) {
       if (row.authority !== reg.authority) {
@@ -396,11 +531,32 @@ export class ConsumerDriver {
         }
       }
 
-      return;
+      const storedKind = this.parseStoredRegistrationKind(reg.id, row.registration_kind);
+      if (requestedKind !== undefined && storedKind !== requestedKind) {
+        if (!allowRegistrationKindUpdate) {
+          throw new CoralSetupError({
+            code: 'consumer_registration_kind_mismatch',
+            userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
+            remediation: 'Either delete the stored cursor row or reconcile the registrationKind.',
+            context: { consumerId: reg.id, existing: storedKind, requested: requestedKind },
+          });
+        }
+        this.updateRegistrationKindStmt.run(requestedKind, reg.id);
+        return requestedKind;
+      }
+
+      return storedKind;
     }
 
+    const registrationKind = requestedKind ?? 'base';
+    this.insertCursorRow(reg, registrationKind);
+    return registrationKind;
+  }
+
+  private insertCursorRow(reg: ConsumerRegistration, registrationKind: ConsumerRegistrationKind): void {
+    const nowIso = this.now().toISOString();
     if (reg.authority === 'journal') {
-      this.insertJournalCursorRowStmt.run(reg.id, reg.authority, this.now().toISOString());
+      this.insertJournalCursorRowStmt.run(reg.id, reg.authority, nowIso, registrationKind);
       return;
     }
 
@@ -409,12 +565,30 @@ export class ConsumerDriver {
       reg.authority,
       laneHintFromInterest(reg.corpusInterest),
       reg.corpusInterest,
-      this.now().toISOString(),
+      nowIso,
+      registrationKind,
     );
   }
 
+  private parseStoredRegistrationKind(
+    consumerId: string,
+    registrationKind: string | null | undefined,
+  ): ConsumerRegistrationKind {
+    const value = registrationKind ?? 'base';
+    if (isRegistrationKind(value)) {
+      return value;
+    }
+
+    throw new CoralSetupError({
+      code: 'consumer_registration_kind_invalid',
+      userMessage: `Consumer '${consumerId}' has an invalid stored registration kind`,
+      remediation: "Update the stored cursor row so registration_kind is 'base' or 'equipment'.",
+      context: { consumerId, registrationKind: value },
+    });
+  }
+
   private scheduleJournalApply(state: ConsumerState, target: number): void {
-    if (state.reg.authority !== 'journal') {
+    if (state.stopped || state.reg.authority !== 'journal') {
       return;
     }
     if (target <= this.readJournalCursor(state.reg.id)) {
@@ -432,6 +606,11 @@ export class ConsumerDriver {
       const succeeded = await this.runJournalApply(state, target);
       state.inFlight = null;
 
+      if (state.stopped) {
+        state.pendingTarget = null;
+        return;
+      }
+
       if (!succeeded) {
         state.pendingTarget = null;
         return;
@@ -446,7 +625,7 @@ export class ConsumerDriver {
   }
 
   private scheduleCorpusApply(state: ConsumerState, snapshot: CorpusSnapshot): void {
-    if (state.reg.authority !== 'corpus') {
+    if (state.stopped || state.reg.authority !== 'corpus') {
       return;
     }
     if (!isSnapshotFresherForInterest(snapshot, this.readCorpusCursor(state.reg.id), state.reg.corpusInterest)) {
@@ -466,6 +645,11 @@ export class ConsumerDriver {
     state.inFlight = (async () => {
       const succeeded = await this.runCorpusApply(state, snapshot);
       state.inFlight = null;
+
+      if (state.stopped) {
+        state.pendingCorpusSnapshot = null;
+        return;
+      }
 
       if (!succeeded) {
         state.pendingCorpusSnapshot = null;
@@ -495,9 +679,13 @@ export class ConsumerDriver {
 
       await state.reg.apply({ fromSeq, upToSeq, db: this.db });
       this.advanceJournalCursor(state.reg, upToSeq);
+      state.lastApplyError = null;
       this.resolveWaiters(state, upToSeq);
       return true;
     } catch (err) {
+      const applyError = toConsumerApplyError(err, this.now().toISOString());
+      state.lastApplyError = applyError;
+      this.invokeApplyFailureCallback(state, applyError);
       backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
       return false;
     }
@@ -516,10 +704,26 @@ export class ConsumerDriver {
 
       await state.reg.apply({ snapshot, db: this.db });
       this.advanceCorpusCursor(state.reg, snapshot);
+      state.lastApplyError = null;
       return true;
     } catch (err) {
+      const applyError = toConsumerApplyError(err, this.now().toISOString());
+      state.lastApplyError = applyError;
+      this.invokeApplyFailureCallback(state, applyError);
       backendLog.error(`ConsumerDriver apply failed (${state.reg.id})`, err);
       return false;
+    }
+  }
+
+  private invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {
+    if (state.reg.onApplyFailure === undefined) {
+      return;
+    }
+
+    try {
+      state.reg.onApplyFailure(applyError);
+    } catch (callbackErr) {
+      backendLog.error(`ConsumerDriver onApplyFailure failed (${state.reg.id})`, callbackErr);
     }
   }
 
@@ -581,6 +785,88 @@ export class ConsumerDriver {
       snapshot.metadataSeq,
       snapshot.snapshotId,
     );
+  }
+
+  private async stopConsumer(state: ConsumerState, waiterError: Error): Promise<void> {
+    if (state.stopPromise !== null) {
+      return state.stopPromise;
+    }
+
+    state.stopped = true;
+    state.stopPromise = (async () => {
+      await state.inFlight;
+      state.pendingTarget = null;
+      state.pendingCorpusSnapshot = null;
+      this.rejectWaiters(state, waiterError);
+    })();
+
+    return state.stopPromise;
+  }
+
+  private async unregisterConsumer(state: ConsumerState): Promise<void> {
+    if (state.unregistered) {
+      return;
+    }
+    if (state.stopPromise === null) {
+      throw new CoralSetupError({
+        code: 'consumer_unregister_requires_stop',
+        userMessage: `Consumer '${state.reg.id}' must be stopped before unregister()`,
+        remediation: 'Call handle.stop() and await it before handle.unregister().',
+        context: { consumerId: state.reg.id },
+      });
+    }
+
+    await state.stopPromise;
+    if (state.unregistered) {
+      return;
+    }
+
+    if (this.consumers.get(state.reg.id) === state) {
+      this.consumers.delete(state.reg.id);
+    }
+    if (state.registrationKind === 'equipment') {
+      this.deleteCursorRowStmt.run(state.reg.id);
+    }
+
+    state.unregistered = true;
+  }
+
+  private statusFor(state: ConsumerState): ConsumerHandleStatus {
+    if (state.reg.authority === 'journal') {
+      return {
+        authority: 'journal',
+        cursor: this.readJournalCursor(state.reg.id),
+        pending: this.isPending(state),
+        lastApplyError: state.lastApplyError,
+      };
+    }
+
+    const cursor = this.readCorpusCursor(state.reg.id);
+    return {
+      authority: 'corpus',
+      snapshotId: cursor.snapshotId === '' ? null : cursor.snapshotId,
+      contentSeq: cursor.contentSeq,
+      contentManifestHash: cursor.contentManifestHash === '' ? null : cursor.contentManifestHash,
+      pending: this.isPending(state),
+      lastApplyError: state.lastApplyError,
+    };
+  }
+
+  private isPending(state: ConsumerState): boolean {
+    return state.inFlight !== null || state.pendingTarget !== null || state.pendingCorpusSnapshot !== null;
+  }
+
+  private rejectWaiters(state: ConsumerState, err: Error): void {
+    for (const waiter of [...state.waiters]) {
+      if (waiter.settled) {
+        continue;
+      }
+
+      waiter.settled = true;
+      clearTimeout(waiter.timeoutHandle);
+      state.waiters.delete(waiter);
+      waiter.reject(err);
+    }
   }
 
   private resolveWaiters(state: ConsumerState, newCursor: number): void {
