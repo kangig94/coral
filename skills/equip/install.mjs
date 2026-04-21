@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { arch, homedir, platform, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import {
   equipmentAddonPath,
@@ -134,15 +135,15 @@ function isUnwritableInstallPathError(error) {
   return error instanceof Error && UNWRITABLE_ERRNOS.has(error.code ?? '');
 }
 
-function emitSetupError(code, userMessage, remediation, context = undefined, extra = {}) {
-  emit({
+function buildSetupError(code, userMessage, remediation, context = undefined, extra = {}) {
+  return {
     status: 'error',
     code,
     userMessage,
     remediation,
     ...(context === undefined ? {} : { context }),
     ...extra,
-  });
+  };
 }
 
 function metaPath(pkg) {
@@ -250,23 +251,22 @@ function extractStructuredError(error) {
   return null;
 }
 
-function emitCoordinatorError(error, fallbackMessage) {
+function coordinatorErrorJson(error, fallbackMessage) {
   const structured = extractStructuredError(error);
   if (structured !== null) {
-    emit({
+    return {
       status: 'error',
       code: structured.code,
       userMessage: structured.userMessage,
       remediation: structured.remediation,
       ...(structured.context === undefined ? {} : { context: structured.context }),
-    });
-    return;
+    };
   }
 
-  emit({
+  return {
     status: 'error',
     message: fallbackMessage ?? (error instanceof Error ? error.message : String(error)),
-  });
+  };
 }
 
 function resolveLocalNeedleStatus(entry) {
@@ -475,9 +475,7 @@ function buildTargetResult(status, method, targetDir, entry, extra) {
   };
 }
 
-async function main() {
-  // Parse arguments
-  const argv = process.argv.slice(2);
+export async function runInstallCommand(argv = process.argv.slice(2)) {
   const hasUninstallSubcommand = argv[0] === 'uninstall';
   const uninstallTarget = hasUninstallSubcommand ? argv[1] : null;
   const update = argv.includes('--update');
@@ -485,47 +483,60 @@ async function main() {
 
   if (hasUninstallSubcommand) {
     if (!uninstallTarget) {
-      emit({ status: 'error', message: 'Package name required with uninstall' });
-      return 1;
+      return {
+        exitCode: 1,
+        result: { status: 'error', message: 'Package name required with uninstall' },
+      };
     }
 
     try {
       const result = await unregisterCoordinatorEquipment({ name: uninstallTarget });
-      emit({
-        ...result,
-        name: uninstallTarget,
-      });
-      return 0;
+      return {
+        exitCode: 0,
+        result: {
+          ...result,
+          name: uninstallTarget,
+        },
+      };
     } catch (error) {
-      emitCoordinatorError(error, `Could not uninstall ${uninstallTarget}`);
-      return 1;
+      return {
+        exitCode: 1,
+        result: coordinatorErrorJson(error, `Could not uninstall ${uninstallTarget}`),
+      };
     }
   }
 
-  // List catalog
   if (argv.includes('--list') || (!rawPkg && !update)) {
     try {
-      emit({
-        status: 'catalog',
-        packages: await buildCatalogPackages(),
-      });
-      return 0;
+      return {
+        exitCode: 0,
+        result: {
+          status: 'catalog',
+          packages: await buildCatalogPackages(),
+        },
+      };
     } catch (error) {
-      emitCoordinatorError(error, 'Could not list equipment catalog');
-      return 1;
+      return {
+        exitCode: 1,
+        result: coordinatorErrorJson(error, 'Could not list equipment catalog'),
+      };
     }
   }
 
   if (!rawPkg) {
-    emit({ status: 'error', message: 'Package name required with --update' });
-    return 1;
+    return {
+      exitCode: 1,
+      result: { status: 'error', message: 'Package name required with --update' },
+    };
   }
 
   const [pkg, requestedVersion] = rawPkg.split('@');
   const entry = CATALOG[pkg];
   if (!entry) {
-    emit({ status: 'error', message: `Unknown package: ${pkg}` });
-    return 1;
+    return {
+      exitCode: 1,
+      result: { status: 'error', message: `Unknown package: ${pkg}` },
+    };
   }
 
   const plat = platform();
@@ -539,13 +550,15 @@ async function main() {
       ? resolveNeedleTargetVersion(entry, requestedVersion)
       : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
   } catch (error) {
-    emit({
-      status: 'error',
-      message: `Could not install ${pkg}`,
-      errors: [error instanceof Error ? error.message : String(error)],
-      suggestions: [],
-    });
-    return 1;
+    return {
+      exitCode: 1,
+      result: {
+        status: 'error',
+        message: `Could not install ${pkg}`,
+        errors: [error instanceof Error ? error.message : String(error)],
+        suggestions: [],
+      },
+    };
   }
 
   const errors = [];
@@ -560,14 +573,16 @@ async function main() {
       && (installedMeta?.method === 'prebuild' || installedMeta?.method === 'source-build');
 
     if (isCurrentInstall) {
-      emit(buildTargetResult(
-        update ? 'already_up_to_date' : 'already_installed',
-        installedMeta.method,
-        targetDir,
-        entry,
-        { version: targetVersion },
-      ));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildTargetResult(
+          update ? 'already_up_to_date' : 'already_installed',
+          installedMeta.method,
+          targetDir,
+          entry,
+          { version: targetVersion },
+        ),
+      };
     }
 
     const installLockPath = equipmentInstallLockPath('needle');
@@ -576,13 +591,15 @@ async function main() {
       mkdirSync(dirname(installLockPath), { recursive: true });
     } catch (error) {
       if (isUnwritableInstallPathError(error)) {
-        emitSetupError(
-          'equipment_install_path_unwritable',
-          'Cannot write to the Coral equipment install path for needle.',
-          'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-          { name: 'needle' },
-        );
-        return 1;
+        return {
+          exitCode: 1,
+          result: buildSetupError(
+            'equipment_install_path_unwritable',
+            'Cannot write to the Coral equipment install path for needle.',
+            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            { name: 'needle' },
+          ),
+        };
       }
       throw error;
     }
@@ -592,22 +609,26 @@ async function main() {
       releaseInstallLock = await acquireDirectoryLock(installLockPath, EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS);
     } catch (error) {
       if (isDirectoryLockTimeoutError(error)) {
-        emitSetupError(
-          'equipment_install_lock_contended',
-          'Another /equip is in progress for needle.',
-          'Wait for the in-flight install to complete or remove the stale lock file.',
-          { name: 'needle' },
-        );
-        return 1;
+        return {
+          exitCode: 1,
+          result: buildSetupError(
+            'equipment_install_lock_contended',
+            'Another /equip is in progress for needle.',
+            'Wait for the in-flight install to complete or remove the stale lock file.',
+            { name: 'needle' },
+          ),
+        };
       }
       if (isUnwritableInstallPathError(error)) {
-        emitSetupError(
-          'equipment_install_path_unwritable',
-          'Cannot write to the Coral equipment install path for needle.',
-          'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-          { name: 'needle' },
-        );
-        return 1;
+        return {
+          exitCode: 1,
+          result: buildSetupError(
+            'equipment_install_path_unwritable',
+            'Cannot write to the Coral equipment install path for needle.',
+            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            { name: 'needle' },
+          ),
+        };
       }
       throw error;
     }
@@ -616,34 +637,42 @@ async function main() {
     try {
       try {
         installNeedlePrebuild(entry, targetDir, targetVersion, needlePlatKey);
-        emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
-        return 0;
+        return {
+          exitCode: 0,
+          result: buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }),
+        };
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
-          emitSetupError(
-            'equipment_install_path_unwritable',
-            'Cannot write to the Coral equipment install path for needle.',
-            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-            { name: 'needle' },
-          );
-          return 1;
+          return {
+            exitCode: 1,
+            result: buildSetupError(
+              'equipment_install_path_unwritable',
+              'Cannot write to the Coral equipment install path for needle.',
+              'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+              { name: 'needle' },
+            ),
+          };
         }
         errors.push(`prebuild: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       try {
         installNeedleSourceBuild(entry, targetDir, targetVersion);
-        emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
-        return 0;
+        return {
+          exitCode: 0,
+          result: buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }),
+        };
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
-          emitSetupError(
-            'equipment_install_path_unwritable',
-            'Cannot write to the Coral equipment install path for needle.',
-            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
-            { name: 'needle' },
-          );
-          return 1;
+          return {
+            exitCode: 1,
+            result: buildSetupError(
+              'equipment_install_path_unwritable',
+              'Cannot write to the Coral equipment install path for needle.',
+              'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+              { name: 'needle' },
+            ),
+          };
         }
         errors.push(`source-build: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -659,8 +688,10 @@ async function main() {
         suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
       }
 
-      emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
-      return 1;
+      return {
+        exitCode: 1,
+        result: { status: 'error', message: `Could not install ${pkg}`, errors, suggestions },
+      };
     } finally {
       releaseInstallLock?.();
     }
@@ -669,8 +700,10 @@ async function main() {
   if (update) {
     const meta = readMeta(pkg);
     if (meta?.version === targetVersion) {
-      emit(buildResult('already_up_to_date', meta.method, toolPath, entry, { version: targetVersion }));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult('already_up_to_date', meta.method, toolPath, entry, { version: targetVersion }),
+      };
     }
 
     if (existsSync(toolPath)) {
@@ -680,13 +713,17 @@ async function main() {
 
   if (!update) {
     if (existsSync(toolPath)) {
-      emit(buildResult('already_installed', 'binary', toolPath, entry));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult('already_installed', 'binary', toolPath, entry),
+      };
     }
     const systemPath = findCmd(pkg);
     if (systemPath) {
-      emit(buildResult('already_installed', 'system', systemPath, entry));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult('already_installed', 'system', systemPath, entry),
+      };
     }
   }
 
@@ -698,8 +735,10 @@ async function main() {
       download(url, toolPath);
       if (plat !== 'win32') chmodSync(toolPath, 0o755);
       writeMeta(pkg, targetVersion, 'binary');
-      emit(buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }),
+      };
     } catch (error) {
       errors.push(`binary: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -711,8 +750,10 @@ async function main() {
       execSync(`uv tool ${uvCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
       const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
       writeMeta(pkg, targetVersion, 'uv');
-      emit(buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }),
+      };
     } catch (error) {
       errors.push(`uv: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -724,8 +765,10 @@ async function main() {
       execSync(`pipx ${pipxCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
       const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
       writeMeta(pkg, targetVersion, 'pipx');
-      emit(buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }));
-      return 0;
+      return {
+        exitCode: 0,
+        result: buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }),
+      };
     } catch (error) {
       errors.push(`pipx: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -736,8 +779,18 @@ async function main() {
   if (!findCmd('uv')) suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
   if (!findCmd('pipx')) suggestions.push('Install pipx: python3 -m pip install --user pipx');
 
-  emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
-  return 1;
+  return {
+    exitCode: 1,
+    result: { status: 'error', message: `Could not install ${pkg}`, errors, suggestions },
+  };
 }
 
-process.exitCode = await main();
+async function main() {
+  const { exitCode, result } = await runInstallCommand(process.argv.slice(2));
+  emit(result);
+  return exitCode;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await main();
+}
