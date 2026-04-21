@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -8,9 +8,13 @@ import {
   mapTurnStartParams,
   resolveCodexServiceTier,
 } from '../codex/request-mapping.js';
-import type { ProviderRequest } from '../contract.js';
+import type { ProviderRequest, ProviderRuntime } from '../contract.js';
 
 const tempHomes: string[] = [];
+type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['readFileSync']>;
+type TierStatSync = NonNullable<NonNullable<ProviderRuntime['storage']>['statSync']>;
+const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
+const defaultStatSync: TierStatSync = (path) => statSync(path);
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -39,23 +43,31 @@ function useTempCodexConfig(content?: string): string {
 
 function makeTierRuntime(
   home: string,
-  readFileSyncImpl: typeof readFileSync = readFileSync,
+  readFileSyncImpl: TierReadFileSync = defaultReadFileSync,
+  statSyncImpl: TierStatSync = defaultStatSync,
 ): {
   env: { homedir(): string };
-  storage: { readFileSync(path: string, encoding: 'utf-8'): string };
+  storage: {
+    readFileSync: TierReadFileSync;
+    statSync: TierStatSync;
+  };
 } {
   return {
     env: { homedir: () => home },
-    storage: { readFileSync: readFileSyncImpl },
+    storage: { readFileSync: readFileSyncImpl, statSync: statSyncImpl },
   };
 }
 
 function resolvedServiceTier(
   request: ProviderRequest,
   home: string,
-  readFileSyncImpl?: typeof readFileSync,
+  readFileSyncImpl?: TierReadFileSync,
+  statSyncImpl?: TierStatSync,
 ): ReturnType<typeof resolveCodexServiceTier> {
-  return resolveCodexServiceTier(request, makeTierRuntime(home, readFileSyncImpl ?? readFileSync));
+  return resolveCodexServiceTier(
+    request,
+    makeTierRuntime(home, readFileSyncImpl ?? defaultReadFileSync, statSyncImpl ?? defaultStatSync),
+  );
 }
 
 afterEach(() => {
@@ -293,7 +305,7 @@ describe('TOML fallback', () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const eioError = Object.assign(new Error('disk I/O failure'), { code: 'EIO' });
     const enoentError = Object.assign(new Error('missing file'), { code: 'ENOENT' });
-    const home = useTempCodexConfig();
+    const home = useTempCodexConfig('service_tier = "fast"');
     const request = makeRequest();
 
     expect(mapThreadStartParams(request, resolvedServiceTier(request, home, () => {
@@ -302,10 +314,55 @@ describe('TOML fallback', () => {
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_FAST'));
 
     stderrSpy.mockClear();
-    expect(mapThreadStartParams(request, resolvedServiceTier(request, home, () => {
+    const missingHome = useTempCodexConfig();
+    expect(mapThreadStartParams(request, resolvedServiceTier(request, missingHome, () => {
       throw enoentError;
     }))).not.toHaveProperty('serviceTier');
     expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  it('caches service_tier reads when the config mtime is unchanged', () => {
+    const home = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest();
+    const configPath = join(home, '.codex', 'config.toml');
+    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
+    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
+    expect(statSpy).toHaveBeenCalledTimes(2);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(readSpy).toHaveBeenCalledWith(configPath, 'utf-8');
+  });
+
+  it('re-reads the config when the mtime changes', () => {
+    const home = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest();
+    const configPath = join(home, '.codex', 'config.toml');
+    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
+    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('fast');
+
+    const updatedAt = new Date(statSync(configPath).mtimeMs + 1_000);
+    writeFileSync(configPath, 'service_tier = "flex"', 'utf-8');
+    utimesSync(configPath, updatedAt, updatedAt);
+
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBe('flex');
+    expect(statSpy).toHaveBeenCalledTimes(2);
+    expect(readSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches missing top-level service_tier results when the config mtime is unchanged', () => {
+    const home = useTempCodexConfig('[profiles.dev]\nservice_tier = "fast"');
+    const request = makeRequest();
+    const readSpy = vi.fn<TierReadFileSync>(defaultReadFileSync);
+    const statSpy = vi.fn<TierStatSync>(defaultStatSync);
+
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
+    expect(resolvedServiceTier(request, home, readSpy, statSpy)).toBeUndefined();
+    expect(statSpy).toHaveBeenCalledTimes(2);
+    expect(readSpy).toHaveBeenCalledTimes(1);
   });
 });
 

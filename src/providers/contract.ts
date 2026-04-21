@@ -243,7 +243,7 @@ export interface ProviderContinuityBridge {
 export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
-  storage?: Pick<Runtime['storage'], 'readFileSync'>;
+  storage?: Pick<Runtime['storage'], 'readFileSync' | 'statSync'>;
   env?: Pick<Runtime['env'], 'homedir'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;

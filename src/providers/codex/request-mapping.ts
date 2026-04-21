@@ -30,6 +30,7 @@ export function buildCodexPrompt(request: Pick<ProviderRequest, 'action' | 'inst
 const CODEX_EFFORT: Record<EffortLevel, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'xhigh' };
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 export type CodexServiceTier = 'fast' | 'flex';
+const serviceTierCache = new Map<string, { mtimeMs: number; value: CodexServiceTier | undefined }>();
 
 /**
  * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
@@ -234,8 +235,24 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     return undefined;
   }
 
+  const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+  let cachedMtimeMs: number | undefined;
+
   try {
-    const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+    cachedMtimeMs = runtime.storage.statSync(configPath).mtimeMs;
+    const cached = serviceTierCache.get(configPath);
+    if (cached && cached.mtimeMs === cachedMtimeMs) {
+      return cached.value;
+    }
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'EACCES') {
+      serviceTierCache.set(configPath, { mtimeMs: 0, value: undefined });
+      return undefined;
+    }
+  }
+
+  try {
     const content = runtime.storage.readFileSync(configPath, 'utf-8');
     const lines = content.split(/\r?\n/);
 
@@ -245,7 +262,9 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
       }
       const match = line.match(/^\s*service_tier\s*=\s*["']?(fast|flex)["']?\s*(#.*)?$/i);
       if (match) {
-        return match[1].toLowerCase() as CodexServiceTier;
+        const value = match[1].toLowerCase() as CodexServiceTier;
+        serviceTierCache.set(configPath, { mtimeMs: cachedMtimeMs ?? 0, value });
+        return value;
       }
     }
   } catch (error: unknown) {
@@ -257,6 +276,7 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     return undefined;
   }
 
+  serviceTierCache.set(configPath, { mtimeMs: cachedMtimeMs ?? 0, value: undefined });
   return undefined;
 }
 
