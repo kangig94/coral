@@ -145,16 +145,13 @@ async function teardownSession(options: {
   }
 }
 
-export function appServerSession(
-  contract: AppServerContract,
-  mapInterrupt?: (lease: ProviderServerLease) => Promise<void>,
-): ProviderMiddleware {
+export function appServerSession(contract: AppServerContract): ProviderMiddleware {
   return (next) =>
     async function* appServerSessionProvider(request, runtime) {
       const spec: ProviderServerSpec = contract.buildServerSpec(request, runtime.persistedContinuity);
       const lease: ProviderServerLease = await runtime.acquireServer(spec);
       const clearBoundLease = bindAppServerLease(runtime, lease);
-      const removeAbortRelay = installAbortRelay(runtime, lease, mapInterrupt ?? contract.interrupt);
+      const removeAbortRelay = installAbortRelay(runtime, lease, contract.interrupt.bind(contract));
       const notifications = subscribeWithPhase(contract.subscriptionPhase, lease, (message) => {
         getAppServerNotificationHandler(runtime)?.(message);
         contract.onNotification?.(message);

@@ -63,7 +63,7 @@ export const claudeExecProvider = compose(
 
 export const claudeSessionProvider = compose(
   sessionContinuity('claude', claudeBrokerContinuity),
-  appServerSession(claudeAppServerContract, mapClaudeInterrupt),
+  appServerSession(claudeAppServerContract),
   claudeSessionKernel,
 );
 

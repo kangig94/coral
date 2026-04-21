@@ -52,6 +52,6 @@ const codexAppServerContract = {
 
 export const codexThreadProvider = compose(
   sessionContinuity('codex', codexThreadContinuity),
-  appServerSession(codexAppServerContract, mapCodexInterrupt),
+  appServerSession(codexAppServerContract),
   codexTurnKernel,
 );
