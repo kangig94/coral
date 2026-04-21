@@ -454,10 +454,13 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
   4. Creates `CorpusConsumer` wrapping the addon; registers in `coordinator/corpus-notify.ts` consumer list.
   5. Initial catchup: consumer cursor starts at 0, first `apply()` replays full Corpus history.
   6. Binary load failure path: caught, marks consumer `disabled_pending_reinstall` in equipment metadata; CLI errors with reinstall guidance (`CoralSetupError` shape per §3.9).
-- `/unequip needle`:
+- `/equip uninstall needle`:
   - `coordinator.unregisterEquipment` waits for in-flight drain (`ConsumerDriver.stop()`).
   - Removes consumer from notify list.
   - Deletes cursor row + equipment storage.
+- Identity unification (A2): skill catalog id, runtime consumer id, install dir, and user-facing strings all use `needle` (`/equip needle`, `/equip uninstall needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`).
+- Slot registry (A3): migration 002 persists `equipment_state`; `kb.vector` defaults to Orama and can be reassigned to `needle`. KB routing reads ownership through `KbRuntime.getEquipmentView()` without coordinator imports; no boot-time needle auto-registration remains.
+- Consumer handle shape (A4): `ConsumerDriver.register()` returns `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`, with `onApplyFailure` plumbing async apply failures and `registrationKind` distinguishing equipment vs base consumers.
 - Exclusive per-path enforcement: second equip for same query path fails with structured error.
 - `/equip --list` reads catalog + current equipment state from coordinator.
 - `skills/equip/` updates: `install.mjs` catalog uses tool names (`needle` replaces `kb`); post-install invokes `coordinator.registerEquipment` RPC (not `backend_shutdown`).
@@ -465,10 +468,12 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 **Acceptance criteria**:
 
 - `/equip needle` fresh install: binary downloads, installs to `~/.coral/data/equipment/needle/` (parent auto-created), RPC registers consumer, initial catchup runs, vector search available without coordinator restart.
-- `/unequip needle`: consumer stops, storage cleared, FTS-only mode restored. Re-equip replays from cursor=0.
+- `/equip uninstall needle`: consumer stops, storage cleared, FTS-only mode restored. Re-equip replays from cursor=0.
 - Second `/equip needle` while already equipped: reports "already equipped".
-- Second `/equip <other-vector-tool>` (hypothetical): errors with "unequip needle first".
+- Second `/equip <other-vector-tool>` (hypothetical): errors with "`/equip uninstall needle` first".
 - Corrupt binary: load catches, marks consumer `disabled_pending_reinstall`, CLI returns `CoralSetupError` with reinstall guidance.
+- `grep -R "kb-needle" src/ skills/` returns zero.
+- `grep -R "data/equipment/kb" src/ skills/` returns zero.
 - **Race test** (multi-process): infrastructure at `src/testing/multi-process-driver.ts` spawns two `node scripts/equip-driver.mjs` subprocesses with shared `CORAL_HOME`; asserts filesystem lock behavior. Current `vitest.integration.config.ts` `singleFork` is insufficient; this test uses `vitest` with per-worker subprocess spawn.
 - Git tag `phase-7-complete`.
 
@@ -517,7 +522,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
   - `coral-cli kb promote --memo test --title "test"` round-trips.
   - `coral-cli kb search "test"` returns the promoted entry.
   - `/equip needle` installs needle, vector search upgrades.
-  - `/unequip needle` reverts cleanly.
+  - `/equip uninstall needle` reverts cleanly.
 
 **Acceptance criteria**:
 
@@ -586,7 +591,7 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 | Corrupt needle binary after `/equip` | `dlopen`/`require` wrapped in try/catch; failure writes `disabled_pending_reinstall` to equipment metadata; CLI returns `CoralSetupError` with reinstall hint. |
 | git-sync detects conflict | Conflict markers detected in frontmatter parser; entry routed to corpus repair pipeline (§Phase 5); skipped with diagnostic. |
 | Orphan `.tmp` files at startup | Phase 3 startup sweep removes `*.tmp` older than start time under `~/.coral/kb/`. |
-| `/unequip` during in-flight drain | `unregisterEquipment` awaits `ConsumerDriver.stop()`; removes consumer + cursor atomically. |
+| `/equip uninstall` during in-flight drain | `unregisterEquipment` awaits `ConsumerDriver.stop()`; removes consumer + cursor atomically. |
 | Partial-phase crash mid-migration | Migrations are `IF NOT EXISTS` idempotent; re-running is a no-op. Manual `git reset --hard phase-N-complete` for code; DB migrations self-heal. |
 
 ### 3.4 Concurrency
@@ -719,3 +724,9 @@ Tracked deviations from the original plan adopted during implementation. Each en
 - **Phase 4 (tag `phase-4-complete`) — new §11 clause: interactive/live subscriptions use one generic subscription primitive.** `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` slot; HTTP projects subscriptions to SSE, IPC carries notifications directly. At Phase 4 gate, subscriptions are one-per-connection; multiplexing is a transparent future optimization.
 - **Phase 4 (tag `phase-4-complete`) — CLI read commands migrate from `BackendClient` (HTTP) to `CoralStore` read facade in Phase 4.** `src/client/readers.ts` file retirement remains Phase 6/Cleanup (non-CLI importers), but CLI importers migrate now so invariant #23 actually closes at the Phase 4 gate.
 - **Phase 4 (tag `phase-4-complete`) — `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling.** The singleton lock remains the launch gate but is not the detection mechanism. Current `ensureBackend` semantics (observation lattice, compatibility on `bundleHash + flavor + namespace`, verified sick ownership, unsafe-replacement refusal, corrupt-lock quarantine) preserved literally.
+- **A1 — `/equip uninstall` replaces `/unequip` slash command** (Phase 7, tag `phase-7`). Rationale: `/equip` is already the catalog + lifecycle entry; a separate slash command duplicates surface area for no UX gain. Coordinator RPC name `unregisterEquipment` is preserved; only the CLI surface collapses.
+- **A2 — Needle identity unification** (Phase 7, tag `phase-7`). Rationale: Skill catalog id (`kb`), runtime consumer id (`kb-needle`), on-disk directory naming, and user messaging all collapse to the single name `needle`. `/equip needle`, `/equip uninstall needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`.
+- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` persisted via migration 002; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation.
+- **A4 — `ConsumerDriver.register()` returns per-consumer `ConsumerHandle`** (Phase 7, tag `phase-7`). Rationale: Signature changes from `void` to `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`. `onApplyFailure` callback plumbs async apply errors. `registrationKind` metadata distinguishes equipment vs base consumers for cursor-deletion semantics. Existing base-tier consumers migrate to the same handle shape via `projection-consumer.ts` helper.
+- **A5 — Legacy types retire to upcaster boundary only** (Phase 7, tag `phase-7`). Rationale: `src/shared/legacy-terminal-outcome-compat.ts` deleted; read-time body transforms moved to per-domain upcaster registrars (`jobs/upcasters.ts`, `sessions/upcasters.ts`, `workflow/upcasters.ts`). `src/store/upcasters.ts` remains assembler only. Runtime multi-event canonicalization stays in `legacy-ingest` (consumes upcaster output). Active runtime code uses canonical `SessionContinuityState` / `SessionProviderFailureReason` / `SessionFault` directly.
+- **A6 — Codex pre-turn notification mailbox** (Phase 7, tag `phase-7`). Rationale: `src/providers/codex/thread-kernel.ts` `applyNotification` replaces unconditional buffering with an admission-filtering mailbox. Notifications are admitted only if they can still belong to the active thread's lifecycle (matching `state.threadId` candidate, or lifecycle messages without thread id). `PRE_TURN_MAILBOX_CAP=64` FIFO eviction with `dropped` counter. `status()` exposed for observability. Provisional candidates seeded from persisted continuity / resume `conversationRef` (robustness against `thread/resume` id mismatch).
