@@ -30,6 +30,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/workflow/api.ts',
   'src/kb/api.ts',
   'src/store/index.ts',
+  'src/coordinator/equipment/contract.ts',
   'src/coordinator/event-bus.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
@@ -41,13 +42,18 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/execution-service.ts',
   'src/coordinator/workflow-cleanup.ts',
 ]);
-const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
+const COORDINATOR_EXEMPT_PREFIXES = [
+  'src/coordinator/composition/',
+  'src/coordinator/equipment/',
+  'src/coordinator/services/',
+] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/api.ts',
   'src/sessions/api.ts',
   'src/discuss/api.ts',
   'src/workflow/api.ts',
   'src/kb/api.ts',
+  'src/kb/contracts.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);

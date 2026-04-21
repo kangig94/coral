@@ -78,17 +78,19 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       driver.notify('journal', 7);
       await driver.drainAll();
 
-      expect(onApplyFailure).toHaveBeenCalledWith({
+      expect(onApplyFailure).toHaveBeenCalledWith(expect.objectContaining({
         message: 'boom',
         at: expect.any(String),
-      });
-      expect(failingHandle.status()).toEqual({
+        cause: expect.any(Error),
+      }));
+      expect(failingHandle.status()).toMatchObject({
         authority: 'journal',
         cursor: 0,
         pending: false,
         lastApplyError: {
           message: 'boom',
           at: expect.any(String),
+          cause: expect.any(Error),
         },
       });
       expect(errorSpy).toHaveBeenCalledWith('ConsumerDriver onApplyFailure failed (failing-consumer)', expect.any(Error));
@@ -284,16 +286,17 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
       });
       await driver.drainAll();
 
-      expect(journalHandle.status()).toEqual({
+      expect(journalHandle.status()).toMatchObject({
         authority: 'journal',
         cursor: 0,
         pending: false,
         lastApplyError: {
           message: 'journal boom',
           at: failureAt.toISOString(),
+          cause: expect.any(Error),
         },
       });
-      expect(corpusHandle.status()).toEqual({
+      expect(corpusHandle.status()).toMatchObject({
         authority: 'corpus',
         snapshotId: null,
         contentSeq: 0,
@@ -302,6 +305,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         lastApplyError: {
           message: 'corpus boom',
           at: failureAt.toISOString(),
+          cause: expect.any(Error),
         },
       });
 

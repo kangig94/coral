@@ -442,9 +442,10 @@ describe('manifest authority drift checks (AC2)', () => {
       name: 'promote',
       run: async () => {
         const fixture = await createRuntimeFixture(() => {}, { reindexOnBoot: false });
-        const projectRoot = join(fixture.root, 'project');
-        mkdirSync(memoDir(projectRoot), { recursive: true });
-        writeFileSync(join(memoDir(projectRoot), 'promotion.md'), renderMemo(), 'utf-8');
+        const projectRoot = mkdtempSync(join(fixture.root, 'local-project-'));
+        const projectMemoDir = memoDir(projectRoot);
+        mkdirSync(projectMemoDir, { recursive: true });
+        writeFileSync(join(projectMemoDir, 'promotion.md'), renderMemo(), 'utf-8');
 
         await promote(fixture.kb, projectRoot, {
           memo: 'promotion.md',

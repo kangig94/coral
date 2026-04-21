@@ -35,6 +35,12 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/corpus-notify.ts',
   'src/coordinator/discovery.ts',
+  'src/coordinator/equipment/contract.ts',
+  'src/coordinator/equipment/lifecycle.ts',
+  'src/coordinator/equipment/needle-activation.ts',
+  'src/coordinator/equipment/rpc.ts',
+  'src/coordinator/equipment/runtime-activation.ts',
+  'src/coordinator/equipment/slots.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/index.ts',
@@ -73,6 +79,8 @@ const DOMAIN_API_TARGETS = new Set([
   'src/kb/api.ts',
 ]);
 const CONTRACT_TARGETS = new Set([
+  'src/kb/contracts.ts',
+  'src/kb/search/contract.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
   'src/simulation/recording.ts',
@@ -91,7 +99,11 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/workflow-cleanup.ts',
 ]);
 
-const BROAD_IMPORT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
+const BROAD_IMPORT_PREFIXES = [
+  'src/coordinator/composition/',
+  'src/coordinator/equipment/',
+  'src/coordinator/services/',
+] as const;
 const FORBIDDEN_PREFIXES = [
   'src/execution/',
   'src/jobs/shell/',
