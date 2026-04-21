@@ -1,4 +1,4 @@
-import type { ProviderTerminalEventBody } from '../protocol.js';
+import type { ProviderTerminalEventBody } from '../contract.js';
 import type { LegacyAbortReason } from '../../shared/legacy-terminal-outcome-compat.js';
 
 export type AppServerSubscriptionPhase = 'beforeInitialize' | 'afterInitialize';
@@ -9,8 +9,14 @@ export type AppServerNotificationMessage = {
 };
 
 export type ProviderTransportClose =
-  | { kind: 'transport_closed' }
-  | { kind: 'transport_error'; error: Error };
+  | {
+      kind: 'transport_closed';
+      error?: Error | null;
+    }
+  | {
+      kind: 'transport_error';
+      error: Error;
+    };
 
 export type DriverStepOutcome = {
   terminal?: TurnOutcome;

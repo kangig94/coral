@@ -1,4 +1,10 @@
 import type { ProviderRequest, ProviderTerminalEventBody } from '../protocol.js';
+import type {
+  ProviderRequest as ContractProviderRequest,
+  ProviderRuntime as ContractProviderRuntime,
+  ProviderServerLease as ContractProviderServerLease,
+  ProviderServerSpec as ContractProviderServerSpec,
+} from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
 import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../provider-contracts.js';
@@ -16,6 +22,46 @@ export type {
   ProviderTransportClose,
   TurnOutcome,
 } from './types.js';
+
+export interface AppServerContract {
+  readonly name: string;
+  readonly subscriptionPhase: AppServerSubscriptionPhase;
+  buildServerSpec(
+    request: ContractProviderRequest,
+    persistedContinuity: ProviderContinuityBlob | undefined,
+  ): ContractProviderServerSpec;
+  interrupt(lease: ContractProviderServerLease): Promise<void>;
+  onNotification?(message: AppServerNotificationMessage): void;
+}
+
+const appServerLeaseBindings = new WeakMap<ContractProviderRuntime, ContractProviderServerLease>();
+
+export function bindAppServerLease(
+  runtime: ContractProviderRuntime,
+  lease: ContractProviderServerLease,
+): () => void {
+  appServerLeaseBindings.set(runtime, lease);
+  return () => {
+    if (appServerLeaseBindings.get(runtime) === lease) {
+      appServerLeaseBindings.delete(runtime);
+    }
+  };
+}
+
+export function getAppServerLease(runtime: ContractProviderRuntime): ContractProviderServerLease | undefined {
+  return appServerLeaseBindings.get(runtime);
+}
+
+export function requireAppServerLease(
+  runtime: ContractProviderRuntime,
+  providerName: string,
+): ContractProviderServerLease {
+  const lease = getAppServerLease(runtime);
+  if (!lease) {
+    throw new Error(`${providerName} provider requires app-server session middleware to bind a ProviderServerLease.`);
+  }
+  return lease;
+}
 
 export interface AppServerSessionDriver<TState> {
   readonly name: string;
