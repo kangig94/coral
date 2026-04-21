@@ -1,15 +1,39 @@
+import type { EffortLevel } from '../../shared/schemas.js';
 import type { Provider } from '../contract.js';
+import type { ProviderCliRunner } from '../cli-runner.js';
 import { providerRequestFailed } from '../fault.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
-import { executeClaudeFork, ClaudeExecParseError } from './claude-executor.js';
+import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
 import { buildPreparedClaudeRequest } from './shared-utils.js';
-import type { ClaudeStreamEvent } from './types.js';
+import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
 const CLAUDE_EXEC_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
+const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
+
+type ClaudeForkOptions = {
+  model?: string;
+  workingDirectory?: string;
+  systemPrompt?: string;
+  effort?: EffortLevel;
+  bypassPermissions?: boolean;
+  onEvent?: (line: string) => void;
+  runCli: ProviderCliRunner;
+  environment: Record<string, string>;
+};
+
+class ClaudeExecParseError extends Error {
+  readonly failure: ClaudeExecFailure;
+
+  constructor(failure: ClaudeExecFailure) {
+    super(`Claude CLI returned non-JSON output: ${failure.parseError}`);
+    this.name = 'ClaudeExecParseError';
+    this.failure = failure;
+  }
+}
 
 function buildClaudeExecRequestFailed(message: string) {
   const fault = providerRequestFailed({
@@ -102,4 +126,64 @@ function emitProgress(
   } catch {
     /* ignore non-JSON or unparseable lines */
   }
+}
+
+async function executeClaudeFork(
+  sessionId: string,
+  prompt: string,
+  options: ClaudeForkOptions,
+): Promise<ClaudeExecResult> {
+  const args = [...STREAM_JSON_ARGS, '--resume', sessionId, '--fork-session'];
+  appendSharedArgs(args, options);
+  return executeClaude(args, prompt, options);
+}
+
+function appendSharedArgs(
+  args: string[],
+  options: Pick<ClaudeForkOptions, 'bypassPermissions' | 'systemPrompt' | 'model' | 'effort'>,
+): void {
+  if (options.bypassPermissions) args.push('--dangerously-skip-permissions');
+  if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
+  if (options.model) args.push('--model', options.model);
+  if (options.effort) args.push('--effort', options.effort);
+}
+
+async function executeClaude(args: string[], prompt: string, options: ClaudeForkOptions): Promise<ClaudeExecResult> {
+  const start = Date.now();
+  const { stdout, stderr, code, aborted } = await options.runCli({
+    command: 'claude',
+    args,
+    prompt,
+    cwd: options.workingDirectory,
+    extraEnv: options.environment,
+    onEvent: options.onEvent,
+  });
+
+  const parsed = parseClaudeStreamJson(stdout);
+  if (parsed.isError && !parsed.response) {
+    throw new ClaudeExecParseError({
+      exitCode: code,
+      stdout,
+      stderr,
+      parseError: 'Fully unparseable stream-json output',
+    });
+  }
+
+  return {
+    response: parsed.response,
+    sessionId: parsed.sessionId,
+    model: extractModel(parsed, options.model),
+    durationMs: parsed.durationMs ?? Date.now() - start,
+    costUsd: parsed.costUsd,
+    aborted,
+    isError: parsed.isError,
+  };
+}
+
+function extractModel(parsed: ParsedClaudeStreamOutput, fallbackModel: string | undefined): string {
+  if (typeof parsed.model === 'string' && parsed.model) {
+    return parsed.model;
+  }
+
+  return fallbackModel ?? 'unknown';
 }
