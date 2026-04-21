@@ -14,15 +14,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '../../../../coordinator/discovery.js';
-import { coordinatorPaths } from '../../../../coordinator/paths.js';
-import { isProcessAlive } from '../../../../shared/node-process.js';
-import { readBuildFlavor } from '../../../../shared/utils.js';
-import { createIpcClient } from '../../../../transport/ipc/client.js';
-import { CoralStore, openStoreDatabase } from '../../../../store/index.js';
-import { createDefaultStoreReadContext } from '../../../../store/read-context.js';
-import { createRealRuntime } from '../../../../runtime/real.js';
-import { storePaths } from '../../../../store/paths.js';
+import type { CoordinatorDiscoveryRecord } from '../../../coordinator/discovery.js';
+import { coordinatorPaths } from '../../../coordinator/paths.js';
+import { isProcessAlive } from '../../../shared/node-process.js';
+import { readBuildFlavor } from '../../../shared/utils.js';
+import { createIpcClient } from '../../../transport/ipc/client.js';
+import { CoralStore, openStoreDatabase } from '../../../store/index.js';
+import { createDefaultStoreReadContext } from '../../../store/read-context.js';
+import { createRealRuntime } from '../../../runtime/real.js';
+import { storePaths } from '../../../store/paths.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');

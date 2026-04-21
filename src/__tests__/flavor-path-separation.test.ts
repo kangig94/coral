@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { resolveBuildFlavor } from '../../runtime/flavor.js';
-import { composeCoralPaths } from '../../coordinator/paths.js';
+import { resolveBuildFlavor } from '../runtime/flavor.js';
+import { composeCoralPaths } from '../coordinator/paths.js';
 
 const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'equipment'] as const;
 
