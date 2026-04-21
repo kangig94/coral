@@ -1,5 +1,6 @@
 import {
   describeLegacyCoralFault,
+  type LegacyCoralFault,
   type LegacyTerminalOutcome,
   type RecoveryFaultCompat,
 } from '../../shared/legacy-terminal-outcome-compat.js';
@@ -10,7 +11,34 @@ import type { ProgressStore } from '../job-store.js';
 import { materializeLegacyTerminalOutcome, planLegacyTerminalOutcome } from '../shell/legacy-ingest.js';
 import type { LegacyIngestOptions } from '../shell/legacy-ingest.js';
 import type { ProviderTerminalEventBody } from '../../providers/protocol.js';
+import type { FaultPayload } from '../../providers/fault.js';
 import type { TerminalOutcome } from '../outcome.js';
+
+export function faultPayloadToLegacyFault(fault: FaultPayload): LegacyCoralFault {
+  switch (fault.kind) {
+    case 'adapter_output_unparseable':
+      return {
+        kind: 'adapter_output_unparseable' as const,
+        provider: fault.provider === 'claude' ? 'claude' : 'codex',
+        exitCode: fault.exitCode,
+        stdout: fault.stdout,
+        stderr: fault.stderr,
+        parseError: fault.parseError,
+      };
+    case 'provider_session_unavailable':
+      return {
+        kind: 'provider_session_unavailable' as const,
+        provider: fault.provider === 'claude' ? 'claude' : 'codex',
+        note: fault.reason,
+      };
+    case 'provider_request_failed':
+      return {
+        kind: 'provider_request_failed' as const,
+        provider: fault.provider === 'claude' ? 'claude' : 'codex',
+        message: fault.message,
+      };
+  }
+}
 
 export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
   return {

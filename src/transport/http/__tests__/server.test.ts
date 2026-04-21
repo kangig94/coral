@@ -72,6 +72,7 @@ import {
 import { createRealRuntime } from '../../../runtime/real.js';
 import { streamProviderTerminal } from '../../../providers/protocol.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
+import { toProviderSpec } from '../../../providers/spec-compat.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,
@@ -1278,10 +1279,12 @@ describe('execution backend server', () => {
     ) {
       const { runtimeState } = createRuntimeStateMock();
       const providerRegistry = new ProviderRegistry();
-      providerRegistry.register({
-        name: 'codex',
-        execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
-      });
+      providerRegistry.register(
+        toProviderSpec({
+          name: 'codex',
+          execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+        })!,
+      );
       const executionService = options.executionService ?? createFakeExecutionService();
       const idleTimer = createFakeIdleTimer();
       const progressStore = createProgressStore('test-ns', runtime);
@@ -3278,10 +3281,12 @@ describe('execution backend server', () => {
           executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
-        deps.providerRegistry.register({
-          name: 'claude',
-          execute: vi.fn(async () => ({ content: 'ok', outcome: { kind: 'completed' as const } })),
-        });
+        deps.providerRegistry.register(
+          toProviderSpec({
+            name: 'claude',
+            execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+          })!,
+        );
         const started = await startHttpHandlerServer(deps);
 
         try {

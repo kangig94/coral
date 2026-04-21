@@ -57,14 +57,14 @@ export function findUnknownProviders(
   providerRegistry: ProviderCatalog,
 ): string[] {
   const unknownProviders = new Set<string>();
-  if (!providerRegistry.getExecutor(defaultProviderName)) {
+  if (!providerRegistry.get(defaultProviderName)) {
     unknownProviders.add(defaultProviderName);
   }
 
   for (const step of ast) {
     for (const atom of step) {
       const providerName = atom.provider ?? defaultProviderName;
-      if (!providerRegistry.getExecutor(providerName)) {
+      if (!providerRegistry.get(providerName)) {
         unknownProviders.add(providerName);
       }
     }

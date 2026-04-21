@@ -13,6 +13,7 @@ import { pluginRootNamespace } from '../../../infra/paths.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { Provider } from '../../../providers/provider-contracts.js';
+import { toProviderSpec } from '../../../providers/spec-compat.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { streamProviderTerminal, type ProviderInstruction, type ProviderRequest } from '../../../providers/protocol.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
@@ -82,7 +83,7 @@ describe('pipe executor coral cascade invariant', () => {
       };
 
       const providerRegistry = new ProviderRegistry();
-      providerRegistry.register(stubProvider);
+      providerRegistry.register(toProviderSpec(stubProvider)!);
 
       const eventBus = new TypedEventBus();
       const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });

@@ -77,7 +77,7 @@ export interface ProviderServerLease {
 
 export type TerminalOutcome =
   | { kind: 'completed' }
-  | { kind: 'aborted'; reason: string }
+  | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
   | { kind: 'failed'; fault: FaultPayload };
 
 export interface JobTerminal {

@@ -76,7 +76,7 @@ async function interruptTurn(lease: ProviderServerLease, threadId: string, turnI
   await rpc(lease, 'turn/interrupt', { threadId, turnId });
 }
 
-async function preflight(runtime: PreflightRuntime): Promise<void> {
+export async function codexPreflight(runtime: PreflightRuntime): Promise<void> {
   await assertCodexAppServerAvailable(runtime);
   await assertCodexAuthTokens(runtime);
 }
@@ -139,7 +139,7 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-const codexAppServerLifecycle: ProviderAppServerLifecycle = {
+export const codexAppServerLifecycle: ProviderAppServerLifecycle = {
   migrateLegacyContinuity(meta) {
     const continuity: ProviderContinuityBlob = {};
     if (typeof meta.provider === 'string' && meta.provider.length > 0) {
@@ -221,7 +221,7 @@ function runCodex(request: ProviderRequest, runtime: ProviderRuntime): AsyncIter
 const codexProviderBase = Object.assign(function codex(request: ProviderRequest, runtime: ProviderRuntime) {
   return runCodex(request, runtime);
 }, {
-  preflight,
+  preflight: codexPreflight,
   appServerLifecycle: codexAppServerLifecycle,
 });
 

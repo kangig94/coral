@@ -138,10 +138,6 @@ function createService(
     eventBus,
     providerRegistry: {
       get: resolveProvider,
-      getExecutor: resolveProvider,
-      getAppServerLifecycle: (name: string) => resolveProvider(name)?.appServerLifecycle,
-      getArtifactRecovery: (name: string) => resolveProvider(name)?.artifactRecovery,
-      getArtifactCleanup: (name: string) => resolveProvider(name)?.artifactCleanup,
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },

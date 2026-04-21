@@ -15,6 +15,7 @@ import type {
   LaunchState,
 } from '../jobs/views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { ProviderContinuityBlob, ProviderSpec } from '../providers/contract.js';
 import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { EffortLevel } from '../shared/schemas.js';
@@ -167,8 +168,15 @@ export interface RecoveryCapableService {
     sessionId: string,
     result: JobTerminal,
     phase: JobPhase,
-    options?: { conversationRef?: string; nonResumable?: boolean },
+    options?: {
+      continuity?: {
+        conversationRef: string | null;
+        resumable: boolean;
+        providerContinuity?: ProviderContinuityBlob;
+      };
+    },
   ): void;
 }
 
 export type { EffortLevel };
+export type { ProviderSpec };

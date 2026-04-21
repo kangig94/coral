@@ -19,6 +19,7 @@ import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { Provider } from '../../providers/provider-contracts.js';
+import { toProviderSpec } from '../../providers/spec-compat.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
 import { streamProviderTerminal, type ProviderInstruction, type ProviderRequest } from '../../providers/protocol.js';
@@ -216,7 +217,7 @@ describe('agent wire contract', () => {
       name: 'stub',
       execute: providerExecute,
     };
-    providerRegistry.register(fakeProvider);
+    providerRegistry.register(toProviderSpec(fakeProvider)!);
 
     const runtime = createRealRuntime();
     const launchCoordinator = new LaunchCoordinator({ runtime });

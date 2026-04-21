@@ -5,6 +5,7 @@ import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, Jo
 import type { PipelineAST, WorkflowCommand, WorkflowSessionHandle } from '../workflow/api.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ProviderRecoveryMeta, ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
+import type { ProviderContinuityBlob } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/api.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
@@ -231,7 +232,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     sessionId: string,
     result: JobTerminal,
     phase: JobPhase,
-    options?: { conversationRef?: string; nonResumable?: boolean },
+    options?: {
+      continuity?: {
+        conversationRef: string | null;
+        resumable: boolean;
+        providerContinuity?: ProviderContinuityBlob;
+      };
+    },
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }

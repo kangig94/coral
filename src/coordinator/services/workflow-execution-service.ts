@@ -57,7 +57,7 @@ export class WorkflowExecutionService {
     ctx: CallerContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
-    if (!this.deps.providerRegistry.getExecutor(providerName)) {
+    if (!this.deps.providerRegistry.get(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
 
@@ -139,7 +139,7 @@ export class WorkflowExecutionService {
     dispatchWorkflowSessionCleanup(sessions, {
       resolveConversationRef: (providerName, sessionId) =>
         this.deps.sessionManager.get(providerName, sessionId)?.conversationRef,
-      getArtifactCleanup: (providerName) => this.deps.providerRegistry.getArtifactCleanup(providerName),
+      get: (providerName) => this.deps.providerRegistry.get(providerName),
       cleanupRuntime: toArtifactCleanupRuntime(this.deps.runtime),
       onError: (message) => backendLog.warn(message),
     });

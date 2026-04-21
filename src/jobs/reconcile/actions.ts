@@ -4,7 +4,11 @@ import { isAppServerRuntime } from '../views.js';
 import type { JobLaunch, JobRuntime, JobTerminal } from '../views.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { ProviderArtifactRecovery } from '../../providers/provider-contracts.js';
+import type {
+  ProviderRecoveryContract,
+  ProviderTerminalEventBody as ProviderTerminalBody,
+  TerminalOutcome as ProviderTerminalOutcome,
+} from '../../providers/contract.js';
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
 import type { ProgressStore } from '../job-store.js';
 import type { RecoveryAction } from './plan.js';
@@ -13,7 +17,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from '../../coordinator/contracts.js';
-import { markJobAsError, materializeLegacyOutcome, materializeProviderTerminal } from './job-helpers.js';
+import { faultPayloadToLegacyFault, markJobAsError, materializeLegacyOutcome } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
@@ -22,7 +26,7 @@ export type RunningRecoverableJob = {
   launchRecord: JobLaunch;
   runtimeRecord: JobRuntime;
 };
-type ProviderLike = ProviderArtifactRecovery | undefined;
+type ProviderLike = ProviderRecoveryContract | undefined;
 type RecoveryActionContext = {
   progressStore: ProgressStore;
   recoveryRegistry: RecoveryRegistry;
@@ -183,16 +187,16 @@ export function finalizeDeadAdoptedJob({
           fallbackConversationRef: launchRecord.request.conversationRef,
         })
         .then((result) => {
-          const terminal = materializeProviderTerminal(progressStore, result, {
+          const terminal = materializeRecoveredProviderTerminal(progressStore, result.terminal, {
             jobId,
             sessionId: launchRecord.sessionId,
-          });
+          }, result.continuity);
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
             terminal,
             phaseForOutcome(terminal.outcome),
-            { conversationRef: result.conversationRef, nonResumable: result.nonResumable },
+            result.continuity ? { continuity: result.continuity } : undefined,
           );
         })
         .catch((recoverErr: unknown) => {
@@ -225,7 +229,20 @@ export function finalizeDeadAdoptedJob({
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
       const payload: JobTerminal = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
-      service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase, { nonResumable: persistedPayload.nonResumable === true });
+      service.completeRecoveredJob(
+        jobId,
+        launchRecord.sessionId,
+        payload,
+        phase,
+        persistedPayload.nonResumable === true
+          ? {
+              continuity: {
+                conversationRef: null,
+                resumable: false,
+              },
+            }
+          : undefined,
+      );
       return;
     }
 
@@ -262,4 +279,43 @@ export function finalizeDeadAdoptedJob({
     },
     'error',
   );
+}
+
+function materializeRecoveredProviderTerminal(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  terminal: ProviderTerminalBody,
+  options: { jobId: string; sessionId: string },
+  continuity?: { conversationRef: string | null; resumable: boolean; providerContinuity?: unknown },
+): JobTerminal {
+  return {
+    content: terminal.terminal.content,
+    ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+    ...(continuity?.resumable === false ? { nonResumable: true } : {}),
+    ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
+    ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
+    ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
+    outcome: materializeRecoveredProviderOutcome(progressStore, terminal.terminal.outcome, options),
+  };
+}
+
+function materializeRecoveredProviderOutcome(
+  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  outcome: ProviderTerminalOutcome,
+  options: { jobId: string; sessionId: string },
+): TerminalOutcome {
+  switch (outcome.kind) {
+    case 'completed':
+      return { kind: 'completed' };
+    case 'aborted':
+      return { kind: 'aborted', reason: outcome.reason };
+    case 'failed':
+      return materializeLegacyOutcome(
+        progressStore,
+        {
+          kind: 'legacy_fault',
+          fault: faultPayloadToLegacyFault(outcome.fault),
+        },
+        options,
+      );
+  }
 }

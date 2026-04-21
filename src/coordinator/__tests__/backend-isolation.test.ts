@@ -11,6 +11,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { streamProviderTerminal } from '../../providers/protocol.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import { toProviderSpec } from '../../providers/spec-compat.js';
 import type { JobTerminal } from '../../jobs/views.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
@@ -86,14 +87,18 @@ describe('backend isolation', () => {
     const regA = new ProviderRegistry();
     const regB = new ProviderRegistry();
 
-    regA.register({
-      name: 'provider-a',
-      execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
-    });
-    regB.register({
-      name: 'provider-b',
-      execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
-    });
+    regA.register(
+      toProviderSpec({
+        name: 'provider-a',
+        execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
+      })!,
+    );
+    regB.register(
+      toProviderSpec({
+        name: 'provider-b',
+        execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
+      })!,
+    );
 
     expect(regA.get('provider-a')).toBeDefined();
     expect(regA.get('provider-b')).toBeUndefined();

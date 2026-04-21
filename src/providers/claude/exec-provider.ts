@@ -106,6 +106,8 @@ export const claude: Provider = (request, runtime) => {
   return claudeDispatchTargets.session(request, runtime);
 };
 
+export const claudeProvider = claude;
+
 function createClaudeContinuityContract(
   inferResumable: (continuity: ClaudePersistedContinuity) => boolean,
   isSessionUnavailable: (error: unknown) => boolean,

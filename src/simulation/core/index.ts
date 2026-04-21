@@ -16,6 +16,7 @@ import {
   streamProviderEvents,
   type ProviderTerminalEventBody,
 } from '../../providers/protocol.js';
+import { toProviderSpec } from '../../providers/spec-compat.js';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import { SimulationRuntime } from '../runtime.js';
 import { sendJson } from '../../transport/http/handler.js';
@@ -355,7 +356,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
-  providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
+  const fakeProviderSpec = toProviderSpec(createFakeProvider(runtime, scenario.fakeProvider));
+  if (!fakeProviderSpec) {
+    throw new Error('Failed to convert fake provider to ProviderSpec');
+  }
+  providerRegistry.register(fakeProviderSpec);
 
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   runtime.storage.mkdirSync(projectRoot, { recursive: true });

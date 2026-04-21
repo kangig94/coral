@@ -10,6 +10,7 @@ import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../coordinator/contracts.js';
+import { getProviderRecovery } from '../../providers/spec-compat.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './job-helpers.js';
@@ -153,7 +154,7 @@ export function createRecoveryCoordinator({
       let cleanup: (() => void) | null = null;
       try {
         const service = getRecoveryService(createCallerContext(launchRecord.projectRoot));
-        const recovery = providerRegistry.getArtifactRecovery(launchRecord.provider);
+        const recovery = getProviderRecovery(providerRegistry.get(launchRecord.provider));
         if (isAppServerRuntime(runtimeRecord)) {
           assertStartupStillActive();
           await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });

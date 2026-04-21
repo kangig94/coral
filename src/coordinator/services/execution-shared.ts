@@ -3,6 +3,7 @@ import type {
   PreflightRuntime,
   ProviderExecutor,
 } from '../../providers/provider-contracts.js';
+import type { ProviderSpec } from '../../providers/contract.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
@@ -233,7 +234,7 @@ export function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
 }
 
 export async function runProviderPreflight(
-  provider: ProviderExecutor,
+  provider: ProviderExecutor | ProviderSpec,
   runtime: PreflightRuntime,
 ): Promise<string | null> {
   if (!provider.preflight) return null;

@@ -20,6 +20,12 @@ import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../shared/utils.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
+import {
+  getProviderAppServer,
+  getProviderRecovery,
+  migrateLegacyContinuity,
+  toLegacyProviderExecutor,
+} from '../../providers/spec-compat.js';
 import type {
   ExecutionLaunchCoordinator,
   ExecutionLaunchPool as LaunchPool,
@@ -128,8 +134,9 @@ export class RecoveryService {
     launchRecord: JobLaunch,
     runtimeRecord: AppServerRuntime,
   ): Promise<void> {
-    const appServerLifecycle = this.deps.providerRegistry.getAppServerLifecycle(launchRecord.provider);
-    if (!appServerLifecycle) {
+    const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
+    const appServer = getProviderAppServer(providerEntry);
+    if (!appServer) {
       return;
     }
     const session = this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
@@ -138,20 +145,20 @@ export class RecoveryService {
       return;
     }
 
-    const spec = appServerLifecycle.buildServerSpec(continuity, toProviderRequest(launchRecord));
+    const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity);
     if (spec.shared !== true) {
       const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
         serverGeneration: runtimeRecord.providerMeta.serverGeneration,
       });
       if (liveServer) {
-        await appServerLifecycle.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
+        await appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
         return;
       }
     }
 
     const lease = await this.requestServer(spec);
     try {
-      await appServerLifecycle.interrupt(lease, continuity);
+      await appServer.interrupt(lease, continuity);
     } finally {
       lease.release();
     }
@@ -167,7 +174,9 @@ export class RecoveryService {
       return;
     }
 
-    const appServerLifecycle = this.deps.providerRegistry.getAppServerLifecycle(launchRecord.provider);
+    const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
+    const appServer = getProviderAppServer(providerEntry);
+    const recovery = getProviderRecovery(providerEntry);
     const session =
       this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
       ({
@@ -205,20 +214,20 @@ export class RecoveryService {
       | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
     let probeOutcome: InterruptedProbeOutcome;
 
-    if (appServerLifecycle && continuity) {
+    if (appServer && recovery && continuity) {
       if (runtimeRecord.providerMeta.leaseState === 'waiting') {
         probeOutcome = 'waiting';
         mutation = toMutation(
-          appServerLifecycle.finalizeInterrupted(
+          recovery.finalizeInterrupted?.(
             {
               resumable: Boolean(preservedConversationRef ?? continuity),
               updatedContinuity: continuity,
             },
             continuity,
-          ),
+          ) ?? {},
         );
       } else {
-        const spec = appServerLifecycle.buildServerSpec(continuity, toProviderRequest(launchRecord));
+        const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity);
 
         try {
           const liveServer =
@@ -231,9 +240,11 @@ export class RecoveryService {
             ? this.createAttachedProviderServerLease(liveServer)
             : await this.requestServer(spec);
           try {
-            const probeResult = await appServerLifecycle.probe(lease, continuity);
+            const probeResult = recovery.probe
+              ? await recovery.probe(lease, continuity)
+              : { resumable: Boolean(preservedConversationRef ?? continuity), updatedContinuity: continuity };
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
-            mutation = toMutation(appServerLifecycle.finalizeInterrupted(probeResult, continuity));
+            mutation = toMutation(recovery.finalizeInterrupted?.(probeResult, continuity) ?? {});
           } finally {
             if (!liveServer) {
               lease.release();
@@ -245,13 +256,13 @@ export class RecoveryService {
           );
           probeOutcome = 'unavailable';
           mutation = toMutation(
-            appServerLifecycle.finalizeInterrupted(
+            recovery.finalizeInterrupted?.(
               {
                 resumable: false,
                 updatedContinuity: continuity,
               },
               continuity,
-            ),
+            ) ?? {},
           );
         }
       }
@@ -335,7 +346,7 @@ export class RecoveryService {
 
     this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
-    const provider = this.deps.providerRegistry.getExecutor(launchRecord.provider);
+    const provider = toLegacyProviderExecutor(this.deps.providerRegistry.get(launchRecord.provider));
     if (provider) {
       this.deps.launchOrchestrator.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
     }
@@ -380,7 +391,13 @@ export class RecoveryService {
     sessionId: string,
     result: JobTerminal,
     phase: JobPhase,
-    options?: { conversationRef?: string; nonResumable?: boolean },
+    options?: {
+      continuity?: {
+        conversationRef: string | null;
+        resumable: boolean;
+        providerContinuity?: ProviderContinuityBlob;
+      };
+    },
   ): void {
     this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase);
     this.deps.progressStore.writeResultMd(jobId, result.content);
@@ -390,9 +407,16 @@ export class RecoveryService {
     this.deps.launchCoordinator.releaseLaunch(jobId, pool);
     this.deps.jobPools.delete(jobId);
 
-    if (options?.conversationRef) {
-      this.deps.sessionManager.setConversationRef(sessionId, options.conversationRef);
-    } else if (options?.nonResumable) {
+    const continuity = options?.continuity;
+    if (continuity?.providerContinuity) {
+      this.deps.sessionManager.checkpointProviderContinuity(sessionId, {
+        providerContinuity: continuity.providerContinuity,
+        ...(continuity.conversationRef === null ? {} : { conversationRef: continuity.conversationRef }),
+      });
+    } else if (continuity?.conversationRef) {
+      this.deps.sessionManager.setConversationRef(sessionId, continuity.conversationRef);
+    }
+    if (continuity && !continuity.resumable) {
       this.deps.sessionManager.setNonResumable(sessionId);
     }
     this.deps.sessionManager.releaseJob(sessionId, jobId);
@@ -405,9 +429,10 @@ export class RecoveryService {
     jobId: string,
     result: ProviderTerminalEventBody,
   ): Promise<void> {
-    const appServerLifecycle = this.deps.providerRegistry.getAppServerLifecycle(providerName);
+    const providerEntry = this.deps.providerRegistry.get(providerName);
+    const appServer = getProviderAppServer(providerEntry);
     const runtimeRecord = this.deps.progressStore.readRuntimeRecord(jobId);
-    if (appServerLifecycle && isAppServerRuntime(runtimeRecord)) {
+    if (appServer && isAppServerRuntime(runtimeRecord)) {
       const continuity = this.resolveAppServerContinuity(
         providerName,
         runtimeRecord,
@@ -474,8 +499,12 @@ export class RecoveryService {
     }
 
     return this.deps.providerRegistry
-      .getAppServerLifecycle(providerName)
-      ?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
+      .get(providerName)
+      ? migrateLegacyContinuity(
+          this.deps.providerRegistry.get(providerName),
+          runtimeRecord.providerMeta as Record<string, unknown>,
+        )
+      : undefined;
   }
 
   private writeAppServerRuntimeRecord(

@@ -43,7 +43,7 @@ import {
 import { readString, sameBootstrapSignature } from './shared-utils.js';
 import type { ClaudeExecResult } from './types.js';
 
-async function preflight(_runtime: PreflightRuntime): Promise<void> {
+export async function claudePreflight(_runtime: PreflightRuntime): Promise<void> {
   const cli = await detectClaudeCli();
   if (!cli.available) throw new Error(`Claude CLI not available: ${cli.error}`);
   if (cli.authState === 'unauthenticated') throw new Error(`Claude CLI unauthenticated: ${cli.authError}`);
@@ -256,7 +256,7 @@ function executePersistent(
   return runAppServerTurn(claudeSessionDriver, request, runtime);
 }
 
-const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
+export const claudeAppServerLifecycle: ProviderAppServerLifecycle = {
   buildServerSpec(_persistedContinuity, _request) {
     return buildClaudeProviderServerSpec();
   },
@@ -392,7 +392,7 @@ async function cleanupSessions(
   }
 }
 
-const claudeArtifactCleanup: ProviderArtifactCleanup = {
+export const claudeArtifactCleanup: ProviderArtifactCleanup = {
   name: 'claude',
   cleanupSessions,
 };
@@ -400,7 +400,7 @@ const claudeArtifactCleanup: ProviderArtifactCleanup = {
 const claudeProviderBase = Object.assign(function claude(request: ProviderRequest, runtime: ProviderRuntime) {
   return runClaude(request, runtime);
 }, {
-  preflight,
+  preflight: claudePreflight,
   appServerLifecycle: claudeAppServerLifecycle,
   artifactCleanup: claudeArtifactCleanup,
 });

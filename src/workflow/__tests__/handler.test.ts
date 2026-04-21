@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { streamProviderTerminal } from '../../providers/protocol.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import { toProviderSpec } from '../../providers/spec-compat.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { WorkflowCommand } from '../api.js';
 
@@ -20,10 +21,12 @@ function createExecutionService(result = { status: 'running', job: 'job-1', sess
 function createProviderRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
   for (const name of ['claude', 'codex']) {
-    registry.register({
-      name,
-      execute: () => streamProviderTerminal({ content: `${name} response`, outcome: { kind: 'completed' } }),
-    });
+    registry.register(
+      toProviderSpec({
+        name,
+        execute: () => streamProviderTerminal({ content: `${name} response`, outcome: { kind: 'completed' } }),
+      })!,
+    );
   }
   return registry;
 }

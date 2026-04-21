@@ -3,6 +3,7 @@ import type { SessionEntry } from '../../sessions/api.js';
 import { resolveEffort } from '../../shared/schemas.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
+import { toLegacyProviderExecutor } from '../../providers/spec-compat.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import { getSessionById } from '../../sessions/shell/resolve.js';
@@ -49,11 +50,13 @@ export class JobLaunchService {
   constructor(private readonly deps: JobLaunchServiceDeps) {}
 
   async start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.deps.providerRegistry.getExecutor(providerName);
-    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    const spec = this.deps.providerRegistry.get(providerName);
+    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.deps.runtime));
+    const preflightError = await runProviderPreflight(spec, toPreflightRuntime(this.deps.runtime));
     if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+    const provider = toLegacyProviderExecutor(spec);
+    if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile> | null = null;
     if (input.agent) {
@@ -127,7 +130,9 @@ export class JobLaunchService {
   }
 
   async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.deps.providerRegistry.getExecutor(providerName);
+    const spec = this.deps.providerRegistry.get(providerName);
+    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    const provider = toLegacyProviderExecutor(spec);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const session = this.deps.sessionManager.get(providerName, input.sessionId);
@@ -162,7 +167,9 @@ export class JobLaunchService {
   }
 
   async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    const provider = this.deps.providerRegistry.getExecutor(providerName);
+    const spec = this.deps.providerRegistry.get(providerName);
+    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
+    const provider = toLegacyProviderExecutor(spec);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
     const sourceSession = this.deps.sessionManager.get(providerName, input.sessionId);
@@ -176,7 +183,9 @@ export class JobLaunchService {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
-    const provider = this.deps.providerRegistry.getExecutor(resolved.providerName);
+    const spec = this.deps.providerRegistry.get(resolved.providerName);
+    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
+    const provider = toLegacyProviderExecutor(spec);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
     return this.resumeResolved(resolved.providerName, provider, resolved.session, input, ctx);
@@ -186,7 +195,9 @@ export class JobLaunchService {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
 
-    const provider = this.deps.providerRegistry.getExecutor(resolved.providerName);
+    const spec = this.deps.providerRegistry.get(resolved.providerName);
+    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
+    const provider = toLegacyProviderExecutor(spec);
     if (!provider) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
     return this.forkResolved(resolved.providerName, provider, resolved.session, input, ctx);
