@@ -72,7 +72,7 @@ import {
 import { createRealRuntime } from '../../../runtime/real.js';
 import { streamProviderTerminal } from '../../../providers/stream.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
-import { toProviderSpec } from '../../../testing/provider-spec.js';
+import { toProviderSpec } from '../../../testing/scripted-provider.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,

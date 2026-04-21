@@ -11,7 +11,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
 import { streamProviderTerminal } from '../../providers/stream.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import { toProviderSpec } from '../../testing/provider-spec.js';
+import { toProviderSpec } from '../../testing/scripted-provider.js';
 import type { JobTerminal } from '../../jobs/views.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };

@@ -40,6 +40,14 @@ type ExecIntent = JobLaunchRequest;
 type ResumeIntent = JobResumeRequest;
 type ForkIntent = JobForkRequest;
 
+/**
+ * Stream-owned continuity snapshot projected alongside job output.
+ *
+ * When a read API exposes `JobContinuitySnapshot | null`, `null` means the
+ * provider emitted no `continuity` body at all. Downstream callers treat that
+ * as resumable (`resumable: true`) to preserve the legacy
+ * `nonResumable ?? false` silence default.
+ */
 export type JobContinuitySnapshot = {
   conversationRef: string | null;
   resumable: boolean;
@@ -55,7 +63,15 @@ interface CoordinatorSessionOps {
 interface CoordinatorJobOps {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }>;
+  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{
+    content: string;
+    /**
+     * `null` means the provider emitted no `continuity` body. Downstream
+     * consumers treat that as resumable (`resumable: true`) to preserve the
+     * existing `nonResumable ?? false` default.
+     */
+    continuity: JobContinuitySnapshot | null;
+  }>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
   list(providerName: string): ListResult;
 }

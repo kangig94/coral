@@ -1,13 +1,29 @@
+import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import {
   compose,
+  faultPayloadSchema,
+  providerContinuityEventBodySchema,
   type Provider,
+  type ProviderContinuityEventBody,
   type ProviderEventBody,
   type ProviderMiddleware,
   type ProviderRequest,
   type ProviderRuntime,
+  terminalOutcomeSchema,
+  type TerminalOutcome,
 } from '../contract.js';
+import type { FaultPayload } from '../fault.js';
+
+type IsEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2)
+    ? (<T>() => T extends B ? 1 : 2) extends (<T>() => T extends A ? 1 : 2)
+      ? true
+      : false
+    : false;
+
+function expectTypeParity<_T extends true>(): void {}
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -133,5 +149,69 @@ describe('compose', () => {
 
     expect(typeof fromArray).toBe('function');
     expect(rendered).toEqual(['conversation-1', 'typed']);
+  });
+});
+
+describe('contract schemas', () => {
+  it('keeps zod inference aligned with the native fault and continuity types', () => {
+    expectTypeParity<IsEqual<z.infer<typeof terminalOutcomeSchema>, TerminalOutcome>>();
+    expectTypeParity<IsEqual<z.infer<typeof faultPayloadSchema>, FaultPayload>>();
+    expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();
+
+    const failed = terminalOutcomeSchema.parse({
+      kind: 'failed',
+      fault: {
+        kind: 'provider_request_failed',
+        provider: 'claude',
+        message: 'dispatch rejected',
+      },
+    });
+    const continuity = providerContinuityEventBodySchema.parse({
+      kind: 'continuity',
+      conversationRef: 'conversation-1',
+      resumable: true,
+      providerContinuity: {
+        conversationRef: 'conversation-1',
+      },
+    });
+
+    expect(failed).toEqual({
+      kind: 'failed',
+      fault: {
+        kind: 'provider_request_failed',
+        provider: 'claude',
+        message: 'dispatch rejected',
+      },
+    });
+    expect(continuity).toEqual({
+      kind: 'continuity',
+      conversationRef: 'conversation-1',
+      resumable: true,
+      providerContinuity: {
+        conversationRef: 'conversation-1',
+      },
+    });
+  });
+
+  it('rejects aborted outcomes and fault payloads that fall outside the contract', () => {
+    const invalidAbort = terminalOutcomeSchema.safeParse({
+      kind: 'aborted',
+      reason: 'timeout',
+    });
+    const invalidFault = faultPayloadSchema.safeParse({
+      kind: 'provider_session_unavailable',
+      provider: 'claude',
+      message: 'wrong field',
+    });
+    const invalidContinuity = providerContinuityEventBodySchema.safeParse({
+      kind: 'continuity',
+      conversationRef: null,
+      resumable: true,
+      providerContinuity: 'not-an-object',
+    });
+
+    expect(invalidAbort.success).toBe(false);
+    expect(invalidFault.success).toBe(false);
+    expect(invalidContinuity.success).toBe(false);
   });
 });

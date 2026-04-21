@@ -8,7 +8,7 @@ import type {
   ProviderServerLease,
 } from '../../contract.js';
 import type { AppServerContract } from '../../app-server/driver.js';
-import { requireAppServerLease } from '../../app-server/driver.js';
+import { bindAppServerNotificationHandler, requireAppServerLease } from '../../app-server/driver.js';
 import { providerRequestFailed } from '../../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../../terminal.js';
 import { appServerSession } from '../app-server-session.js';
@@ -153,6 +153,44 @@ describe('appServerSession', () => {
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
     expect(contract.buildServerSpec).toHaveBeenCalledWith(BASE_REQUEST, undefined);
+  });
+
+  it('delivers notifications through the bound runtime handler with a single lease subscription', async () => {
+    const lease = makeLease();
+    const runtime = makeRuntime(lease);
+    const dynamicHandler = vi.fn();
+    const staticHandler = vi.fn();
+    const contract = makeContract({ onNotification: staticHandler, subscriptionPhase: 'afterInitialize' });
+    const started = deferred<void>();
+    const nextTerminal = deferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
+    const terminal = terminalEvent({ kind: 'completed' }, 'bound-handler');
+    const provider: Provider = async function* leaf(_request, nextRuntime) {
+      const clearNotificationBinding = bindAppServerNotificationHandler(nextRuntime, dynamicHandler);
+      expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
+      started.resolve();
+
+      try {
+        yield await nextTerminal.promise;
+      } finally {
+        clearNotificationBinding();
+      }
+    };
+
+    const eventsPromise = collect(appServerSession(contract)(provider)(BASE_REQUEST, runtime));
+
+    await started.promise;
+    lease.emit({ method: 'session/updated', params: { ok: true } });
+    await vi.waitFor(() => {
+      expect(dynamicHandler).toHaveBeenCalledWith({ method: 'session/updated', params: { ok: true } });
+      expect(staticHandler).toHaveBeenCalledWith({ method: 'session/updated', params: { ok: true } });
+    });
+    nextTerminal.resolve(terminal);
+
+    const events = await eventsPromise;
+
+    expect(events).toEqual([terminal]);
+    expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
+    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('routes aborts to interrupt and preserves the leaf-authored aborted terminal', async () => {

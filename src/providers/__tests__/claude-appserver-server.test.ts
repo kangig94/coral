@@ -6,11 +6,10 @@ import { isRecord } from '../../shared/utils.js';
 import { buildClaudeChildArgs, createClaudeBrokerServer } from '../claude-appserver/server.js';
 import {
   buildClaudeChildEnv,
-  createBrokerSession,
   hashClaudeChildEnv,
   type ClaudeBrokerChild,
-  type ClaudeBrokerSession,
 } from '../claude-appserver/controller.js';
+import { createBrokerSession, type ClaudeBrokerSession } from '../claude-appserver/broker-pool.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,

@@ -11,7 +11,7 @@ import {
   type ProviderEventBody,
   type ProviderTerminalEventBody,
 } from '../contract.js';
-import { providerSessionUnavailable } from '../fault.js';
+import { providerRequestFailed } from '../fault.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { claudeExecKernel, isClaudeExecParseError } from './exec-kernel.js';
@@ -56,13 +56,13 @@ export const claudeBrokerContinuity = createClaudeContinuityContract(
 );
 
 export const claudeExecProvider = compose(
-  sessionContinuity(claudeExecContinuity),
+  sessionContinuity('claude', claudeExecContinuity),
   adapterParseGuard('claude', isClaudeExecParseError),
   claudeExecKernel,
 );
 
 export const claudeSessionProvider = compose(
-  sessionContinuity(claudeBrokerContinuity),
+  sessionContinuity('claude', claudeBrokerContinuity),
   appServerSession(claudeAppServerContract, mapClaudeInterrupt),
   claudeSessionKernel,
 );
@@ -81,7 +81,7 @@ export const claude: Provider = (request, runtime) => {
 
     if (persistedContinuity.brokerSessionKey || persistedContinuity.bootstrapSignature) {
       return terminalOnly(
-        buildSessionUnavailableTerminal(
+        buildDispatchRejectedTerminal(
           prepared.model,
           'This Claude session already established persistent continuity. Start a new Coral session before forking.',
         ),
@@ -95,7 +95,7 @@ export const claude: Provider = (request, runtime) => {
     const actual = buildClaudeBootstrapSignature(request, prepared.systemPrompt);
     if (!sameBootstrapSignature(persistedContinuity.bootstrapSignature, actual)) {
       return terminalOnly(
-        buildSessionUnavailableTerminal(
+        buildDispatchRejectedTerminal(
           prepared.model,
           `This Claude session already established persistent continuity with cwd=${persistedContinuity.bootstrapSignature.cwd}, systemPromptHash=${persistedContinuity.bootstrapSignature.systemPromptHash}, permissionMode=${persistedContinuity.bootstrapSignature.permissionMode}. Start a new Coral session before changing that bootstrap signature.`,
         ),
@@ -203,7 +203,7 @@ function isClaudeBrokerSessionUnavailable(error: unknown): boolean {
   return /session unavailable/i.test(message);
 }
 
-function buildSessionUnavailableTerminal(model: string | undefined, reason: string): ProviderTerminalEventBody {
+function buildDispatchRejectedTerminal(model: string | undefined, reason: string): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
@@ -211,9 +211,9 @@ function buildSessionUnavailableTerminal(model: string | undefined, reason: stri
       model,
       outcome: {
         kind: 'failed',
-        fault: providerSessionUnavailable({
+        fault: providerRequestFailed({
           provider: 'claude',
-          reason,
+          message: reason,
         }),
       },
     }),

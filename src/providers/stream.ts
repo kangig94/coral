@@ -1,5 +1,6 @@
 import type {
   JobDiagnostics,
+  ProviderContinuityEventBody,
   JobTerminal,
   ProviderEventBody,
   ProviderProgressEventBody,
@@ -111,8 +112,6 @@ export type ProviderTerminalInput = {
   warnings?: JobTerminal['warnings'];
   usage?: JobTerminal['usage'];
   diagnostics?: JobDiagnostics;
-  conversationRef?: string;
-  nonResumable?: boolean;
 };
 
 export function providerProgressEvent(
@@ -122,6 +121,21 @@ export function providerProgressEvent(
   return {
     kind: 'progress',
     message,
+  };
+}
+
+export function providerContinuityEvent(
+  event: ProviderContinuityEventBody | Omit<ProviderContinuityEventBody, 'kind'>,
+): ProviderContinuityEventBody {
+  if ('kind' in event && event.kind === 'continuity') {
+    return event;
+  }
+
+  return {
+    kind: 'continuity',
+    conversationRef: event.conversationRef,
+    resumable: event.resumable,
+    providerContinuity: event.providerContinuity,
   };
 }
 
@@ -169,18 +183,6 @@ export function streamProviderTerminal(
 ): AsyncIterable<ProviderEventBody> {
   return streamProviderEvents(async (emit) => {
     const resolved = await terminal;
-    if (
-      !('kind' in resolved && resolved.kind === 'terminal') &&
-      !('terminal' in resolved) &&
-      (resolved.conversationRef !== undefined || resolved.nonResumable !== undefined)
-    ) {
-      emit({
-        kind: 'continuity',
-        conversationRef: resolved.conversationRef ?? null,
-        resumable: resolved.nonResumable !== true,
-        providerContinuity: null,
-      });
-    }
     emit(providerTerminalEvent(resolved));
   });
 }

@@ -6,7 +6,6 @@ import {
   type PreflightRuntime,
   type ProviderRequest,
   type ProviderSpec,
-  type TerminalOutcome,
   usageSummarySchema,
 } from './contract.js';
 import { streamProviderEvents } from './stream.js';
@@ -84,7 +83,7 @@ function toScriptedProviderSpec(specInput: ScriptedProviderSpec): ProviderSpec {
           kind: 'terminal',
           terminal: buildJobTerminal({
             content: spec.result?.content ?? '',
-            outcome: (spec.result?.outcome ?? { kind: 'completed' }) as TerminalOutcome,
+            outcome: spec.result?.outcome ?? { kind: 'completed' },
             ...(spec.result?.model === undefined ? {} : { model: spec.result.model }),
             ...(spec.result?.durationMs === undefined ? {} : { durationMs: spec.result.durationMs }),
             ...(spec.result?.exitCode === undefined ? {} : { exitCode: spec.result.exitCode }),

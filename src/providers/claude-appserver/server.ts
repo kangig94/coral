@@ -19,11 +19,10 @@ import {
 } from './protocol.js';
 import {
   buildClaudeChildEnv,
-  createBrokerSession,
   type ClaudeBrokerChild,
-  type ClaudeBrokerSession,
   type SpawnClaudeChildOptions,
 } from './controller.js';
+import { createBrokerSession, type ClaudeBrokerSession } from './broker-pool.js';
 
 interface CreateClaudeBrokerServerOptions {
   input?: NodeJS.ReadableStream;

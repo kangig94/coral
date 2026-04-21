@@ -2,12 +2,27 @@ import { z } from 'zod';
 
 import type { Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
-import type { FaultPayload } from './fault.js';
+import {
+  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
+  PROVIDER_REQUEST_FAILED_KIND,
+  PROVIDER_SESSION_UNAVAILABLE_KIND,
+  type FaultPayload,
+} from './fault.js';
 import type { ProviderCliRunner } from './cli-runner.js';
-import type { AppServerSubscriptionPhase, ProviderTransportClose } from './app-server/types.js';
+import type {
+  AbortReason,
+  AppServerNotificationMessage,
+  AppServerSubscriptionPhase,
+  ProviderTransportClose,
+} from './app-server/types.js';
 
 export type { ProviderContinuityBlob } from '../sessions/continuity.js';
-export type { AppServerSubscriptionPhase, ProviderTransportClose } from './app-server/types.js';
+export type {
+  AbortReason,
+  AppServerNotificationMessage,
+  AppServerSubscriptionPhase,
+  ProviderTransportClose,
+} from './app-server/types.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ProviderAction = 'exec' | 'resume' | 'fork';
@@ -107,7 +122,7 @@ export type ProviderContinuityEventBody = {
   kind: 'continuity';
   conversationRef: string | null;
   resumable: boolean;
-  providerContinuity: unknown;
+  providerContinuity?: ProviderContinuityBlob | null;
 };
 
 export type ProviderTerminalEventBody = {
@@ -121,10 +136,40 @@ export type ProviderEventBody =
   | ProviderContinuityEventBody
   | ProviderTerminalEventBody;
 
+const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
+
+export const faultPayloadSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal(ADAPTER_OUTPUT_UNPARSEABLE_KIND),
+      provider: z.string(),
+      exitCode: z.number().nullable(),
+      stdout: z.string(),
+      stderr: z.string(),
+      parseError: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal(PROVIDER_SESSION_UNAVAILABLE_KIND),
+      provider: z.string(),
+      reason: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal(PROVIDER_REQUEST_FAILED_KIND),
+      provider: z.string(),
+      message: z.string(),
+      cause: z.unknown().optional(),
+    })
+    .strict(),
+]);
+
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
-  z.object({ kind: z.literal('aborted'), reason: z.string() }).strict(),
-  z.object({ kind: z.literal('failed'), fault: z.unknown() }).strict(),
+  z.object({ kind: z.literal('aborted'), reason: z.enum(abortReasons) }).strict(),
+  z.object({ kind: z.literal('failed'), fault: faultPayloadSchema }).strict(),
 ]);
 
 export const jobTerminalSchema = z
@@ -164,7 +209,7 @@ export const providerContinuityEventBodySchema = z
     kind: z.literal('continuity'),
     conversationRef: z.string().nullable(),
     resumable: z.boolean(),
-    providerContinuity: z.unknown(),
+    providerContinuity: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .strict();
 
@@ -212,20 +257,7 @@ export interface ProviderAppServerContract {
   readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(request: ProviderRequest, persistedContinuity: ProviderContinuityBlob | undefined): ProviderServerSpec;
   interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
-  probe?(
-    lease: ProviderServerLease,
-    continuity: ProviderContinuityBlob,
-  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
-  finalizeInterrupted?(
-    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
-    continuity: ProviderContinuityBlob,
-  ): {
-    conversationRef?: string;
-    nonResumable?: boolean;
-    continuityMutation?: ProviderContinuityBlob;
-  };
-  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
-  onTransportClosed?(state: unknown, outcome: Error | void): ProviderTransportClose;
+  onNotification?(message: AppServerNotificationMessage): void;
 }
 
 export interface ProviderRecoveryContract {
@@ -261,6 +293,7 @@ export interface ProviderRecoveryContract {
     messages: string[];
     newOffset: number;
   };
+  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;

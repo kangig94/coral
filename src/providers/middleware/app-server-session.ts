@@ -19,6 +19,11 @@ import type {
 type DownstreamStep = IteratorResult<ProviderEventBody>;
 type ClosedResult = { kind: 'closed'; closed: Error | void };
 type NextResult = { kind: 'next'; step: DownstreamStep };
+type NotificationSubscription = {
+  startBeforeInitialize(): void;
+  startAfterInitialize(): void;
+  stop(): void;
+};
 
 function isBeforeInitialize(phase: AppServerSubscriptionPhase): boolean {
   return phase === 'beforeInitialize';
@@ -51,6 +56,95 @@ function installAbortRelay(
   };
 }
 
+function subscribeWithPhase(
+  phase: AppServerSubscriptionPhase,
+  lease: ProviderServerLease,
+  handler: (message: AppServerNotificationMessage) => void,
+): NotificationSubscription {
+  let subscribed = false;
+  let open = false;
+  let unsubscribe = () => {};
+
+  const start = (): void => {
+    if (subscribed) {
+      return;
+    }
+
+    subscribed = true;
+    open = true;
+    unsubscribe = lease.subscribe((message: AppServerNotificationMessage) => {
+      if (!open) {
+        return;
+      }
+      handler(message);
+    });
+  };
+
+  return {
+    startBeforeInitialize() {
+      if (isBeforeInitialize(phase)) {
+        start();
+      }
+    },
+    startAfterInitialize() {
+      if (!isBeforeInitialize(phase)) {
+        start();
+      }
+    },
+    stop() {
+      if (!subscribed || !open) {
+        return;
+      }
+
+      open = false;
+      const currentUnsubscribe = unsubscribe;
+      unsubscribe = () => {};
+      try {
+        currentUnsubscribe();
+      } catch {
+        /* ignore cleanup failures */
+      }
+    },
+  };
+}
+
+function raceNextAndClosed(
+  pendingNext: Promise<DownstreamStep>,
+  pendingClosed: Promise<ClosedResult>,
+): Promise<ClosedResult | NextResult> {
+  return Promise.race([
+    pendingClosed,
+    pendingNext.then((step): NextResult => ({ kind: 'next', step })),
+  ]);
+}
+
+async function teardownSession(options: {
+  removeAbortRelay: () => void;
+  notifications: NotificationSubscription;
+  iterator: AsyncIterator<ProviderEventBody> | null;
+  downstreamSettled: boolean;
+  clearBoundLease: () => void;
+  lease: ProviderServerLease;
+}): Promise<void> {
+  options.removeAbortRelay();
+  options.notifications.stop();
+
+  if (options.iterator && !options.downstreamSettled && typeof options.iterator.return === 'function') {
+    try {
+      await options.iterator.return();
+    } catch {
+      /* ignore downstream cleanup failures */
+    }
+  }
+
+  options.clearBoundLease();
+  try {
+    options.lease.release();
+  } catch {
+    /* ignore cleanup failures */
+  }
+}
+
 export function appServerSession(
   contract: AppServerContract,
   mapInterrupt?: (lease: ProviderServerLease) => Promise<void>,
@@ -61,55 +155,20 @@ export function appServerSession(
       const lease: ProviderServerLease = await runtime.acquireServer(spec);
       const clearBoundLease = bindAppServerLease(runtime, lease);
       const removeAbortRelay = installAbortRelay(runtime, lease, mapInterrupt ?? contract.interrupt);
+      const notifications = subscribeWithPhase(contract.subscriptionPhase, lease, (message) => {
+        getAppServerNotificationHandler(runtime)?.(message);
+        contract.onNotification?.(message);
+      });
 
-      let notificationsSubscribed = false;
-      let notificationsOpen = false;
-      let unsubscribe = () => {};
       let iterator: AsyncIterator<ProviderEventBody> | null = null;
       let downstreamSettled = false;
       let transportClosed = false;
 
-      const startNotifications = (): void => {
-        if (notificationsSubscribed) {
-          return;
-        }
-        notificationsSubscribed = true;
-        notificationsOpen = true;
-        unsubscribe = lease.subscribe((message: AppServerNotificationMessage) => {
-          if (!notificationsOpen) {
-            return;
-          }
-          getAppServerNotificationHandler(runtime)?.(message);
-          contract.onNotification?.(message);
-        });
-      };
-
-      const stopNotifications = (): void => {
-        if (!notificationsSubscribed || !notificationsOpen) {
-          return;
-        }
-        notificationsOpen = false;
-        const currentUnsubscribe = unsubscribe;
-        unsubscribe = () => {};
-        try {
-          currentUnsubscribe();
-        } catch {
-          /* ignore cleanup failures */
-        }
-      };
-
       try {
-        if (isBeforeInitialize(contract.subscriptionPhase)) {
-          startNotifications();
-        }
-
+        notifications.startBeforeInitialize();
         iterator = next(request, runtime)[Symbol.asyncIterator]();
         let pendingNext: Promise<DownstreamStep> | null = iterator.next();
-
-        if (!isBeforeInitialize(contract.subscriptionPhase)) {
-          // Start the leaf turn before wiring after-initialize notifications.
-          startNotifications();
-        }
+        notifications.startAfterInitialize();
 
         const pendingClosed: Promise<ClosedResult> = lease.closed.then((closed) => ({
           kind: 'closed',
@@ -120,14 +179,11 @@ export function appServerSession(
           let step: DownstreamStep | undefined;
 
           if (!transportClosed) {
-            const winner: ClosedResult | NextResult = await Promise.race([
-              pendingClosed,
-              pendingNext.then((nextStep): NextResult => ({ kind: 'next', step: nextStep })),
-            ]);
+            const winner = await raceNextAndClosed(pendingNext, pendingClosed);
 
             if (winner.kind === 'closed') {
               transportClosed = true;
-              stopNotifications();
+              notifications.stop();
               runtime.continuityBridge.transportClosed(toTransportClose(winner.closed));
               continue;
             }
@@ -147,7 +203,7 @@ export function appServerSession(
           const event = step.value;
           if (event.kind === 'terminal') {
             downstreamSettled = true;
-            stopNotifications();
+            notifications.stop();
             yield event;
             return;
           }
@@ -156,21 +212,14 @@ export function appServerSession(
           pendingNext = iterator.next();
         }
       } finally {
-        removeAbortRelay();
-        stopNotifications();
-        if (iterator && !downstreamSettled && typeof iterator.return === 'function') {
-          try {
-            await iterator.return();
-          } catch {
-            /* ignore downstream cleanup failures */
-          }
-        }
-        clearBoundLease();
-        try {
-          lease.release();
-        } catch {
-          /* ignore cleanup failures */
-        }
+        await teardownSession({
+          removeAbortRelay,
+          notifications,
+          iterator,
+          downstreamSettled,
+          clearBoundLease,
+          lease,
+        });
       }
     };
 }

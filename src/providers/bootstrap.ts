@@ -13,21 +13,23 @@ import {
   claudeAppServerLifecycle,
   claudeArtifactCleanup,
   claudePreflight,
+  claudeRecoveryLifecycle,
 } from './claude/provider-facets.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
-import { codexAppServerLifecycle, codexPreflight } from './codex/provider-facets.js';
+import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
 import { ProviderRegistry } from './registry.js';
 import { resolveScriptedProviderOverride } from './bootstrap-scripted-override.js';
 
-function buildClaudeRecovery(): ProviderRecoveryContract {
-  const probe = claudeAppServerLifecycle.probe;
-  const finalizeInterrupted = claudeAppServerLifecycle.finalizeInterrupted;
+function buildClaudeRecovery(
+  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>,
+): ProviderRecoveryContract {
+  const { probe, finalizeInterrupted } = lifecycle;
   if (!probe || !finalizeInterrupted) {
-    throw new Error('Claude app-server lifecycle must define probe + finalizeInterrupted');
+    throw new Error('Claude recovery lifecycle must define probe + finalizeInterrupted');
   }
   return {
-    probe: probe.bind(claudeAppServerLifecycle),
-    finalizeInterrupted: finalizeInterrupted.bind(claudeAppServerLifecycle),
+    probe: probe.bind(lifecycle),
+    finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
     async finalizeFromArtifacts(options) {
       const stdout = readArtifact(options.stdoutPath);
       const stderr = readArtifact(options.stderrPath);
@@ -82,21 +84,25 @@ function buildClaudeRecovery(): ProviderRecoveryContract {
               : {
                   conversationRef: null,
                   resumable: false,
-                },
+            },
       };
     },
+    ...(lifecycle.migrateLegacyContinuity
+      ? { migrateLegacyContinuity: lifecycle.migrateLegacyContinuity.bind(lifecycle) }
+      : {}),
   };
 }
 
-function buildCodexRecovery(): ProviderRecoveryContract {
-  const probe = codexAppServerLifecycle.probe;
-  const finalizeInterrupted = codexAppServerLifecycle.finalizeInterrupted;
+function buildCodexRecovery(
+  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>,
+): ProviderRecoveryContract {
+  const { probe, finalizeInterrupted } = lifecycle;
   if (!probe || !finalizeInterrupted) {
-    throw new Error('Codex app-server lifecycle must define probe + finalizeInterrupted');
+    throw new Error('Codex recovery lifecycle must define probe + finalizeInterrupted');
   }
   return {
-    probe: probe.bind(codexAppServerLifecycle),
-    finalizeInterrupted: finalizeInterrupted.bind(codexAppServerLifecycle),
+    probe: probe.bind(lifecycle),
+    finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
     async finalizeFromArtifacts(options) {
       const stdout = readArtifact(options.stdoutPath);
       const stderr = readArtifact(options.stderrPath);
@@ -129,6 +135,9 @@ function buildCodexRecovery(): ProviderRecoveryContract {
             },
       };
     },
+    ...(lifecycle.migrateLegacyContinuity
+      ? { migrateLegacyContinuity: lifecycle.migrateLegacyContinuity.bind(lifecycle) }
+      : {}),
   };
 }
 
@@ -145,7 +154,7 @@ const codexProviderSpec: ProviderSpec = {
   run: codexThreadProvider,
   preflight: codexPreflight,
   appServer: codexAppServerLifecycle,
-  recovery: buildCodexRecovery(),
+  recovery: buildCodexRecovery(codexRecoveryLifecycle),
 };
 
 const claudeProviderSpec: ProviderSpec = {
@@ -153,7 +162,7 @@ const claudeProviderSpec: ProviderSpec = {
   run: claudeProvider,
   preflight: claudePreflight,
   appServer: claudeAppServerLifecycle,
-  recovery: buildClaudeRecovery(),
+  recovery: buildClaudeRecovery(claudeRecoveryLifecycle),
   cleanup: claudeArtifactCleanup,
 };
 

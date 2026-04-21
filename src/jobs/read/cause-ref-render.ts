@@ -77,6 +77,18 @@ function continuitySentenceFragment(value: string | undefined): string {
   }
 }
 
+function describeSessionUnavailable(provider: string, reason: string): string {
+  const detail = ensureSentence(reason);
+  switch (provider) {
+    case 'codex':
+      return `Codex session unavailable: ${detail} Start a new Coral session or resume without --session.`;
+    case 'claude':
+      return `Claude session unavailable: ${detail} Start a new Coral session before forking.`;
+    default:
+      return `${provider} session unavailable: ${detail}`;
+  }
+}
+
 function describeEvent(event: CoralEvent): string {
   switch (`${event.stream.kind}:${event.type}`) {
     case 'job:job.launch.requested':
@@ -120,7 +132,7 @@ function describeEvent(event: CoralEvent): string {
       if (typeof event.body.provider === 'string' && typeof event.body.reason === 'string') {
         const message = typeof event.body.message === 'string' ? event.body.message : 'unknown';
         if (event.body.reason === 'session_unavailable') {
-          return `${event.body.provider} session unavailable: ${ensureSentence(message)}`;
+          return describeSessionUnavailable(event.body.provider, message);
         }
         if (event.body.reason === 'request_failed') {
           return `${event.body.provider} turn failed: ${ensureSentence(message)}`;

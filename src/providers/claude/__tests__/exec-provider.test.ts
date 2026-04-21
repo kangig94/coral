@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../../contract.js';
 
@@ -12,6 +12,7 @@ const BASE_BOOTSTRAP_SIGNATURE = {
   systemPromptHash: 'sha256:system',
   permissionMode: 'default' as const,
 };
+const ORIGINAL_CORAL_DEV_ASSERTIONS = process.env.CORAL_DEV_ASSERTIONS;
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -128,6 +129,15 @@ async function loadProvider() {
 beforeEach(() => {
   kernelInvocations.exec = 0;
   kernelInvocations.session = 0;
+});
+
+afterEach(() => {
+  if (ORIGINAL_CORAL_DEV_ASSERTIONS === undefined) {
+    delete process.env.CORAL_DEV_ASSERTIONS;
+    return;
+  }
+
+  process.env.CORAL_DEV_ASSERTIONS = ORIGINAL_CORAL_DEV_ASSERTIONS;
 });
 
 describe('claude exec-provider dispatcher', () => {
@@ -276,6 +286,122 @@ describe('claude exec-provider dispatcher', () => {
 
   it.each([
     [
+      'envHash',
+      {
+        envHash: 'sha256:env',
+      },
+    ],
+    [
+      'conversationRef',
+      {
+        conversationRef: 'persisted-conversation',
+      },
+    ],
+    [
+      'brokerTurnId',
+      {
+        brokerTurnId: 'persisted-turn',
+      },
+    ],
+  ])(
+    'routes fork marker-only continuity through claudeExecProvider when only %s is persisted',
+    async (_label, persistedContinuity) => {
+      delete process.env.CORAL_DEV_ASSERTIONS;
+
+      const { claude } = await loadProvider();
+      const lease = makeLease();
+      const runtime = makeRuntime(lease, {
+        persistedContinuity,
+        runCli: vi.fn(async () => ({
+          stdout: JSON.stringify({
+            type: 'result',
+            result: 'fork result',
+            session_id: 'fork-session-1',
+            total_cost_usd: 0.03,
+          }),
+          stderr: '',
+          code: 0,
+          aborted: false,
+        })),
+      });
+
+      const terminal = getTerminal(
+        await collect(
+          claude(
+            makeRequest({
+              action: 'fork',
+              conversationRef: 'parent-session',
+            }),
+            runtime,
+          ),
+        ),
+      );
+
+      expect(kernelInvocations.exec).toBe(1);
+      expect(kernelInvocations.session).toBe(0);
+      expect(runtime.acquireServer).not.toHaveBeenCalled();
+      expect(runtime.runCli).toHaveBeenCalledTimes(1);
+      expect(terminal.terminal).toMatchObject({
+        content: 'fork result',
+        outcome: { kind: 'completed' },
+      });
+    },
+  );
+
+  it.each([
+    [
+      'envHash',
+      {
+        envHash: 'sha256:env',
+      },
+    ],
+    [
+      'conversationRef',
+      {
+        conversationRef: 'persisted-conversation',
+      },
+    ],
+    [
+      'brokerTurnId',
+      {
+        brokerTurnId: 'persisted-turn',
+      },
+    ],
+  ])('throws under CORAL_DEV_ASSERTIONS=1 when only %s is persisted for fork', async (_label, persistedContinuity) => {
+    process.env.CORAL_DEV_ASSERTIONS = '1';
+
+    const { claude } = await loadProvider();
+    const lease = makeLease();
+    const runtime = makeRuntime(lease, {
+      persistedContinuity,
+    });
+
+    let assertion: unknown;
+    try {
+      claude(
+        makeRequest({
+          action: 'fork',
+          conversationRef: 'parent-session',
+        }),
+        runtime,
+      );
+    } catch (error: unknown) {
+      assertion = error;
+    }
+
+    expect(assertion).toMatchObject({
+      name: 'AssertionError',
+      message:
+        'Claude fork received envHash, conversationRef, or brokerTurnId without brokerSessionKey or bootstrapSignature.',
+    });
+    expect(kernelInvocations.exec).toBe(0);
+    expect(kernelInvocations.session).toBe(0);
+    expect(runtime.acquireServer).not.toHaveBeenCalled();
+    expect(runtime.runCli).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
       'brokerSessionKey',
       {
         brokerSessionKey: 'broker-established',
@@ -317,9 +443,10 @@ describe('claude exec-provider dispatcher', () => {
         outcome: {
           kind: 'failed',
           fault: {
-            kind: 'provider_session_unavailable',
+            kind: 'provider_request_failed',
             provider: 'claude',
-            reason: 'This Claude session already established persistent continuity. Start a new Coral session before forking.',
+            message:
+              'This Claude session already established persistent continuity. Start a new Coral session before forking.',
           },
         },
       });
@@ -351,9 +478,9 @@ describe('claude exec-provider dispatcher', () => {
       outcome: {
         kind: 'failed',
         fault: {
-          kind: 'provider_session_unavailable',
+          kind: 'provider_request_failed',
           provider: 'claude',
-          reason:
+          message:
             'This Claude session already established persistent continuity with cwd=/persisted-workspace, systemPromptHash=sha256:system, permissionMode=default. Start a new Coral session before changing that bootstrap signature.',
         },
       },

@@ -12,6 +12,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh` level — the adapter collapses `xhigh` to the provider ceiling (`max`) on those tiers |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier |
 | `CORAL_EFFORT` | _(none)_ | Global effort fallback used only when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset. Explicit request-body effort wins over all env vars |
+| `CORAL_DEV_ASSERTIONS` | _(none)_ | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls throw instead of silently no-oping, and to throw on dispatcher corrupt-state cases. Leave unset for production behavior; never enable in production deploys |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |

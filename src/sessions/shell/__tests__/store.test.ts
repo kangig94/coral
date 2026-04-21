@@ -440,6 +440,36 @@ describe('sessions shell store', () => {
     }
   });
 
+  it('checkpointJobContinuityAtomic returns ok:false and leaves the claim untouched for stale versions', async () => {
+    const { mgr, workDir } = setup('checkpoint-job-continuity-stale');
+    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    mgr.claimForJobSync(entry.sessionId, 'job-1');
+
+    const claimed = mgr.get('codex', entry.sessionId);
+    if (!claimed) {
+      throw new Error('Expected claimed session');
+    }
+
+    await expect(
+      mgr.checkpointJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version + 1,
+        snapshot: {
+          conversationRef: 'thread-stale',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-stale' },
+        },
+      }),
+    ).resolves.toEqual({ ok: false });
+
+    const current = mgr.get('codex', entry.sessionId);
+    expect(current).toMatchObject({
+      activeJobId: 'job-1',
+      version: claimed.version,
+    });
+    expect(current?.conversationRef).toBeUndefined();
+  });
+
   it('releaseJobClaimAtomic clears the claim only at the latest version and does not write continuity', async () => {
     const { db, mgr, workDir } = setupWithJournal('release-job-claim');
     const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);

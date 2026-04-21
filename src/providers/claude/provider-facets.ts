@@ -4,6 +4,7 @@ import { detectClaudeCli } from '../cli-detection.js';
 import type {
   ArtifactCleanupRuntime,
   ProviderAppServerContract,
+  ProviderRecoveryContract,
   ProviderServerLease,
 } from '../contract.js';
 import type { SessionProbeResult } from '../claude-appserver/protocol.js';
@@ -52,6 +53,9 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
       mapInterruptParams(persistedContinuity.brokerSessionKey, persistedContinuity.brokerTurnId),
     );
   },
+};
+
+export const claudeRecoveryLifecycle = {
   async probe(lease, continuity) {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
     if (!persistedContinuity.brokerSessionKey) {
@@ -125,7 +129,7 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
       continuityMutation,
     };
   },
-};
+} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;
 
 async function cleanupSessions(
   runtime: ArtifactCleanupRuntime,

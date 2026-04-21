@@ -43,9 +43,14 @@ import {
 } from './contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
+
+function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
+  throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
+}
+
 const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> = {
-  checkpoint: () => {},
-  transportClosed: () => {},
+  checkpoint: () => missingContinuityMiddleware('checkpoint'),
+  transportClosed: () => missingContinuityMiddleware('transportClosed'),
 };
 
 function canAdvanceLaunchState(status: JobStatus | null): status is JobStatus {
@@ -433,13 +438,13 @@ export class LaunchOrchestrator {
     try {
       const runtime = this.createProviderRuntime(provider.name, sessionId, jobId, signal, pool);
       let latestContinuity: JobContinuitySnapshot | null = null;
+      const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
       const consumed = await consumeJobStream({
         jobId,
         sessionId,
+        initialVersion,
         stream: runProviderExecution(provider, request, runtime),
         sessionApi: {
-          readClaimVersion: (claimedSessionId, expectedActiveJobId) =>
-            this.readClaimVersion(provider.name, claimedSessionId, expectedActiveJobId),
           checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
             const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
             if (result.ok) {

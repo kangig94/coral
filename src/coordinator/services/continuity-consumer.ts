@@ -6,9 +6,9 @@ import type {
   ProviderEventBody,
 } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import { backendLog } from '../../shared/backend-log.js';
 
 type SessionContinuityApi = {
-  readClaimVersion(sessionId: string, expectedActiveJobId: string): number;
   checkpointJobContinuityAtomic(
     sessionId: string,
     options: {
@@ -22,6 +22,7 @@ type SessionContinuityApi = {
 export async function consumeJobStream(options: {
   jobId: string;
   sessionId: string;
+  initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
   sessionApi: SessionContinuityApi;
   appendProgress(message: string): void;
@@ -33,7 +34,7 @@ export async function consumeJobStream(options: {
 }> {
   const { sessionId, stream, sessionApi } = options;
   let finalContinuity: JobContinuitySnapshot | null = null;
-  let expectedVersion: number | null = null;
+  let expectedVersion = options.initialVersion;
 
   for await (const event of stream) {
     if (event.kind === 'progress') {
@@ -45,7 +46,7 @@ export async function consumeJobStream(options: {
       const continuity = toJobContinuitySnapshot(event.providerContinuity, event.conversationRef, event.resumable);
       const result = await sessionApi.checkpointJobContinuityAtomic(sessionId, {
         expectedActiveJobId: options.jobId,
-        expectedVersion: expectedVersion ?? sessionApi.readClaimVersion(sessionId, options.jobId),
+        expectedVersion,
         snapshot: {
           conversationRef: continuity.conversationRef,
           resumable: continuity.resumable,
@@ -53,7 +54,10 @@ export async function consumeJobStream(options: {
         },
       });
       if (!result.ok) {
-        throw new Error(`Failed to checkpoint continuity for claimed job ${options.jobId}.`);
+        backendLog.warn(
+          `Continuity checkpoint went stale for claimed job ${options.jobId} on session ${sessionId}; draining terminal.`,
+        );
+        continue;
       }
 
       expectedVersion = result.nextVersion;

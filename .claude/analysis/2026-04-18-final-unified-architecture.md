@@ -910,13 +910,13 @@ const claudeExecProvider = compose(
 
 const claudeAppServerProvider = compose(
   sessionContinuity(claudeBrokerContinuity),
-  appServerSession(buildClaudeProviderServerSpec, mapClaudeInterrupt),
+  appServerSession(claudeAppServerContract),
   claudeBrokerTurnKernel,
 );
 
 const codexThreadProvider = compose(
   sessionContinuity(codexThreadContinuity),
-  appServerSession(buildCodexProviderServerSpec, mapCodexInterrupt),
+  appServerSession(codexAppServerContract),
   codexTurnKernel,
 );
 ```
@@ -930,7 +930,8 @@ transport-close from `appServerSession` via `runtime.continuityBridge`, so
 `continuity` bodies have one emitter. `appServerSession` surfaces typed
 close-state through the bridge but never emits `continuity` itself and never
 rewrites downstream terminal outcome. See
-`.coral/projects/.../phase6-provider-middleware.md` § Amendments for rationale.
+`/home/ing/.coral/projects/kangig94-coral/plans/phase6-provider-middleware.md`
+§ Amendments for rationale.
 
 ### 8.2 Envelope vs body split
 

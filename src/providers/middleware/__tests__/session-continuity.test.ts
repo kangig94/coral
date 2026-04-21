@@ -19,12 +19,14 @@ type TestState = {
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
   sessionId: 'job-session-continuity',
-  name: 'claude',
+  name: 'claude-opus-4-7',
   prompt: 'hello',
   cwd: process.cwd(),
   bypassPermissions: false,
   coralEnv: {},
 };
+
+const TEST_PROVIDER_NAME = 'claude';
 
 const DEV_ASSERTIONS = 'CORAL_DEV_ASSERTIONS';
 const ORIGINAL_DEV_ASSERTIONS = process.env[DEV_ASSERTIONS];
@@ -126,6 +128,16 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
   return events;
 }
 
+function captureThrownError(invoke: () => void): Error {
+  try {
+    invoke();
+  } catch (error) {
+    return error as Error;
+  }
+
+  throw new Error('Expected callback to throw.');
+}
+
 describe('sessionContinuity', () => {
   it('does not emit an opening continuity snapshot when no live delta occurs', async () => {
     const downstreamTerminal = terminalEvent('resumable');
@@ -135,6 +147,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: 'abc',
@@ -156,6 +169,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: null,
@@ -183,6 +197,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: 'persisted-1',
@@ -223,6 +238,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: 'stable',
@@ -263,6 +279,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: null,
@@ -300,6 +317,7 @@ describe('sessionContinuity', () => {
 
     const events = await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: 'conversation-1',
@@ -335,6 +353,7 @@ describe('sessionContinuity', () => {
 
     await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: null,
@@ -363,6 +382,7 @@ describe('sessionContinuity', () => {
 
     await collect(
       sessionContinuity(
+        TEST_PROVIDER_NAME,
         makeContract({
           opening: {
             conversationRef: null,
@@ -374,11 +394,21 @@ describe('sessionContinuity', () => {
     );
 
     expect(capturedBridge).not.toBeNull();
-    expect(() => capturedBridge?.checkpoint({ conversationRef: 'stale-assert' })).toThrowError(
-      /runtime\.continuityBridge\.checkpoint\(\)/,
+    const checkpointAssertion = captureThrownError(() => {
+      capturedBridge?.checkpoint({ conversationRef: 'stale-assert' });
+    });
+    expect(checkpointAssertion.message).toMatch(/runtime\.continuityBridge\.checkpoint\(\)/);
+    expect(checkpointAssertion.message).toContain('Bridge creation stack:');
+    expect(checkpointAssertion.message).toContain('Continuity bridge created here.');
+    expect(checkpointAssertion.message).toContain('Bridge deactivation stack:');
+    expect(checkpointAssertion.message).toContain('Continuity bridge deactivated here.');
+    expect(checkpointAssertion.message).toContain(
+      'cancel delayed callbacks or stop emitting after the provider iterator returns',
     );
-    expect(() => capturedBridge?.transportClosed({ kind: 'transport_closed' })).toThrowError(
-      /runtime\.continuityBridge\.transportClosed\(\)/,
-    );
+
+    const transportClosedAssertion = captureThrownError(() => {
+      capturedBridge?.transportClosed({ kind: 'transport_closed' });
+    });
+    expect(transportClosedAssertion.message).toMatch(/runtime\.continuityBridge\.transportClosed\(\)/);
   });
 });

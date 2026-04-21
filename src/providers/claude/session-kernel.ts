@@ -1,7 +1,11 @@
 import { errorMessage, isRecord } from '../../shared/utils.js';
 import type { Provider, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
-import { requireAppServerLease, buildProviderFailureMessage } from '../app-server/driver.js';
+import {
+  bindAppServerNotificationHandler,
+  buildProviderFailureMessage,
+  requireAppServerLease,
+} from '../app-server/driver.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
@@ -78,8 +82,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity);
     const clearBinding = bindInterruptState(lease, state);
-
-    const unsubscribe = lease.subscribe((message) => {
+    const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
       applyNotification(state, message, runtime, emit);
     });
 
@@ -136,7 +139,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       emit(buildFailedTerminal('', state.prepared.model, Date.now() - state.startedAt, errorMessage(error)));
     } finally {
-      unsubscribe();
+      clearNotificationBinding();
       clearBinding();
     }
   });

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
+  Provider,
   ProviderContinuityBlob,
   ProviderContinuityEventBody,
   ProviderContinuityUpdate,
@@ -16,6 +17,22 @@ type ContinuitySnapshot = Pick<
   ProviderContinuityEventBody,
   'conversationRef' | 'resumable' | 'providerContinuity'
 >;
+
+type ContinuityQueue = {
+  lastEmitted: ContinuitySnapshot;
+  pending: ContinuitySnapshot[];
+};
+
+type ContinuityState<TState> = {
+  current: TState;
+  pendingTransportClosed?: ProviderTransportClose;
+};
+
+type BridgeLifecycle = {
+  active: boolean;
+  creationStack?: string;
+  deactivationStack?: string;
+};
 
 export interface SessionContinuityContract<TState> {
   read(
@@ -38,104 +55,68 @@ function buildSessionUnavailableFault(provider: string, reason: string) {
   return fault;
 }
 
-export function sessionContinuity<TState>(contract: SessionContinuityContract<TState>): ProviderMiddleware {
+export function sessionContinuity<TState>(
+  contract: SessionContinuityContract<TState>,
+): ProviderMiddleware;
+export function sessionContinuity<TState>(
+  providerName: string,
+  contract: SessionContinuityContract<TState>,
+): ProviderMiddleware;
+export function sessionContinuity<TState>(
+  providerNameOrContract: string | SessionContinuityContract<TState>,
+  maybeContract?: SessionContinuityContract<TState>,
+): ProviderMiddleware {
+  const providerName = typeof providerNameOrContract === 'string' ? providerNameOrContract : undefined;
+  const contract = typeof providerNameOrContract === 'string' ? maybeContract : providerNameOrContract;
+  if (!contract) {
+    throw new Error('sessionContinuity requires a contract.');
+  }
+
   return (next) =>
     async function* sessionContinuityProvider(request, runtime) {
       const { providerState, opening } = contract.read(runtime.persistedContinuity, request);
-      let state = providerState;
-      let lastSnapshot = normalizeSnapshot(opening);
-      let pendingTransportClosed: ProviderTransportClose | undefined;
-      const pendingContinuity: ContinuitySnapshot[] = [];
-      let active = true;
-
-      const queueSnapshot = (snapshot: ContinuitySnapshot): void => {
-        const normalized = normalizeSnapshot(snapshot);
-        if (isDeepStrictEqual(lastSnapshot, normalized)) {
-          return;
-        }
-
-        lastSnapshot = normalized;
-        pendingContinuity.push(normalized);
+      const queue: ContinuityQueue = {
+        lastEmitted: normalizeSnapshot(opening),
+        pending: [],
       };
-
-      const flushPendingTransportClose = (): void => {
-        if (pendingTransportClosed === undefined) {
-          return;
-        }
-        if (contract.applyTransportClosed) {
-          state = contract.applyTransportClosed(state, pendingTransportClosed);
-        }
-        pendingTransportClosed = undefined;
+      const state: ContinuityState<TState> = {
+        current: providerState,
       };
-
-      const flushFinalSnapshot = (): void => {
-        flushPendingTransportClose();
-        queueSnapshot(contract.snapshot(state));
-      };
-
-      const continuityBridge = createContinuityBridge({
-        checkpoint(update) {
-          state = contract.applyUpdate(state, update);
-          queueSnapshot(contract.snapshot(state));
-        },
-        transportClosed(closed) {
-          pendingTransportClosed = closed;
-        },
-        isActive: () => active,
-      });
+      const bridgeLifecycle = createBridgeLifecycle();
+      const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue);
 
       const wrappedRuntime: ProviderRuntime = { ...runtime, continuityBridge };
 
       try {
-        for await (const event of next(request, wrappedRuntime)) {
-          while (pendingContinuity.length > 0) {
-            const snapshot = pendingContinuity.shift();
-            if (snapshot) {
-              yield continuityEvent(snapshot);
-            }
-          }
+        for await (const event of runWithBridge(next, request, wrappedRuntime)) {
+          yield* drainContinuity(queue.pending);
 
           if (event.kind !== 'terminal') {
             yield event;
             continue;
           }
 
-          flushFinalSnapshot();
-          while (pendingContinuity.length > 0) {
-            const snapshot = pendingContinuity.shift();
-            if (snapshot) {
-              yield continuityEvent(snapshot);
-            }
-          }
+          queueFinalContinuityIfDelta(contract, state, queue);
+          yield* drainContinuity(queue.pending);
 
           yield event;
           return;
         }
 
-        flushFinalSnapshot();
-        while (pendingContinuity.length > 0) {
-          const snapshot = pendingContinuity.shift();
-          if (snapshot) {
-            yield continuityEvent(snapshot);
-          }
-        }
+        queueFinalContinuityIfDelta(contract, state, queue);
+        yield* drainContinuity(queue.pending);
       } catch (err) {
         if (!contract.isSessionUnavailable(err)) {
           throw err;
         }
 
         if (request.action === 'resume') {
-          state = contract.applyUpdate(state, {
+          state.current = contract.applyUpdate(state.current, {
             conversationRef: null,
             resumable: true,
           });
-          flushFinalSnapshot();
-          while (pendingContinuity.length > 0) {
-            const snapshot = pendingContinuity.shift();
-            if (snapshot) {
-              yield continuityEvent(snapshot);
-            }
-          }
+          queueFinalContinuityIfDelta(contract, state, queue);
+          yield* drainContinuity(queue.pending);
         }
 
         yield {
@@ -144,14 +125,14 @@ export function sessionContinuity<TState>(contract: SessionContinuityContract<TS
             content: '',
             outcome: {
               kind: 'failed',
-              fault: buildSessionUnavailableFault(request.name ?? 'unknown', errorReason(err)),
+              fault: buildSessionUnavailableFault(providerName ?? 'unknown', errorReason(err)),
             },
           }),
           diagnostics: buildJobDiagnostics({}),
         };
         return;
       } finally {
-        active = false;
+        deactivateBridge(bridgeLifecycle);
       }
     };
 }
@@ -171,32 +152,107 @@ function normalizeSnapshot(snapshot: ContinuitySnapshot): ContinuitySnapshot {
   };
 }
 
-function createContinuityBridge(options: {
-  checkpoint(update: ProviderContinuityUpdate): void;
-  transportClosed(closed: ProviderTransportClose): void;
-  isActive(): boolean;
-}): ProviderRuntime['continuityBridge'] {
+function createBridgeLifecycle(): BridgeLifecycle {
+  return {
+    active: true,
+    creationStack: captureStack('Continuity bridge created here.'),
+  };
+}
+
+function deactivateBridge(lifecycle: BridgeLifecycle): void {
+  lifecycle.deactivationStack = captureStack('Continuity bridge deactivated here.');
+  lifecycle.active = false;
+}
+
+function createContinuityBridge<TState>(
+  lifecycle: BridgeLifecycle,
+  contract: SessionContinuityContract<TState>,
+  state: ContinuityState<TState>,
+  queue: ContinuityQueue,
+): ProviderRuntime['continuityBridge'] {
   return {
     checkpoint(update) {
-      if (!assertBridgeActive(options.isActive, 'checkpoint')) {
+      if (!assertBridgeActive(lifecycle, 'checkpoint')) {
         return;
       }
-      options.checkpoint(update);
+
+      state.current = contract.applyUpdate(state.current, update);
+      queueContinuityIfDelta(queue, contract.snapshot(state.current));
     },
     transportClosed(closed) {
-      if (!assertBridgeActive(options.isActive, 'transportClosed')) {
+      if (!assertBridgeActive(lifecycle, 'transportClosed')) {
         return;
       }
-      options.transportClosed(closed);
+
+      state.pendingTransportClosed = closed;
     },
   };
 }
 
+function runWithBridge(
+  next: Provider,
+  request: ProviderRequest,
+  runtime: ProviderRuntime,
+): ReturnType<Provider> {
+  return next(request, runtime);
+}
+
+function queueContinuityIfDelta(queue: ContinuityQueue, snapshot: ContinuitySnapshot): void {
+  queue.lastEmitted = emitFinalContinuityIfDelta(queue.lastEmitted, snapshot, (nextSnapshot) => {
+    queue.pending.push(nextSnapshot);
+  });
+}
+
+function applyPendingTransportClosed<TState>(
+  contract: SessionContinuityContract<TState>,
+  state: ContinuityState<TState>,
+): void {
+  if (state.pendingTransportClosed === undefined) {
+    return;
+  }
+  if (contract.applyTransportClosed) {
+    state.current = contract.applyTransportClosed(state.current, state.pendingTransportClosed);
+  }
+  state.pendingTransportClosed = undefined;
+}
+
+function queueFinalContinuityIfDelta<TState>(
+  contract: SessionContinuityContract<TState>,
+  state: ContinuityState<TState>,
+  queue: ContinuityQueue,
+): void {
+  applyPendingTransportClosed(contract, state);
+  queueContinuityIfDelta(queue, contract.snapshot(state.current));
+}
+
+function emitFinalContinuityIfDelta(
+  lastEmitted: ContinuitySnapshot,
+  current: ContinuitySnapshot,
+  emit: (snapshot: ContinuitySnapshot) => void,
+): ContinuitySnapshot {
+  const normalized = normalizeSnapshot(current);
+  if (isDeepStrictEqual(lastEmitted, normalized)) {
+    return lastEmitted;
+  }
+
+  emit(normalized);
+  return normalized;
+}
+
+function* drainContinuity(pending: ContinuitySnapshot[]): Generator<ProviderContinuityEventBody> {
+  while (pending.length > 0) {
+    const snapshot = pending.shift();
+    if (snapshot) {
+      yield continuityEvent(snapshot);
+    }
+  }
+}
+
 function assertBridgeActive(
-  isActive: () => boolean,
+  lifecycle: BridgeLifecycle,
   method: keyof ProviderRuntime['continuityBridge'],
 ): boolean {
-  if (isActive()) {
+  if (lifecycle.active) {
     return true;
   }
 
@@ -205,10 +261,23 @@ function assertBridgeActive(
   }
 
   const assertion = new Error(
-    `Stale runtime.continuityBridge.${method}() call after sessionContinuity() deactivation.`,
+    [
+      `Stale runtime.continuityBridge.${method}() call after sessionContinuity() deactivation.`,
+      'Remediation: cancel delayed callbacks or stop emitting after the provider iterator returns.',
+      '',
+      'Bridge creation stack:',
+      lifecycle.creationStack ?? 'stack unavailable',
+      '',
+      'Bridge deactivation stack:',
+      lifecycle.deactivationStack ?? 'stack unavailable',
+    ].join('\n'),
   );
   assertion.name = 'AssertionError';
   throw assertion;
+}
+
+function captureStack(message: string): string | undefined {
+  return new Error(message).stack;
 }
 
 function errorReason(err: unknown): string {

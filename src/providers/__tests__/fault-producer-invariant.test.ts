@@ -6,29 +6,29 @@ import { describe, expect, it } from 'vitest';
 const PROVIDERS_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
 type FaultAuthorityRule = {
-  needle: string;
+  builder: string;
   allowed: Set<string>;
 };
 
 const RULES: FaultAuthorityRule[] = [
   {
-    needle: 'adapter_output_unparseable',
+    builder: 'adapterOutputUnparseable',
     allowed: new Set([
-      'src/providers/fault.ts',
+      'src/providers/bootstrap.ts',
       'src/providers/middleware/adapter-parse-guard.ts',
     ]),
   },
   {
-    needle: 'provider_session_unavailable',
+    builder: 'providerSessionUnavailable',
     allowed: new Set([
-      'src/providers/fault.ts',
       'src/providers/middleware/session-continuity.ts',
     ]),
   },
   {
-    needle: 'provider_request_failed',
+    builder: 'providerRequestFailed',
     allowed: new Set([
-      'src/providers/fault.ts',
+      'src/providers/bootstrap.ts',
+      'src/providers/claude/exec-provider.ts',
       'src/providers/claude/exec-kernel.ts',
       'src/providers/claude/session-kernel.ts',
       'src/providers/codex/thread-kernel.ts',
@@ -63,8 +63,16 @@ function isFixtureFile(path: string): boolean {
   return path.includes('/test-fixtures/') || path.includes('/middleware-authority/');
 }
 
+function hasBuilderCall(content: string, builder: string): boolean {
+  const callPattern = new RegExp(`\\b${builder}\\s*\\(`);
+  const definitionPattern = new RegExp(`\\bfunction\\s+${builder}\\s*\\(`);
+  return content
+    .split('\n')
+    .some((line) => callPattern.test(line) && !definitionPattern.test(line));
+}
+
 describe('provider fault producer authority invariants', () => {
-  it('pins each fault kind to a single production authority beyond fault.ts', () => {
+  it('pins each fault builder call to the approved production authorities', () => {
     const files = walk(PROVIDERS_ROOT);
 
     for (const rule of RULES) {
@@ -73,11 +81,11 @@ describe('provider fault producer authority invariants', () => {
           path: toCanonical(filePath),
           content: readFileSync(filePath, 'utf-8'),
         }))
-        .filter(({ path, content }) => !isFixtureFile(path) && content.includes(rule.needle))
+        .filter(({ path, content }) => !isFixtureFile(path) && hasBuilderCall(content, rule.builder))
         .map(({ path }) => path)
         .sort();
 
-      expect(matches, `Unexpected producers for ${rule.needle}`).toEqual([...rule.allowed].sort());
+      expect(matches, `Unexpected producers for ${rule.builder}`).toEqual([...rule.allowed].sort());
     }
   });
 });

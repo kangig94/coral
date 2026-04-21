@@ -406,7 +406,7 @@ export class RecoveryService {
 
     return this.deps.providerRegistry
       .get(providerName)
-      ?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
+      ?.recovery?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
   }
 
   private writeAppServerRuntimeRecord(

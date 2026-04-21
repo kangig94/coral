@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type {
   PreflightRuntime,
   ProviderAppServerContract,
+  ProviderRecoveryContract,
   ProviderServerLease,
 } from '../contract.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
@@ -120,6 +121,19 @@ function hasCodexAuthTokens(value: unknown): boolean {
 export const codexAppServerLifecycle: ProviderAppServerContract = {
   name: 'codex',
   subscriptionPhase: 'afterInitialize',
+  buildServerSpec(request, persistedContinuity) {
+    return buildCodexProviderServerSpec(request, persistedContinuity);
+  },
+  async interrupt(lease, continuity) {
+    const parsed = readCodexPersistedContinuity(continuity);
+    if (!parsed.threadId || !parsed.turnId) {
+      return;
+    }
+    await interruptTurn(lease, parsed.threadId, parsed.turnId);
+  },
+};
+
+export const codexRecoveryLifecycle = {
   migrateLegacyContinuity(meta) {
     const continuity: Record<string, unknown> = {};
     if (typeof meta.provider === 'string' && meta.provider.length > 0) {
@@ -132,16 +146,6 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
       continuity.turnId = meta.turnId;
     }
     return Object.keys(continuity).length > 0 ? continuity : undefined;
-  },
-  buildServerSpec(request, persistedContinuity) {
-    return buildCodexProviderServerSpec(request, persistedContinuity);
-  },
-  async interrupt(lease, continuity) {
-    const parsed = readCodexPersistedContinuity(continuity);
-    if (!parsed.threadId || !parsed.turnId) {
-      return;
-    }
-    await interruptTurn(lease, parsed.threadId, parsed.turnId);
   },
   async probe(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
@@ -186,4 +190,4 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
       ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
     };
   },
-};
+} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>;

@@ -527,9 +527,9 @@ describe('phase6 provider smoke', () => {
     expect(terminal.terminal.outcome).toEqual({
       kind: 'failed',
       fault: {
-        kind: 'provider_session_unavailable',
+        kind: 'provider_request_failed',
         provider: 'claude',
-        reason: 'This Claude session already established persistent continuity. Start a new Coral session before forking.',
+        message: 'This Claude session already established persistent continuity. Start a new Coral session before forking.',
       },
     });
     expect(runtime.runCli).not.toHaveBeenCalled();

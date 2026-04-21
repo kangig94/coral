@@ -9,6 +9,9 @@ import { createDeferred } from '../../simulation/core/test-deferred.js';
 import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import {
+  providerContinuityEvent,
+  providerTerminalEvent,
+  streamProviderEvents,
   streamProviderTerminal,
   type ProviderTerminalInput,
 } from '../../providers/stream.js';
@@ -34,10 +37,18 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
-import { toProviderSpec, type PreflightRuntime, type Provider } from '../../testing/provider-spec.js';
+import { toProviderSpec, type PreflightRuntime, type Provider } from '../../testing/scripted-provider.js';
 import { getInternals } from '../../jobs/shell/__tests__/__helpers__/service-fixture.js';
 
-type ProviderTurnResult = ProviderTerminalInput;
+type ProviderTurnContinuity = {
+  conversationRef: string | null;
+  resumable: boolean;
+  providerContinuity?: Record<string, unknown> | null;
+};
+
+type ProviderTurnResult = ProviderTerminalInput & {
+  continuity?: ProviderTurnContinuity;
+};
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -271,7 +282,7 @@ function completedOutcome() {
 }
 
 function toCompletedResult(
-  result: TestProviderTurnResult | { content: string },
+  result: TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity },
 ): TestProviderTurnResult {
   if ('outcome' in result) {
     return result;
@@ -280,13 +291,30 @@ function toCompletedResult(
 }
 
 function streamCompletedResult(
-  result: TestProviderTurnResult | Promise<TestProviderTurnResult | { content: string }> | { content: string },
+  result:
+    | TestProviderTurnResult
+    | Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>
+    | { content: string; continuity?: ProviderTurnContinuity },
 ) {
-  return streamProviderTerminal(Promise.resolve(result).then((value) => toCompletedResult(value)));
+  return streamProviderEvents(async (emit) => {
+    const completed = toCompletedResult(await result);
+    if (completed.continuity) {
+      emit(
+        providerContinuityEvent({
+          conversationRef: completed.continuity.conversationRef,
+          resumable: completed.continuity.resumable,
+          providerContinuity: completed.continuity.providerContinuity ?? null,
+        }),
+      );
+    }
+    emit(providerTerminalEvent(completed));
+  });
 }
 
 function makeProvider(options?: {
-  execute?: (...args: Parameters<Provider['execute']>) => Promise<TestProviderTurnResult | { content: string }>;
+  execute?: (
+    ...args: Parameters<Provider['execute']>
+  ) => Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
   provider: NonNullable<ReturnType<typeof toProviderSpec>>;
@@ -298,7 +326,7 @@ function makeProvider(options?: {
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute,
+    execute: execute as unknown as Provider['execute'],
     ...(preflight ? { preflight } : {}),
   };
   return { provider: toProviderSpec(provider)!, execute, preflight };
@@ -773,7 +801,10 @@ describe('ExecutionService', () => {
       const { provider } = makeProvider({
         execute: async () => ({
           content: '',
-          nonResumable: true,
+          continuity: {
+            conversationRef: null,
+            resumable: false,
+          },
           outcome: {
             kind: 'failed',
             fault: {
