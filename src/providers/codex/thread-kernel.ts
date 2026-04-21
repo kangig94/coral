@@ -25,6 +25,7 @@ import type {
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 const CODEX_THREAD_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
+export const PRE_TURN_MAILBOX_CAP = 64;
 
 function buildCodexThreadRequestFailed(message: string) {
   const fault = providerRequestFailed({
@@ -37,12 +38,18 @@ function buildCodexThreadRequestFailed(message: string) {
   return fault;
 }
 
-type CodexTurnState = {
+export type PreTurnMailboxStatus = {
+  pending: number;
+  dropped: number;
+};
+
+export type CodexTurnState = {
   startedAt: number;
   cwd: string;
   model: string | undefined;
   serviceTier: CodexServiceTier | undefined;
   sessionId: string;
+  persistedThreadId: string | null;
   threadId: string | null;
   threadIds: Set<string>;
   threadTurnIds: Map<string, string>;
@@ -50,6 +57,10 @@ type CodexTurnState = {
   turnStartRequested: boolean;
   checkpointedTurnId: string | null;
   bufferedNotifications: AppServerNotificationMessage[];
+  bufferedNotificationsDropped: number;
+  preTurnMailbox: {
+    status(): PreTurnMailboxStatus;
+  };
   completion: Promise<void>;
   resolveCompletion: () => void;
   finalTurn: Turn | null;
@@ -86,12 +97,13 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
   });
   const persistedContinuity = readCodexPersistedContinuity(runtime.persistedContinuity);
 
-  return {
+  const state = {
     startedAt: Date.now(),
     cwd: persistedContinuity.cwd ?? request.cwd,
     model: resolveModelTier(request.model),
     serviceTier: resolveCodexServiceTier(request, runtime),
     sessionId: request.sessionId,
+    persistedThreadId: persistedContinuity.threadId ?? null,
     threadId: null,
     threadIds: new Set(),
     threadTurnIds: new Map(),
@@ -99,6 +111,13 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     turnStartRequested: false,
     checkpointedTurnId: null,
     bufferedNotifications: [],
+    bufferedNotificationsDropped: 0,
+    preTurnMailbox: {
+      status: () => ({
+        pending: 0,
+        dropped: 0,
+      }),
+    },
     completion,
     resolveCompletion,
     finalTurn: null,
@@ -110,7 +129,16 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     lastAgentMessage: '',
     error: null,
     interruptRequest: null,
+  } satisfies CodexTurnState;
+
+  state.preTurnMailbox = {
+    status: () => ({
+      pending: state.bufferedNotifications.length,
+      dropped: state.bufferedNotificationsDropped,
+    }),
   };
+
+  return state;
 }
 
 function requireResumeConversationRef(request: ProviderRequest): string {
@@ -151,6 +179,29 @@ function registerThread(state: CodexTurnState, threadId: string | null): void {
     return;
   }
   state.threadIds.add(threadId);
+}
+
+function canAdmitNotification(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
+  const threadId = extractThreadId(message);
+  if (!threadId) {
+    return true;
+  }
+  if (state.threadId) {
+    return threadId === state.threadId;
+  }
+  return threadId === state.persistedThreadId;
+}
+
+function admitBufferedNotification(state: CodexTurnState, message: AppServerNotificationMessage): boolean {
+  if (!canAdmitNotification(state, message)) {
+    return false;
+  }
+  if (state.bufferedNotifications.length >= PRE_TURN_MAILBOX_CAP) {
+    state.bufferedNotifications.shift();
+    state.bufferedNotificationsDropped += 1;
+  }
+  state.bufferedNotifications.push(message);
+  return true;
 }
 
 function clearCompletionTimer(state: CodexTurnState): void {
@@ -539,10 +590,11 @@ function applyNotification(
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (!state.turnId) {
-    state.bufferedNotifications.push(message);
-    maybeDiscoverTurnId(state, message);
-    if (state.turnStartRequested && state.turnId) {
-      flushBufferedNotifications(state, emit);
+    if (admitBufferedNotification(state, message)) {
+      maybeDiscoverTurnId(state, message);
+      if (state.turnStartRequested && state.turnId) {
+        flushBufferedNotifications(state, emit);
+      }
     }
     return;
   }
@@ -581,6 +633,18 @@ async function waitForTurnResult(
   ]);
 
   return outcome;
+}
+
+export function createCodexTurnStateForTest(request: ProviderRequest, runtime: ProviderRuntime): CodexTurnState {
+  return createState(request, runtime);
+}
+
+export function applyCodexNotificationForTest(
+  state: CodexTurnState,
+  message: AppServerNotificationMessage,
+  emit: (event: ProviderEventBody) => void,
+): void {
+  applyNotification(state, message, emit);
 }
 
 function isSuccessfulTurn(status: string | undefined): boolean {
