@@ -24,17 +24,11 @@ import {
   type PreparedClaudeRequest,
 } from './shared-utils.js';
 
-const CLAUDE_SESSION_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
-
 function buildClaudeSessionRequestFailed(message: string) {
-  const fault = providerRequestFailed({
+  return providerRequestFailed({
     provider: 'claude',
     message,
   });
-  if (fault.kind !== CLAUDE_SESSION_REQUEST_FAILURE_KIND) {
-    throw new Error('Claude session kernel emitted an unexpected fault kind.');
-  }
-  return fault;
 }
 
 type ClaudeCompletedTurn = {

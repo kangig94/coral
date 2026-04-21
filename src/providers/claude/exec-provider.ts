@@ -8,17 +8,17 @@ import {
   type Provider,
   type ProviderContinuityBlob,
   type ProviderContinuityUpdate,
-  type ProviderEventBody,
   type ProviderTerminalEventBody,
 } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
-import { streamProviderEvents } from '../stream.js';
+import { streamProviderTerminal } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { claudeExecKernel, isClaudeExecParseError } from './exec-kernel.js';
 import {
   buildClaudeBootstrapSignature,
   buildClaudeProviderServerSpec,
   readClaudePersistedContinuity,
+  withClaudeContinuity,
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
 import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
@@ -47,7 +47,7 @@ export const claudeBrokerContinuity = createClaudeContinuityContract(
       return state;
     }
 
-    const { brokerTurnId: _brokerTurnId, ...continuity } = stripResumable(state);
+    const { brokerTurnId: _brokerTurnId, ...continuity } = withClaudeContinuity(undefined, state);
     return {
       ...continuity,
       resumable: inferBrokerResumable(continuity),
@@ -80,7 +80,7 @@ export const claude: Provider = (request, runtime) => {
     assertValidForkContinuity(persistedContinuity);
 
     if (persistedContinuity.brokerSessionKey || persistedContinuity.bootstrapSignature) {
-      return terminalOnly(
+      return streamProviderTerminal(
         buildDispatchRejectedTerminal(
           prepared.model,
           'This Claude session already established persistent continuity. Start a new Coral session before forking.',
@@ -94,7 +94,7 @@ export const claude: Provider = (request, runtime) => {
   if (persistedContinuity.bootstrapSignature) {
     const actual = buildClaudeBootstrapSignature(request, prepared.systemPrompt);
     if (!sameBootstrapSignature(persistedContinuity.bootstrapSignature, actual)) {
-      return terminalOnly(
+      return streamProviderTerminal(
         buildDispatchRejectedTerminal(
           prepared.model,
           `This Claude session already established persistent continuity with cwd=${persistedContinuity.bootstrapSignature.cwd}, systemPromptHash=${persistedContinuity.bootstrapSignature.systemPromptHash}, permissionMode=${persistedContinuity.bootstrapSignature.permissionMode}. Start a new Coral session before changing that bootstrap signature.`,
@@ -129,7 +129,7 @@ function createClaudeContinuityContract(
     applyUpdate(state, update) {
       const continuity =
         update.providerContinuity === undefined
-          ? applyConversationRefOverride(stripResumable(state), update.conversationRef)
+          ? applyConversationRefOverride(withClaudeContinuity(undefined, state), update.conversationRef)
           : readClaudePersistedContinuity(update.providerContinuity as ProviderContinuityBlob | undefined);
 
       return {
@@ -153,17 +153,7 @@ function snapshotClaudeContinuity(state: ClaudeContinuityState) {
   return {
     conversationRef: state.conversationRef ?? null,
     resumable: state.resumable,
-    providerContinuity: toProviderContinuityBlob(stripResumable(state)),
-  };
-}
-
-function stripResumable(state: ClaudeContinuityState): ClaudePersistedContinuity {
-  return {
-    ...(state.brokerSessionKey ? { brokerSessionKey: state.brokerSessionKey } : {}),
-    ...(state.bootstrapSignature ? { bootstrapSignature: state.bootstrapSignature } : {}),
-    ...(state.envHash ? { envHash: state.envHash } : {}),
-    ...(state.conversationRef ? { conversationRef: state.conversationRef } : {}),
-    ...(state.brokerTurnId ? { brokerTurnId: state.brokerTurnId } : {}),
+    providerContinuity: toProviderContinuityBlob(withClaudeContinuity(undefined, state)),
   };
 }
 
@@ -219,12 +209,6 @@ function buildDispatchRejectedTerminal(model: string | undefined, reason: string
     }),
     diagnostics: buildJobDiagnostics({}),
   };
-}
-
-function terminalOnly(event: ProviderTerminalEventBody): AsyncIterable<ProviderEventBody> {
-  return streamProviderEvents(async (emit) => {
-    emit(event);
-  });
 }
 
 function assertValidForkContinuity(continuity: ClaudePersistedContinuity): void {

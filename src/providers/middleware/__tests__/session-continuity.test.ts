@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   Provider,
@@ -309,7 +309,7 @@ describe('sessionContinuity', () => {
     const downstreamTerminal = terminalEvent('closed');
     const provider: Provider = async function* transportClosedProvider(_request, runtime) {
       runtime.continuityBridge.transportClosed({
-        kind: 'transport_error',
+        kind: 'transport_closed',
         error: new Error('socket closed'),
       });
       yield downstreamTerminal;
@@ -338,7 +338,7 @@ describe('sessionContinuity', () => {
         kind: 'continuity',
         conversationRef: 'conversation-1',
         resumable: false,
-        providerContinuity: { closeKind: 'transport_error' },
+        providerContinuity: { closeKind: 'transport_closed' },
       },
       downstreamTerminal,
     ]);
@@ -373,6 +373,8 @@ describe('sessionContinuity', () => {
 
   it('throws assertion errors for post-deactivation bridge calls when CORAL_DEV_ASSERTIONS=1', async () => {
     process.env[DEV_ASSERTIONS] = '1';
+    vi.resetModules();
+    const { sessionContinuity: sessionContinuityWithAssertions } = await import('../session-continuity.js');
 
     let capturedBridge: ProviderRuntime['continuityBridge'] | null = null;
     const provider: Provider = async function* postDeactivationAssertProvider(_request, runtime) {
@@ -381,7 +383,7 @@ describe('sessionContinuity', () => {
     };
 
     await collect(
-      sessionContinuity(
+      sessionContinuityWithAssertions(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {

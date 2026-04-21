@@ -10,6 +10,7 @@ import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from 
 import {
   buildCodexProviderServerSpec,
   clearCodexTurnContinuity,
+  isCodexSessionUnavailable,
   readCodexPersistedContinuity,
 } from './request-mapping.js';
 
@@ -26,17 +27,6 @@ type PreflightCacheEntry = {
 
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 let codexAuthTokensCache: PreflightCacheEntry | null = null;
-
-function isMissingConversationError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return (
-    message.includes('not found') ||
-    message.includes('missing thread') ||
-    message.includes('unknown thread') ||
-    message.includes('does not exist') ||
-    message.includes('no such thread')
-  );
-}
 
 async function rpc<M extends AppServerMethod>(
   lease: ProviderServerLease,
@@ -166,7 +156,7 @@ export const codexRecoveryLifecycle = {
         updatedContinuity,
       };
     } catch (error) {
-      if (!isMissingConversationError(error)) {
+      if (!isCodexSessionUnavailable(error)) {
         throw error;
       }
       return {

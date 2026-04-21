@@ -13,6 +13,8 @@ import type {
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 
+const captureDebugStacks = process.env.CORAL_DEV_ASSERTIONS === '1';
+
 type ContinuitySnapshot = Pick<
   ProviderContinuityEventBody,
   'conversationRef' | 'resumable' | 'providerContinuity'
@@ -155,12 +157,14 @@ function normalizeSnapshot(snapshot: ContinuitySnapshot): ContinuitySnapshot {
 function createBridgeLifecycle(): BridgeLifecycle {
   return {
     active: true,
-    creationStack: captureStack('Continuity bridge created here.'),
+    creationStack: captureDebugStacks ? captureStack('Continuity bridge created here.') : undefined,
   };
 }
 
 function deactivateBridge(lifecycle: BridgeLifecycle): void {
-  lifecycle.deactivationStack = captureStack('Continuity bridge deactivated here.');
+  if (captureDebugStacks) {
+    lifecycle.deactivationStack = captureStack('Continuity bridge deactivated here.');
+  }
   lifecycle.active = false;
 }
 

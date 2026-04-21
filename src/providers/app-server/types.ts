@@ -13,10 +13,6 @@ export type ProviderTransportClose =
   | {
       kind: 'transport_closed';
       error?: Error | null;
-    }
-  | {
-      kind: 'transport_error';
-      error: Error;
     };
 
 export type DriverStepOutcome = {

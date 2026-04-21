@@ -2,11 +2,11 @@ import type { JobContinuitySnapshot } from '../contracts.js';
 import type {
   JobDiagnostics,
   JobTerminal,
-  ProviderContinuityBlob,
   ProviderEventBody,
 } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import { backendLog } from '../../shared/backend-log.js';
+import { isProviderContinuityBlob } from './execution-shared.js';
 
 type SessionContinuityApi = {
   checkpointJobContinuityAtomic(
@@ -86,8 +86,4 @@ function toJobContinuitySnapshot(
     resumable,
     ...(isProviderContinuityBlob(providerContinuity) ? { providerContinuity } : {}),
   };
-}
-
-function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
