@@ -27,7 +27,7 @@ export interface KbCorpusPublishFailure {
   stage: 'persist' | 'notify';
   snapshot: KbCorpusSnapshot;
   changedLanes: KbCorpusLane[];
-  consecutiveFailures: number;
+  consecutivePublishFailureCount: number;
   error: unknown;
 }
 
@@ -69,6 +69,10 @@ export interface KbCachedOramaIndex {
   tokenizer: KbOramaTokenizer;
 }
 
+export interface KbInboundSyncOptions {
+  structuredDiff?: boolean;
+}
+
 export interface KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
@@ -102,7 +106,7 @@ export interface KbRuntime {
   ensureTextArtifactsFreshUnderLock(): Promise<KbTextArtifactsSnapshot>;
   withMutationLock<T>(fn: () => Promise<T> | T, options?: KbMutationLockOptions): Promise<T>;
   retryPendingCorpusPublication(): Promise<void>;
-  runInboundSync<T>(fn: () => Promise<T> | T): Promise<T>;
+  runInboundSync<T>(fn: () => Promise<T> | T, options?: KbInboundSyncOptions): Promise<T>;
   invalidateKbCache(): void;
   invalidateTextSnapshot(reason: string): KbIndexState;
   installRebuiltArtifacts(index: KbIndex, orama: KbCachedOramaIndex): KbIndex;

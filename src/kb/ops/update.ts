@@ -1,10 +1,12 @@
 import { nowIsoString } from '../../shared/utils.js';
+import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { serializeNote } from '../corpus/frontmatter.js';
 import { loadKbNote } from '../read.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 
 export async function applyNoteUpdateLocked(
   rt: KbRuntime,
@@ -22,8 +24,10 @@ export async function applyNoteUpdateLocked(
 
   const updatedAt = nowIsoString();
   const nextFrontmatter = { ...frontmatter, updatedAt };
+  const nextRaw = serializeNote(nextFrontmatter, nextTitle, nextContent);
 
-  writeFileAtomic(notePath, serializeNote(nextFrontmatter, nextTitle, nextContent));
+  writeFileAtomic(notePath, nextRaw);
+  queueManifestAuthorityDelta(rt, captureNoteManifestDeltas(input.note, nextRaw));
 
   commitIndexUpdate(rt, (index) => {
     setEntry(

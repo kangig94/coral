@@ -1,8 +1,10 @@
 import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
+import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 import { assertNoteSlug } from '../validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {
@@ -18,6 +20,7 @@ export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ d
       }
       throw error;
     }
+    queueManifestAuthorityDelta(rt, captureRemovedNoteManifestDeltas(note));
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_delete.');
 
     commitIndexUpdate(rt, (index) => {

@@ -12,23 +12,29 @@ export interface KbMutationLockOptions {
   preReleaseInstallProjection?: KbPreReleaseInstallProjectionHook;
 }
 
-export interface KbMutationLockContext<TIndex, TPublication, TLane> {
+export interface KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta = unknown> {
   startIndex: TIndex;
   pendingMutationLane: TLane | null;
   pendingMutationReason?: string;
   publication: TPublication | null;
   projectionDispatchMode: KbProjectionDispatchMode;
+  pendingOpaqueDeltas: TOpaqueDelta[];
 }
 
-export interface KbMutationLockRunner<TIndex, TPublication extends { snapshot: CorpusSnapshot }, TLane> {
+export interface KbMutationLockRunner<
+  TIndex,
+  TPublication extends { snapshot: CorpusSnapshot },
+  TLane,
+  TOpaqueDelta = unknown,
+> {
   cloneStartIndex(): TIndex;
   getCurrentLock(): Promise<void>;
   setCurrentLock(lock: Promise<void>): void;
-  setActiveContext(context: KbMutationLockContext<TIndex, TPublication, TLane> | null): void;
-  finalizePendingMutation(context: KbMutationLockContext<TIndex, TPublication, TLane>): void | Promise<void>;
+  setActiveContext(context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta> | null): void;
+  finalizePendingMutation(context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>): void | Promise<void>;
   installPendingBaseProjectionBeforeRelease(
     snapshot: CorpusSnapshot,
-    context: KbMutationLockContext<TIndex, TPublication, TLane>,
+    context: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
   ): Promise<boolean>;
   recordIndexSyncSuccess(): void | Promise<void>;
   enqueuePublication(publication: TPublication): void;
@@ -36,8 +42,13 @@ export interface KbMutationLockRunner<TIndex, TPublication extends { snapshot: C
   processPublishQueue(): Promise<void> | void;
 }
 
-export function createKbMutationLock<TIndex, TPublication extends { snapshot: CorpusSnapshot }, TLane>(
-  runner: KbMutationLockRunner<TIndex, TPublication, TLane>,
+export function createKbMutationLock<
+  TIndex,
+  TPublication extends { snapshot: CorpusSnapshot },
+  TLane,
+  TOpaqueDelta = unknown,
+>(
+  runner: KbMutationLockRunner<TIndex, TPublication, TLane, TOpaqueDelta>,
 ): {
   withMutationLock<TResult>(fn: () => Promise<TResult> | TResult, options?: KbMutationLockOptions): Promise<TResult>;
 } {
@@ -56,12 +67,13 @@ export function createKbMutationLock<TIndex, TPublication extends { snapshot: Co
 
       await previous;
 
-      const lockContext: KbMutationLockContext<TIndex, TPublication, TLane> = {
+      const lockContext: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta> = {
         startIndex: runner.cloneStartIndex(),
         pendingMutationLane: null,
         pendingMutationReason: undefined,
         publication: null,
         projectionDispatchMode: 'delta',
+        pendingOpaqueDeltas: [],
       };
       runner.setActiveContext(lockContext);
 

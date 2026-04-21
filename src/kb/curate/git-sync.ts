@@ -6,10 +6,27 @@ import type { GitSyncRuntimePicks, SpawnCliFn } from './types.js';
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 const DEFERRED_COMMIT_DELAY_MS = 60_000;
+const KB_GIT_DIFF_PATHS = ['notes/', 'sources/', 'principles/', 'communities/', '.entity-graph.json'];
+
+export type GitSyncPathChange =
+  | {
+      status: 'added' | 'modified' | 'deleted';
+      path: string;
+    }
+  | {
+      status: 'renamed';
+      previousPath: string;
+      path: string;
+    };
+
+export type GitSyncResult =
+  | { kind: 'no-change' }
+  | { kind: 'paths'; changes: GitSyncPathChange[] }
+  | { kind: 'ambiguous' };
 
 export type GitSyncController = {
   ensureKbGitignore(): void;
-  gitSync(signal?: AbortSignal): Promise<void>;
+  gitSync(signal?: AbortSignal): Promise<GitSyncResult>;
   gitPush(): Promise<void>;
   gitAutoCommit(message: string): void;
   gitAutoCommitAsync(message: string): Promise<void>;
@@ -124,6 +141,87 @@ export function createGitSyncController({
     );
   }
 
+  function readHead(): string | null {
+    try {
+      return git(['rev-parse', 'HEAD'], 5000).trim();
+    } catch {
+      return null;
+    }
+  }
+
+  function parseNameStatusDiff(raw: string): GitSyncPathChange[] | null {
+    const changes: GitSyncPathChange[] = [];
+
+    for (const line of raw.split('\n').map((entry) => entry.trim()).filter((entry) => entry !== '')) {
+      const columns = line.split('\t');
+      const status = columns[0] ?? '';
+      if (status === 'A') {
+        const path = columns[1];
+        if (path === undefined) {
+          return null;
+        }
+        changes.push({ status: 'added', path });
+        continue;
+      }
+      if (status === 'M') {
+        const path = columns[1];
+        if (path === undefined) {
+          return null;
+        }
+        changes.push({ status: 'modified', path });
+        continue;
+      }
+      if (status === 'D') {
+        const path = columns[1];
+        if (path === undefined) {
+          return null;
+        }
+        changes.push({ status: 'deleted', path });
+        continue;
+      }
+      if (status.startsWith('R')) {
+        const previousPath = columns[1];
+        const path = columns[2];
+        if (previousPath === undefined || path === undefined) {
+          return null;
+        }
+        changes.push({ status: 'renamed', previousPath, path });
+        continue;
+      }
+      if (status.startsWith('C')) {
+        const path = columns[2] ?? columns[1];
+        if (path === undefined) {
+          return null;
+        }
+        changes.push({ status: 'added', path });
+        continue;
+      }
+
+      return null;
+    }
+
+    return changes;
+  }
+
+  function diffKbPathsBetweenRevisions(previousHead: string, nextHead: string): GitSyncResult {
+    try {
+      const raw = git(['diff', '--name-status', '--find-renames', `${previousHead}..${nextHead}`, '--', ...KB_GIT_DIFF_PATHS], 10000);
+      const changes = parseNameStatusDiff(raw);
+      if (changes === null) {
+        return { kind: 'ambiguous' };
+      }
+      if (changes.length === 0) {
+        return { kind: 'no-change' };
+      }
+      return {
+        kind: 'paths',
+        changes,
+      };
+    } catch {
+      return { kind: 'ambiguous' };
+    }
+  }
+
   function ensureKbGitignore(): void {
     const gitignorePath = join(root, '.gitignore');
     try {
@@ -183,13 +281,15 @@ export function createGitSyncController({
     return false;
   }
 
-  async function gitSync(signal?: AbortSignal): Promise<void> {
+  async function gitSync(signal?: AbortSignal): Promise<GitSyncResult> {
     if (!isGitRepo() || !isGitSyncEnabled()) {
-      return;
+      return { kind: 'no-change' };
     }
 
     cancelDeferredCommit();
     const branch = getDefaultBranch();
+    const headBeforeSync = readHead();
+    let usedConflictResolution = false;
 
     try {
       await gitAsync(['fetch', 'origin'], 30000);
@@ -206,6 +306,7 @@ export function createGitSyncController({
       try {
         await gitAsync(['rebase', `origin/${branch}`]);
       } catch {
+        usedConflictResolution = true;
         if (!(await resolveConflictsWithClaude(signal))) {
           try {
             git(['rebase', '--abort'], 5000);
@@ -217,6 +318,19 @@ export function createGitSyncController({
     } catch {
       // Offline or no remote; continue with local state.
     }
+
+    const headAfterSync = readHead();
+    if (headBeforeSync === headAfterSync) {
+      return { kind: 'no-change' };
+    }
+    if (usedConflictResolution) {
+      return { kind: 'ambiguous' };
+    }
+    if (headBeforeSync === null || headAfterSync === null) {
+      return { kind: 'ambiguous' };
+    }
+
+    return diffKbPathsBetweenRevisions(headBeforeSync, headAfterSync);
   }
 
   async function gitPush(): Promise<void> {

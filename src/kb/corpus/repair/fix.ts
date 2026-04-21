@@ -4,6 +4,13 @@ import { backendLog } from '../../../shared/backend-log.js';
 import { errorMessage } from '../../../shared/utils.js';
 import type { KbRuntime } from '../../contracts.js';
 import {
+  captureCommunityManifestDelta,
+  type ManifestAuthorityDelta,
+  captureNoteManifestDeltas,
+  capturePrincipleManifestDelta,
+  captureSourceManifestDeltas,
+} from '../manifest-authority.js';
+import {
   communityEntryId,
   noteEntryId,
   parseKbEntryId,
@@ -16,7 +23,7 @@ import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
 import type { SpawnCliFn } from '../../curate/types.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { writeEntityGraphLocked } from '../../runtime.js';
+import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../../runtime.js';
 import {
   commitIndexUpdate,
   buildCommunityIndexEntry,
@@ -384,6 +391,7 @@ function applyPreparedMarkdownFixLocked(
   reason: string,
 ): void {
   writeFileAtomic(target.path, prepared.content);
+  queueManifestAuthorityDelta(kb, captureRepairTargetManifestDeltas(target, prepared.content));
   commitIndexUpdate(kb, prepared.updateIndex);
 
   const queueEntryId = parseKbEntryId(target.entryId);
@@ -395,6 +403,22 @@ function applyPreparedMarkdownFixLocked(
     recordMetadataMutation(kb, reason);
   } else {
     recordContentAndMetadataMutation(kb, reason);
+  }
+}
+
+function captureRepairTargetManifestDeltas(
+  target: MarkdownRepairTarget,
+  content: string,
+): ManifestAuthorityDelta[] {
+  switch (target.kind) {
+    case 'note':
+      return captureNoteManifestDeltas(target.slug, content);
+    case 'source':
+      return captureSourceManifestDeltas(target.slug, content);
+    case 'community':
+      return captureCommunityManifestDelta(target.slug, content);
+    case 'principle':
+      return capturePrincipleManifestDelta(target.slug, content);
   }
 }
 

@@ -25,12 +25,12 @@ export function createCurateSchedulerHealthBridge(
       runtimeState = nextRuntimeState;
     },
     onCorpusPublishFailure(failure) {
-      if (runtimeState === null || failure.consecutiveFailures < failureThreshold) {
+      if (runtimeState === null || failure.consecutivePublishFailureCount < failureThreshold) {
         return;
       }
 
       runtimeState.setKbInitError(
-        `${HEALTH_ERROR_PREFIX} after ${failure.consecutiveFailures} consecutive ${failure.stage} failures: ${errorMessage(failure.error)}`,
+        `${HEALTH_ERROR_PREFIX} after ${failure.consecutivePublishFailureCount} consecutive ${failure.stage} failures: ${errorMessage(failure.error)}`,
       );
     },
     onCorpusPublishSuccess() {

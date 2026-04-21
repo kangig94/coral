@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { CurateRetryQueueRow } from '../../store/schema.js';
+import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema, type PendingRepair } from './state-shared.js';
 import {
   prepareCached,
@@ -214,7 +215,7 @@ export function replaceCurateRetryQueue(target: SqliteTarget, entries: ReadonlyA
 
 export function syncCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArray<PendingRepair>): void {
   const existingById = new Map(readCurateRetryQueue(target).map((entry) => [entry.entryId, entry] as const));
-  const nextById = new Map<string, PendingRepair>();
+  const nextById = new Map<KbEntryId, PendingRepair>();
   for (const entry of entries) {
     nextById.set(entry.entryId, entry);
   }

@@ -1,5 +1,9 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
+import {
+  captureRemovedSourceManifestDeltas,
+  captureSourceManifestDeltas,
+} from '../corpus/manifest-authority.js';
 import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
 import {
   buildSourceIndexEntry,
@@ -9,6 +13,7 @@ import {
 } from '../corpus/mutation-helpers.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 import {
   deleteEntry,
   isSourceEntry,
@@ -69,6 +74,7 @@ export async function persistPreparedSource(
       const persistedSource = replaceSourceFrontmatter(renderedSource, persistedMeta);
 
       writeFileAtomic(filePath, persistedSource);
+      queueManifestAuthorityDelta(kb, captureSourceManifestDeltas(normalizedSlug, persistedSource));
 
       commitIndexUpdate(kb, (index) => {
         setEntry(
@@ -103,6 +109,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
       throw error;
     }
 
+    queueManifestAuthorityDelta(rt, captureRemovedSourceManifestDeltas(slug));
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_source_delete.');
     commitIndexUpdate(rt, (index) => {
       deleteEntry(index, sourceEntryId(slug));

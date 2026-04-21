@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { nowIsoString } from '../../shared/utils.js';
+import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
@@ -11,6 +12,7 @@ import {
   writeFileAtomic,
 } from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -59,6 +61,7 @@ export async function promote(
     const noteContent = serializeNote(noteMeta, title, content);
 
     writeFileAtomic(notePath, noteContent);
+    queueManifestAuthorityDelta(rt, captureNoteManifestDeltas(note, noteContent));
 
     commitIndexUpdate(rt, (index) => {
       setEntry(

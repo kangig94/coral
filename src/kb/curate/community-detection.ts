@@ -7,6 +7,10 @@ import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
 import { unlinkIfExists } from '../../shared/utils.js';
 import {
+  captureCommunityManifestDelta,
+  captureRemovedCommunityManifestDelta,
+} from '../corpus/manifest-authority.js';
+import {
   extractBody,
   extractTitle,
   parseCommunityFrontmatter,
@@ -19,6 +23,7 @@ import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbRuntime } from '../contracts.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 import { compareLocale, stripMarkdownCodeFences } from '../validation.js';
 import {
   communityEntryId,
@@ -895,7 +900,7 @@ export function buildCommunityDocuments(
 }
 
 export function generateCommunityFiles(
-  kb: Pick<KbRuntime, 'communityPath'>,
+  kb: KbRuntime,
   documents: CommunityDocument[],
   priorGeneratedCommunities: ExistingGeneratedCommunity[],
   onWrite?: () => void,
@@ -909,12 +914,14 @@ export function generateCommunityFiles(
     }
 
     unlinkIfExists(communityPath);
+    queueManifestAuthorityDelta(kb, captureRemovedCommunityManifestDelta(community.slug));
     onWrite?.();
     wroteFiles = true;
   }
 
   for (const document of documents) {
     writeFileAtomic(kb.communityPath(document.slug), document.content);
+    queueManifestAuthorityDelta(kb, captureCommunityManifestDelta(document.slug, document.content));
     onWrite?.();
     wroteFiles = true;
   }

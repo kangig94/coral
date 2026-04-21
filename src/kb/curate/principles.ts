@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { isNoEntryError, nowIsoString, unlinkIfExists } from '../../shared/utils.js';
 import type { KbRuntime } from '../contracts.js';
+import {
+  capturePrincipleManifestDelta,
+  captureRemovedPrincipleManifestDelta,
+} from '../corpus/manifest-authority.js';
 import { extractPrincipleStatement } from '../corpus/frontmatter.js';
 import {
   cloneKbIndex,
@@ -10,6 +14,7 @@ import {
 } from '../corpus/mutation-helpers.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
+import { queueManifestAuthorityDelta } from '../runtime.js';
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,
@@ -174,7 +179,9 @@ function ensurePrincipleDocumentLocked(
   }
 
   recordMetadataMutation(kb, CURATE_STALE_REASON);
-  writeFileAtomic(principlePath, serializePrincipleDocument(entry.statement, entry.createdAt));
+  const principleDocument = serializePrincipleDocument(entry.statement, entry.createdAt);
+  writeFileAtomic(principlePath, principleDocument);
+  queueManifestAuthorityDelta(kb, capturePrincipleManifestDelta(entry.principle, principleDocument));
   nextIndex.principles[entry.principle] = entry.statement;
   kb.writeIndex(nextIndex);
   return {
@@ -317,18 +324,17 @@ export async function runPrincipleDiscovery(
         }
 
         const updatedAt = nowIsoString();
-        writeFileAtomic(
-          principlePath,
-          [
-            '---',
-            `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,
-            `updatedAt: ${updatedAt}`,
-            '---',
-            '',
-            entry.statement,
-            '',
-          ].join('\n'),
-        );
+        const nextRaw = [
+          '---',
+          `createdAt: ${assertNonEmptyText(createdAtMatch[1] ?? '', 'createdAt')}`,
+          `updatedAt: ${updatedAt}`,
+          '---',
+          '',
+          entry.statement,
+          '',
+        ].join('\n');
+        writeFileAtomic(principlePath, nextRaw);
+        queueManifestAuthorityDelta(kb, capturePrincipleManifestDelta(entry.principle, nextRaw));
         recordMetadataMutation(kb, CURATE_STALE_REASON);
         const nextIndex = cloneKbIndex(kb.readIndexOrEmpty());
         nextIndex.principles[entry.principle] = entry.statement;
@@ -369,6 +375,7 @@ export async function runPrincipleDiscovery(
         }
 
         unlinkIfExists(kb.principlePath(absorbSlug));
+        queueManifestAuthorityDelta(kb, captureRemovedPrincipleManifestDelta(absorbSlug));
         delete nextIndex.principles[absorbSlug];
       }
       recordMetadataMutation(kb, CURATE_STALE_REASON);

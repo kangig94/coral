@@ -198,7 +198,7 @@ export function createCurateScheduler({
   }
 
   async function runScheduledCurate(signal: AbortSignal): Promise<CurateCursor | null> {
-    await kb.runInboundSync(() => gitSync.gitSync(signal));
+    await kb.runInboundSync(() => gitSync.gitSync(signal), { structuredDiff: true });
     let lastCompletedThrough: CurateCursor | null = null;
 
     while (!stopped && !signal.aborted) {

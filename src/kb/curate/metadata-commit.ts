@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { isNoEntryError } from '../../shared/utils.js';
 import type { KbRuntime } from '../contracts.js';
 import {
+  captureNoteManifestDeltas,
+  captureSourceManifestDeltas,
+} from '../corpus/manifest-authority.js';
+import {
   extractTitle,
   parseFrontmatter,
   parseSourceFrontmatter,
@@ -17,7 +21,7 @@ import {
   recordMetadataMutation,
   writeFileAtomic,
 } from '../corpus/mutation-helpers.js';
-import { writeEntityGraphLocked } from '../runtime.js';
+import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../runtime.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -270,8 +274,10 @@ export async function commitMetadataTargetsLocked(
         related: nextRelated,
         entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
       };
+      const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
-      writeFileAtomic(notePath, replaceFrontmatter(raw, nextFrontmatter));
+      writeFileAtomic(notePath, nextRaw);
+      queueManifestAuthorityDelta(kb, captureNoteManifestDeltas(target.slug, nextRaw));
       wroteMarkdown = true;
 
       const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
@@ -328,8 +334,10 @@ export async function commitMetadataTargetsLocked(
       related: nextRelated,
       entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
     };
+    const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
-    writeFileAtomic(sourcePath, replaceSourceFrontmatter(raw, nextFrontmatter));
+    writeFileAtomic(sourcePath, nextRaw);
+    queueManifestAuthorityDelta(kb, captureSourceManifestDeltas(target.slug, nextRaw));
     wroteMarkdown = true;
 
     const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];

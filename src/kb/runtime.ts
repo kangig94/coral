@@ -8,15 +8,12 @@ import { backendLog } from '../shared/backend-log.js';
 import { readPendingRepairRows, type PendingRepairRetryCandidate } from './curate/retry.js';
 import {
   type CanonicalFrontmatterRecord,
-  computeContentManifestHash,
   computeContentSurfaceHash,
-  computeMetadataManifestHash,
   computeMetadataSurfaceHash,
-  type ContentManifestEntry,
   type CorpusSnapshot,
-  type MetadataManifestInput,
 } from './corpus/snapshot.js';
 import type {
+  KbInboundSyncOptions,
   KbCachedOramaIndex,
   KbCorpusLane,
   KbCorpusPublishCallbacks,
@@ -34,6 +31,21 @@ import {
   type KbMutationLockContext,
   type KbMutationLockOptions,
 } from './corpus/mutation-lock.js';
+import {
+  captureCommunityManifestDelta,
+  captureEntityGraphManifestDelta,
+  captureNoteManifestDeltas,
+  capturePrincipleManifestDelta,
+  captureRemovedCommunityManifestDelta,
+  captureRemovedNoteManifestDeltas,
+  captureRemovedPrincipleManifestDelta,
+  captureRemovedSourceManifestDeltas,
+  captureSourceManifestDeltas,
+  collectFullManifestSurfaceHashes,
+  createManifestAuthority,
+  type ManifestAuthorityDelta,
+  type ManifestAuthorityLane,
+} from './corpus/manifest-authority.js';
 import {
   extractBody,
   extractTitle,
@@ -96,6 +108,7 @@ import { runEntrySeqUpgradeGuard } from './corpus/entry-seq-guard.js';
 import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { createRealRuntime } from '../runtime/real.js';
+import type { GitSyncPathChange, GitSyncResult } from './curate/git-sync.js';
 
 // TODO(phase-6-runtime-follow-up): split this module into narrower runtime slices once the
 // Phase 5 search/layering fixes have landed and stabilized.
@@ -150,7 +163,47 @@ function isSearchVisibleEntry(entry: KbIndex['entries'][string] | undefined): en
 }
 
 function entryFingerprint(entry: SearchVisibleEntry): string {
-  return JSON.stringify(entry);
+  if (isNoteEntry(entry)) {
+    return JSON.stringify({
+      kind: entry.kind,
+      slug: entry.slug,
+      title: entry.title,
+      tags: [...entry.tags],
+      principles: [...entry.principles],
+      source: [...entry.source],
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      related: [...(entry.related ?? [])],
+      entrySeq: entry.entrySeq ?? null,
+    });
+  }
+
+  if (isSourceEntry(entry)) {
+    return JSON.stringify({
+      kind: entry.kind,
+      slug: entry.slug,
+      title: entry.title,
+      type: entry.type,
+      tags: [...entry.tags],
+      url: entry.url ?? null,
+      importedAt: entry.importedAt,
+      related: [...(entry.related ?? [])],
+      entrySeq: entry.entrySeq ?? null,
+    });
+  }
+
+  return JSON.stringify({
+    kind: entry.kind,
+    slug: entry.slug,
+    title: entry.title,
+    level: entry.level,
+    members: [...entry.members],
+    parent: entry.parent ?? null,
+    children: [...(entry.children ?? [])],
+    summary: entry.summary ?? null,
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+  });
 }
 
 function diffSearchVisibleEntryIds(previous: KbIndex, next: KbIndex): {
@@ -240,117 +293,6 @@ function deriveStableCorpusSnapshotId(snapshot: Omit<CorpusSnapshot, 'snapshotId
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Buffer.from(bytes).toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-}
-
-function collectContentManifestEntries(
-  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir'>,
-): ContentManifestEntry[] {
-  const entries: ContentManifestEntry[] = [];
-
-  for (const filename of sortedMarkdownEntries(runtime.notesDir())) {
-    const slug = stripMdExt(filename);
-    const raw = readFileSync(join(runtime.notesDir(), filename), 'utf-8');
-    entries.push({
-      entryId: noteEntryId(slug),
-      title: extractTitle(raw),
-      body: extractBody(raw),
-    });
-  }
-
-  for (const filename of sortedMarkdownEntries(runtime.sourcesDir())) {
-    const slug = stripMdExt(filename);
-    try {
-      const raw = readFileSync(join(runtime.sourcesDir(), filename), 'utf-8');
-      entries.push({
-        entryId: sourceEntryId(slug),
-        title: parseSourceFrontmatter(raw).title,
-        body: extractBody(raw),
-      });
-    } catch {
-      continue;
-    }
-  }
-
-  return entries;
-}
-
-function collectMetadataManifestInputs(
-  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'>,
-): MetadataManifestInput[] {
-  const inputs: MetadataManifestInput[] = [];
-
-  for (const filename of sortedMarkdownEntries(runtime.notesDir())) {
-    const slug = stripMdExt(filename);
-    try {
-      const raw = readFileSync(join(runtime.notesDir(), filename), 'utf-8');
-      inputs.push({
-        manifestId: `note-meta:${slug}`,
-        frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
-      });
-    } catch {
-      continue;
-    }
-  }
-
-  for (const filename of sortedMarkdownEntries(runtime.sourcesDir())) {
-    const slug = stripMdExt(filename);
-    try {
-      const raw = readFileSync(join(runtime.sourcesDir(), filename), 'utf-8');
-      const { title: _title, ...metadata } = parseSourceFrontmatter(raw);
-      inputs.push({
-        manifestId: `source-meta:${slug}`,
-        frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
-      });
-    } catch {
-      continue;
-    }
-  }
-
-  for (const filename of sortedMarkdownEntries(runtime.communitiesDir())) {
-    const slug = stripMdExt(filename);
-    inputs.push({
-      manifestId: `community:${slug}`,
-      rawBytes: readFileSync(join(runtime.communitiesDir(), filename), 'utf-8'),
-    });
-  }
-
-  for (const filename of sortedMarkdownEntries(runtime.principlesDir())) {
-    const slug = stripMdExt(filename);
-    inputs.push({
-      manifestId: `principle:${slug}`,
-      rawBytes: readFileSync(join(runtime.principlesDir(), filename), 'utf-8'),
-    });
-  }
-
-  try {
-    inputs.push({
-      manifestId: 'entity-graph:.entity-graph.json',
-      rawBytes: readFileSync(runtime.entityGraphPath(), 'utf-8'),
-    });
-  } catch (error: unknown) {
-    if (!isNoEntryError(error)) {
-      throw error;
-    }
-  }
-
-  return inputs;
-}
-
-function buildCorpusSnapshot(
-  runtime: Pick<KbRuntime, 'notesDir' | 'sourcesDir' | 'communitiesDir' | 'principlesDir' | 'entityGraphPath'>,
-  state: KbIndexStateSnapshot,
-): CorpusSnapshot {
-  const snapshotWithoutId = {
-    contentSeq: state.contentSeq,
-    metadataSeq: state.metadataSeq,
-    contentManifestHash: computeContentManifestHash(collectContentManifestEntries(runtime)),
-    metadataManifestHash: computeMetadataManifestHash(collectMetadataManifestInputs(runtime)),
-  };
-
-  return {
-    ...snapshotWithoutId,
-    snapshotId: deriveStableCorpusSnapshotId(snapshotWithoutId),
-  };
 }
 
 
@@ -636,20 +578,18 @@ type PublishQueueEntry = {
   persisted: boolean;
 };
 
-type MutationLockContext = KbMutationLockContext<KbIndex, KbCorpusPublication, KbIndexMutationLane>;
-
-type CorpusFilesystemSnapshot = {
-  notes: Map<string, { contentHash: string; metadataHash: string }>;
-  sources: Map<string, { contentHash: string; metadataHash: string }>;
-  principles: Map<string, string>;
-  communities: Map<string, string>;
-  entityGraphHash: string | null;
-};
+type MutationLockContext = KbMutationLockContext<
+  KbIndex,
+  KbCorpusPublication,
+  KbIndexMutationLane,
+  ManifestAuthorityDelta
+>;
 
 type InboundSyncMutationDiff = {
   lane: KbIndexMutationLane | null;
   changedEntryIds: string[];
   requiresFullInstall: boolean;
+  manifestDeltas: ManifestAuthorityDelta[];
 };
 
 export interface CreateKbRuntimeOptions {
@@ -750,6 +690,70 @@ function mergePublication(
     },
     changedLanes: mergeCorpusLanes(current.changedLanes, next.changedLanes),
   };
+}
+
+type InboundSyncTrackedPath =
+  | { kind: 'note'; slug: string }
+  | { kind: 'source'; slug: string }
+  | { kind: 'community'; slug: string }
+  | { kind: 'principle'; slug: string }
+  | { kind: 'entity-graph' };
+
+type CorpusFilesystemSnapshot = {
+  notes: Map<string, { contentHash: string; metadataHash: string }>;
+  sources: Map<string, { contentHash: string; metadataHash: string }>;
+  principles: Map<string, string>;
+  communities: Map<string, string>;
+  entityGraphHash: string | null;
+};
+
+function normalizeInboundSyncPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function resolveInboundSyncTrackedPath(path: string): InboundSyncTrackedPath | null {
+  const normalized = normalizeInboundSyncPath(path);
+  if (normalized === '.entity-graph.json') {
+    return { kind: 'entity-graph' };
+  }
+
+  const noteMatch = normalized.match(/^notes\/(.+)\.md$/);
+  if (noteMatch !== null) {
+    return {
+      kind: 'note',
+      slug: noteMatch[1] ?? '',
+    };
+  }
+
+  const sourceMatch = normalized.match(/^sources\/(.+)\.md$/);
+  if (sourceMatch !== null) {
+    return {
+      kind: 'source',
+      slug: sourceMatch[1] ?? '',
+    };
+  }
+
+  const communityMatch = normalized.match(/^communities\/(.+)\.md$/);
+  if (communityMatch !== null) {
+    return {
+      kind: 'community',
+      slug: communityMatch[1] ?? '',
+    };
+  }
+
+  const principleMatch = normalized.match(/^principles\/(.+)\.md$/);
+  if (principleMatch !== null) {
+    return {
+      kind: 'principle',
+      slug: principleMatch[1] ?? '',
+    };
+  }
+
+  return null;
+}
+
+function isGitSyncResult(value: unknown): value is GitSyncResult {
+  return isRecord(value) && typeof value.kind === 'string';
 }
 
 function captureNoteFileSnapshot(dirPath: string): Map<string, { contentHash: string; metadataHash: string }> {
@@ -910,6 +914,7 @@ function detectInboundSyncMutation(
     lane,
     changedEntryIds: [...changedEntryIds].sort(),
     requiresFullInstall: principlesChanged || communitiesChanged || entityGraphChanged,
+    manifestDeltas: [],
   };
 }
 
@@ -918,6 +923,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
   private readonly readOnlyOrama: boolean;
+  private readonly manifestAuthority = createManifestAuthority();
 
   private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
@@ -930,8 +936,13 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly publishQueue: PublishQueueEntry[] = [];
   private publishDrain: Promise<void> | null = null;
   private publishDrainRequested = false;
-  private consecutivePublishFailures = 0;
-  private readonly mutationLockController = createKbMutationLock<KbIndex, KbCorpusPublication, KbIndexMutationLane>({
+  private consecutivePublishFailureCount = 0;
+  private readonly mutationLockController = createKbMutationLock<
+    KbIndex,
+    KbCorpusPublication,
+    KbIndexMutationLane,
+    ManifestAuthorityDelta
+  >({
     cloneStartIndex: () => cloneKbIndex(this.readIndex()),
     getCurrentLock: () => this.mutationLock,
     setCurrentLock: (lock) => {
@@ -970,6 +981,8 @@ class KbRuntimeImpl implements KbRuntime {
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
     }
+
+    this.manifestAuthority.seedFromFullCollectors(this);
   }
 
   notesDir(): string {
@@ -1043,6 +1056,9 @@ class KbRuntimeImpl implements KbRuntime {
   writeEntityGraphLocked(graph: EntityGraph): void {
     const normalized = parseEntityGraph(graph);
     writeJsonAtomic(this.entityGraphPath(), normalized);
+    this.queueManifestAuthorityDelta(
+      captureEntityGraphManifestDelta(`${JSON.stringify(normalized, null, 2)}\n`),
+    );
     this.setMutationLockProjectionDispatchMode('full');
     this.recordMutationCommitted('metadata', 'KB entity graph changed.');
 
@@ -1140,6 +1156,7 @@ class KbRuntimeImpl implements KbRuntime {
     const changed = runEntrySeqUpgradeGuard(this);
     this.upgradeGuardDone = true;
     if (changed) {
+      this.manifestAuthority.seedFromFullCollectors(this);
       this.recordMutationCommitted('both', 'KB text snapshot is stale after entry-seq upgrade.');
     }
     return changed;
@@ -1203,6 +1220,7 @@ class KbRuntimeImpl implements KbRuntime {
       return state;
     }
 
+    this.manifestAuthority.seedFromFullCollectors(this);
     const nextState = withLegacyIndexStateAliases({
       ...applyMutationLane(withoutTextStaleReason(stripLegacyIndexStateAliases(state)), externalMutation),
     });
@@ -1320,16 +1338,43 @@ class KbRuntimeImpl implements KbRuntime {
     await this.processPublishQueue();
   }
 
-  async runInboundSync<T>(fn: () => Promise<T> | T): Promise<T> {
+  async runInboundSync<T>(
+    fn: () => Promise<T> | T,
+    options: KbInboundSyncOptions = {},
+  ): Promise<T> {
     let mutationDiff: InboundSyncMutationDiff | null = null;
 
     return this.withMutationLock(async () => {
-      const before = captureCorpusFilesystemSnapshot(this);
+      const beforeSnapshot = options.structuredDiff === true ? null : captureCorpusFilesystemSnapshot(this);
       const result = await fn();
-      const after = captureCorpusFilesystemSnapshot(this);
-      mutationDiff = detectInboundSyncMutation(before, after);
+
+      if (options.structuredDiff === true && isGitSyncResult(result)) {
+        if (result.kind === 'ambiguous') {
+          mutationDiff = this.detectInboundSyncMutationFromFullCollectors(true);
+        } else if (result.kind === 'paths') {
+          mutationDiff = this.detectInboundSyncMutationFromStructuredDiff(result.changes);
+        } else {
+          mutationDiff = {
+            lane: null,
+            changedEntryIds: [],
+            requiresFullInstall: false,
+            manifestDeltas: [],
+          };
+        }
+      } else {
+        mutationDiff = detectInboundSyncMutation(
+          beforeSnapshot ?? captureCorpusFilesystemSnapshot(this),
+          captureCorpusFilesystemSnapshot(this),
+        );
+        if (mutationDiff.lane !== null) {
+          this.manifestAuthority.seedFromFullCollectors(this);
+        }
+      }
 
       if (mutationDiff.lane !== null) {
+        if (mutationDiff.manifestDeltas.length > 0) {
+          this.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
+        }
         if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
           this.writeIndex(this.buildInboundSyncIndexDelta(mutationDiff.changedEntryIds));
         } else if (mutationDiff.requiresFullInstall) {
@@ -1379,7 +1424,11 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   captureCurrentCorpusSnapshot(): KbCorpusPublication['snapshot'] {
-    return buildCorpusSnapshot(this, captureIndexStateSnapshot(this.readIndexState()));
+    return this.buildCurrentCorpusSnapshot(captureIndexStateSnapshot(this.readIndexState()));
+  }
+
+  getCurrentManifestAuthorityHash(lane: ManifestAuthorityLane): string {
+    return this.manifestAuthority.getCurrentManifestHash(lane);
   }
 
   private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
@@ -1426,6 +1475,236 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     return nextIndex;
+  }
+
+  private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): CorpusSnapshot {
+    const snapshotWithoutId = {
+      contentSeq: state.contentSeq,
+      metadataSeq: state.metadataSeq,
+      contentManifestHash: this.manifestAuthority.getCurrentManifestHash('content'),
+      metadataManifestHash: this.manifestAuthority.getCurrentManifestHash('metadata'),
+    };
+
+    return {
+      ...snapshotWithoutId,
+      snapshotId: deriveStableCorpusSnapshotId(snapshotWithoutId),
+    };
+  }
+
+  private queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void {
+    if (this.activeMutationContext === null) {
+      throw new Error('KB manifest authority deltas can only be queued while the mutation lock is held.');
+    }
+
+    this.activeMutationContext.pendingOpaqueDeltas.push(...deltas);
+  }
+
+  private applyPendingManifestAuthorityDeltas(lockContext: MutationLockContext): void {
+    if (lockContext.pendingOpaqueDeltas.length === 0) {
+      return;
+    }
+
+    this.manifestAuthority.updateFromDelta(lockContext.pendingOpaqueDeltas);
+  }
+
+  private captureInboundSyncTrackedPathDeltas(
+    target: InboundSyncTrackedPath,
+    mode: 'present' | 'deleted',
+  ): ManifestAuthorityDelta[] {
+    if (target.kind === 'note') {
+      if (mode === 'deleted') {
+        return captureRemovedNoteManifestDeltas(target.slug);
+      }
+      try {
+        return captureNoteManifestDeltas(target.slug, readFileSync(this.notePath(target.slug), 'utf-8'));
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          return captureRemovedNoteManifestDeltas(target.slug);
+        }
+        throw error;
+      }
+    }
+
+    if (target.kind === 'source') {
+      if (mode === 'deleted') {
+        return captureRemovedSourceManifestDeltas(target.slug);
+      }
+      try {
+        return captureSourceManifestDeltas(target.slug, readFileSync(this.sourcePath(target.slug), 'utf-8'));
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          return captureRemovedSourceManifestDeltas(target.slug);
+        }
+        throw error;
+      }
+    }
+
+    if (target.kind === 'community') {
+      if (mode === 'deleted') {
+        return captureRemovedCommunityManifestDelta(target.slug);
+      }
+      try {
+        return captureCommunityManifestDelta(target.slug, readFileSync(this.communityPath(target.slug), 'utf-8'));
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          return captureRemovedCommunityManifestDelta(target.slug);
+        }
+        throw error;
+      }
+    }
+
+    if (target.kind === 'principle') {
+      if (mode === 'deleted') {
+        return captureRemovedPrincipleManifestDelta(target.slug);
+      }
+      try {
+        return capturePrincipleManifestDelta(target.slug, readFileSync(this.principlePath(target.slug), 'utf-8'));
+      } catch (error: unknown) {
+        if (isNoEntryError(error)) {
+          return captureRemovedPrincipleManifestDelta(target.slug);
+        }
+        throw error;
+      }
+    }
+
+    if (mode === 'deleted') {
+      return captureEntityGraphManifestDelta(null);
+    }
+
+    try {
+      return captureEntityGraphManifestDelta(readFileSync(this.entityGraphPath(), 'utf-8'));
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return captureEntityGraphManifestDelta(null);
+      }
+      throw error;
+    }
+  }
+
+  private applyInboundSyncTrackedPathChange(
+    target: InboundSyncTrackedPath,
+    mode: 'present' | 'deleted',
+    mutation: InboundSyncMutationDiff,
+  ): void {
+    const nextDeltas = this.captureInboundSyncTrackedPathDeltas(target, mode);
+    let changed = false;
+
+    for (const delta of nextDeltas) {
+      const previousHash = this.manifestAuthority.getCurrentSurfaceHash(delta.lane, delta.manifestId);
+      if (previousHash === delta.surfaceHash) {
+        continue;
+      }
+
+      mutation.manifestDeltas.push(delta);
+      mutation.lane = mergeMutationLane(mutation.lane, delta.lane);
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    if (target.kind === 'note') {
+      mutation.changedEntryIds.push(noteEntryId(target.slug));
+      return;
+    }
+
+    if (target.kind === 'source') {
+      mutation.changedEntryIds.push(sourceEntryId(target.slug));
+      return;
+    }
+
+    mutation.requiresFullInstall = true;
+  }
+
+  private detectInboundSyncMutationFromStructuredDiff(changes: readonly GitSyncPathChange[]): InboundSyncMutationDiff {
+    const mutation: InboundSyncMutationDiff = {
+      lane: null,
+      changedEntryIds: [],
+      requiresFullInstall: false,
+      manifestDeltas: [],
+    };
+
+    for (const change of changes) {
+      if (change.status === 'renamed') {
+        const previousTarget = resolveInboundSyncTrackedPath(change.previousPath);
+        if (previousTarget !== null) {
+          this.applyInboundSyncTrackedPathChange(previousTarget, 'deleted', mutation);
+        }
+
+        const nextTarget = resolveInboundSyncTrackedPath(change.path);
+        if (nextTarget !== null) {
+          this.applyInboundSyncTrackedPathChange(nextTarget, 'present', mutation);
+        }
+        continue;
+      }
+
+      const target = resolveInboundSyncTrackedPath(change.path);
+      if (target === null) {
+        continue;
+      }
+
+      this.applyInboundSyncTrackedPathChange(target, change.status === 'deleted' ? 'deleted' : 'present', mutation);
+    }
+
+    mutation.changedEntryIds = [...new Set(mutation.changedEntryIds)].sort();
+    return mutation;
+  }
+
+  private detectInboundSyncMutationFromFullCollectors(forceFullInstall = false): InboundSyncMutationDiff {
+    const fullHashes = collectFullManifestSurfaceHashes(this);
+    const currentContent = this.manifestAuthority.getCurrentSurfaceHashes('content');
+    const currentMetadata = this.manifestAuthority.getCurrentSurfaceHashes('metadata');
+    let lane: KbIndexMutationLane | null = null;
+    let requiresFullInstall = false;
+    const changedEntryIds = new Set<string>();
+
+    for (const manifestId of new Set([...currentContent.keys(), ...fullHashes.content.keys()])) {
+      const previousHash = currentContent.get(manifestId) ?? null;
+      const nextHash = fullHashes.content.get(manifestId) ?? null;
+      if (previousHash === nextHash) {
+        continue;
+      }
+
+      lane = mergeMutationLane(lane, 'content');
+      if (manifestId.startsWith('note:') || manifestId.startsWith('source:')) {
+        changedEntryIds.add(manifestId);
+      }
+    }
+
+    for (const manifestId of new Set([...currentMetadata.keys(), ...fullHashes.metadata.keys()])) {
+      const previousHash = currentMetadata.get(manifestId) ?? null;
+      const nextHash = fullHashes.metadata.get(manifestId) ?? null;
+      if (previousHash === nextHash) {
+        continue;
+      }
+
+      lane = mergeMutationLane(lane, 'metadata');
+      if (manifestId.startsWith('note-meta:')) {
+        changedEntryIds.add(noteEntryId(manifestId.slice('note-meta:'.length)));
+        continue;
+      }
+      if (manifestId.startsWith('source-meta:')) {
+        changedEntryIds.add(sourceEntryId(manifestId.slice('source-meta:'.length)));
+        continue;
+      }
+      requiresFullInstall = true;
+    }
+
+    if (forceFullInstall && lane !== null) {
+      requiresFullInstall = true;
+    }
+
+    if (lane !== null) {
+      this.manifestAuthority.replaceCurrentSurfaceHashes(fullHashes);
+    }
+
+    return {
+      lane,
+      changedEntryIds: [...changedEntryIds].sort(),
+      requiresFullInstall,
+      manifestDeltas: [],
+    };
   }
 
   private async installPendingBaseProjectionBeforeRelease(
@@ -1485,7 +1764,7 @@ class KbRuntimeImpl implements KbRuntime {
 
     this.publishQueue.push({
       publication: {
-        snapshot: buildCorpusSnapshot(this, stateSnapshot),
+        snapshot: this.buildCurrentCorpusSnapshot(stateSnapshot),
         changedLanes: ['content', 'metadata'],
       },
       persisted: false,
@@ -1526,12 +1805,12 @@ class KbRuntimeImpl implements KbRuntime {
               }
               current.persisted = true;
             } catch (error: unknown) {
-              this.consecutivePublishFailures += 1;
+              this.consecutivePublishFailureCount += 1;
               this.corpusPublishCallbacks.onPublishFailure?.({
                 stage: 'persist',
                 snapshot: current.publication.snapshot,
                 changedLanes: current.publication.changedLanes,
-                consecutiveFailures: this.consecutivePublishFailures,
+                consecutivePublishFailureCount: this.consecutivePublishFailureCount,
                 error,
               });
               return;
@@ -1540,7 +1819,7 @@ class KbRuntimeImpl implements KbRuntime {
 
           if (current.publication.changedLanes.length === 0) {
             this.publishQueue.shift();
-            this.consecutivePublishFailures = 0;
+            this.consecutivePublishFailureCount = 0;
             this.corpusPublishCallbacks.onPublishSuccess?.();
             continue;
           }
@@ -1548,19 +1827,19 @@ class KbRuntimeImpl implements KbRuntime {
           try {
             await this.corpusPublishCallbacks.notifyCorpusMutation(current.publication);
           } catch (error: unknown) {
-            this.consecutivePublishFailures += 1;
+            this.consecutivePublishFailureCount += 1;
             this.corpusPublishCallbacks.onPublishFailure?.({
               stage: 'notify',
               snapshot: current.publication.snapshot,
               changedLanes: current.publication.changedLanes,
-              consecutiveFailures: this.consecutivePublishFailures,
+              consecutivePublishFailureCount: this.consecutivePublishFailureCount,
               error,
             });
             return;
           }
 
           this.publishQueue.shift();
-          this.consecutivePublishFailures = 0;
+          this.consecutivePublishFailureCount = 0;
           this.corpusPublishCallbacks.onPublishSuccess?.();
         }
       } finally {
@@ -1582,6 +1861,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private finalizePendingMutation(lockContext: MutationLockContext): void {
+    this.applyPendingManifestAuthorityDeltas(lockContext);
     if (lockContext.pendingMutationLane === null) {
       return;
     }
@@ -1610,7 +1890,7 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.activeMutationContext.publication = mergePublication(this.activeMutationContext.publication, {
-      snapshot: buildCorpusSnapshot(this, next),
+      snapshot: this.buildCurrentCorpusSnapshot(next),
       changedLanes,
     });
   }
@@ -1866,6 +2146,29 @@ export function setMutationLockProjectionDispatchMode(kb: KbRuntime, mode: 'delt
     throw new Error('KB runtime does not expose mutation-lock projection dispatch control.');
   }
   runtime.setMutationLockProjectionDispatchMode(mode);
+}
+
+export function queueManifestAuthorityDelta(
+  kb: KbRuntime,
+  deltas: readonly ManifestAuthorityDelta[],
+): void {
+  const runtime = kb as KbRuntime & {
+    queueManifestAuthorityDelta?: (nextDeltas: readonly ManifestAuthorityDelta[]) => void;
+  };
+  if (typeof runtime.queueManifestAuthorityDelta !== 'function') {
+    throw new Error('KB runtime does not expose manifest-authority delta staging.');
+  }
+  runtime.queueManifestAuthorityDelta(deltas);
+}
+
+export function getManifestAuthorityHash(kb: KbRuntime, lane: ManifestAuthorityLane): string {
+  const runtime = kb as KbRuntime & {
+    getCurrentManifestAuthorityHash?: (nextLane: ManifestAuthorityLane) => string;
+  };
+  if (typeof runtime.getCurrentManifestAuthorityHash !== 'function') {
+    throw new Error('KB runtime does not expose manifest-authority hashes.');
+  }
+  return runtime.getCurrentManifestAuthorityHash(lane);
 }
 
 // KbRuntime exposes only the coordinator-facing surface; this bridge reaches the concrete
