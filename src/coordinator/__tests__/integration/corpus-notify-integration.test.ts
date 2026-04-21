@@ -5,18 +5,18 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { createRealRuntime } from '../../runtime/real.js';
-import { createCurateScheduler, type CurateHandle } from '../../kb/curate/scheduler.js';
-import { commitMetadataTargets, commitMetadataTargetsLocked } from '../../kb/curate/metadata-commit.js';
-import { readCurateState } from '../../kb/curate/state.js';
-import { applyNoteUpdateLocked, update } from '../../kb/ops/update.js';
-import { reindex } from '../../kb/ops/reindex.js';
-import { createKbRuntime } from '../../kb/runtime.js';
-import { noteEntryId } from '../../kb/entry-types.js';
-import { applyMigrations } from '../../store/migrations.js';
-import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../store/corpus-state.js';
-import { ConsumerDriver, type CorpusConsumerRegistration } from '../consumer-driver.js';
-import { createNotifyCorpusMutation } from '../corpus-notify.js';
+import { createRealRuntime } from '../../../runtime/real.js';
+import { createCurateScheduler, type CurateHandle } from '../../../kb/curate/scheduler.js';
+import { commitMetadataTargets, commitMetadataTargetsLocked } from '../../../kb/curate/metadata-commit.js';
+import { readCurateState } from '../../../kb/curate/state.js';
+import { applyNoteUpdateLocked, update } from '../../../kb/ops/update.js';
+import { reindex } from '../../../kb/ops/reindex.js';
+import { createKbRuntime } from '../../../kb/runtime.js';
+import { noteEntryId } from '../../../kb/entry-types.js';
+import { applyMigrations } from '../../../store/migrations.js';
+import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../../store/corpus-state.js';
+import { ConsumerDriver, type CorpusConsumerRegistration } from '../../consumer-driver.js';
+import { createNotifyCorpusMutation } from '../../corpus-notify.js';
 
 type ObservedSnapshot = Pick<CorpusStateSnapshot, 'contentSeq' | 'metadataSeq'>;
 
