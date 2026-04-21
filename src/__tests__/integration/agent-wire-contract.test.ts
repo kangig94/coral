@@ -18,11 +18,11 @@ import { pluginRootNamespace } from '../../infra/paths.js';
 import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { Provider } from '../../providers/provider-contracts.js';
-import { toProviderSpec } from '../../providers/spec-compat.js';
+import type { ProviderInstruction, ProviderRequest } from '../../providers/contract.js';
+import { toProviderSpec, type Provider } from '../../testing/provider-spec.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import * as Schemas from '../../shared/schemas.js';
-import { streamProviderTerminal, type ProviderInstruction, type ProviderRequest } from '../../providers/protocol.js';
+import { streamProviderTerminal } from '../../providers/stream.js';
 import type { LifecycleState } from '../../coordinator/control.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 

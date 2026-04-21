@@ -22,12 +22,10 @@ import type {
 import type { WaitStreamEvent } from '../../wait.js';
 import {
   streamProviderTerminal,
-  type ProviderRequest as _ProviderRequest,
-  type ProviderTerminalEventBody,
-} from '../../../providers/protocol.js';
+  type ProviderTerminalInput,
+} from '../../../providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 
-import type { PreflightRuntime, Provider } from '../../../providers/provider-contracts.js';
 import { pluginRootNamespace } from '../../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../../providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '../../../workflow/parser.js';
@@ -52,10 +50,10 @@ import type { SessionManager } from '../../../sessions/shell/store.js';
 import type { CallerContext } from '../../../shared/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
-import { toProviderSpec } from '../../../providers/spec-compat.js';
+import { toProviderSpec, type PreflightRuntime, type Provider } from '../../../testing/provider-spec.js';
 import { getInternals } from './__helpers__/service-fixture.js';
 
-type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
+type ProviderTurnResult = ProviderTerminalInput;
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

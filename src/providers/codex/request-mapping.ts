@@ -1,10 +1,9 @@
 import { join } from 'node:path';
-import type { ProviderRequest } from '../protocol.js';
+import type { ProviderRequest, ProviderRuntime, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../shared/schemas.js';
 import { isRecord, readString } from '../../shared/utils.js';
 import type { ProviderContinuityUpdate, ProviderTransportClose } from '../contract.js';
-import type { ProviderRuntime, ProviderServerSpec } from '../provider-contracts.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
 type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;

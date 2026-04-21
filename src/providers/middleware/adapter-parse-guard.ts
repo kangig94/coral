@@ -9,6 +9,19 @@ export interface ParseErrorDetail {
   parseError: string;
 }
 
+const ADAPTER_PARSE_GUARD_FAULT_KIND = 'adapter_output_unparseable' as const;
+
+function buildParseGuardFault(provider: string, detail: ParseErrorDetail) {
+  const fault = adapterOutputUnparseable({
+    provider,
+    ...detail,
+  });
+  if (fault.kind !== ADAPTER_PARSE_GUARD_FAULT_KIND) {
+    throw new Error('adapterParseGuard emitted an unexpected fault kind.');
+  }
+  return fault;
+}
+
 export function adapterParseGuard(
   provider: string,
   classify: (err: unknown) => ParseErrorDetail | null,
@@ -29,10 +42,7 @@ export function adapterParseGuard(
             content: '',
             outcome: {
               kind: 'failed',
-              fault: adapterOutputUnparseable({
-                provider,
-                ...detail,
-              }),
+              fault: buildParseGuardFault(provider, detail),
             },
           }),
           diagnostics: buildJobDiagnostics({}),

@@ -1,30 +1,22 @@
 import { join } from 'node:path';
-import type { ProviderEventBody, ProviderRequest } from '../protocol.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { readString } from '../../shared/utils.js';
-import { runAppServerTurn } from '../app-server/runner.js';
-import {
-  type PreflightRuntime,
-  type ProviderAppServerLifecycle,
-  type ProviderRuntime,
-  type ProviderServerLease,
-  type Provider,
-} from '../provider-contracts.js';
+
+import type {
+  PreflightRuntime,
+  ProviderAppServerContract,
+  ProviderServerLease,
+} from '../contract.js';
+import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
   buildCodexProviderServerSpec,
+  clearCodexTurnContinuity,
+  readCodexPersistedContinuity,
 } from './request-mapping.js';
-import { codexSessionDriver } from './session-driver.js';
-import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 
-const CODEX_APP_SERVER_UPGRADE_MESSAGE = 'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
-const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
+const CODEX_APP_SERVER_UPGRADE_MESSAGE =
+  'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
+const CODEX_AUTH_ERROR_MESSAGE =
+  'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
-
-type CodexContinuity = {
-  cwd?: string;
-  threadId?: string;
-  turnId?: string;
-};
 
 type PreflightCacheEntry = {
   available: boolean;
@@ -43,25 +35,6 @@ function isMissingConversationError(error: unknown): boolean {
     message.includes('does not exist') ||
     message.includes('no such thread')
   );
-}
-
-function toCodexContinuity(continuity: ProviderContinuityBlob | undefined): CodexContinuity {
-  return {
-    cwd: readString(continuity?.cwd),
-    threadId: readString(continuity?.threadId),
-    turnId: readString(continuity?.turnId),
-  };
-}
-
-function continuityWithClearedTurnId(continuity: ProviderContinuityBlob | undefined): ProviderContinuityBlob | undefined {
-  const { cwd, threadId } = toCodexContinuity(continuity);
-  if (!threadId) {
-    return undefined;
-  }
-  return {
-    ...(cwd ? { cwd } : {}),
-    threadId,
-  };
 }
 
 async function rpc<M extends AppServerMethod>(
@@ -129,9 +102,14 @@ async function assertCodexAuthTokens(runtime: PreflightRuntime): Promise<void> {
 }
 
 function hasCodexAuthTokens(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
   const tokens = (value as { tokens?: unknown }).tokens;
-  if (!tokens || typeof tokens !== 'object') return false;
+  if (!tokens || typeof tokens !== 'object') {
+    return false;
+  }
 
   return ['access_token', 'refresh_token', 'id_token'].some((key) => {
     const token = (tokens as Record<string, unknown>)[key];
@@ -139,9 +117,11 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-export const codexAppServerLifecycle: ProviderAppServerLifecycle = {
+export const codexAppServerLifecycle: ProviderAppServerContract = {
+  name: 'codex',
+  subscriptionPhase: 'afterInitialize',
   migrateLegacyContinuity(meta) {
-    const continuity: ProviderContinuityBlob = {};
+    const continuity: Record<string, unknown> = {};
     if (typeof meta.provider === 'string' && meta.provider.length > 0) {
       continuity.provider = meta.provider;
     }
@@ -153,28 +133,24 @@ export const codexAppServerLifecycle: ProviderAppServerLifecycle = {
     }
     return Object.keys(continuity).length > 0 ? continuity : undefined;
   },
-  buildServerSpec(persistedContinuity, request) {
-    const { cwd } = toCodexContinuity(persistedContinuity);
-    return buildCodexProviderServerSpec(cwd ?? request.cwd, request.coralEnv);
+  buildServerSpec(request, persistedContinuity) {
+    return buildCodexProviderServerSpec(request, persistedContinuity);
   },
   async interrupt(lease, continuity) {
-    const parsed = toCodexContinuity(continuity);
+    const parsed = readCodexPersistedContinuity(continuity);
     if (!parsed.threadId || !parsed.turnId) {
       return;
     }
     await interruptTurn(lease, parsed.threadId, parsed.turnId);
   },
   async probe(lease, continuity) {
-    const parsed = toCodexContinuity(continuity);
-    const updatedContinuity = continuityWithClearedTurnId(continuity);
+    const parsed = readCodexPersistedContinuity(continuity);
+    const updatedContinuity = clearCodexTurnContinuity(continuity);
     if (!parsed.threadId) {
       return { resumable: false, updatedContinuity };
     }
 
     try {
-      // Probe only checks thread existence — sandbox is intentionally omitted because
-      // no commands execute during probe, so the sandbox policy is irrelevant.
-      // Infrastructure: probe uses process.cwd() for orphaned continuity data without request context
       await rpc(lease, 'thread/resume', {
         threadId: parsed.threadId,
         cwd: parsed.cwd ?? process.cwd(),
@@ -196,35 +172,18 @@ export const codexAppServerLifecycle: ProviderAppServerLifecycle = {
     }
   },
   finalizeInterrupted(probeResult, continuity) {
-    const nextContinuity = probeResult.updatedContinuity ?? continuityWithClearedTurnId(continuity);
-    const parsed = toCodexContinuity(nextContinuity ?? continuity);
+    const nextContinuity = probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity);
+    const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
     if (probeResult.resumable && parsed.threadId) {
       return {
         conversationRef: parsed.threadId,
         ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
       };
     }
+
     return {
       nonResumable: true,
       ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
     };
   },
 };
-
-function runCodex(request: ProviderRequest, runtime: ProviderRuntime): AsyncIterable<ProviderEventBody> {
-  if (request.action === 'fork') {
-    throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
-  }
-  return runAppServerTurn(codexSessionDriver, request, runtime);
-}
-
-const codexProviderBase = Object.assign(function codex(request: ProviderRequest, runtime: ProviderRuntime) {
-  return runCodex(request, runtime);
-}, {
-  preflight: codexPreflight,
-  appServerLifecycle: codexAppServerLifecycle,
-});
-
-export const codexProvider = Object.assign(codexProviderBase, {
-  execute: codexProviderBase,
-}) satisfies Provider & { appServerLifecycle: ProviderAppServerLifecycle };

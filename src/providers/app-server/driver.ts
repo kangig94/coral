@@ -1,48 +1,38 @@
-import type { ProviderRequest, ProviderTerminalEventBody } from '../protocol.js';
 import type {
-  ProviderRequest as ContractProviderRequest,
-  ProviderRuntime as ContractProviderRuntime,
-  ProviderServerLease as ContractProviderServerLease,
-  ProviderServerSpec as ContractProviderServerSpec,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerLease,
+  ProviderServerSpec,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { LegacyProviderName } from '../../shared/legacy-terminal-outcome-compat.js';
-import type { ProviderRuntime, ProviderServerLease, ProviderServerSpec } from '../provider-contracts.js';
-import type {
-  AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
-  DriverStepOutcome,
-  TurnOutcome,
-} from './types.js';
+import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './types.js';
 
 export type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
-  DriverStepOutcome,
   ProviderTransportClose,
-  TurnOutcome,
 } from './types.js';
 
 export interface AppServerContract {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(
-    request: ContractProviderRequest,
+    request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
-  ): ContractProviderServerSpec;
-  interrupt(lease: ContractProviderServerLease): Promise<void>;
+  ): ProviderServerSpec;
+  interrupt(lease: ProviderServerLease): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
-const appServerLeaseBindings = new WeakMap<ContractProviderRuntime, ContractProviderServerLease>();
+const appServerLeaseBindings = new WeakMap<ProviderRuntime, ProviderServerLease>();
 const appServerNotificationBindings = new WeakMap<
-  ContractProviderRuntime,
+  ProviderRuntime,
   (message: AppServerNotificationMessage) => void
 >();
 
 export function bindAppServerLease(
-  runtime: ContractProviderRuntime,
-  lease: ContractProviderServerLease,
+  runtime: ProviderRuntime,
+  lease: ProviderServerLease,
 ): () => void {
   appServerLeaseBindings.set(runtime, lease);
   return () => {
@@ -52,12 +42,12 @@ export function bindAppServerLease(
   };
 }
 
-export function getAppServerLease(runtime: ContractProviderRuntime): ContractProviderServerLease | undefined {
+export function getAppServerLease(runtime: ProviderRuntime): ProviderServerLease | undefined {
   return appServerLeaseBindings.get(runtime);
 }
 
 export function bindAppServerNotificationHandler(
-  runtime: ContractProviderRuntime,
+  runtime: ProviderRuntime,
   handler: (message: AppServerNotificationMessage) => void,
 ): () => void {
   appServerNotificationBindings.set(runtime, handler);
@@ -69,45 +59,20 @@ export function bindAppServerNotificationHandler(
 }
 
 export function getAppServerNotificationHandler(
-  runtime: ContractProviderRuntime,
+  runtime: ProviderRuntime,
 ): ((message: AppServerNotificationMessage) => void) | undefined {
   return appServerNotificationBindings.get(runtime);
 }
 
 export function requireAppServerLease(
-  runtime: ContractProviderRuntime,
+  runtime: ProviderRuntime,
   providerName: string,
-): ContractProviderServerLease {
+): ProviderServerLease {
   const lease = getAppServerLease(runtime);
   if (!lease) {
     throw new Error(`${providerName} provider requires app-server session middleware to bind a ProviderServerLease.`);
   }
   return lease;
-}
-
-export interface AppServerSessionDriver<TState> {
-  readonly name: string;
-  readonly faultProviderName: LegacyProviderName;
-  readonly subscriptionPhase: AppServerSubscriptionPhase;
-
-  buildServerSpec(
-    request: ProviderRequest,
-    persistedContinuity: ProviderContinuityBlob | undefined,
-  ): ProviderServerSpec;
-  createInitialState(ctx: DriverContext, request: ProviderRequest): TState;
-  initialize(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
-  startTurn(ctx: DriverContext, state: TState, request: ProviderRequest): Promise<DriverStepOutcome>;
-  applyNotification(state: TState, message: AppServerNotificationMessage): void;
-  awaitTurnOutcome(state: TState): Promise<TurnOutcome>;
-  requestInterrupt(ctx: DriverContext, state: TState): Promise<void>;
-  onTransportClosed(state: TState, outcome: Error | void): TurnOutcome;
-  finalize(state: TState, outcome: TurnOutcome): ProviderTerminalEventBody;
-}
-
-export interface DriverContext {
-  lease: ProviderServerLease;
-  runtime: ProviderRuntime;
-  emitProgress(message: string): void;
 }
 
 export function buildProviderFailureMessage(label: string, message?: string, status?: string): string {

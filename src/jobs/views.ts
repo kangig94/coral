@@ -8,7 +8,7 @@ import {
   type ProviderInstruction,
   type UsageSummary,
   usageSummarySchema,
-} from '../providers/protocol.js';
+} from '../providers/contract.js';
 import { type TerminalOutcome, terminalOutcomeSchema } from './outcome.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
 

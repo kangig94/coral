@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
-import type { ProviderCliRequest, ProviderCliRunner } from '../runner-port.js';
+import type { ProviderCliRequest, ProviderCliRunner } from '../cli-runner.js';
 import { executeClaudeOneShot, executeClaudeResume } from '../claude/claude-executor.js';
 
 const runCli: ProviderCliRunner = (request: ProviderCliRequest) =>

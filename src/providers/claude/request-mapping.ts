@@ -6,9 +6,8 @@ import { join, resolve } from 'node:path';
 
 import { isRecord } from '../../shared/utils.js';
 import type { PermissionMode } from './control-protocol.js';
-import type { ProviderRequest } from '../protocol.js';
+import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type { ProviderServerSpec } from '../provider-contracts.js';
 import type {
   ClaudeBootstrapSignature,
   SessionEnsureParams,

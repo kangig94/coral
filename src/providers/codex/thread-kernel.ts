@@ -24,6 +24,18 @@ import type {
 } from './protocol.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
+const CODEX_THREAD_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
+
+function buildCodexThreadRequestFailed(message: string) {
+  const fault = providerRequestFailed({
+    provider: 'codex',
+    message,
+  });
+  if (fault.kind !== CODEX_THREAD_REQUEST_FAILURE_KIND) {
+    throw new Error('Codex thread kernel emitted an unexpected fault kind.');
+  }
+  return fault;
+}
 
 type CodexTurnState = {
   startedAt: number;
@@ -604,10 +616,7 @@ function buildFailedTerminal(
       durationMs: Date.now() - state.startedAt,
       outcome: {
         kind: 'failed',
-        fault: providerRequestFailed({
-          provider: 'codex',
-          message: buildProviderFailureMessage('Codex', message),
-        }),
+        fault: buildCodexThreadRequestFailed(buildProviderFailureMessage('Codex', message)),
       },
     }),
     diagnostics: buildJobDiagnostics({}),
@@ -636,10 +645,9 @@ function buildCompletedTerminal(
         : turnFailed
           ? {
               kind: 'failed',
-              fault: providerRequestFailed({
-                provider: 'codex',
-                message: failureMessage ?? 'Codex session driver reported a failed turn.',
-              }),
+              fault: buildCodexThreadRequestFailed(
+                failureMessage ?? 'Codex session driver reported a failed turn.',
+              ),
             }
           : { kind: 'completed' },
     }),

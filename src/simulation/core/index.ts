@@ -7,16 +7,19 @@ import {
   type BackendInfo,
 } from '../../coordinator/discovery.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
+import type {
+  JobTerminal,
+  PreflightRuntime,
+  ProviderSpec,
+} from '../../providers/contract.js';
 import { readAppendedLines } from '../../shared/file-tail.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import {
   providerProgressEvent,
   providerTerminalEvent,
   streamProviderEvents,
-  type ProviderTerminalEventBody,
-} from '../../providers/protocol.js';
-import { toProviderSpec } from '../../providers/spec-compat.js';
+} from '../../providers/stream.js';
+import { providerRequestFailed } from '../../providers/fault.js';
 import { formatError, nowIsoString } from '../../shared/utils.js';
 import { SimulationRuntime } from '../runtime.js';
 import { sendJson } from '../../transport/http/handler.js';
@@ -70,7 +73,7 @@ export { SimulationRuntime } from '../runtime.js';
 export type { SimulationRuntimeOptions } from '../runtime.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
-type SimulationTerminalOutcome = ProviderTerminalEventBody['outcome'];
+type SimulationTerminalOutcome = JobTerminal['outcome'];
 
 export type FakeProviderScenario = {
   name?: string;
@@ -81,7 +84,17 @@ export type FakeProviderScenario = {
     extraEnv?: Record<string, string>;
   };
   progress?: Array<{ delayMs?: number; message: string }>;
-  result?: Omit<Partial<ProviderTerminalEventBody>, 'type' | 'outcome'> & Pick<ProviderTerminalEventBody, 'outcome'>;
+  result?: {
+    content?: string;
+    conversationRef?: string;
+    model?: string;
+    durationMs?: number;
+    nonResumable?: boolean;
+    exitCode?: number | null;
+    warnings?: string[];
+    usage?: JobTerminal['usage'];
+    outcome: SimulationTerminalOutcome;
+  };
   preflightError?: Error | string;
 };
 
@@ -179,6 +192,7 @@ function createSimulationHealthFetch(runtime: SimulationRuntime, pluginRoot: str
 }
 
 function buildDefaultExecutionOutcome(
+  scenario: FakeProviderScenario | undefined,
   aborted: boolean,
   exitCode: number | null | undefined,
 ): SimulationTerminalOutcome {
@@ -186,7 +200,13 @@ function buildDefaultExecutionOutcome(
     return { kind: 'aborted', reason: 'signal_abort' };
   }
   if (typeof exitCode === 'number' && exitCode !== 0) {
-    return { kind: 'provider_exit', code: exitCode };
+    return {
+      kind: 'failed',
+      fault: providerRequestFailed({
+        provider: scenario?.name ?? DEFAULT_FAKE_PROVIDER,
+        message: `Fake provider exited with code ${exitCode}.`,
+      }),
+    };
   }
   return { kind: 'completed' };
 }
@@ -196,16 +216,18 @@ function buildRecoveredArtifactFailureOutcome(
   message: string,
 ): SimulationTerminalOutcome {
   return {
-    kind: 'legacy_fault',
-    fault: {
-      kind: 'provider_request_failed',
-      provider: scenario?.faultProvider ?? 'claude',
+    kind: 'failed',
+    fault: providerRequestFailed({
+      provider: scenario?.name ?? DEFAULT_FAKE_PROVIDER,
       message,
-    },
+    }),
   };
 }
 
-export function createFakeProvider(runtime: SimulationRuntime, scenario: FakeProviderScenario | undefined): Provider {
+export function createFakeProvider(
+  runtime: SimulationRuntime,
+  scenario: FakeProviderScenario | undefined,
+): ProviderSpec {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
   return {
@@ -217,7 +239,10 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           },
         }
       : {}),
-    execute: (request, providerRuntime) =>
+    run: (
+      request: Parameters<ProviderSpec['run']>[0],
+      providerRuntime: Parameters<ProviderSpec['run']>[1],
+    ) =>
       streamProviderEvents(async (emit) => {
         const startedAt = runtime.time.now();
 
@@ -240,7 +265,15 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
         });
 
         const exitCode = scenario?.result?.exitCode ?? cli.code;
-        const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(cli.aborted, exitCode);
+        const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
+        if (scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined) {
+          emit({
+            kind: 'continuity',
+            conversationRef: scenario.result?.conversationRef ?? null,
+            resumable: scenario.result?.nonResumable !== true,
+            providerContinuity: null,
+          });
+        }
         emit(
           providerTerminalEvent({
             ...scenario?.result,
@@ -251,9 +284,14 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           }),
         );
       }),
-    artifactRecovery: {
+    recovery: {
       buildRecoveryMeta: () => ({ provider: providerName }),
-      finalizeFromArtifacts: async ({ stdoutPath, stderrPath, exitCode, signal }) => {
+      finalizeFromArtifacts: async ({
+        stdoutPath,
+        stderrPath,
+        exitCode,
+        signal,
+      }: Parameters<NonNullable<ProviderSpec['recovery']>['finalizeFromArtifacts']>[0]) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
         const stderr = readFileIfPresent(runtime.storage, stderrPath).trimEnd();
         const recoveredArtifactFailed = scenario?.result?.outcome === undefined && stderr.length > 0;
@@ -261,16 +299,27 @@ export function createFakeProvider(runtime: SimulationRuntime, scenario: FakePro
           scenario?.result?.outcome ??
           (recoveredArtifactFailed
             ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
-            : buildDefaultExecutionOutcome(signal !== null, exitCode));
-        return providerTerminalEvent({
-          ...scenario?.result,
-          content: scenario?.result?.content ?? stdout,
-          exitCode: scenario?.result?.exitCode ?? exitCode,
-          nonResumable: scenario?.result?.nonResumable ?? (recoveredArtifactFailed ? true : undefined),
-          outcome,
-        });
+            : buildDefaultExecutionOutcome(scenario, signal !== null, exitCode));
+        return {
+          terminal: providerTerminalEvent({
+            ...scenario?.result,
+            content: scenario?.result?.content ?? stdout,
+            exitCode: scenario?.result?.exitCode ?? exitCode,
+            outcome,
+          }),
+          continuity:
+            scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined
+              ? {
+                  conversationRef: scenario?.result?.conversationRef ?? null,
+                  resumable: scenario?.result?.nonResumable !== true,
+                }
+              : undefined,
+        };
       },
-      extractProgress: ({ stdoutPath, fromOffset }) => {
+      extractProgress: ({
+        stdoutPath,
+        fromOffset,
+      }: Parameters<NonNullable<NonNullable<ProviderSpec['recovery']>['extractProgress']>>[0]) => {
         const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset, runtime.storage);
         return {
           messages: lines,
@@ -356,11 +405,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   );
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
-  const fakeProviderSpec = toProviderSpec(createFakeProvider(runtime, scenario.fakeProvider));
-  if (!fakeProviderSpec) {
-    throw new Error('Failed to convert fake provider to ProviderSpec');
-  }
-  providerRegistry.register(fakeProviderSpec);
+  providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
 
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   runtime.storage.mkdirSync(projectRoot, { recursive: true });

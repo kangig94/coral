@@ -23,6 +23,7 @@ import { CoralStore, openStoreDatabase } from '../../../../store/index.js';
 import { createDefaultStoreReadContext } from '../../../../store/read-context.js';
 import { createRealRuntime } from '../../../../runtime/real.js';
 import { storePaths } from '../../../../store/paths.js';
+import { CORAL_SCRIPTED_PROVIDER_SPEC_ENV } from '../../../../testing/scripted-provider.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');
@@ -160,7 +161,7 @@ describe('mutating commands via IPC', () => {
           ...process.env,
           HOME: fixture.home,
           TMPDIR: fixture.home,
-          CORAL_SCRIPTED_PROVIDER_SPEC: scriptedProviderSpec,
+          [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: scriptedProviderSpec,
         },
         encoding: 'utf-8',
         timeout: 90_000,

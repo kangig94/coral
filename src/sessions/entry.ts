@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ProviderInstruction } from '../providers/protocol.js';
+import type { ProviderInstruction } from '../providers/contract.js';
 import type { ProviderContinuityBlob } from './continuity.js';
 
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);

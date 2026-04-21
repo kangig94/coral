@@ -1,3 +1,11 @@
+import type {
+  JobDiagnostics,
+  JobTerminal,
+  ProviderEventBody,
+  ProviderProgressEventBody,
+  ProviderTerminalEventBody,
+} from './contract.js';
+
 type ProviderEventQueueEntry<TEvent> =
   | { kind: 'event'; event: TEvent }
   | { kind: 'done' }
@@ -92,4 +100,120 @@ export function streamProviderEvents<TEvent>(
       }
     },
   };
+}
+
+export type ProviderTerminalInput = {
+  content: string;
+  outcome: JobTerminal['outcome'];
+  model?: JobTerminal['model'];
+  durationMs?: JobTerminal['durationMs'];
+  exitCode?: JobTerminal['exitCode'];
+  warnings?: JobTerminal['warnings'];
+  usage?: JobTerminal['usage'];
+  diagnostics?: JobDiagnostics;
+  conversationRef?: string;
+  nonResumable?: boolean;
+};
+
+export function providerProgressEvent(
+  message: string,
+  _ts?: string,
+): ProviderProgressEventBody {
+  return {
+    kind: 'progress',
+    message,
+  };
+}
+
+export function providerTerminalEvent(
+  event:
+    | ProviderTerminalEventBody
+    | Omit<ProviderTerminalEventBody, 'kind'>
+    | ProviderTerminalInput,
+): ProviderTerminalEventBody {
+  if ('kind' in event && event.kind === 'terminal') {
+    return event;
+  }
+
+  if ('terminal' in event) {
+    return {
+      kind: 'terminal',
+      terminal: event.terminal,
+      diagnostics: event.diagnostics,
+    };
+  }
+
+  return {
+    kind: 'terminal',
+    terminal: {
+      content: event.content,
+      outcome: event.outcome,
+      ...(event.model === undefined ? {} : { model: event.model }),
+      ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+      ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+      ...(event.warnings === undefined ? {} : { warnings: [...event.warnings] }),
+      ...(event.usage === undefined ? {} : { usage: { ...event.usage } }),
+    },
+    diagnostics: event.diagnostics ?? {},
+  };
+}
+
+export function streamProviderTerminal(
+  terminal:
+    | ProviderTerminalEventBody
+    | Omit<ProviderTerminalEventBody, 'kind'>
+    | ProviderTerminalInput
+    | Promise<
+        ProviderTerminalEventBody | Omit<ProviderTerminalEventBody, 'kind'> | ProviderTerminalInput
+      >,
+): AsyncIterable<ProviderEventBody> {
+  return streamProviderEvents(async (emit) => {
+    const resolved = await terminal;
+    if (
+      !('kind' in resolved && resolved.kind === 'terminal') &&
+      !('terminal' in resolved) &&
+      (resolved.conversationRef !== undefined || resolved.nonResumable !== undefined)
+    ) {
+      emit({
+        kind: 'continuity',
+        conversationRef: resolved.conversationRef ?? null,
+        resumable: resolved.nonResumable !== true,
+        providerContinuity: null,
+      });
+    }
+    emit(providerTerminalEvent(resolved));
+  });
+}
+
+export async function collectProviderEvents(
+  stream: AsyncIterable<ProviderEventBody>,
+): Promise<ProviderEventBody[]> {
+  const events: ProviderEventBody[] = [];
+  for await (const event of stream) {
+    events.push(event);
+  }
+  return events;
+}
+
+export async function collectProviderTerminalEvent(
+  stream: AsyncIterable<ProviderEventBody>,
+): Promise<ProviderTerminalEventBody> {
+  let terminal: ProviderTerminalEventBody | null = null;
+
+  for await (const event of stream) {
+    if (event.kind !== 'terminal') {
+      continue;
+    }
+
+    if (terminal !== null) {
+      throw new Error('Provider stream emitted multiple terminal events.');
+    }
+    terminal = event;
+  }
+
+  if (terminal === null) {
+    throw new Error('Provider stream ended without a terminal event.');
+  }
+
+  return terminal;
 }

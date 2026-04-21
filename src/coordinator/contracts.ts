@@ -15,8 +15,12 @@ import type {
   LaunchState,
 } from '../jobs/views.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { ProviderContinuityBlob, ProviderSpec } from '../providers/contract.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
+import type {
+  ProviderContinuityBlob,
+  ProviderServerLease,
+  ProviderServerSpec,
+  ProviderSpec,
+} from '../providers/contract.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { AbortResult } from '../shared/execution-contracts.js';

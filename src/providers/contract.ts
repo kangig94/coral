@@ -212,6 +212,19 @@ export interface ProviderAppServerContract {
   readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(request: ProviderRequest, persistedContinuity: ProviderContinuityBlob | undefined): ProviderServerSpec;
   interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  probe?(
+    lease: ProviderServerLease,
+    continuity: ProviderContinuityBlob,
+  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
+  finalizeInterrupted?(
+    probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
+    continuity: ProviderContinuityBlob,
+  ): {
+    conversationRef?: string;
+    nonResumable?: boolean;
+    continuityMutation?: ProviderContinuityBlob;
+  };
+  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
   onTransportClosed?(state: unknown, outcome: Error | void): ProviderTransportClose;
 }
 

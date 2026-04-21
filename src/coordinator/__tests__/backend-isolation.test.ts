@@ -9,9 +9,9 @@ import { TypedEventBus } from '../control.js';
 import { createDiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { registerBuiltInProviders } from '../../providers/bootstrap.js';
-import { streamProviderTerminal } from '../../providers/protocol.js';
+import { streamProviderTerminal } from '../../providers/stream.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import { toProviderSpec } from '../../providers/spec-compat.js';
+import { toProviderSpec } from '../../testing/provider-spec.js';
 import type { JobTerminal } from '../../jobs/views.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };

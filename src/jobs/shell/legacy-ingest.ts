@@ -4,6 +4,11 @@ import type {
   LegacyCoralFault,
   LegacyTerminalOutcome,
 } from '../../shared/legacy-terminal-outcome-compat.js';
+import {
+  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
+  PROVIDER_REQUEST_FAILED_KIND,
+  PROVIDER_SESSION_UNAVAILABLE_KIND,
+} from '../../providers/fault.js';
 import type { CauseRef, JobLifecycleFault, TerminalOutcome } from '../outcome.js';
 
 export interface LegacyIngestOptions {
@@ -107,7 +112,7 @@ export function planLegacyTerminalOutcome(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.interrupted', outcome.fault),
           );
-        case 'adapter_output_unparseable':
+        case ADAPTER_OUTPUT_UNPARSEABLE_KIND:
           return planFailed(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.adapter_unparseable', {
@@ -118,7 +123,7 @@ export function planLegacyTerminalOutcome(
               parseError: outcome.fault.parseError,
             }),
           );
-        case 'provider_session_unavailable':
+        case PROVIDER_SESSION_UNAVAILABLE_KIND:
           return planFailed(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {
@@ -127,7 +132,7 @@ export function planLegacyTerminalOutcome(
               message: outcome.fault.note,
             }),
           );
-        case 'provider_request_failed':
+        case PROVIDER_REQUEST_FAILED_KIND:
           return planFailed(
             options,
             baseEvent(options, { kind: 'session', id: options.sessionId }, 'session.provider_failed', {

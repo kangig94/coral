@@ -73,7 +73,7 @@ const DOMAIN_API_TARGETS = new Set([
   'src/kb/api.ts',
 ]);
 const CONTRACT_TARGETS = new Set([
-  'src/providers/provider-contracts.ts',
+  'src/providers/contract.ts',
   'src/providers/registry.ts',
   'src/simulation/recording.ts',
 ]);

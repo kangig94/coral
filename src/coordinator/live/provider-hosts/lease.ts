@@ -1,4 +1,4 @@
-import type { ProviderServerLease } from '../../../providers/provider-contracts.js';
+import type { ProviderServerLease } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './pool.js';
 

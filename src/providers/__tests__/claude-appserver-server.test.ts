@@ -10,7 +10,7 @@ import {
   hashClaudeChildEnv,
   type ClaudeBrokerChild,
   type ClaudeBrokerSession,
-} from '../claude-appserver/session.js';
+} from '../claude-appserver/controller.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,

@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
+  PROVIDER_REQUEST_FAILED_KIND,
+  PROVIDER_SESSION_UNAVAILABLE_KIND,
+} from '../providers/fault.js';
 import { assertNever } from './utils.js';
 
 export type LegacyAbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
@@ -44,7 +49,7 @@ export type LegacyCoralFault =
     }
   | { kind: 'workflow_aborted' }
   | {
-      kind: 'adapter_output_unparseable';
+      kind: typeof ADAPTER_OUTPUT_UNPARSEABLE_KIND;
       provider: LegacyProviderName;
       exitCode: number | null;
       stdout: string;
@@ -52,12 +57,12 @@ export type LegacyCoralFault =
       parseError: string;
     }
   | {
-      kind: 'provider_session_unavailable';
+      kind: typeof PROVIDER_SESSION_UNAVAILABLE_KIND;
       provider: LegacyProviderName;
       note: string;
     }
   | {
-      kind: 'provider_request_failed';
+      kind: typeof PROVIDER_REQUEST_FAILED_KIND;
       provider: LegacyProviderName;
       message: string;
     };
@@ -122,7 +127,7 @@ export const legacyCoralFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('workflow_aborted') }).strict(),
   z
     .object({
-      kind: z.literal('adapter_output_unparseable'),
+      kind: z.literal(ADAPTER_OUTPUT_UNPARSEABLE_KIND),
       provider: legacyProviderNameSchema,
       exitCode: z.number().nullable(),
       stdout: z.string(),
@@ -132,14 +137,14 @@ export const legacyCoralFaultSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.literal('provider_session_unavailable'),
+      kind: z.literal(PROVIDER_SESSION_UNAVAILABLE_KIND),
       provider: legacyProviderNameSchema,
       note: z.string(),
     })
     .strict(),
   z
     .object({
-      kind: z.literal('provider_request_failed'),
+      kind: z.literal(PROVIDER_REQUEST_FAILED_KIND),
       provider: legacyProviderNameSchema,
       message: z.string(),
     })
@@ -220,14 +225,14 @@ export function describeLegacyCoralFault(fault: LegacyCoralFault): string {
       return `Workflow failed: ${fault.cause.message}.`;
     case 'workflow_aborted':
       return 'Workflow aborted.';
-    case 'adapter_output_unparseable': {
+    case ADAPTER_OUTPUT_UNPARSEABLE_KIND: {
       const provider = providerDisplayName(fault.provider);
       const exit = fault.exitCode === null ? 'unknown' : String(fault.exitCode);
       return `${provider} produced unparseable output (exit ${exit}): ${fault.parseError}.`;
     }
-    case 'provider_session_unavailable':
+    case PROVIDER_SESSION_UNAVAILABLE_KIND:
       return `${providerDisplayName(fault.provider)} session unavailable: ${ensureSentence(fault.note)}`;
-    case 'provider_request_failed': {
+    case PROVIDER_REQUEST_FAILED_KIND: {
       const provider = providerDisplayName(fault.provider);
       const message = fault.message.trim();
       if (!message) {

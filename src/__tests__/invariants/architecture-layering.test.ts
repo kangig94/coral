@@ -48,8 +48,7 @@ const COORDINATOR_ALLOWED = new Set([
   'src/discuss/api.ts',
   'src/workflow/api.ts',
   'src/kb/api.ts',
-  'src/providers/provider-contracts.ts',
-  'src/providers/protocol.ts',
+  'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts'] as const;

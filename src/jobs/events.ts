@@ -17,7 +17,7 @@ import {
   type JobLaunchRejected,
   type JobProgressFault,
 } from './outcome.js';
-import { usageSummarySchema } from '../providers/protocol.js';
+import { usageSummarySchema } from '../providers/contract.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
 import { jobContinuitySnapshotSchema, workflowResultMetaSchema } from './views.js';
 

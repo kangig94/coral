@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createBuiltInProviderRegistry, registerBuiltInProviders } from '../bootstrap.js';
 import type { ProviderEventBody, ProviderRuntime, ProviderSpec } from '../contract.js';
 import { ProviderRegistry } from '../registry.js';
+import { CORAL_SCRIPTED_PROVIDER_SPEC_ENV } from '../../testing/scripted-provider.js';
 
 const BASE_RUNTIME: ProviderRuntime = {
   signal: new AbortController().signal,
@@ -112,7 +113,7 @@ describe('registerBuiltInProviders', () => {
 
   it('replaces a built-in provider when CORAL_SCRIPTED_PROVIDER_SPEC targets the same name', async () => {
     const registry = createBuiltInProviderRegistry({
-      CORAL_SCRIPTED_PROVIDER_SPEC: JSON.stringify({
+      [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: JSON.stringify({
         name: 'codex',
         progress: [{ message: 'scripted registry progress' }],
         result: {

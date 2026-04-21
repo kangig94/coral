@@ -70,9 +70,9 @@ import {
   type MutableBackendRuntimeState,
 } from '../../../coordinator/__tests__/server-test-deps.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { streamProviderTerminal } from '../../../providers/protocol.js';
+import { streamProviderTerminal } from '../../../providers/stream.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
-import { toProviderSpec } from '../../../providers/spec-compat.js';
+import { toProviderSpec } from '../../../testing/provider-spec.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,

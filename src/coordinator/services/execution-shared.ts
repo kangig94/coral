@@ -1,9 +1,9 @@
 import type {
   ProviderContinuityBlob,
   PreflightRuntime,
-  ProviderExecutor,
-} from '../../providers/provider-contracts.js';
-import type { ProviderSpec } from '../../providers/contract.js';
+  ProviderInstruction,
+  ProviderSpec,
+} from '../../providers/contract.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { EffortLevel } from '../../shared/schemas.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
@@ -31,7 +31,6 @@ import {
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/api.js';
 import { rejectLaunch, SessionClaimError } from '../../jobs/shell/contracts.js';
-import type { ProviderInstruction } from '../../providers/protocol.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
@@ -234,7 +233,7 @@ export function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
 }
 
 export async function runProviderPreflight(
-  provider: ProviderExecutor | ProviderSpec,
+  provider: ProviderSpec,
   runtime: PreflightRuntime,
 ): Promise<string | null> {
   if (!provider.preflight) return null;

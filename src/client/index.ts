@@ -69,7 +69,7 @@ export type {
 export type { WaitStreamEvent, WaitCursor } from '../jobs/wait.js';
 export type { JobPhase } from '../jobs/phase.js';
 export type { SessionEntry, SessionState } from '../sessions/entry.js';
-export type { UsageSummary } from '../providers/protocol.js';
+export type { UsageSummary } from '../providers/contract.js';
 
 // ../discuss/session-types.js
 export type { DiscussState, TranscriptEntry, AgentState, EndReason } from '../discuss/session-types.js';

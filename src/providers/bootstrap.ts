@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 
 import {
-  type ProviderAppServerContract,
   type ProviderRecoveryContract,
   type ProviderSpec,
   type TerminalOutcome,
@@ -14,33 +13,21 @@ import {
   claudeAppServerLifecycle,
   claudeArtifactCleanup,
   claudePreflight,
-} from './claude/adapter.js';
+} from './claude/provider-facets.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
-import { codexAppServerLifecycle, codexPreflight } from './codex/adapter.js';
+import { codexAppServerLifecycle, codexPreflight } from './codex/provider-facets.js';
 import { ProviderRegistry } from './registry.js';
-import { createScriptedProvider, readScriptedProviderSpecFromEnv } from './scripted-provider.js';
-import { toProviderSpec } from './spec-compat.js';
-
-function adaptAppServerContract(
-  name: string,
-  subscriptionPhase: 'beforeInitialize' | 'afterInitialize',
-  lifecycle: {
-    buildServerSpec: NonNullable<NonNullable<typeof claudeAppServerLifecycle>['buildServerSpec']>;
-    interrupt: NonNullable<NonNullable<typeof claudeAppServerLifecycle>['interrupt']>;
-  },
-): ProviderAppServerContract {
-  return {
-    name,
-    subscriptionPhase,
-    buildServerSpec: (request, persistedContinuity) => lifecycle.buildServerSpec(persistedContinuity, request),
-    interrupt: (lease, continuity) => lifecycle.interrupt(lease, continuity),
-  };
-}
+import { resolveScriptedProviderOverride } from './bootstrap-scripted-override.js';
 
 function buildClaudeRecovery(): ProviderRecoveryContract {
+  const probe = claudeAppServerLifecycle.probe;
+  const finalizeInterrupted = claudeAppServerLifecycle.finalizeInterrupted;
+  if (!probe || !finalizeInterrupted) {
+    throw new Error('Claude app-server lifecycle must define probe + finalizeInterrupted');
+  }
   return {
-    probe: claudeAppServerLifecycle.probe.bind(claudeAppServerLifecycle),
-    finalizeInterrupted: claudeAppServerLifecycle.finalizeInterrupted.bind(claudeAppServerLifecycle),
+    probe: probe.bind(claudeAppServerLifecycle),
+    finalizeInterrupted: finalizeInterrupted.bind(claudeAppServerLifecycle),
     async finalizeFromArtifacts(options) {
       const stdout = readArtifact(options.stdoutPath);
       const stderr = readArtifact(options.stderrPath);
@@ -102,9 +89,14 @@ function buildClaudeRecovery(): ProviderRecoveryContract {
 }
 
 function buildCodexRecovery(): ProviderRecoveryContract {
+  const probe = codexAppServerLifecycle.probe;
+  const finalizeInterrupted = codexAppServerLifecycle.finalizeInterrupted;
+  if (!probe || !finalizeInterrupted) {
+    throw new Error('Codex app-server lifecycle must define probe + finalizeInterrupted');
+  }
   return {
-    probe: codexAppServerLifecycle.probe.bind(codexAppServerLifecycle),
-    finalizeInterrupted: codexAppServerLifecycle.finalizeInterrupted.bind(codexAppServerLifecycle),
+    probe: probe.bind(codexAppServerLifecycle),
+    finalizeInterrupted: finalizeInterrupted.bind(codexAppServerLifecycle),
     async finalizeFromArtifacts(options) {
       const stdout = readArtifact(options.stdoutPath);
       const stderr = readArtifact(options.stderrPath);
@@ -152,7 +144,7 @@ const codexProviderSpec: ProviderSpec = {
   name: 'codex',
   run: codexThreadProvider,
   preflight: codexPreflight,
-  appServer: adaptAppServerContract('codex', 'afterInitialize', codexAppServerLifecycle),
+  appServer: codexAppServerLifecycle,
   recovery: buildCodexRecovery(),
 };
 
@@ -160,7 +152,7 @@ const claudeProviderSpec: ProviderSpec = {
   name: 'claude',
   run: claudeProvider,
   preflight: claudePreflight,
-  appServer: adaptAppServerContract('claude', 'beforeInitialize', claudeAppServerLifecycle),
+  appServer: claudeAppServerLifecycle,
   recovery: buildClaudeRecovery(),
   cleanup: claudeArtifactCleanup,
 };
@@ -168,13 +160,8 @@ const claudeProviderSpec: ProviderSpec = {
 const BUILT_IN_PROVIDERS = [codexProviderSpec, claudeProviderSpec] as const;
 
 function resolveBuiltInProviders(env: NodeJS.ProcessEnv = process.env): ProviderSpec[] {
-  const scriptedProviderSpec = readScriptedProviderSpecFromEnv(env);
-  if (scriptedProviderSpec === null) {
-    return [...BUILT_IN_PROVIDERS];
-  }
-
-  const scriptedProvider = toProviderSpec(createScriptedProvider(scriptedProviderSpec));
-  if (!scriptedProvider) {
+  const scriptedProvider = resolveScriptedProviderOverride(env);
+  if (scriptedProvider === null) {
     return [...BUILT_IN_PROVIDERS];
   }
 

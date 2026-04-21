@@ -2,7 +2,7 @@ import type {
   ProviderContinuityBlob,
   ProviderServerLease,
   ProviderServerSpec,
-} from '../../providers/provider-contracts.js';
+} from '../../providers/contract.js';
 import { backendLog } from '../../shared/backend-log.js';
 import {
   isAppServerRuntime,
@@ -18,11 +18,6 @@ import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../shared/utils.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import {
-  getProviderAppServer,
-  getProviderRecovery,
-  migrateLegacyContinuity,
-} from '../../providers/spec-compat.js';
 import type {
   ExecutionLaunchCoordinator,
   ExecutionLaunchPool as LaunchPool,
@@ -101,7 +96,7 @@ export class RecoveryService {
     runtimeRecord: AppServerRuntime,
   ): Promise<void> {
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
-    const appServer = getProviderAppServer(providerEntry);
+    const appServer = providerEntry?.appServer;
     if (!appServer) {
       return;
     }
@@ -141,8 +136,8 @@ export class RecoveryService {
     }
 
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
-    const appServer = getProviderAppServer(providerEntry);
-    const recovery = getProviderRecovery(providerEntry);
+    const appServer = providerEntry?.appServer;
+    const recovery = providerEntry?.recovery;
     const session =
       this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
       ({
@@ -411,11 +406,7 @@ export class RecoveryService {
 
     return this.deps.providerRegistry
       .get(providerName)
-      ? migrateLegacyContinuity(
-          this.deps.providerRegistry.get(providerName),
-          runtimeRecord.providerMeta as Record<string, unknown>,
-        )
-      : undefined;
+      ?.appServer?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
   }
 
   private writeAppServerRuntimeRecord(

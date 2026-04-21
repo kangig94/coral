@@ -5,11 +5,12 @@ import {
   collectProviderEvents,
   providerProgressEvent,
   streamProviderEvents,
-} from '../protocol.js';
+} from '../stream.js';
+import type { ProviderEventBody } from '../contract.js';
 
 describe('streamProviderEvents', () => {
   it('fails with a backpressure error when the producer outruns an absent consumer', async () => {
-    const stream = streamProviderEvents((emit) => {
+    const stream = streamProviderEvents<ProviderEventBody>((emit) => {
       for (let i = 0; i <= 1024; i += 1) {
         emit(providerProgressEvent(`step ${i}`, `2026-04-20T00:00:${String(i % 60).padStart(2, '0')}.000Z`));
       }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { streamProviderTerminal } from '../../providers/protocol.js';
+import { streamProviderTerminal } from '../../providers/stream.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import { toProviderSpec } from '../../providers/spec-compat.js';
+import { toProviderSpec } from '../../testing/provider-spec.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { WorkflowCommand } from '../api.js';
 

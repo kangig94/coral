@@ -10,12 +10,11 @@ import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import {
   streamProviderTerminal,
-  type ProviderRequest,
-  type ProviderTerminalEventBody,
-} from '../../providers/protocol.js';
+  type ProviderTerminalInput,
+} from '../../providers/stream.js';
+import type { ProviderRequest } from '../../providers/contract.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 
-import type { PreflightRuntime, Provider } from '../../providers/provider-contracts.js';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { buildCodexProviderServerSpec } from '../../providers/codex/request-mapping.js';
 import { parseExpression } from '../../workflow/parser.js';
@@ -35,10 +34,10 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
-import { toProviderSpec } from '../../providers/spec-compat.js';
+import { toProviderSpec, type PreflightRuntime, type Provider } from '../../testing/provider-spec.js';
 import { getInternals } from '../../jobs/shell/__tests__/__helpers__/service-fixture.js';
 
-type ProviderTurnResult = Omit<ProviderTerminalEventBody, 'type'>;
+type ProviderTurnResult = ProviderTerminalInput;
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -776,11 +775,11 @@ describe('ExecutionService', () => {
           content: '',
           nonResumable: true,
           outcome: {
-            kind: 'legacy_fault',
+            kind: 'failed',
             fault: {
               kind: 'provider_session_unavailable',
               provider: 'codex',
-              note: 'Conversation thread-stale is no longer resumable.',
+              reason: 'Conversation thread-stale is no longer resumable.',
             },
           },
         }),
@@ -1242,7 +1241,7 @@ describe('ExecutionService', () => {
           return {
             content: '',
             outcome: {
-              kind: 'legacy_fault',
+              kind: 'failed',
               fault: {
                 kind: 'provider_request_failed',
                 provider: 'codex',

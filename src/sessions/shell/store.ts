@@ -4,7 +4,7 @@ import { noopAppendEvents, type AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { acquireDirectoryLock } from '../../shared/fs-lock.js';
-import type { ProviderInstruction } from '../../providers/protocol.js';
+import type { ProviderInstruction } from '../../providers/contract.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../../shared/utils.js';
 import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from '../../runtime/ports.js';
 import {

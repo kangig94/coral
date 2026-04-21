@@ -22,8 +22,6 @@ const ALLOWLIST = [
   /^src\/shared\/legacy-terminal-outcome-compat\.ts$/,
   /^src\/jobs\/shell\/legacy-ingest\.ts$/,
   /^src\/providers\/app-server\/driver\.ts$/,
-  /^src\/providers\/provider-contracts\.ts$/,
-  /^src\/providers\/codex\/adapter\.ts$/,
   /^src\/simulation\/(schema|core\/index|normalize)\.ts$/,
 ];
 

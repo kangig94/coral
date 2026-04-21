@@ -1,6 +1,4 @@
-import type { ArtifactCleanupRuntime } from '../providers/provider-contracts.js';
-import type { ProviderSpec } from '../providers/contract.js';
-import { getProviderCleanup } from '../providers/spec-compat.js';
+import type { ArtifactCleanupRuntime, ProviderSpec } from '../providers/contract.js';
 import type { Runtime } from '../runtime/ports.js';
 import { errorMessage } from '../shared/utils.js';
 import type { WorkflowSessionHandle } from '../workflow/api.js';
@@ -42,7 +40,7 @@ export function dispatchWorkflowSessionCleanup(
   if (refsByProvider.size === 0) return;
 
   for (const [providerName, refs] of refsByProvider) {
-    const artifactCleanup = getProviderCleanup(deps.get(providerName));
+    const artifactCleanup = deps.get(providerName)?.cleanup;
     if (!artifactCleanup?.cleanupSessions) continue;
     void artifactCleanup.cleanupSessions(deps.cleanupRuntime, [...refs]).catch((error: unknown) => {
       deps.onError(`Provider ${providerName} session cleanup failed: ${errorMessage(error)}`);

@@ -11,8 +11,7 @@ import type {
 import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, JobTerminal, LaunchDecision, LaunchState, WaitStreamEvent, WaitStreamRequest } from '../jobs/api.js';
 import type { PipelineAST, WorkflowCommand, WorkflowSessionHandle } from '../workflow/api.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../providers/provider-contracts.js';
-import type { ProviderContinuityBlob } from '../providers/contract.js';
+import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/api.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';

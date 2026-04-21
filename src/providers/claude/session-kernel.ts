@@ -20,6 +20,19 @@ import {
   type PreparedClaudeRequest,
 } from './shared-utils.js';
 
+const CLAUDE_SESSION_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
+
+function buildClaudeSessionRequestFailed(message: string) {
+  const fault = providerRequestFailed({
+    provider: 'claude',
+    message,
+  });
+  if (fault.kind !== CLAUDE_SESSION_REQUEST_FAILURE_KIND) {
+    throw new Error('Claude session kernel emitted an unexpected fault kind.');
+  }
+  return fault;
+}
+
 type ClaudeCompletedTurn = {
   content: string;
   model?: string;
@@ -283,10 +296,9 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): Re
         outcome: outcome.turn.isError
           ? {
               kind: 'failed',
-              fault: providerRequestFailed({
-                provider: 'claude',
-                message: failureMessage ?? 'Claude session driver reported a failed turn.',
-              }),
+              fault: buildClaudeSessionRequestFailed(
+                failureMessage ?? 'Claude session driver reported a failed turn.',
+              ),
             }
           : { kind: 'completed' },
       }),
@@ -328,10 +340,7 @@ function buildFailedTerminal(
       durationMs,
       outcome: {
         kind: 'failed',
-        fault: providerRequestFailed({
-          provider: 'claude',
-          message,
-        }),
+        fault: buildClaudeSessionRequestFailed(message),
       },
     }),
     diagnostics: buildJobDiagnostics({}),

@@ -14,6 +14,7 @@ import {
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { LaunchDecision } from '../../jobs/api.js';
+import type { ProviderRequest } from '../../providers/contract.js';
 import type { ExecutionLaunchPool as LaunchPool, ListResult } from '../contracts.js';
 import {
   buildEffectiveCoralEnv,
@@ -29,7 +30,6 @@ import {
   runProviderPreflight,
   toPreflightRuntime,
 } from './execution-shared.js';
-import type { ProviderRequest } from '../../providers/protocol.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;

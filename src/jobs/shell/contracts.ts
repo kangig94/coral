@@ -1,7 +1,7 @@
 import type { LaunchDecision } from '../launch.js';
 import type { JobPhase } from '../phase.js';
 import type { JobKind, JobLaunch } from '../views.js';
-import type { ProviderRequest } from '../../providers/protocol.js';
+import type { ProviderRequest } from '../../providers/contract.js';
 import { resolveEffort } from '../../shared/schemas.js';
 import type { ExecutionAdmissionResult } from '../../coordinator/contracts.js';
 
