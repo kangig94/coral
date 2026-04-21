@@ -1,9 +1,5 @@
 import { search as oramaSearch } from '@orama/orama';
-import {
-  computeCommunitySummaryInputFingerprints,
-  computeCommunityTopologyFingerprint,
-} from '../curate/community-detection.js';
-import { readCurateState } from '../curate/state.js';
+import { areCommunityDocumentsFresh } from '../curate/text-artifacts.js';
 import {
   normalizeOramaTerm,
   normalizeWhitespace,
@@ -643,51 +639,6 @@ function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scop
   return hits.filter((hit) => hit.kind === 'community');
 }
 
-function areCommunityResultsFresh(
-  rt: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
-  index: KbIndex,
-): boolean {
-  const hasCommunityEntries = Object.values(index.entries).some((entry) => entry.kind === 'community');
-  if (!hasCommunityEntries) {
-    return true;
-  }
-
-  const state = readCurateState(rt);
-  const topologyHash = computeCommunityTopologyFingerprint(index);
-  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
-    return false;
-  }
-
-  try {
-    const communities = Object.values(index.entries)
-      .filter(isCommunityEntry)
-      .map((community) => ({
-        slug: community.slug,
-        title: community.title,
-        level: community.level,
-        members: community.members,
-        ...(community.children === undefined ? {} : { children: community.children }),
-        ...(community.summary === undefined ? {} : { summary: community.summary }),
-      }));
-    const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, rt, index);
-    const storedFingerprints = state.communitySummaryInputFingerprints ?? {};
-    const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
-    const storedEntries = Object.entries(storedFingerprints)
-      .filter(([slug]) => slug in currentFingerprints)
-      .sort(([left], [right]) => left.localeCompare(right));
-
-    return (
-      currentEntries.length === storedEntries.length &&
-      currentEntries.every(
-        ([slug, fingerprint], index) =>
-          storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
 function isSearchableHit(hit: ResolvedKbSearchHit, communitiesFresh: boolean): boolean {
   if (hit.kind !== 'community') {
     return true;
@@ -1110,7 +1061,7 @@ export async function searchKb(
   const queryTokens = tokenizeQuery(oramaTerm, tokenizer);
 
   const queryCtx: QueryContext = { rawQuery, oramaTerm, queryTokens, tokenizer };
-  const communitiesFresh = areCommunityResultsFresh(rt, index);
+  const communitiesFresh = areCommunityDocumentsFresh(rt, index);
   const graphContext = buildGraphSearchContext(index, rt.readEntityGraph());
   const graphFresh = graphContext !== null;
   const resolvedHits: ResolvedKbSearchHit[] = [];

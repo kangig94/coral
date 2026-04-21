@@ -22,8 +22,6 @@ import {
 } from '../corpus/frontmatter.js';
 import {
   computeContentSurfaceHash,
-  computeMetadataSurfaceHash,
-  type CanonicalFrontmatterRecord,
 } from '../corpus/snapshot.js';
 import {
   buildCommunityDocuments,
@@ -37,6 +35,7 @@ import {
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/mutation-helpers.js';
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
 import { stripMdExt } from '../paths.js';
+import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
 import { loadKbNote } from '../read.js';
 import { assertCommunitySlug, assertSourceSlug } from '../validation.js';
 import { createOramaDb, toOramaDocument } from '../orama-factory.js';
@@ -49,12 +48,10 @@ import {
   noteEntryId,
   sourceEntryId,
   type KbIndex,
-  type NoteEntry,
   type KbReindexCommunityRecord,
   type KbReindexNoteRecord,
   type KbReindexSourceRecord,
   type ReindexResult,
-  type SourceEntry,
 } from '../entry-types.js';
 
 const INDEX_FILE = 'index.json';
@@ -103,33 +100,6 @@ function markdownDirModifiedAfter(dir: string, threshold: bigint): boolean {
 function fileModifiedAfter(filePath: string, threshold: bigint): boolean {
   const modifiedAt = modifiedAtNs(filePath);
   return modifiedAt !== null && modifiedAt > threshold;
-}
-
-function noteMetadataHash(entry: Pick<NoteEntry, 'tags' | 'principles' | 'source' | 'createdAt' | 'updatedAt' | 'entrySeq' | 'related'>): string {
-  return computeMetadataSurfaceHash({
-    frontmatter: {
-      tags: entry.tags,
-      principles: entry.principles,
-      source: entry.source,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-      entrySeq: entry.entrySeq,
-      related: entry.related,
-    } as CanonicalFrontmatterRecord,
-  });
-}
-
-function sourceMetadataHash(entry: Pick<SourceEntry, 'type' | 'tags' | 'url' | 'importedAt' | 'entrySeq' | 'related'>): string {
-  return computeMetadataSurfaceHash({
-    frontmatter: {
-      type: entry.type,
-      tags: entry.tags,
-      url: entry.url,
-      importedAt: entry.importedAt,
-      entrySeq: entry.entrySeq,
-      related: entry.related,
-    } as CanonicalFrontmatterRecord,
-  });
 }
 
 function collectStoredAuthorityHashes(value: unknown, hashes: Map<string, StoredAuthorityHashes>): void {
@@ -378,7 +348,25 @@ export function detectTextArtifactRebuildInfo(
   }
 }
 
-function areCommunityDocumentsFreshForState(
+export function isCommunitySummaryFresh(
+  currentFingerprints: Readonly<Record<string, string>>,
+  storedFingerprints: Readonly<Record<string, string>> | undefined,
+): boolean {
+  const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
+  const storedEntries = Object.entries(storedFingerprints ?? {})
+    .filter(([slug]) => slug in currentFingerprints)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  return (
+    currentEntries.length === storedEntries.length &&
+    currentEntries.every(
+      ([slug, fingerprint], index) =>
+        storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
+    )
+  );
+}
+
+function isCommunityStateFreshForIndex(
   state: Pick<CurateState, 'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'>,
   kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
   index: KbIndex,
@@ -403,22 +391,24 @@ function areCommunityDocumentsFreshForState(
       ...(community.summary === undefined ? {} : { summary: community.summary }),
     }));
     const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, kb, index);
-    const storedFingerprints = state.communitySummaryInputFingerprints ?? {};
-    const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
-    const storedEntries = Object.entries(storedFingerprints)
-      .filter(([slug]) => slug in currentFingerprints)
-      .sort(([left], [right]) => left.localeCompare(right));
-
-    return (
-      currentEntries.length === storedEntries.length &&
-      currentEntries.every(
-        ([slug, fingerprint], index) =>
-          storedEntries[index]?.[0] === slug && storedEntries[index]?.[1] === fingerprint,
-      )
-    );
+    return isCommunitySummaryFresh(currentFingerprints, state.communitySummaryInputFingerprints);
   } catch {
     return false;
   }
+}
+
+export function areCommunityDocumentsFresh(
+  kb: Pick<KbRuntime, 'db' | 'notePath' | 'sourcePath'>,
+  index: KbIndex,
+  state?: CurateState,
+): boolean {
+  // Early-return before reading curate state when there are no community entries — preserves the
+  // old orama-backend behavior where readCurateState was skipped entirely on empty corpora.
+  const hasCommunityEntries = Object.values(index.entries).some(isCommunityEntry);
+  if (!hasCommunityEntries) {
+    return true;
+  }
+  return isCommunityStateFreshForIndex(state ?? readCurateState(kb), kb, index);
 }
 
 function normalizedCommunitySummaryFingerprints(
@@ -785,7 +775,7 @@ export async function rebuildTextArtifacts(
         communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
       }
     : curateState;
-  const communityFresh = areCommunityDocumentsFreshForState(projectedCommunityState, kb, index);
+  const communityFresh = isCommunityStateFreshForIndex(projectedCommunityState, kb, index);
   const { db, tokenizer } = await createOramaDb();
 
   await insertMultiple(db, [

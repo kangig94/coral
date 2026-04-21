@@ -40,6 +40,7 @@ import {
   CURATE_STATE_MIGRATION_VERSION,
   compareCursor,
   compareOptionalCursor,
+  cursorEntryKind,
   defaultCurateState,
   extractMalformedEntryRepair,
   getCurateRepairFrontier,
@@ -92,17 +93,6 @@ type ScannedSource = {
   content: string;
   frontmatter: KbSourceFrontmatter;
 };
-
-function cursorEntryKind(cursor: CurateCursor): 'note' | 'source' {
-  if (cursor.entryId.startsWith('note:')) {
-    return 'note';
-  }
-  if (cursor.entryId.startsWith('source:')) {
-    return 'source';
-  }
-
-  throw new Error(`curate cursor must point at a note or source entry: ${cursor.entryId}`);
-}
 
 function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
   const row = prepareCached<[], CurateActiveClaimRow | undefined>(

@@ -8,6 +8,7 @@ import type {
 } from '../kb/api.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../shared/backend-log.js';
+import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../store/corpus-state.js';
 
 export type { CorpusConsumerRegistration, CorpusInterest, CorpusLaneHint };
 
@@ -79,14 +80,6 @@ export interface ConsumerDriverOptions {
   readonly now?: () => Date;
 }
 
-const EMPTY_CORPUS_CURSOR: CorpusSnapshot = {
-  snapshotId: '',
-  contentSeq: 0,
-  metadataSeq: 0,
-  contentManifestHash: '',
-  metadataManifestHash: '',
-};
-
 function isCorpusInterest(value: unknown): value is CorpusInterest {
   return value === 'content' || value === 'metadata' || value === 'both';
 }
@@ -100,53 +93,11 @@ function parseStoredCorpusInterest(row: StoredCursorMetadataRow): CorpusInterest
   return isCorpusInterest(raw) ? raw : null;
 }
 
-function normalizeCorpusCursor(row: CorpusCursorRow | undefined): CorpusSnapshot {
-  if (row === undefined) {
-    return { ...EMPTY_CORPUS_CURSOR };
-  }
-
-  return {
-    snapshotId: row.snapshot_id ?? '',
-    contentSeq: row.content_seq ?? 0,
-    metadataSeq: row.metadata_seq ?? 0,
-    contentManifestHash: row.content_manifest_hash ?? '',
-    metadataManifestHash: row.metadata_manifest_hash ?? '',
-  };
-}
-
 function shouldNotifyCorpusConsumer(
   interest: CorpusInterest,
   laneHint: CorpusLaneHint | undefined,
 ): boolean {
   return laneHint === undefined || interest === 'both' || interest === laneHint;
-}
-
-function isSnapshotFresherForInterest(
-  next: CorpusSnapshot,
-  current: CorpusSnapshot,
-  interest: CorpusInterest,
-): boolean {
-  if (interest === 'content') {
-    return (
-      next.contentSeq > current.contentSeq ||
-      (next.contentSeq === current.contentSeq && next.contentManifestHash !== current.contentManifestHash)
-    );
-  }
-
-  if (interest === 'metadata') {
-    return (
-      next.metadataSeq > current.metadataSeq ||
-      (next.metadataSeq === current.metadataSeq && next.metadataManifestHash !== current.metadataManifestHash)
-    );
-  }
-
-  return (
-    next.contentSeq > current.contentSeq ||
-    next.metadataSeq > current.metadataSeq ||
-    (next.contentSeq === current.contentSeq &&
-      next.metadataSeq === current.metadataSeq &&
-      next.snapshotId !== current.snapshotId)
-  );
 }
 
 export class ConsumerDriver {

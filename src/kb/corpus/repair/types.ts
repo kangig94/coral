@@ -277,11 +277,11 @@ function scanTitle(kind: CorpusMarkdownKind, content: string): { title: string |
 function buildEntryId(kind: CorpusMarkdownKind, slug: string): string {
   switch (kind) {
     case 'note':
-      return `note:${slug}`;
+      return noteEntryId(slug);
     case 'source':
-      return `source:${slug}`;
+      return sourceEntryId(slug);
     case 'community':
-      return `community:${slug}`;
+      return communityEntryId(slug);
     case 'principle':
       return `principle:${slug}`;
   }

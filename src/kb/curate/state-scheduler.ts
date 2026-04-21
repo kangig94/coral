@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { CurateSchedulerRow } from '../../store/schema.js';
 import type { CurateCursor } from './state-shared.js';
-import { kbEntryIdSchema } from './state-shared.js';
+import { cursorEntryKind, kbEntryIdSchema } from './state-shared.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
 type CurateSchedulerState = {
@@ -54,17 +54,6 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
   };
 }
 
-function cursorEntryKind(cursor: CurateCursor): 'note' | 'source' {
-  if (cursor.entryId.startsWith('note:')) {
-    return 'note';
-  }
-  if (cursor.entryId.startsWith('source:')) {
-    return 'source';
-  }
-
-  throw new Error(`curate scheduler cursor must point at a note or source entry: ${cursor.entryId}`);
-}
-
 function parseStoredCursor(
   label: string,
   entrySeq: number | null,
@@ -86,7 +75,7 @@ function parseStoredCursor(
     entrySeq,
     entryId,
   };
-  if (cursorEntryKind(cursor) !== entryKind) {
+  if (cursorEntryKind(cursor, 'curate scheduler') !== entryKind) {
     throw new Error(`curate_scheduler ${label} entry kind must match the stored entry ID`);
   }
   return cursor;
@@ -151,9 +140,10 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
 }
 
 export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSchedulerState): void {
-  const processedThroughEntryKind = state.processedThrough === null ? null : cursorEntryKind(state.processedThrough);
+  const processedThroughEntryKind =
+    state.processedThrough === null ? null : cursorEntryKind(state.processedThrough, 'curate scheduler');
   const lastAttemptedThroughEntryKind =
-    state.lastAttemptedThrough === null ? null : cursorEntryKind(state.lastAttemptedThrough);
+    state.lastAttemptedThrough === null ? null : cursorEntryKind(state.lastAttemptedThrough, 'curate scheduler');
 
   prepareCached<
     [

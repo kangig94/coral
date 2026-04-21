@@ -132,6 +132,17 @@ export function noteCursor(note: string, entrySeq: number): CurateCursor {
   };
 }
 
+export function cursorEntryKind(cursor: CurateCursor, label = 'curate'): 'note' | 'source' {
+  if (cursor.entryId.startsWith('note:')) {
+    return 'note';
+  }
+  if (cursor.entryId.startsWith('source:')) {
+    return 'source';
+  }
+
+  throw new Error(`${label} cursor must point at a note or source entry: ${cursor.entryId}`);
+}
+
 export function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {
   if (left === null) {
     return -1;

@@ -5,6 +5,21 @@ import type { CorpusStateRow } from './schema.js';
 
 type Database = BetterSqlite3.Database;
 export type CorpusStateSnapshot = KbCorpusSnapshot;
+export interface CorpusSnapshotCursorRow {
+  snapshot_id: string | null;
+  content_seq: number | null;
+  metadata_seq: number | null;
+  content_manifest_hash: string | null;
+  metadata_manifest_hash: string | null;
+}
+
+const EMPTY_CORPUS_SNAPSHOT: CorpusStateSnapshot = {
+  snapshotId: '',
+  contentSeq: 0,
+  metadataSeq: 0,
+  contentManifestHash: '',
+  metadataManifestHash: '',
+};
 
 export interface PersistCorpusStateOptions {
   now?: () => Date;
@@ -39,39 +54,39 @@ export function readCorpusStateRow(db: Database): CorpusStateRow {
     .get() as CorpusStateRow;
 }
 
-function toSnapshot(row: CorpusStateRow): CorpusStateSnapshot {
+function toSnapshot(row: CorpusSnapshotCursorRow): CorpusStateSnapshot {
   return {
     snapshotId: row.snapshot_id ?? '',
-    contentSeq: row.content_seq,
-    metadataSeq: row.metadata_seq,
+    contentSeq: row.content_seq ?? 0,
+    metadataSeq: row.metadata_seq ?? 0,
     contentManifestHash: row.content_manifest_hash ?? '',
     metadataManifestHash: row.metadata_manifest_hash ?? '',
   };
 }
 
-function isSnapshotFresh(current: CorpusStateRow, next: KbCorpusSnapshot): boolean {
+function isSnapshotFresh(current: CorpusSnapshotCursorRow, next: KbCorpusSnapshot): boolean {
   return (
-    next.contentSeq > current.content_seq ||
-    next.metadataSeq > current.metadata_seq ||
-    (next.contentSeq === current.content_seq &&
-      next.metadataSeq === current.metadata_seq &&
+    next.contentSeq > (current.content_seq ?? 0) ||
+    next.metadataSeq > (current.metadata_seq ?? 0) ||
+    (next.contentSeq === (current.content_seq ?? 0) &&
+      next.metadataSeq === (current.metadata_seq ?? 0) &&
       next.snapshotId !== (current.snapshot_id ?? ''))
   );
 }
 
-function deriveChangedLanes(current: CorpusStateRow, next: KbCorpusSnapshot): KbCorpusPublication['changedLanes'] {
+function deriveChangedLanes(current: CorpusSnapshotCursorRow, next: KbCorpusSnapshot): KbCorpusPublication['changedLanes'] {
   const changedLanes: KbCorpusPublication['changedLanes'] = [];
 
   if (
-    next.contentSeq > current.content_seq ||
-    (next.contentSeq === current.content_seq && next.contentManifestHash !== (current.content_manifest_hash ?? ''))
+    next.contentSeq > (current.content_seq ?? 0) ||
+    (next.contentSeq === (current.content_seq ?? 0) && next.contentManifestHash !== (current.content_manifest_hash ?? ''))
   ) {
     changedLanes.push('content');
   }
 
   if (
-    next.metadataSeq > current.metadata_seq ||
-    (next.metadataSeq === current.metadata_seq && next.metadataManifestHash !== (current.metadata_manifest_hash ?? ''))
+    next.metadataSeq > (current.metadata_seq ?? 0) ||
+    (next.metadataSeq === (current.metadata_seq ?? 0) && next.metadataManifestHash !== (current.metadata_manifest_hash ?? ''))
   ) {
     changedLanes.push('metadata');
   }
@@ -79,8 +94,39 @@ function deriveChangedLanes(current: CorpusStateRow, next: KbCorpusSnapshot): Kb
   return changedLanes;
 }
 
+function snapshotToCursorRow(snapshot: KbCorpusSnapshot): CorpusSnapshotCursorRow {
+  return {
+    snapshot_id: snapshot.snapshotId,
+    content_seq: snapshot.contentSeq,
+    metadata_seq: snapshot.metadataSeq,
+    content_manifest_hash: snapshot.contentManifestHash,
+    metadata_manifest_hash: snapshot.metadataManifestHash,
+  };
+}
+
+export function normalizeCorpusCursor(row: CorpusSnapshotCursorRow | undefined): CorpusStateSnapshot {
+  if (row === undefined) {
+    return { ...EMPTY_CORPUS_SNAPSHOT };
+  }
+
+  return toSnapshot(row);
+}
+
+export function isSnapshotFresherForInterest(
+  next: KbCorpusSnapshot,
+  current: KbCorpusSnapshot,
+  interest: 'content' | 'metadata' | 'both',
+): boolean {
+  const currentRow = snapshotToCursorRow(current);
+  if (interest === 'both') {
+    return isSnapshotFresh(currentRow, next);
+  }
+
+  return deriveChangedLanes(currentRow, next).includes(interest);
+}
+
 export function readCorpusState(db: Database): CorpusStateSnapshot {
-  return toSnapshot(readCorpusStateRow(db));
+  return normalizeCorpusCursor(readCorpusStateRow(db));
 }
 
 export function persistCorpusState(

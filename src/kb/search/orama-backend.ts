@@ -6,16 +6,12 @@ import {
   buildRetrievalAuthorityText,
   computeContentSurfaceHash,
   computeMetadataSurfaceHash,
-  type CanonicalFrontmatterRecord,
 } from '../corpus/snapshot.js';
-import { readCurateState } from '../curate/state.js';
-import {
-  computeCommunitySummaryInputFingerprints,
-  computeCommunityTopologyFingerprint,
-  type CommunityDocument,
-} from '../curate/community-detection.js';
+import { areCommunityDocumentsFresh } from '../curate/text-artifacts.js';
+import type { CommunityDocument } from '../curate/community-detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../corpus/frontmatter.js';
 import { cloneKbIndex } from '../corpus/mutation-helpers.js';
+import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
 import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
 import { loadKbNote, loadKbSource } from '../read.js';
@@ -286,91 +282,10 @@ function collectTopKByCosine(
   return heap.sort(compareScoredVectorCandidates);
 }
 
-function noteMetadataHash(entry: NoteEntry): string {
-  return computeMetadataSurfaceHash({
-    frontmatter: {
-      tags: entry.tags,
-      principles: entry.principles,
-      source: entry.source,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-      entrySeq: entry.entrySeq,
-      related: entry.related,
-    } as CanonicalFrontmatterRecord,
-  });
-}
-
-function sourceMetadataHash(entry: SourceEntry): string {
-  return computeMetadataSurfaceHash({
-    frontmatter: {
-      type: entry.type,
-      tags: entry.tags,
-      url: entry.url,
-      importedAt: entry.importedAt,
-      entrySeq: entry.entrySeq,
-      related: entry.related,
-    } as CanonicalFrontmatterRecord,
-  });
-}
-
 function communityMetadataHash(rawContent: string): string {
   return computeMetadataSurfaceHash({
     rawBytes: rawContent,
   });
-}
-
-function sameCommunitySummaryFingerprints(
-  left: Readonly<Record<string, string>> | undefined,
-  right: Readonly<Record<string, string>> | undefined,
-): boolean {
-  const leftEntries = Object.entries(left ?? {}).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
-  const rightEntries = Object.entries(right ?? {}).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
-
-  return (
-    leftEntries.length === rightEntries.length &&
-    leftEntries.every(
-      ([slug, fingerprint], index) =>
-        rightEntries[index]?.[0] === slug && rightEntries[index]?.[1] === fingerprint,
-    )
-  );
-}
-
-function areCommunityDocumentsFresh(
-  runtime: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'db'>,
-  index: KbIndex,
-  communities: CommunityEntry[],
-): boolean {
-  if (communities.length === 0) {
-    return true;
-  }
-
-  const state = readCurateState(runtime);
-  const topologyHash = computeCommunityTopologyFingerprint(index);
-  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
-    return false;
-  }
-
-  try {
-    const currentFingerprints = computeCommunitySummaryInputFingerprints(
-      communities.map((community) => ({
-        slug: community.slug,
-        title: community.title,
-        level: community.level,
-        members: community.members,
-        ...(community.children === undefined ? {} : { children: community.children }),
-        ...(community.summary === undefined ? {} : { summary: community.summary }),
-      })),
-      runtime,
-      index,
-    );
-    const storedFingerprints = Object.fromEntries(
-      Object.entries(state.communitySummaryInputFingerprints ?? {}).filter(([slug]) => slug in currentFingerprints),
-    );
-
-    return sameCommunitySummaryFingerprints(currentFingerprints, storedFingerprints);
-  } catch {
-    return false;
-  }
 }
 
 function retrievalHitFromDocument(document: KbOramaDocument, score: number, rank: number) {
@@ -553,11 +468,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
   }
 
   private async buildDocumentsForEntryIds(index: KbIndex, entryIds: readonly string[]): Promise<KbOramaDocument[]> {
-    const communityFresh = areCommunityDocumentsFresh(
-      this.runtime,
-      index,
-      Object.values(index.entries).filter(isCommunityEntry),
-    );
+    const communityFresh = areCommunityDocumentsFresh(this.runtime, index);
     const records = entryIds
       .map((entryId) => this.loadProjectionRecordForEntry(index, entryId))
       .filter((record): record is ProjectionRecord => record !== null);
@@ -571,13 +482,7 @@ export class OramaBaseProjection implements TextRetrieval, VectorRetrieval {
     forceCommunityFresh?: boolean,
   ): Promise<KbOramaDocument[]> {
     const generatedCommunityDocsBySlug = new Map(generatedCommunityDocs.map((document) => [document.slug, document] as const));
-    const communityFresh =
-      forceCommunityFresh ??
-      areCommunityDocumentsFresh(
-        this.runtime,
-        index,
-        Object.values(index.entries).filter(isCommunityEntry),
-      );
+    const communityFresh = forceCommunityFresh ?? areCommunityDocumentsFresh(this.runtime, index);
 
     const records = Object.entries(index.entries)
       .sort(([left], [right]) => left.localeCompare(right))
