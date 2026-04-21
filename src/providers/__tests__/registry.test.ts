@@ -56,7 +56,7 @@ describe('ProviderRegistry', () => {
     };
     const recovery = {
       probe: async () => ({ resumable: true }),
-      finalizeInterrupted: () => ({}),
+      finalizeInterrupted: () => ({ type: 'preserve' as const }),
       finalizeFromArtifacts: async () => ({
         terminal: {
           kind: 'terminal' as const,

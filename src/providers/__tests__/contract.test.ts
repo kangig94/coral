@@ -2,6 +2,10 @@ import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import {
+  sessionContinuityMutationSchema,
+  type SessionContinuityMutation,
+} from '../continuity-mutation.js';
+import {
   compose,
   faultPayloadSchema,
   providerContinuityEventBodySchema,
@@ -157,6 +161,7 @@ describe('contract schemas', () => {
     expectTypeParity<IsEqual<z.infer<typeof terminalOutcomeSchema>, TerminalOutcome>>();
     expectTypeParity<IsEqual<z.infer<typeof faultPayloadSchema>, FaultPayload>>();
     expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();
+    expectTypeParity<IsEqual<z.infer<typeof sessionContinuityMutationSchema>, SessionContinuityMutation>>();
 
     const failed = terminalOutcomeSchema.parse({
       kind: 'failed',
@@ -174,6 +179,13 @@ describe('contract schemas', () => {
         conversationRef: 'conversation-1',
       },
     });
+    const continuityMutation = sessionContinuityMutationSchema.parse({
+      type: 'set_resumable',
+      conversationRef: 'conversation-1',
+      providerContinuity: {
+        conversationRef: 'conversation-1',
+      },
+    });
 
     expect(failed).toEqual({
       kind: 'failed',
@@ -187,6 +199,13 @@ describe('contract schemas', () => {
       kind: 'continuity',
       conversationRef: 'conversation-1',
       resumable: true,
+      providerContinuity: {
+        conversationRef: 'conversation-1',
+      },
+    });
+    expect(continuityMutation).toEqual({
+      type: 'set_resumable',
+      conversationRef: 'conversation-1',
       providerContinuity: {
         conversationRef: 'conversation-1',
       },
@@ -209,9 +228,14 @@ describe('contract schemas', () => {
       resumable: true,
       providerContinuity: 'not-an-object',
     });
+    const invalidContinuityMutation = sessionContinuityMutationSchema.safeParse({
+      type: 'preserve',
+      extra: true,
+    });
 
     expect(invalidAbort.success).toBe(false);
     expect(invalidFault.success).toBe(false);
     expect(invalidContinuity.success).toBe(false);
+    expect(invalidContinuityMutation.success).toBe(false);
   });
 });

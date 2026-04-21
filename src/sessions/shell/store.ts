@@ -5,6 +5,7 @@ import type { CoralEventInput } from '../../store/envelope.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { acquireDirectoryLock } from '../../shared/fs-lock.js';
 import type { ProviderInstruction } from '../../providers/contract.js';
+import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
 import { isNoEntryError, nowIsoString, providerIdentPattern } from '../../shared/utils.js';
 import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from '../../runtime/ports.js';
 import {
@@ -20,11 +21,6 @@ import type {
   SessionInterruptedFault,
 } from '../fault.js';
 import { isValidSessionEntry } from './session-read.js';
-
-export type SessionContinuityMutation =
-  | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
-  | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
-  | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
 
 export type SessionAllocateOptions = {
   provider: string;

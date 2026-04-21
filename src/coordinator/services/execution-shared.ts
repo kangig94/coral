@@ -69,11 +69,6 @@ export type EffectiveContinuationProfile = {
 
 export type InterruptedAppServerReason = 'restart' | 'handoff';
 export type InterruptedProbeOutcome = 'verified' | 'missing' | 'unavailable' | 'waiting';
-export type InterruptedAppServerFinalization = {
-  conversationRef?: string;
-  nonResumable?: boolean;
-  continuityMutation?: ProviderContinuityBlob;
-};
 
 export function buildSessionControllerProfile(
   coralEnv: Record<string, string>,

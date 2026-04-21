@@ -10,6 +10,7 @@ import {
   resolveScriptedProviderOverride,
   type ScriptedProviderSpec,
 } from '../providers/bootstrap-scripted-override.js';
+import type { SessionContinuityMutation } from '../providers/continuity-mutation.js';
 import type {
   PreflightRuntime,
   ProviderAppServerContract,
@@ -55,11 +56,8 @@ type TestAppServerLifecycle = {
   finalizeInterrupted?(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob,
-  ): {
-    conversationRef?: string;
-    nonResumable?: boolean;
-    continuityMutation?: ProviderContinuityBlob;
-  };
+    context: { preservedConversationRef?: string },
+  ): SessionContinuityMutation;
   migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 };
 

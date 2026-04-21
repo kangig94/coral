@@ -61,6 +61,7 @@ export { sessionsCommands, sessionsQueries } from './api.js';
 export type { SessionListFilter } from './api.js';
 
 export { SessionManager } from './shell/store.js';
-export type { SessionAllocateOptions, SessionContinuityMutation } from './shell/store.js';
+export type { SessionAllocateOptions } from './shell/store.js';
+export type { SessionContinuityMutation } from '../providers/continuity-mutation.js';
 export { getSessionById, listSessionShards, readSessionRefs, resolveSession } from './shell/resolve.js';
 export type { SessionResolveRef } from './shell/resolve.js';

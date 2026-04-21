@@ -8,6 +8,7 @@ import {
   PROVIDER_SESSION_UNAVAILABLE_KIND,
   type FaultPayload,
 } from './fault.js';
+import type { SessionContinuityMutation } from './continuity-mutation.js';
 import type { ProviderCliRunner } from './cli-runner.js';
 import type {
   AbortReason,
@@ -268,11 +269,8 @@ export interface ProviderRecoveryContract {
   finalizeInterrupted?(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob,
-  ): {
-    conversationRef?: string;
-    nonResumable?: boolean;
-    continuityMutation?: ProviderContinuityBlob;
-  };
+    context: { preservedConversationRef?: string },
+  ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
     stdoutPath: string;
     stderrPath: string;

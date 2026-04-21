@@ -3,6 +3,7 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/contract.js';
+import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
 import { backendLog } from '../../shared/backend-log.js';
 import {
   isAppServerRuntime,
@@ -36,7 +37,6 @@ import {
   buildInterruptedAppServerReport,
   isProviderContinuityBlob,
   normalizeLegacyFaultOutcome,
-  type InterruptedAppServerFinalization,
   type InterruptedAppServerReason,
   type InterruptedProbeOutcome,
 } from './execution-shared.js';
@@ -146,47 +146,24 @@ export class RecoveryService {
     const preservedConversationRef = session.conversationRef ?? launchRecord.request.conversationRef;
     const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
 
-    const toMutation = (finalization: InterruptedAppServerFinalization) => {
-      if (finalization.nonResumable) {
-        return {
-          type: 'clear_non_resumable',
-          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
-        } as const;
-      }
-
-      const conversationRef = finalization.conversationRef ?? preservedConversationRef;
-      if (conversationRef) {
-        return {
-          type: 'set_resumable',
-          conversationRef,
-          ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
-        } as const;
-      }
-
-      return {
-        type: 'preserve',
-        ...(finalization.continuityMutation ? { providerContinuity: finalization.continuityMutation } : {}),
-      } as const;
-    };
-
-    let mutation:
-      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
-      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
-      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob };
+    let mutation: SessionContinuityMutation;
     let probeOutcome: InterruptedProbeOutcome;
 
     if (appServer && recovery && continuity) {
       if (runtimeRecord.providerMeta.leaseState === 'waiting') {
         probeOutcome = 'waiting';
-        mutation = toMutation(
+        mutation =
           recovery.finalizeInterrupted?.(
             {
               resumable: Boolean(preservedConversationRef ?? continuity),
               updatedContinuity: continuity,
             },
             continuity,
-          ) ?? {},
-        );
+            { preservedConversationRef },
+          ) ??
+          (preservedConversationRef
+            ? { type: 'set_resumable', conversationRef: preservedConversationRef }
+            : { type: 'preserve' });
       } else {
         const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity);
 
@@ -205,7 +182,11 @@ export class RecoveryService {
               ? await recovery.probe(lease, continuity)
               : { resumable: Boolean(preservedConversationRef ?? continuity), updatedContinuity: continuity };
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
-            mutation = toMutation(recovery.finalizeInterrupted?.(probeResult, continuity) ?? {});
+            mutation =
+              recovery.finalizeInterrupted?.(probeResult, continuity, { preservedConversationRef }) ??
+              (preservedConversationRef
+                ? { type: 'set_resumable', conversationRef: preservedConversationRef }
+                : { type: 'preserve' });
           } finally {
             if (!liveServer) {
               lease.release();
@@ -216,15 +197,18 @@ export class RecoveryService {
             `Probe failed for ${launchRecord.jobId}: ${error instanceof Error ? error.message : String(error)}`,
           );
           probeOutcome = 'unavailable';
-          mutation = toMutation(
+          mutation =
             recovery.finalizeInterrupted?.(
               {
                 resumable: false,
                 updatedContinuity: continuity,
               },
               continuity,
-            ) ?? {},
-          );
+              { preservedConversationRef },
+            ) ??
+            (preservedConversationRef
+              ? { type: 'set_resumable', conversationRef: preservedConversationRef }
+              : { type: 'preserve' });
         }
       }
     } else if (preservedConversationRef) {
@@ -434,10 +418,7 @@ export class RecoveryService {
     providerName: string,
     sessionId: string,
     jobId: string,
-    mutation:
-      | { type: 'set_resumable'; conversationRef: string; providerContinuity?: ProviderContinuityBlob }
-      | { type: 'clear_non_resumable'; providerContinuity?: ProviderContinuityBlob }
-      | { type: 'preserve'; providerContinuity?: ProviderContinuityBlob },
+    mutation: SessionContinuityMutation,
   ): Promise<boolean> {
     for (let attempt = 0; attempt < FINALIZE_CONTINUITY_MAX_RETRIES; attempt += 1) {
       const session = this.deps.sessionManager.get(providerName, sessionId);

@@ -165,19 +165,28 @@ export const codexRecoveryLifecycle = {
       };
     }
   },
-  finalizeInterrupted(probeResult, continuity) {
+  finalizeInterrupted(probeResult, continuity, context) {
     const nextContinuity = probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity);
     const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
-    if (probeResult.resumable && parsed.threadId) {
+    const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
+    if (probeResult.resumable && effectiveConversationRef) {
       return {
-        conversationRef: parsed.threadId,
-        ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
+        type: 'set_resumable',
+        conversationRef: effectiveConversationRef,
+        ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
+      };
+    }
+
+    if (probeResult.resumable) {
+      return {
+        type: 'preserve',
+        ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
       };
     }
 
     return {
-      nonResumable: true,
-      ...(nextContinuity ? { continuityMutation: nextContinuity } : {}),
+      type: 'clear_non_resumable',
+      ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },
 } satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>;

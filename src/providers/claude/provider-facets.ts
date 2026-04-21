@@ -84,49 +84,36 @@ export const claudeRecoveryLifecycle = {
       }),
     };
   },
-  finalizeInterrupted(probeResult, continuity) {
+  finalizeInterrupted(probeResult, continuity, context) {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
+    const providerContinuity = persistedContinuity.bootstrapSignature
+      ? buildClaudeContinuity({
+          ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
+          bootstrapSignature: persistedContinuity.bootstrapSignature,
+          ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
+          ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
+        })
+      : undefined;
+    const effectiveConversationRef = persistedContinuity.conversationRef ?? context.preservedConversationRef;
 
-    if (probeResult.resumable && persistedContinuity.conversationRef) {
-      if (!persistedContinuity.bootstrapSignature) {
+    if (probeResult.resumable) {
+      if (effectiveConversationRef) {
         return {
-          conversationRef: persistedContinuity.conversationRef,
+          type: 'set_resumable',
+          conversationRef: effectiveConversationRef,
+          ...(providerContinuity ? { providerContinuity } : {}),
         };
       }
 
       return {
-        conversationRef: persistedContinuity.conversationRef,
-        continuityMutation: buildClaudeContinuity({
-          ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
-          bootstrapSignature: persistedContinuity.bootstrapSignature,
-          ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
-          conversationRef: persistedContinuity.conversationRef,
-        }),
-      };
-    }
-
-    if (!persistedContinuity.bootstrapSignature) {
-      return {
-        nonResumable: true,
-      };
-    }
-
-    const continuityMutation = buildClaudeContinuity({
-      ...(persistedContinuity.brokerSessionKey ? { brokerSessionKey: persistedContinuity.brokerSessionKey } : {}),
-      bootstrapSignature: persistedContinuity.bootstrapSignature,
-      ...(persistedContinuity.envHash ? { envHash: persistedContinuity.envHash } : {}),
-      ...(persistedContinuity.conversationRef ? { conversationRef: persistedContinuity.conversationRef } : {}),
-    });
-
-    if (probeResult.resumable) {
-      return {
-        continuityMutation,
+        type: 'preserve',
+        ...(providerContinuity ? { providerContinuity } : {}),
       };
     }
 
     return {
-      nonResumable: true,
-      continuityMutation,
+      type: 'clear_non_resumable',
+      ...(providerContinuity ? { providerContinuity } : {}),
     };
   },
 } satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;

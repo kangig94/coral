@@ -370,16 +370,25 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderS
           throw error;
         }
       },
-      finalizeInterrupted: (probeResult, continuity) =>
-        probeResult.resumable
-          ? {
-              conversationRef: typeof continuity.threadId === 'string' ? continuity.threadId : undefined,
-              continuityMutation: continuity,
-            }
+      finalizeInterrupted: (probeResult, continuity, context) => {
+        const effectiveConversationRef =
+          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+        return probeResult.resumable
+          ? effectiveConversationRef
+            ? {
+                type: 'set_resumable' as const,
+                conversationRef: effectiveConversationRef,
+                providerContinuity: continuity,
+              }
+            : {
+                type: 'preserve' as const,
+                providerContinuity: continuity,
+              }
           : {
-              nonResumable: true,
-              continuityMutation: continuity,
-            },
+              type: 'clear_non_resumable' as const,
+              providerContinuity: continuity,
+            };
+      },
     },
   })!;
 }
@@ -419,9 +428,31 @@ function makeSharedClaudeAppServerProvider(spec: {
         resumable: true,
         updatedContinuity: continuity,
       }),
-      finalizeInterrupted: (probeResult) => ({
-        continuityMutation: probeResult.updatedContinuity,
-      }),
+      finalizeInterrupted: (probeResult, continuity, context) => {
+        const effectiveConversationRef =
+          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+        return probeResult.resumable
+          ? effectiveConversationRef
+            ? {
+                type: 'set_resumable' as const,
+                conversationRef: effectiveConversationRef,
+                ...(probeResult.updatedContinuity
+                  ? { providerContinuity: probeResult.updatedContinuity }
+                  : {}),
+              }
+            : {
+                type: 'preserve' as const,
+                ...(probeResult.updatedContinuity
+                  ? { providerContinuity: probeResult.updatedContinuity }
+                  : {}),
+              }
+          : {
+              type: 'clear_non_resumable' as const,
+              ...(probeResult.updatedContinuity
+                ? { providerContinuity: probeResult.updatedContinuity }
+                : {}),
+            };
+      },
     },
   })!;
 }
