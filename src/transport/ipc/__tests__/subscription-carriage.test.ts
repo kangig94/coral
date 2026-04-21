@@ -133,6 +133,11 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
       speech: vi.fn(),
       abort: vi.fn(),
     },
+    equipment: {
+      registerEquipment: vi.fn(),
+      unregisterEquipment: vi.fn(),
+      listEquipment: vi.fn(async () => ({ equipment: [] })),
+    },
   };
 }
 

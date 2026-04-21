@@ -208,9 +208,12 @@ function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: Inst
   };
 }
 
-function writeNeedleAddon(runtimeDir: string): void {
-  mkdirSync(join(runtimeDir, 'needle'), { recursive: true });
-  writeFileSync(join(runtimeDir, 'needle', 'coral-needle.node'), 'mock-needle-addon', 'utf-8');
+function writeNeedleAddon(runtimeDir: string): string {
+  const addonDir = join(runtimeDir, 'installed-addon');
+  const addonPath = join(addonDir, 'coral-needle.node');
+  mkdirSync(addonDir, { recursive: true });
+  writeFileSync(addonPath, 'mock-needle-addon', 'utf-8');
+  return addonPath;
 }
 
 function writeNote(markdownRoot: string, slug: string, title: string, body: string): void {
@@ -330,7 +333,7 @@ describe('needle staging crash replay', () => {
 
     mkdirSync(markdownRoot, { recursive: true });
     mkdirSync(runtimeDir, { recursive: true });
-    writeNeedleAddon(runtimeDir);
+    const addonPath = writeNeedleAddon(runtimeDir);
     writeNote(markdownRoot, 'coral-alpha', 'Coral Alpha', 'Needle crash replay coverage.');
     writeSource(markdownRoot, 'sqlite-overview', 'SQLite Overview', 'Source text for vector staging.');
 
@@ -351,7 +354,7 @@ describe('needle staging crash replay', () => {
         now: () => FIXED_NOW,
       });
       const notifyCorpusMutation = createNotifyCorpusMutation(firstDriver);
-      const firstBackend = createNeedleBackend(firstRuntime);
+      const firstBackend = createNeedleBackend(firstRuntime, { addonPath });
       firstRuntimeHarness.equip(firstBackend, firstDriver.register(firstBackend));
 
       let crashedStagingDir = '';
@@ -407,7 +410,7 @@ describe('needle staging crash replay', () => {
         db,
         now: () => FIXED_NOW,
       });
-      const secondBackend = createNeedleBackend(secondRuntime);
+      const secondBackend = createNeedleBackend(secondRuntime, { addonPath });
       secondRuntimeHarness.equip(secondBackend, secondDriver.register(secondBackend));
 
       secondDriver.notifyCorpus(readCorpusState(db));

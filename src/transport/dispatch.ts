@@ -174,6 +174,21 @@ export async function executeCatalogRequest(
       return unaryHttp(launchToHttp(result.decision, 202));
     }
 
+    case 'coordinator.registerEquipment': {
+      const parsed = request as { name: string };
+      return unary(await rpcPorts.equipment.registerEquipment(parsed));
+    }
+
+    case 'coordinator.unregisterEquipment': {
+      const parsed = request as { name: string };
+      const name = decodePathSegment(parsed.name);
+      if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid equipment name')));
+      return unary(await rpcPorts.equipment.unregisterEquipment({ name }));
+    }
+
+    case 'coordinator.listEquipment':
+      return unary(await rpcPorts.equipment.listEquipment({}));
+
     case 'jobs.abort': {
       const parsed = request as { jobs: string[]; projectRoot: string };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);

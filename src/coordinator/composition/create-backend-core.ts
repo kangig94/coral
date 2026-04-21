@@ -54,6 +54,7 @@ import { createRuntimeState } from './runtime-state.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/views.js';
 import { coordinatorPaths } from '../paths.js';
+import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
 
 export type {
   BackendBootSnapshot,
@@ -227,6 +228,10 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
+    equipment:
+      options.equipmentLifecycleService === undefined
+        ? createUnavailableEquipmentRpc()
+        : createEquipmentRpc(options.equipmentLifecycleService),
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {
@@ -392,6 +397,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
+    equipmentLifecycleService: options.equipmentLifecycleService ?? null,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

@@ -286,6 +286,11 @@ describe('agent wire contract', () => {
         },
         requestDrain: () => {},
       },
+      equipment: {
+        registerEquipment: vi.fn(),
+        unregisterEquipment: vi.fn(),
+        listEquipment: vi.fn(async () => ({ equipment: [] })),
+      },
       health: {
         read: () => ({
           status: 'ok',

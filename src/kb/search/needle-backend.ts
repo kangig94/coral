@@ -10,10 +10,10 @@ import { needleIndexDir, needleStagingDir } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import { chunkEntry, type ChunkSeed } from './chunking.js';
 import { createEmbeddingProvider, resolveEmbeddingProviderConfig, type EmbeddingProviderConfig } from './embedding.js';
-import { createNeedleStore, needleAddonPath, type NeedleStore } from './needle-store.js';
+import { createNeedleStore, type NeedleStore } from './needle-store.js';
 import type { RetrievalScope, VectorRetrieval, VectorRetrievalHit, VectorRetrievalResult } from './contract.js';
 
-export const NEEDLE_CONSUMER_ID = 'kb-needle';
+export const NEEDLE_CONSUMER_ID = 'needle';
 
 const NEEDLE_STORE_FILE = 'store.db';
 const NEEDLE_MANIFEST_FILE = 'manifest.json';
@@ -22,7 +22,7 @@ const VECTOR_CANDIDATE_CAP_MULTIPLIER = 10;
 
 export interface NeedleBackendOptions {
   consumerId?: string;
-  addonPath?: string;
+  addonPath: string;
   pluginRoot?: string;
   storeFactory?: (runtimeDir: string) => NeedleStore | null;
 }
@@ -85,11 +85,6 @@ function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapshotManife
     typeof value.entryCount === 'number' &&
     typeof value.chunkCount === 'number'
   );
-}
-
-function resolveInstalledAddonPath(runtimeDir: string): string | null {
-  const preferred = needleAddonPath(runtimeDir);
-  return existsSync(preferred) ? preferred : null;
 }
 
 function needleSnapshotsDir(runtimeDir: string): string {
@@ -248,7 +243,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
   readonly registrationKind = 'equipment';
   readonly id: string;
 
-  private addonPath?: string;
+  private addonPath: string;
   private pluginRoot?: string;
   private storeFactory?: NeedleBackendOptions['storeFactory'];
   private activeHandle: ActiveNeedleHandle | null = null;
@@ -256,7 +251,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
 
   constructor(
     private readonly runtime: KbRuntime,
-    options: NeedleBackendOptions = {},
+    options: NeedleBackendOptions,
   ) {
     this.id = options.consumerId ?? NEEDLE_CONSUMER_ID;
     this.addonPath = options.addonPath;
@@ -264,10 +259,8 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
     this.storeFactory = options.storeFactory;
   }
 
-  configure(options: NeedleBackendOptions = {}): void {
-    if (options.addonPath !== undefined) {
-      this.addonPath = options.addonPath;
-    }
+  configure(options: NeedleBackendOptions): void {
+    this.addonPath = options.addonPath;
     if (options.pluginRoot !== undefined) {
       this.pluginRoot = options.pluginRoot;
     }
@@ -417,10 +410,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
   }
 
   private resolveInstalledAddonPath(): string | null {
-    if (this.addonPath !== undefined) {
-      return existsSync(this.addonPath) ? this.addonPath : null;
-    }
-    return resolveInstalledAddonPath(this.runtime.runtimeDir);
+    return existsSync(this.addonPath) ? this.addonPath : null;
   }
 
   private snapshotMatchesCursor(manifest: NeedleSnapshotManifest, cursor: NeedleCursorView): boolean {
@@ -682,7 +672,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
 }
 
 /** Returns the shared KB needle backend for a runtime so coordinator wiring stays single-instance. */
-export function createNeedleBackend(runtime: KbRuntime, options?: NeedleBackendOptions): NeedleBackend {
+export function createNeedleBackend(runtime: KbRuntime, options: NeedleBackendOptions): NeedleBackend {
   const existing = SHARED_NEEDLE_BACKENDS.get(runtime);
   if (existing !== undefined) {
     existing.configure(options);

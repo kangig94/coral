@@ -1,5 +1,13 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/api.js';
 import type {
+  ListEquipmentRequest,
+  ListEquipmentResult,
+  RegisterEquipmentRequest,
+  RegisterEquipmentResult,
+  UnregisterEquipmentRequest,
+  UnregisterResult,
+} from '../coordinator/equipment/contract.js';
+import type {
   JobForkRequest,
   JobLaunchRequest,
   JobPhase,
@@ -110,10 +118,17 @@ export interface DiscussRequestPort {
   abort(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
 }
 
+export interface EquipmentRequestPort {
+  registerEquipment(request: RegisterEquipmentRequest): Promise<RegisterEquipmentResult>;
+  unregisterEquipment(request: UnregisterEquipmentRequest): Promise<UnregisterResult>;
+  listEquipment(request: ListEquipmentRequest): Promise<ListEquipmentResult>;
+}
+
 export interface RpcPorts {
   readonly sessions: SessionRequestPort;
   readonly jobs: JobsRequestPort;
   readonly workflows: WorkflowRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
+  readonly equipment: EquipmentRequestPort;
 }

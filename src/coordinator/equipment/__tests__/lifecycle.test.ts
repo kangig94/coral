@@ -10,11 +10,15 @@ import { EquipmentLifecycleService } from '../lifecycle.js';
 import { applyMigrations } from '../../../store/migrations.js';
 import { persistCorpusState } from '../../../store/corpus-state.js';
 import { equipmentAddonPath, equipmentInstallLockPath } from '../../../infra/equipment-paths.js';
+import { createOramaBaseProjection } from '../../../kb/api.js';
 import { createKbRuntime } from '../../../kb/runtime.js';
 import { reindex } from '../../../kb/ops/reindex.js';
+import type { VectorRetrieval } from '../../../kb/search/contract.js';
 import { closeNeedleBackend } from '../../../kb/search/needle-backend.js';
 import { createNeedleStoreFake } from '../../../testing/fixtures/needle-store-fake.js';
 import { acquireDirectoryLockSync } from '../../../shared/fs-lock.js';
+import { runtimeActivationFromHandle } from '../runtime-activation.js';
+import { createEquipmentSlot, createSlotRegistry } from '../slots.js';
 
 const FIXED_NOW = new Date('2026-04-22T00:00:00.000Z');
 const tempRoots: string[] = [];
@@ -57,6 +61,7 @@ type Harness = {
   driver: ConsumerDriver;
   kb: ReturnType<typeof createKbRuntime>;
   lifecycle: EquipmentLifecycleService;
+  currentBackendKind(): string;
   dispose(): Promise<void>;
 };
 
@@ -94,6 +99,40 @@ ${body}
   );
 }
 
+function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: InstanceType<typeof Database>): {
+  kb: ReturnType<typeof createKbRuntime>;
+  slotRegistry: ReturnType<typeof createSlotRegistry>;
+  currentBackendKind(): string;
+} {
+  const slotRegistry = createSlotRegistry();
+  // eslint-disable-next-line prefer-const -- forward-self-reference in getEquipmentView closure
+  let vectorSlot!: ReturnType<typeof createEquipmentSlot<VectorRetrieval>>;
+  const kb = createKbRuntime({
+    markdownRoot,
+    runtimeDir,
+    db,
+    getEquipmentView: () => {
+      const slotView = slotRegistry.list().find((entry) => entry.id === 'kb.vector');
+      return slotView?.handle ? runtimeActivationFromHandle(vectorSlot.currentOwner(), slotView.handle) : null;
+    },
+  });
+  vectorSlot = createEquipmentSlot<VectorRetrieval>({
+    id: 'kb.vector',
+    defaultOwner: () => createOramaBaseProjection(kb),
+  });
+  slotRegistry.declare(vectorSlot);
+
+  return {
+    kb,
+    slotRegistry,
+    currentBackendKind: () => (vectorSlot.currentOwner() as VectorRetrieval & { backendKind?: string }).backendKind ?? 'unknown',
+  };
+}
+
+function equipmentBackendKind(runtime: ReturnType<typeof createKbRuntime>): string {
+  return (runtime.getEquipmentView().retrieval as VectorRetrieval & { backendKind?: string }).backendKind ?? 'unknown';
+}
+
 async function createHarness(options: { storeFactory?: () => ReturnType<typeof createNeedleStoreFake>; corruptAddon?: boolean } = {}): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-equipment-lifecycle-'));
   tempRoots.push(root);
@@ -107,11 +146,8 @@ async function createHarness(options: { storeFactory?: () => ReturnType<typeof c
   writeNote(markdownRoot, 'coral-alpha', 'Coral Alpha', 'Lifecycle coverage for equipment activation.');
 
   const db = createDb();
-  const kb = createKbRuntime({
-    markdownRoot,
-    runtimeDir,
-    db,
-  });
+  const runtimeHarness = createRuntimeHarness(markdownRoot, runtimeDir, db);
+  const kb = runtimeHarness.kb;
   await reindex(kb);
   persistCorpusState(
     db,
@@ -134,6 +170,7 @@ async function createHarness(options: { storeFactory?: () => ReturnType<typeof c
   const lifecycle = new EquipmentLifecycleService({
     db,
     consumerDriver: driver,
+    slotRegistry: runtimeHarness.slotRegistry,
     resolveKbRuntime: () => kb,
     now: () => FIXED_NOW,
     pathOptions: { baseDir: coralBaseDir },
@@ -149,6 +186,7 @@ async function createHarness(options: { storeFactory?: () => ReturnType<typeof c
     driver,
     kb,
     lifecycle,
+    currentBackendKind: runtimeHarness.currentBackendKind,
     async dispose() {
       await closeNeedleBackend(kb).catch(() => {});
       await driver.shutdown();
@@ -201,7 +239,7 @@ afterEach(async () => {
 });
 
 describe('EquipmentLifecycleService', () => {
-  it('transitions needle from unequipped to catching_up to equipped and reports already_equipped when active', async () => {
+  it('transitions needle from inactive to catching_up to equipped and reports already_equipped when active', async () => {
     embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
       kind: 'openai-compatible',
       name: 'mock-embeddings',
@@ -228,25 +266,25 @@ describe('EquipmentLifecycleService', () => {
     });
 
     try {
-      expect(await harness.lifecycle.list()).toEqual([
+      expect(await harness.lifecycle.listEquipment()).toEqual([
         {
           slot: 'kb.vector',
-          installedName: null,
-          activeName: null,
-          status: 'unequipped',
+          name: 'needle',
+          status: 'inactive',
         },
       ]);
+      expect(equipmentBackendKind(harness.kb)).toBe('orama');
 
-      const first = await harness.lifecycle.register({ name: 'needle' });
+      const first = await harness.lifecycle.equip('needle');
       expect(first).toMatchObject({
         status: 'catching_up',
         equipment: {
           slot: 'kb.vector',
-          installedName: 'needle',
-          activeName: 'needle',
+          name: 'needle',
           status: 'catching_up',
         },
       });
+      expect(harness.currentBackendKind()).toBe('needle');
       expect(readEquipmentStateRow(harness.db, 'needle')).toMatchObject({
         state: 'equipped',
         last_error_code: null,
@@ -255,22 +293,21 @@ describe('EquipmentLifecycleService', () => {
 
       await harness.driver.drainAll();
 
-      expect(await harness.lifecycle.list()).toEqual([
+      expect(await harness.lifecycle.listEquipment()).toEqual([
         {
           slot: 'kb.vector',
-          installedName: 'needle',
-          activeName: 'needle',
+          name: 'needle',
           status: 'equipped',
         },
       ]);
+      expect(equipmentBackendKind(harness.kb)).toBe('needle');
 
-      const again = await harness.lifecycle.register({ name: 'needle' });
+      const again = await harness.lifecycle.equip('needle');
       expect(again).toMatchObject({
         status: 'already_equipped',
         equipment: {
           slot: 'kb.vector',
-          installedName: 'needle',
-          activeName: 'needle',
+          name: 'needle',
           status: 'equipped',
         },
       });
@@ -287,17 +324,16 @@ describe('EquipmentLifecycleService', () => {
       mkdirSync(dirname(lockPath), { recursive: true });
       const release = acquireDirectoryLockSync(lockPath);
 
-      expect((await harness.lifecycle.list())[0]).toMatchObject({
+      expect((await harness.lifecycle.listEquipment())[0]).toMatchObject({
         slot: 'kb.vector',
-        installedName: null,
-        activeName: null,
+        name: 'needle',
         status: 'installing',
       });
 
       release();
 
-      expect((await harness.lifecycle.list())[0]).toMatchObject({
-        status: 'unequipped',
+      expect((await harness.lifecycle.listEquipment())[0]).toMatchObject({
+        status: 'inactive',
       });
     } finally {
       await harness.dispose();
@@ -319,16 +355,15 @@ describe('EquipmentLifecycleService', () => {
     const harness = await createHarness({ corruptAddon: true });
 
     try {
-      const first = await harness.lifecycle.register({ name: 'needle' });
+      const first = await harness.lifecycle.equip('needle');
       expect(first.status).toBe('catching_up');
 
       await harness.driver.drainAll();
-      await waitForCondition(async () => (await harness.lifecycle.list())[0]?.status === 'disabled_pending_reinstall');
+      await waitForCondition(async () => (await harness.lifecycle.listEquipment())[0]?.status === 'disabled_pending_reinstall');
 
-      expect((await harness.lifecycle.list())[0]).toMatchObject({
+      expect((await harness.lifecycle.listEquipment())[0]).toMatchObject({
         slot: 'kb.vector',
-        installedName: 'needle',
-        activeName: null,
+        name: 'needle',
         status: 'disabled_pending_reinstall',
       });
       expect(readEquipmentStateRow(harness.db, 'needle')).toMatchObject({
@@ -336,6 +371,112 @@ describe('EquipmentLifecycleService', () => {
         last_error_code: 'equipment_binary_corrupt',
       });
     } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('uninstalls the active needle consumer and reverts kb.vector to the default owner', async () => {
+    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
+      kind: 'openai-compatible',
+      name: 'mock-embeddings',
+      model: 'mock-small',
+      dims: 3,
+      normalization: 'l2',
+      specId: 'mock-small:3:l2',
+      apiKey: 'test',
+      baseUrl: 'http://localhost/mock',
+    });
+    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+      name: 'mock-embeddings',
+      model: 'mock-small',
+      dims: 3,
+      embedDocuments: async (texts: string[]) => texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
+      embedQuery: async () => Float32Array.from([1, 0, 0]),
+    });
+
+    const harness = await createHarness({
+      storeFactory: () => createNeedleStoreFake(),
+    });
+
+    try {
+      await harness.lifecycle.equip('needle');
+      await harness.driver.drainAll();
+      expect(harness.currentBackendKind()).toBe('needle');
+
+      await expect(harness.lifecycle.uninstall('needle')).resolves.toEqual({ status: 'uninstalled' });
+
+      expect(harness.currentBackendKind()).toBe('orama');
+      expect(await harness.lifecycle.listEquipment()).toEqual([
+        {
+          slot: 'kb.vector',
+          name: 'needle',
+          status: 'inactive',
+        },
+      ]);
+      expect(readEquipmentStateRow(harness.db, 'needle')).toBeNull();
+      expect(equipmentBackendKind(harness.kb)).toBe('orama');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('reports previously equipped needle as unavailable on restart until it is reactivated explicitly', async () => {
+    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
+      kind: 'openai-compatible',
+      name: 'mock-embeddings',
+      model: 'mock-small',
+      dims: 3,
+      normalization: 'l2',
+      specId: 'mock-small:3:l2',
+      apiKey: 'test',
+      baseUrl: 'http://localhost/mock',
+    });
+    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
+      name: 'mock-embeddings',
+      model: 'mock-small',
+      dims: 3,
+      embedDocuments: async (texts: string[]) => texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
+      embedQuery: async () => Float32Array.from([1, 0, 0]),
+    });
+
+    const harness = await createHarness({
+      storeFactory: () => createNeedleStoreFake(),
+    });
+    let restartedDriver: ConsumerDriver | null = null;
+
+    try {
+      await harness.lifecycle.equip('needle');
+      await harness.driver.drainAll();
+      expect((await harness.lifecycle.listEquipment())[0]?.status).toBe('equipped');
+
+      await closeNeedleBackend(harness.kb);
+      await harness.driver.shutdown();
+
+      const restartedRuntimeHarness = createRuntimeHarness(harness.markdownRoot, harness.runtimeDir, harness.db);
+      restartedDriver = new ConsumerDriver({
+        db: harness.db,
+        now: () => FIXED_NOW,
+      });
+      const restartedLifecycle = new EquipmentLifecycleService({
+        db: harness.db,
+        consumerDriver: restartedDriver,
+        slotRegistry: restartedRuntimeHarness.slotRegistry,
+        resolveKbRuntime: () => restartedRuntimeHarness.kb,
+        now: () => FIXED_NOW,
+        pathOptions: { baseDir: harness.coralBaseDir },
+        needleBackendOptions: { storeFactory: () => createNeedleStoreFake() },
+      });
+
+      expect(await restartedLifecycle.listEquipment()).toEqual([
+        {
+          slot: 'kb.vector',
+          name: 'needle',
+          status: 'unavailable',
+        },
+      ]);
+      expect(equipmentBackendKind(restartedRuntimeHarness.kb)).toBe('orama');
+    } finally {
+      await restartedDriver?.shutdown();
       await harness.dispose();
     }
   });

@@ -40,6 +40,8 @@ import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { createOramaBaseProjection } from '../kb/api.js';
+import type { KbRuntime } from '../kb/contracts.js';
+import { EquipmentLifecycleService } from './equipment/lifecycle.js';
 import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
 import { runtimeActivationFromHandle } from './equipment/runtime-activation.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
@@ -137,6 +139,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     return consumerDriver;
   };
+  let currentKbRuntime: KbRuntime | null = null;
+  const equipmentLifecycleService = new EquipmentLifecycleService({
+    db: getStoreDb(),
+    consumerDriver: getConsumerDriver(),
+    slotRegistry: equipmentSlots,
+    resolveKbRuntime: () => currentKbRuntime,
+    now: () => new Date(runtime.time.now()),
+  });
 
   const getCurrentJournalSeq = () =>
     (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -161,6 +171,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const core = createBackendCore({
     ...coreOptions,
     runtime,
+    equipmentLifecycleService,
     createKbSubsystemFn: async (ctx) => {
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
@@ -178,6 +189,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
       });
+      currentKbRuntime = kbSubsystem.kb;
       const vectorSlot = createEquipmentSlot<VectorRetrieval>({
         id: 'kb.vector',
         defaultOwner: () => createOramaBaseProjection(kbSubsystem.kb),

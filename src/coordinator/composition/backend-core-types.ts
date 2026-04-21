@@ -24,6 +24,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
+import type { EquipmentLifecycleService } from '../equipment/lifecycle.js';
 
 export type BackendBootSnapshot = {
   version?: string;
@@ -78,6 +79,7 @@ export type BackendCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
+  equipmentLifecycleService?: EquipmentLifecycleService;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
@@ -96,6 +98,7 @@ export type BackendCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
+  equipmentLifecycleService: EquipmentLifecycleService | null;
   getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];

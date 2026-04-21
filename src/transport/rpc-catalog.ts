@@ -1,5 +1,10 @@
 import type { ZodType } from 'zod';
 import {
+  listEquipmentRequestSchema,
+  registerEquipmentRequestSchema,
+  unregisterEquipmentRequestSchema,
+} from '../coordinator/equipment/contract.js';
+import {
   discussSeedSchema,
   discussSessionBidRequestSchema,
   discussSessionCreateRequestSchema,
@@ -95,6 +100,33 @@ export const rpcCatalog = [
     authClass: 'authenticated',
     portKey: 'workflows',
     http: { method: 'POST', path: '/workflow' },
+  },
+  {
+    name: 'coordinator.registerEquipment',
+    kind: 'unary',
+    requestSchema: registerEquipmentRequestSchema,
+    responseKind: 'json',
+    authClass: 'authenticated',
+    portKey: 'equipment',
+    http: { method: 'POST', path: '/coordinator/equipment' },
+  },
+  {
+    name: 'coordinator.unregisterEquipment',
+    kind: 'unary',
+    requestSchema: unregisterEquipmentRequestSchema,
+    responseKind: 'json',
+    authClass: 'authenticated',
+    portKey: 'equipment',
+    http: { method: 'DELETE', path: '/coordinator/equipment/:name' },
+  },
+  {
+    name: 'coordinator.listEquipment',
+    kind: 'unary',
+    requestSchema: listEquipmentRequestSchema,
+    responseKind: 'json',
+    authClass: 'authenticated',
+    portKey: 'equipment',
+    http: { method: 'GET', path: '/coordinator/equipment' },
   },
   {
     name: 'jobs.abort',
