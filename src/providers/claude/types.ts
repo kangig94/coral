@@ -5,6 +5,7 @@ export type ClaudeExecResult = {
   durationMs: number;
   costUsd: number | null;
   aborted: boolean;
+  isError?: boolean;
 };
 
 export type ClaudeJsonOutput = {

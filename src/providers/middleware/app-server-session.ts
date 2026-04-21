@@ -5,7 +5,11 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../contract.js';
-import { bindAppServerLease, type AppServerContract } from '../app-server/driver.js';
+import {
+  bindAppServerLease,
+  getAppServerNotificationHandler,
+  type AppServerContract,
+} from '../app-server/driver.js';
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
@@ -75,6 +79,7 @@ export function appServerSession(
           if (!notificationsOpen) {
             return;
           }
+          getAppServerNotificationHandler(runtime)?.(message);
           contract.onNotification?.(message);
         });
       };

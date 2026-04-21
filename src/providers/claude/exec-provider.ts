@@ -1,0 +1,244 @@
+import type { SessionContinuityContract } from '../middleware/session-continuity.js';
+import { adapterParseGuard } from '../middleware/adapter-parse-guard.js';
+import { appServerSession } from '../middleware/app-server-session.js';
+import { sessionContinuity } from '../middleware/session-continuity.js';
+import type { AppServerContract } from '../app-server/driver.js';
+import {
+  compose,
+  type Provider,
+  type ProviderContinuityBlob,
+  type ProviderContinuityUpdate,
+  type ProviderEventBody,
+  type ProviderTerminalEventBody,
+} from '../contract.js';
+import { providerSessionUnavailable } from '../fault.js';
+import { streamProviderEvents } from '../stream.js';
+import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import { claudeExecKernel, isClaudeExecParseError } from './exec-kernel.js';
+import {
+  buildClaudeBootstrapSignature,
+  buildClaudeProviderServerSpec,
+  readClaudePersistedContinuity,
+  type ClaudePersistedContinuity,
+} from './request-mapping.js';
+import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
+import { buildPreparedClaudeRequest, sameBootstrapSignature } from './shared-utils.js';
+
+type ClaudeContinuityState = ClaudePersistedContinuity & {
+  resumable: boolean;
+};
+
+const claudeAppServerContract = {
+  name: 'claude',
+  subscriptionPhase: 'beforeInitialize',
+  buildServerSpec() {
+    return buildClaudeProviderServerSpec();
+  },
+  interrupt: mapClaudeInterrupt,
+} satisfies AppServerContract;
+
+export const claudeExecContinuity = createClaudeContinuityContract(inferExecResumable, () => false);
+
+export const claudeBrokerContinuity = createClaudeContinuityContract(
+  inferBrokerResumable,
+  isClaudeBrokerSessionUnavailable,
+  (state) => {
+    if (!state.brokerTurnId) {
+      return state;
+    }
+
+    const { brokerTurnId: _brokerTurnId, ...continuity } = stripResumable(state);
+    return {
+      ...continuity,
+      resumable: inferBrokerResumable(continuity),
+    };
+  },
+);
+
+export const claudeExecProvider = compose(
+  sessionContinuity(claudeExecContinuity),
+  adapterParseGuard('claude', isClaudeExecParseError),
+  claudeExecKernel,
+);
+
+export const claudeSessionProvider = compose(
+  sessionContinuity(claudeBrokerContinuity),
+  appServerSession(claudeAppServerContract, mapClaudeInterrupt),
+  claudeSessionKernel,
+);
+
+export const claudeDispatchTargets = {
+  exec: claudeExecProvider,
+  session: claudeSessionProvider,
+};
+
+export const claude: Provider = (request, runtime) => {
+  const prepared = buildPreparedClaudeRequest(request);
+  const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
+
+  if (request.action === 'fork') {
+    assertValidForkContinuity(persistedContinuity);
+
+    if (persistedContinuity.brokerSessionKey || persistedContinuity.bootstrapSignature) {
+      return terminalOnly(
+        buildSessionUnavailableTerminal(
+          prepared.model,
+          'This Claude session already established persistent continuity. Start a new Coral session before forking.',
+        ),
+      );
+    }
+
+    return claudeDispatchTargets.exec(request, runtime);
+  }
+
+  if (persistedContinuity.bootstrapSignature) {
+    const actual = buildClaudeBootstrapSignature(request, prepared.systemPrompt);
+    if (!sameBootstrapSignature(persistedContinuity.bootstrapSignature, actual)) {
+      return terminalOnly(
+        buildSessionUnavailableTerminal(
+          prepared.model,
+          `This Claude session already established persistent continuity with cwd=${persistedContinuity.bootstrapSignature.cwd}, systemPromptHash=${persistedContinuity.bootstrapSignature.systemPromptHash}, permissionMode=${persistedContinuity.bootstrapSignature.permissionMode}. Start a new Coral session before changing that bootstrap signature.`,
+        ),
+      );
+    }
+  }
+
+  return claudeDispatchTargets.session(request, runtime);
+};
+
+function createClaudeContinuityContract(
+  inferResumable: (continuity: ClaudePersistedContinuity) => boolean,
+  isSessionUnavailable: (error: unknown) => boolean,
+  applyTransportClosed?: (state: ClaudeContinuityState) => ClaudeContinuityState,
+): SessionContinuityContract<ClaudeContinuityState> {
+  return {
+    read(persisted) {
+      const continuity = readClaudePersistedContinuity(persisted);
+      const state = {
+        ...continuity,
+        resumable: inferResumable(continuity),
+      };
+
+      return {
+        providerState: state,
+        opening: snapshotClaudeContinuity(state),
+      };
+    },
+    applyUpdate(state, update) {
+      const continuity =
+        update.providerContinuity === undefined
+          ? applyConversationRefOverride(stripResumable(state), update.conversationRef)
+          : readClaudePersistedContinuity(update.providerContinuity as ProviderContinuityBlob | undefined);
+
+      return {
+        ...continuity,
+        resumable: update.resumable ?? inferResumable(continuity),
+      };
+    },
+    snapshot: snapshotClaudeContinuity,
+    ...(applyTransportClosed
+      ? {
+          applyTransportClosed(state) {
+            return applyTransportClosed(state);
+          },
+        }
+      : {}),
+    isSessionUnavailable,
+  };
+}
+
+function snapshotClaudeContinuity(state: ClaudeContinuityState) {
+  return {
+    conversationRef: state.conversationRef ?? null,
+    resumable: state.resumable,
+    providerContinuity: toProviderContinuityBlob(stripResumable(state)),
+  };
+}
+
+function stripResumable(state: ClaudeContinuityState): ClaudePersistedContinuity {
+  return {
+    ...(state.brokerSessionKey ? { brokerSessionKey: state.brokerSessionKey } : {}),
+    ...(state.bootstrapSignature ? { bootstrapSignature: state.bootstrapSignature } : {}),
+    ...(state.envHash ? { envHash: state.envHash } : {}),
+    ...(state.conversationRef ? { conversationRef: state.conversationRef } : {}),
+    ...(state.brokerTurnId ? { brokerTurnId: state.brokerTurnId } : {}),
+  };
+}
+
+function toProviderContinuityBlob(continuity: ClaudePersistedContinuity): ProviderContinuityBlob | null {
+  return Object.keys(continuity).length === 0 ? null : continuity;
+}
+
+function applyConversationRefOverride(
+  continuity: ClaudePersistedContinuity,
+  conversationRef: ProviderContinuityUpdate['conversationRef'],
+): ClaudePersistedContinuity {
+  if (conversationRef === undefined) {
+    return continuity;
+  }
+
+  if (conversationRef === null) {
+    const { conversationRef: _conversationRef, ...rest } = continuity;
+    return rest;
+  }
+
+  return {
+    ...continuity,
+    conversationRef,
+  };
+}
+
+function inferExecResumable(continuity: ClaudePersistedContinuity): boolean {
+  return Boolean(continuity.bootstrapSignature ?? continuity.conversationRef);
+}
+
+function inferBrokerResumable(continuity: ClaudePersistedContinuity): boolean {
+  return Boolean(continuity.bootstrapSignature ?? continuity.brokerSessionKey ?? continuity.conversationRef);
+}
+
+function isClaudeBrokerSessionUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /session unavailable/i.test(message);
+}
+
+function buildSessionUnavailableTerminal(model: string | undefined, reason: string): ProviderTerminalEventBody {
+  return {
+    kind: 'terminal' as const,
+    terminal: buildJobTerminal({
+      content: '',
+      model,
+      outcome: {
+        kind: 'failed',
+        fault: providerSessionUnavailable({
+          provider: 'claude',
+          reason,
+        }),
+      },
+    }),
+    diagnostics: buildJobDiagnostics({}),
+  };
+}
+
+function terminalOnly(event: ProviderTerminalEventBody): AsyncIterable<ProviderEventBody> {
+  return streamProviderEvents(async (emit) => {
+    emit(event);
+  });
+}
+
+function assertValidForkContinuity(continuity: ClaudePersistedContinuity): void {
+  if (continuity.brokerSessionKey || continuity.bootstrapSignature) {
+    return;
+  }
+  if (!continuity.envHash && !continuity.conversationRef && !continuity.brokerTurnId) {
+    return;
+  }
+  if (process.env.CORAL_DEV_ASSERTIONS !== '1') {
+    return;
+  }
+
+  const assertion = new Error(
+    'Claude fork received envHash, conversationRef, or brokerTurnId without brokerSessionKey or bootstrapSignature.',
+  );
+  assertion.name = 'AssertionError';
+  throw assertion;
+}

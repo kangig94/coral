@@ -35,6 +35,10 @@ export interface AppServerContract {
 }
 
 const appServerLeaseBindings = new WeakMap<ContractProviderRuntime, ContractProviderServerLease>();
+const appServerNotificationBindings = new WeakMap<
+  ContractProviderRuntime,
+  (message: AppServerNotificationMessage) => void
+>();
 
 export function bindAppServerLease(
   runtime: ContractProviderRuntime,
@@ -50,6 +54,24 @@ export function bindAppServerLease(
 
 export function getAppServerLease(runtime: ContractProviderRuntime): ContractProviderServerLease | undefined {
   return appServerLeaseBindings.get(runtime);
+}
+
+export function bindAppServerNotificationHandler(
+  runtime: ContractProviderRuntime,
+  handler: (message: AppServerNotificationMessage) => void,
+): () => void {
+  appServerNotificationBindings.set(runtime, handler);
+  return () => {
+    if (appServerNotificationBindings.get(runtime) === handler) {
+      appServerNotificationBindings.delete(runtime);
+    }
+  };
+}
+
+export function getAppServerNotificationHandler(
+  runtime: ContractProviderRuntime,
+): ((message: AppServerNotificationMessage) => void) | undefined {
+  return appServerNotificationBindings.get(runtime);
 }
 
 export function requireAppServerLease(

@@ -91,6 +91,7 @@ async function executeClaude(args: string[], prompt: string, options: ClaudeExec
     durationMs: parsed.durationMs ?? Date.now() - start,
     costUsd: parsed.costUsd,
     aborted,
+    isError: parsed.isError,
   };
 }
 
