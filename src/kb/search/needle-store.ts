@@ -72,11 +72,24 @@ type NativeNeedleAddon = {
   };
 };
 
-type NeedleStoreFactoryOptions = {
+export type NeedleStoreFactoryOptions = {
   pluginRoot?: string;
   runtimeDir: string;
   addonPath?: string;
 };
+
+export class NeedleAddonLoadError extends Error {
+  readonly addonPath: string;
+  readonly code?: string;
+
+  constructor(message: string, options: { addonPath: string; code?: string; cause?: unknown }) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'NeedleAddonLoadError';
+    this.addonPath = options.addonPath;
+    this.code = options.code;
+    Object.setPrototypeOf(this, NeedleAddonLoadError.prototype);
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -207,9 +220,21 @@ function loadNativeAddon(addonPath: string): NativeNeedleAddon | null {
   try {
     const addonRequire = createRequire(join(dirname(addonPath), 'package.json'));
     const loaded = addonRequire(addonPath) as unknown;
-    return isNativeNeedleAddon(loaded) ? loaded : null;
-  } catch {
-    return null;
+    if (!isNativeNeedleAddon(loaded)) {
+      throw new NeedleAddonLoadError('Loaded needle addon did not expose the expected store API.', { addonPath });
+    }
+    return loaded;
+  } catch (error: unknown) {
+    if (error instanceof NeedleAddonLoadError) {
+      throw error;
+    }
+
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    throw new NeedleAddonLoadError(`Failed to load needle addon from ${addonPath}.`, {
+      addonPath,
+      ...(code === undefined ? {} : { code }),
+      cause: error,
+    });
   }
 }
 
@@ -295,14 +320,25 @@ export function createNeedleStore(options: NeedleStoreFactoryOptions): NativeNee
     return null;
   }
 
-  const addon = loadNativeAddon(options.addonPath ?? needleAddonPath(options.runtimeDir));
+  const resolvedAddonPath = options.addonPath ?? needleAddonPath(options.runtimeDir);
+  const addon = loadNativeAddon(resolvedAddonPath);
   if (addon === null) {
     return null;
   }
 
-  const stats = parseStats(addon.getStats());
+  let stats: Awaited<ReturnType<NeedleStore['stats']>>;
+  try {
+    stats = parseStats(addon.getStats());
+  } catch (error: unknown) {
+    throw new NeedleAddonLoadError(`Needle addon at ${resolvedAddonPath} reported invalid compatibility metadata.`, {
+      addonPath: resolvedAddonPath,
+      cause: error,
+    });
+  }
   if (!isNeedleAddonCompatible(stats)) {
-    return null;
+    throw new NeedleAddonLoadError(`Needle addon at ${resolvedAddonPath} is not compatible with this runtime.`, {
+      addonPath: resolvedAddonPath,
+    });
   }
 
   return new NativeNeedleStore(addon, options.runtimeDir);

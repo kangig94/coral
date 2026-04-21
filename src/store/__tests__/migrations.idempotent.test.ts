@@ -10,11 +10,18 @@ import type { StoragePort } from '../../runtime/ports.js';
 
 const STORE_DIR = fileURLToPath(new URL('../', import.meta.url));
 const SCHEMA_SQL_PATH = join(STORE_DIR, 'schema.sql');
+const MIGRATIONS_DIR = join(STORE_DIR, 'migrations');
+const MIGRATION_001_SQL_PATH = join(MIGRATIONS_DIR, '001_initial.sql');
+const MIGRATION_002_SQL_PATH = join(MIGRATIONS_DIR, '002_equipment_cursor_registration_kind.sql');
 type TrackedDatabase = InstanceType<typeof Database> & { totalChanges: number };
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),
   readdirSync: (path, options) => readdirSync(path, options),
 };
+
+function execSqlFile(db: InstanceType<typeof Database>, path: string): void {
+  db.exec(readFileSync(path, 'utf8'));
+}
 
 describe('migrations idempotency', () => {
   it('second run performs zero write activity', () => {
@@ -71,7 +78,7 @@ describe('migrations idempotency', () => {
       ).map(({ key, value }) => ({ key, value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value }));
       expect(metaA).toEqual(metaB);
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
+      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '3' });
 
       const corpusStateA = dbFromSchema.prepare(
         'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
@@ -124,6 +131,21 @@ describe('migrations idempotency', () => {
         'registration_kind',
       ]);
       expect(equipmentCursorColumnsB).toEqual(equipmentCursorColumnsA);
+
+      const equipmentStateColumnsA = (
+        dbFromSchema.prepare("PRAGMA table_info('equipment_state')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      const equipmentStateColumnsB = (
+        dbFromMigration.prepare("PRAGMA table_info('equipment_state')").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      expect(equipmentStateColumnsA).toEqual([
+        'name',
+        'state',
+        'installed_at',
+        'last_error_code',
+        'last_error_message',
+      ]);
+      expect(equipmentStateColumnsB).toEqual(equipmentStateColumnsA);
 
       const curateSchedulerColumnsA = (
         dbFromSchema.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>
@@ -328,6 +350,119 @@ describe('migrations idempotency', () => {
     } finally {
       dbFromSchema.close();
       dbFromMigration.close();
+    }
+  });
+
+  it('upgrades a v1 fixture to v3 and preserves equipment cursor rows', () => {
+    const db = new Database(':memory:');
+
+    try {
+      execSqlFile(db, MIGRATION_001_SQL_PATH);
+      db.prepare(
+        `
+          INSERT INTO equipment_cursors (
+            consumer_id,
+            authority,
+            lane,
+            corpus_interest,
+            cursor,
+            snapshot_id,
+            content_seq,
+            metadata_seq,
+            content_manifest_hash,
+            metadata_manifest_hash,
+            equipped_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        'needle',
+        'corpus',
+        'content',
+        'content',
+        null,
+        'snapshot-v1',
+        7,
+        7,
+        'content-hash',
+        'metadata-hash',
+        '2026-04-20T00:00:00.000Z',
+      );
+
+      applyMigrations({ db, storage: nodeStorage });
+
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '3' });
+      expect(
+        db.prepare(
+          'SELECT consumer_id, registration_kind, content_seq, content_manifest_hash FROM equipment_cursors WHERE consumer_id = ?',
+        ).get('needle'),
+      ).toEqual({
+        consumer_id: 'needle',
+        registration_kind: 'base',
+        content_seq: 7,
+        content_manifest_hash: 'content-hash',
+      });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM equipment_state').get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('re-runs a v2 to v3 upgrade without additional writes', () => {
+    const db = new Database(':memory:') as TrackedDatabase;
+
+    try {
+      execSqlFile(db, MIGRATION_001_SQL_PATH);
+      execSqlFile(db, MIGRATION_002_SQL_PATH);
+      db.prepare(
+        `
+          INSERT INTO equipment_cursors (
+            consumer_id,
+            authority,
+            lane,
+            corpus_interest,
+            cursor,
+            snapshot_id,
+            content_seq,
+            metadata_seq,
+            content_manifest_hash,
+            metadata_manifest_hash,
+            equipped_at,
+            registration_kind
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        'needle',
+        'corpus',
+        'content',
+        'content',
+        null,
+        'snapshot-v2',
+        8,
+        8,
+        'content-hash-v2',
+        'metadata-hash-v2',
+        '2026-04-21T00:00:00.000Z',
+        'equipment',
+      );
+
+      applyMigrations({ db, storage: nodeStorage });
+      const firstChanges = db.totalChanges;
+
+      applyMigrations({ db, storage: nodeStorage });
+
+      expect(db.totalChanges).toBe(firstChanges);
+      expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({ value: '3' });
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'equipment_state'").get(),
+      ).toEqual({ name: 'equipment_state' });
+      expect(
+        db.prepare('SELECT consumer_id, registration_kind FROM equipment_cursors WHERE consumer_id = ?').get('needle'),
+      ).toEqual({
+        consumer_id: 'needle',
+        registration_kind: 'equipment',
+      });
+    } finally {
+      db.close();
     }
   });
 });

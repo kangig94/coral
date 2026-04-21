@@ -29,6 +29,14 @@ export interface CorpusStateRow {
   last_mutation: string;
 }
 
+export interface EquipmentStateRow {
+  name: string;
+  state: string;
+  installed_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+}
+
 export interface CurateSchedulerRow {
   id: 1;
   processed_through_seq: number | null;

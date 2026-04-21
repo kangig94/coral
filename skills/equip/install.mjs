@@ -11,19 +11,28 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { arch, homedir, platform, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import {
+  equipmentAddonPath,
+  equipmentDataDir,
+  equipmentInstallLockPath,
+} from './equipment-paths.mjs';
+import {
+  acquireDirectoryLock,
+  isDirectoryLockTimeoutError,
+} from './fs-lock.mjs';
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_ROOT = resolve(SCRIPT_DIR, '..', '..');
 const TOOLS_DIR = join(homedir(), '.claude', 'tools');
 const KB_ARCH_MAP = { x64: 'amd64', arm64: 'arm64' };
+const EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS = 250;
+const UNWRITABLE_ERRNOS = new Set(['EACCES', 'EROFS', 'EPERM', 'ENOSPC']);
 
 function kbPlatformKey() {
   return `${platform()}-${KB_ARCH_MAP[arch()] || arch()}`;
@@ -57,6 +66,10 @@ function kbRuntimeDirFromEnv() {
   return join(homedir(), '.coral', 'data', 'kb');
 }
 
+function kbEquipmentDirFromEnv() {
+  return equipmentDataDir('needle');
+}
+
 function coralEnvPathFromEnv() {
   return join(homedir(), '.coral', '.env');
 }
@@ -80,7 +93,7 @@ const CATALOG = {
     description: 'Installs coral-needle native addon for vector search',
     repo: 'kangig94/coral-needle',
     needleVersion: '0.2.0',
-    targetDir: () => kbRuntimeDirFromEnv(),
+    targetDir: () => kbEquipmentDirFromEnv(),
     postInstall: ['backend_shutdown', 'kb_reindex'],
   },
 };
@@ -103,6 +116,21 @@ function download(url, dest) {
     ? `curl -fsSL -o "${dest}" "${url}"`
     : `wget -q -O "${dest}" "${url}"`;
   execSync(cmd, { stdio: 'pipe', timeout: 120_000 });
+}
+
+function isUnwritableInstallPathError(error) {
+  return error instanceof Error && UNWRITABLE_ERRNOS.has(error.code ?? '');
+}
+
+function emitSetupError(code, userMessage, remediation, context = undefined, extra = {}) {
+  emit({
+    status: 'error',
+    code,
+    userMessage,
+    remediation,
+    ...(context === undefined ? {} : { context }),
+    ...extra,
+  });
 }
 
 function metaPath(pkg) {
@@ -145,10 +173,6 @@ function fetchLatest(repo) {
   }
 }
 
-function kbAddonPath(targetDir) {
-  return join(targetDir, 'needle', 'coral-needle.node');
-}
-
 function resolveKbTargetVersion(entry, requestedVersion) {
   const needleVersion = entry.needleVersion;
   if (!needleVersion) {
@@ -160,7 +184,7 @@ function resolveKbTargetVersion(entry, requestedVersion) {
   return needleVersion;
 }
 
-function buildKbOnboarding(targetDir) {
+function buildKbOnboarding(runtimeDir) {
   return {
     envPath: coralEnvPathFromEnv(),
     requiredEnv: ['CORAL_EMBEDDING_PROVIDER', 'CORAL_EMBEDDING_API_KEY'],
@@ -169,7 +193,7 @@ function buildKbOnboarding(targetDir) {
     apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
     securityNotice: KB_SECURITY_NOTICE,
     localRuntime: {
-      targetDir,
+      targetDir: runtimeDir,
       bootstrapPackageJson: true,
       packageManager: 'npm',
       packageName: 'onnxruntime-node',
@@ -222,10 +246,18 @@ function installKbPrebuild(entry, targetDir, version, platKey) {
 
   try {
     const archivePath = join(tempDir, assetName);
-    const addonPath = kbAddonPath(targetDir);
+    const addonPath = equipmentAddonPath(entry.kind);
+    const partialAddonPath = `${addonPath}.part`;
     download(`https://github.com/${entry.repo}/releases/download/${releaseTag}/${assetName}`, archivePath);
     mkdirSync(dirname(addonPath), { recursive: true });
-    writeFileSync(addonPath, extractTarEntry(archivePath, 'coral-needle.node'));
+    rmSync(partialAddonPath, { force: true });
+    try {
+      writeFileSync(partialAddonPath, extractTarEntry(archivePath, 'coral-needle.node'));
+      renameSync(partialAddonPath, addonPath);
+    } catch (error) {
+      rmSync(partialAddonPath, { force: true });
+      throw error;
+    }
     writeTargetMeta(targetDir, version, 'prebuild');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -295,9 +327,17 @@ function installKbSourceBuild(entry, targetDir, version) {
       throw new Error('cmake build completed without producing coral-needle.node.');
     }
 
-    const addonPath = kbAddonPath(targetDir);
+    const addonPath = equipmentAddonPath(entry.kind);
+    const partialAddonPath = `${addonPath}.part`;
     mkdirSync(dirname(addonPath), { recursive: true });
-    copyFileSync(builtAddon, addonPath);
+    rmSync(partialAddonPath, { force: true });
+    try {
+      copyFileSync(builtAddon, partialAddonPath);
+      renameSync(partialAddonPath, addonPath);
+    } catch (error) {
+      rmSync(partialAddonPath, { force: true });
+      throw error;
+    }
     writeTargetMeta(targetDir, version, 'source-build');
   } finally {
     rmSync(buildDir, { recursive: true, force: true });
@@ -319,186 +359,252 @@ function buildTargetResult(status, method, targetDir, entry, extra) {
     method,
     targetDir,
     ...(entry.postInstall ? { postInstall: entry.postInstall } : {}),
-    ...(entry.kind === 'needle' ? { onboarding: buildKbOnboarding(targetDir) } : {}),
+    ...(entry.kind === 'needle' ? { onboarding: buildKbOnboarding(kbRuntimeDirFromEnv()) } : {}),
     ...extra,
   };
 }
 
-// Parse arguments
-const argv = process.argv.slice(2);
-const update = argv.includes('--update');
-const rawPkg = argv.find((arg) => !arg.startsWith('-'));
+async function main() {
+  // Parse arguments
+  const argv = process.argv.slice(2);
+  const update = argv.includes('--update');
+  const rawPkg = argv.find((arg) => !arg.startsWith('-'));
 
-// List catalog
-if (argv.includes('--list') || (!rawPkg && !update)) {
-  emit({
-    status: 'catalog',
-    packages: Object.entries(CATALOG).map(([id, item]) => ({
-      id,
-      name: item.name,
-      description: item.description,
-    })),
-  });
-  process.exit(0);
-}
-
-if (!rawPkg) {
-  emit({ status: 'error', message: 'Package name required with --update' });
-  process.exit(1);
-}
-
-const [pkg, requestedVersion] = rawPkg.split('@');
-const entry = CATALOG[pkg];
-if (!entry) {
-  emit({ status: 'error', message: `Unknown package: ${pkg}` });
-  process.exit(1);
-}
-
-const plat = platform();
-const platKey = `${plat}-${arch()}`;
-const ext = plat === 'win32' ? '.exe' : '';
-const toolPath = join(TOOLS_DIR, pkg + ext);
-
-let targetVersion;
-try {
-  targetVersion = entry.kind === 'needle'
-    ? resolveKbTargetVersion(entry, requestedVersion)
-    : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
-} catch (error) {
-  emit({
-    status: 'error',
-    message: `Could not install ${pkg}`,
-    errors: [error instanceof Error ? error.message : String(error)],
-    suggestions: [],
-  });
-  process.exit(1);
-}
-
-const errors = [];
-const statusLabel = update ? 'updated' : 'installed';
-
-if (entry.kind === 'needle') {
-  const targetDir = entry.targetDir();
-  const addonPath = kbAddonPath(targetDir);
-  const installedMeta = readTargetMeta(targetDir);
-  const isCurrentInstall = existsSync(addonPath)
-    && installedMeta?.version === targetVersion
-    && (installedMeta?.method === 'prebuild' || installedMeta?.method === 'source-build');
-
-  if (isCurrentInstall) {
-    emit(buildTargetResult(
-      update ? 'already_up_to_date' : 'already_installed',
-      installedMeta.method,
-      targetDir,
-      entry,
-      { version: targetVersion },
-    ));
-    process.exit(0);
+  // List catalog
+  if (argv.includes('--list') || (!rawPkg && !update)) {
+    emit({
+      status: 'catalog',
+      packages: Object.entries(CATALOG).map(([id, item]) => ({
+        id,
+        name: item.name,
+        description: item.description,
+      })),
+    });
+    return 0;
   }
 
-  const needlePlatKey = kbPlatformKey();
-  {
+  if (!rawPkg) {
+    emit({ status: 'error', message: 'Package name required with --update' });
+    return 1;
+  }
+
+  const [pkg, requestedVersion] = rawPkg.split('@');
+  const entry = CATALOG[pkg];
+  if (!entry) {
+    emit({ status: 'error', message: `Unknown package: ${pkg}` });
+    return 1;
+  }
+
+  const plat = platform();
+  const platKey = `${plat}-${arch()}`;
+  const ext = plat === 'win32' ? '.exe' : '';
+  const toolPath = join(TOOLS_DIR, pkg + ext);
+
+  let targetVersion;
+  try {
+    targetVersion = entry.kind === 'needle'
+      ? resolveKbTargetVersion(entry, requestedVersion)
+      : requestedVersion || fetchLatest(entry.repo) || entry.fallbackVersion;
+  } catch (error) {
+    emit({
+      status: 'error',
+      message: `Could not install ${pkg}`,
+      errors: [error instanceof Error ? error.message : String(error)],
+      suggestions: [],
+    });
+    return 1;
+  }
+
+  const errors = [];
+  const statusLabel = update ? 'updated' : 'installed';
+
+  if (entry.kind === 'needle') {
+    const targetDir = entry.targetDir();
+    const addonPath = equipmentAddonPath(entry.kind);
+    const installedMeta = readTargetMeta(targetDir);
+    const isCurrentInstall = existsSync(addonPath)
+      && installedMeta?.version === targetVersion
+      && (installedMeta?.method === 'prebuild' || installedMeta?.method === 'source-build');
+
+    if (isCurrentInstall) {
+      emit(buildTargetResult(
+        update ? 'already_up_to_date' : 'already_installed',
+        installedMeta.method,
+        targetDir,
+        entry,
+        { version: targetVersion },
+      ));
+      return 0;
+    }
+
+    const installLockPath = equipmentInstallLockPath(entry.kind);
     try {
-      installKbPrebuild(entry, targetDir, targetVersion, needlePlatKey);
-      emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
-      process.exit(0);
+      mkdirSync(targetDir, { recursive: true });
+      mkdirSync(dirname(installLockPath), { recursive: true });
     } catch (error) {
-      errors.push(`prebuild: ${error instanceof Error ? error.message : String(error)}`);
+      if (isUnwritableInstallPathError(error)) {
+        emitSetupError(
+          'equipment_install_path_unwritable',
+          `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+          'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+          { name: entry.kind },
+        );
+        return 1;
+      }
+      throw error;
+    }
+
+    let releaseInstallLock;
+    try {
+      releaseInstallLock = await acquireDirectoryLock(installLockPath, EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS);
+    } catch (error) {
+      if (isDirectoryLockTimeoutError(error)) {
+        emitSetupError(
+          'equipment_install_lock_contended',
+          `Another /equip is in progress for ${entry.kind}.`,
+          'Wait for the in-flight install to complete or remove the stale lock file.',
+          { name: entry.kind },
+        );
+        return 1;
+      }
+      if (isUnwritableInstallPathError(error)) {
+        emitSetupError(
+          'equipment_install_path_unwritable',
+          `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+          'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+          { name: entry.kind },
+        );
+        return 1;
+      }
+      throw error;
+    }
+
+    const needlePlatKey = kbPlatformKey();
+    try {
+      try {
+        installKbPrebuild(entry, targetDir, targetVersion, needlePlatKey);
+        emit(buildTargetResult(statusLabel, 'prebuild', targetDir, entry, { version: targetVersion }));
+        return 0;
+      } catch (error) {
+        if (isUnwritableInstallPathError(error)) {
+          emitSetupError(
+            'equipment_install_path_unwritable',
+            `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            { name: entry.kind },
+          );
+          return 1;
+        }
+        errors.push(`prebuild: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      try {
+        installKbSourceBuild(entry, targetDir, targetVersion);
+        emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
+        return 0;
+      } catch (error) {
+        if (isUnwritableInstallPathError(error)) {
+          emitSetupError(
+            'equipment_install_path_unwritable',
+            `Cannot write to the Coral equipment install path for ${entry.kind}.`,
+            'Check filesystem permissions and free space under ~/.coral/data/equipment/, then retry.',
+            { name: entry.kind },
+          );
+          return 1;
+        }
+        errors.push(`source-build: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      const suggestions = [];
+      if (errors.some((e) => e.startsWith('prebuild:'))) {
+        suggestions.push(`No prebuild available for ${needlePlatKey}. Source build also failed.`);
+      }
+      if (!findCmd('curl') && !findCmd('wget')) {
+        suggestions.push('Install curl or wget so the KB prebuild can be downloaded');
+      }
+      if (!findCmd('cmake') && !findCmd('uv')) {
+        suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
+      }
+
+      emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
+      return 1;
+    } finally {
+      releaseInstallLock?.();
     }
   }
 
-  try {
-    installKbSourceBuild(entry, targetDir, targetVersion);
-    emit(buildTargetResult(statusLabel, 'source-build', targetDir, entry, { version: targetVersion }));
-    process.exit(0);
-  } catch (error) {
-    errors.push(`source-build: ${error instanceof Error ? error.message : String(error)}`);
+  if (update) {
+    const meta = readMeta(pkg);
+    if (meta?.version === targetVersion) {
+      emit(buildResult('already_up_to_date', meta.method, toolPath, entry, { version: targetVersion }));
+      return 0;
+    }
+
+    if (existsSync(toolPath)) {
+      unlinkSync(toolPath);
+    }
+  }
+
+  if (!update) {
+    if (existsSync(toolPath)) {
+      emit(buildResult('already_installed', 'binary', toolPath, entry));
+      return 0;
+    }
+    const systemPath = findCmd(pkg);
+    if (systemPath) {
+      emit(buildResult('already_installed', 'system', systemPath, entry));
+      return 0;
+    }
+  }
+
+  const asset = entry.binaries[platKey];
+  if (asset) {
+    try {
+      const url = `https://github.com/${entry.repo}/releases/download/${targetVersion}/${asset}`;
+      if (!existsSync(TOOLS_DIR)) mkdirSync(TOOLS_DIR, { recursive: true });
+      download(url, toolPath);
+      if (plat !== 'win32') chmodSync(toolPath, 0o755);
+      writeMeta(pkg, targetVersion, 'binary');
+      emit(buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }));
+      return 0;
+    } catch (error) {
+      errors.push(`binary: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (findCmd('uv')) {
+    try {
+      const uvCmd = update ? 'upgrade' : 'install';
+      execSync(`uv tool ${uvCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
+      const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
+      writeMeta(pkg, targetVersion, 'uv');
+      emit(buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }));
+      return 0;
+    } catch (error) {
+      errors.push(`uv: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (findCmd('pipx')) {
+    try {
+      const pipxCmd = update ? 'upgrade' : 'install';
+      execSync(`pipx ${pipxCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
+      const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
+      writeMeta(pkg, targetVersion, 'pipx');
+      emit(buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }));
+      return 0;
+    } catch (error) {
+      errors.push(`pipx: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   const suggestions = [];
-  if (errors.some((e) => e.startsWith('prebuild:'))) {
-    suggestions.push(`No prebuild available for ${needlePlatKey}. Source build also failed.`);
-  }
-  if (!findCmd('curl') && !findCmd('wget')) {
-    suggestions.push('Install curl or wget so the KB prebuild can be downloaded');
-  }
-  if (!findCmd('cmake') && !findCmd('uv')) {
-    suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
-  }
+  if (!asset) suggestions.push(`No pre-built binary for ${platKey}`);
+  if (!findCmd('uv')) suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
+  if (!findCmd('pipx')) suggestions.push('Install pipx: python3 -m pip install --user pipx');
 
   emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
-  process.exit(1);
+  return 1;
 }
 
-if (update) {
-  const meta = readMeta(pkg);
-  if (meta?.version === targetVersion) {
-    emit(buildResult('already_up_to_date', meta.method, toolPath, entry, { version: targetVersion }));
-    process.exit(0);
-  }
-
-  if (existsSync(toolPath)) {
-    unlinkSync(toolPath);
-  }
-}
-
-if (!update) {
-  if (existsSync(toolPath)) {
-    emit(buildResult('already_installed', 'binary', toolPath, entry));
-    process.exit(0);
-  }
-  const systemPath = findCmd(pkg);
-  if (systemPath) {
-    emit(buildResult('already_installed', 'system', systemPath, entry));
-    process.exit(0);
-  }
-}
-
-const asset = entry.binaries[platKey];
-if (asset) {
-  try {
-    const url = `https://github.com/${entry.repo}/releases/download/${targetVersion}/${asset}`;
-    if (!existsSync(TOOLS_DIR)) mkdirSync(TOOLS_DIR, { recursive: true });
-    download(url, toolPath);
-    if (plat !== 'win32') chmodSync(toolPath, 0o755);
-    writeMeta(pkg, targetVersion, 'binary');
-    emit(buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }));
-    process.exit(0);
-  } catch (error) {
-    errors.push(`binary: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-if (findCmd('uv')) {
-  try {
-    const uvCmd = update ? 'upgrade' : 'install';
-    execSync(`uv tool ${uvCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
-    const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
-    writeMeta(pkg, targetVersion, 'uv');
-    emit(buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }));
-    process.exit(0);
-  } catch (error) {
-    errors.push(`uv: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-if (findCmd('pipx')) {
-  try {
-    const pipxCmd = update ? 'upgrade' : 'install';
-    execSync(`pipx ${pipxCmd} ${entry.pip}`, { stdio: 'pipe', timeout: 300_000 });
-    const cmd = findCmd(pkg) || join(homedir(), '.local', 'bin', pkg);
-    writeMeta(pkg, targetVersion, 'pipx');
-    emit(buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }));
-    process.exit(0);
-  } catch (error) {
-    errors.push(`pipx: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-const suggestions = [];
-if (!asset) suggestions.push(`No pre-built binary for ${platKey}`);
-if (!findCmd('uv')) suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
-if (!findCmd('pipx')) suggestions.push('Install pipx: python3 -m pip install --user pipx');
-
-emit({ status: 'error', message: `Could not install ${pkg}`, errors, suggestions });
-process.exit(1);
+process.exitCode = await main();

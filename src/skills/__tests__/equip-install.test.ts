@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
+import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../infra/equipment-paths.js';
 
 const INSTALL_SCRIPT = join(process.cwd(), 'skills', 'equip', 'install.mjs');
 const KB_VERSION = '0.2.0';
@@ -44,10 +45,12 @@ interface InstallerJson {
 interface Fixture {
   root: string;
   homeDir: string;
+  coralBaseDir: string;
   binDir: string;
   logPath: string;
   archivePath: string;
   targetDir: string;
+  runtimeDir: string;
 }
 
 afterEach(() => {
@@ -61,10 +64,12 @@ function createFixture(): Fixture {
   const fixture = {
     root,
     homeDir: join(root, 'home'),
+    coralBaseDir: join(root, 'home', '.coral'),
     binDir: join(root, 'bin'),
     logPath: join(root, 'curl.log'),
     archivePath: join(root, 'prebuild.tar.gz'),
-    targetDir: join(root, 'home', '.coral', 'data', 'kb'),
+    targetDir: equipmentDataDir('needle', { baseDir: join(root, 'home', '.coral') }),
+    runtimeDir: join(root, 'home', '.coral', 'data', 'kb'),
   };
 
   createdRoots.push(root);
@@ -145,8 +150,8 @@ function writeInstalledKb(
   version: string = KB_VERSION,
   method: 'prebuild' | 'source-build' = 'prebuild',
 ): void {
-  mkdirSync(join(fixture.targetDir, 'needle'), { recursive: true });
-  writeFileSync(join(fixture.targetDir, 'needle', 'coral-needle.node'), Buffer.from('installed-addon'));
+  mkdirSync(fixture.targetDir, { recursive: true });
+  writeFileSync(join(fixture.targetDir, 'coral-needle.node'), Buffer.from('installed-addon'));
   writeFileSync(join(fixture.targetDir, '.kb-meta.json'), JSON.stringify({ version, method }), 'utf-8');
 }
 
@@ -195,6 +200,12 @@ function parseResult(result: { stdout: string; stderr: string; status: number })
   return JSON.parse(trimmed) as InstallerJson;
 }
 
+function parseErrorResult(result: { stdout: string; stderr: string; status: number }): InstallerJson {
+  expect(result.status).toBe(1);
+  expect(result.stderr).toBe('');
+  return JSON.parse(result.stdout.trim()) as InstallerJson;
+}
+
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
 }
@@ -211,6 +222,21 @@ function readLog(path: string): string[] {
 }
 
 describe('skills/equip/install.mjs kb addon flow', () => {
+  it('keeps the JS helper seam aligned with the TypeScript equipment path helpers', async () => {
+    const fixture = createFixture();
+    const jsPaths = await import(new URL('../../../skills/equip/equipment-paths.mjs', import.meta.url).href);
+
+    expect(jsPaths.equipmentDataDir('needle', { baseDir: fixture.coralBaseDir })).toBe(
+      equipmentDataDir('needle', { baseDir: fixture.coralBaseDir }),
+    );
+    expect(jsPaths.equipmentAddonPath('needle', { baseDir: fixture.coralBaseDir })).toBe(
+      equipmentAddonPath('needle', { baseDir: fixture.coralBaseDir }),
+    );
+    expect(jsPaths.equipmentInstallLockPath('needle', { baseDir: fixture.coralBaseDir })).toBe(
+      equipmentInstallLockPath('needle', { baseDir: fixture.coralBaseDir }),
+    );
+  });
+
   it('installs the KB addon into the runtime needle dir and emits single-line onboarding JSON', () => {
     const fixture = createFixture();
     const addonBytes = Buffer.from('native-addon');
@@ -233,7 +259,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
         apiKeyEnvKey: 'CORAL_EMBEDDING_API_KEY',
         securityNotice: 'Store API keys in ~/.coral/.env, not in settings.json.',
         localRuntime: {
-          targetDir: fixture.targetDir,
+          targetDir: fixture.runtimeDir,
           bootstrapPackageJson: true,
           packageManager: 'npm',
           packageName: 'onnxruntime-node',
@@ -263,7 +289,8 @@ describe('skills/equip/install.mjs kb addon flow', () => {
         dims: null,
       },
     ]);
-    expect(readFileSync(join(fixture.targetDir, 'needle', 'coral-needle.node'))).toEqual(addonBytes);
+    expect(readFileSync(join(fixture.targetDir, 'coral-needle.node'))).toEqual(addonBytes);
+    expect(existsSync(join(fixture.targetDir, 'coral-needle.node.part'))).toBe(false);
     expect(existsSync(join(fixture.targetDir, RETIRED_VECTOR_DIR_NAME))).toBe(false);
     expect(readJson(join(fixture.targetDir, '.kb-meta.json'))).toEqual({
       version: KB_VERSION,
@@ -291,7 +318,7 @@ describe('skills/equip/install.mjs kb addon flow', () => {
       version: KB_VERSION,
       onboarding: {
         localRuntime: {
-          targetDir: fixture.targetDir,
+          targetDir: fixture.runtimeDir,
         },
       },
     });
@@ -312,5 +339,20 @@ describe('skills/equip/install.mjs kb addon flow', () => {
       version: KB_VERSION,
     });
     expect(readLog(fixture.logPath)).toEqual([]);
+  });
+
+  it('reports install lock contention through the structured equipment error shape', () => {
+    const fixture = createFixture();
+    const lockPath = equipmentInstallLockPath('needle', { baseDir: fixture.coralBaseDir });
+    mkdirSync(lockPath, { recursive: true });
+
+    const result = parseErrorResult(runInstall(fixture, ['kb']));
+
+    expect(result).toMatchObject({
+      status: 'error',
+      code: 'equipment_install_lock_contended',
+      userMessage: 'Another /equip is in progress for needle.',
+      remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+    });
   });
 });

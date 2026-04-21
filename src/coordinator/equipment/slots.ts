@@ -1,4 +1,4 @@
-import { CoralSetupError } from '../../runtime/errors.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ConsumerHandle } from '../consumer-driver.js';
 
 export interface EquipmentSlot<T> {
@@ -77,12 +77,7 @@ class InMemorySlotRegistry implements SlotRegistry {
   get<T>(slotId: string): EquipmentSlot<T> {
     const slot = this.slots.get(slotId);
     if (slot === undefined) {
-      throw new CoralSetupError({
-        code: 'equipment_slot_not_declared',
-        userMessage: `Equipment slot '${slotId}' is not declared.`,
-        remediation: 'Declare the slot before reading or equipping it.',
-        context: { slotId },
-      });
+      throw documentedCoralSetupError('equipment_slot_not_declared', { slotId });
     }
 
     return slot as EquipmentSlot<T>;

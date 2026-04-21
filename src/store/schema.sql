@@ -113,6 +113,14 @@ CREATE TABLE IF NOT EXISTS equipment_cursors (
   registration_kind      TEXT    NOT NULL DEFAULT 'base'
 );
 
+CREATE TABLE IF NOT EXISTS equipment_state (
+  name               TEXT PRIMARY KEY,
+  state              TEXT NOT NULL,
+  installed_at       TEXT,
+  last_error_code    TEXT,
+  last_error_message TEXT
+);
+
 -- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
 -- Single row for scalar scheduler state; the active claim lives in curate_active_claim.
 CREATE TABLE IF NOT EXISTS curate_scheduler (
@@ -181,7 +189,7 @@ CREATE TABLE IF NOT EXISTS curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '2'),
+  ('schema_version', '3'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));

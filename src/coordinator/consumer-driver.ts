@@ -26,6 +26,7 @@ export type ConsumerRegistrationKind = 'base' | 'equipment';
 export interface ConsumerApplyError {
   readonly message: string;
   readonly at: string;
+  readonly cause?: unknown;
 }
 
 export type ConsumerHandleStatus =
@@ -121,6 +122,10 @@ export interface ConsumerDriverOptions {
   readonly now?: () => Date;
 }
 
+export interface UnregisterStoppedConsumerOptions {
+  readonly preserveCursor?: boolean;
+}
+
 function isCorpusInterest(value: unknown): value is CorpusInterest {
   return value === 'content' || value === 'metadata' || value === 'both';
 }
@@ -147,12 +152,12 @@ function shouldNotifyCorpusConsumer(
 
 function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
   if (err instanceof Error && err.message.trim().length > 0) {
-    return { message: err.message, at };
+    return { message: err.message, at, cause: err };
   }
   if (typeof err === 'string' && err.trim().length > 0) {
-    return { message: err, at };
+    return { message: err, at, cause: err };
   }
-  return { message: 'Consumer apply failed', at };
+  return { message: 'Consumer apply failed', at, cause: err };
 }
 
 export class ConsumerDriver {
@@ -432,6 +437,29 @@ export class ConsumerDriver {
     const states = [...this.consumers.values()];
     await Promise.all(states.map((state) => this.stopConsumer(state, new Error('ConsumerDriver shutting down'))));
     this.consumers.clear();
+  }
+
+  unregisterStoppedConsumer(consumerId: string, options: UnregisterStoppedConsumerOptions = {}): void {
+    const state = this.consumers.get(consumerId);
+    if (!state) {
+      throw new CoralSetupError({
+        code: 'consumer_not_registered',
+        userMessage: `Consumer '${consumerId}' is not registered`,
+        remediation: 'Call driver.register(reg) before unregisterStoppedConsumer.',
+        context: { consumerId },
+      });
+    }
+
+    if (state.stopPromise === null) {
+      throw new CoralSetupError({
+        code: 'consumer_unregister_requires_stop',
+        userMessage: `Consumer '${state.reg.id}' must be stopped before unregister()`,
+        remediation: 'Call handle.stop() and await it before removing the stopped consumer.',
+        context: { consumerId },
+      });
+    }
+
+    this.finalizeStoppedConsumer(state, options);
   }
 
   __debugWaiterCount(consumerId: string): number {
@@ -817,6 +845,13 @@ export class ConsumerDriver {
     }
 
     await state.stopPromise;
+    this.finalizeStoppedConsumer(state);
+  }
+
+  private finalizeStoppedConsumer(
+    state: ConsumerState,
+    options: UnregisterStoppedConsumerOptions = {},
+  ): void {
     if (state.unregistered) {
       return;
     }
@@ -824,7 +859,7 @@ export class ConsumerDriver {
     if (this.consumers.get(state.reg.id) === state) {
       this.consumers.delete(state.reg.id);
     }
-    if (state.registrationKind === 'equipment') {
+    if (state.registrationKind === 'equipment' && options.preserveCursor !== true) {
       this.deleteCursorRowStmt.run(state.reg.id);
     }
 
