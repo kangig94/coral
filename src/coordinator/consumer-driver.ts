@@ -38,9 +38,12 @@ export type ConsumerHandleStatus =
     }
   | {
       authority: 'corpus';
+      corpusInterest: CorpusInterest;
       snapshotId: string | null;
       contentSeq: number;
+      metadataSeq: number;
       contentManifestHash: string | null;
+      metadataManifestHash: string | null;
       pending: boolean;
       lastApplyError: ConsumerApplyError | null;
     };
@@ -48,6 +51,7 @@ export type ConsumerHandleStatus =
 export interface ConsumerHandle {
   readonly id: string;
   readonly registrationKind: ConsumerRegistrationKind;
+  readonly lastApplyError: ConsumerApplyError | null;
   stop(): Promise<void>;
   unregister(): Promise<void>;
   status(): ConsumerHandleStatus;
@@ -313,6 +317,9 @@ export class ConsumerDriver {
     const handle: ConsumerHandle = {
       id: reg.id,
       registrationKind,
+      get lastApplyError() {
+        return state.lastApplyError;
+      },
       stop: () => this.stopConsumer(state, new Error(`Consumer '${reg.id}' stopped`)),
       unregister: () => this.unregisterConsumer(state),
       status: () => this.statusFor(state),
@@ -879,9 +886,12 @@ export class ConsumerDriver {
     const cursor = this.readCorpusCursor(state.reg.id);
     return {
       authority: 'corpus',
+      corpusInterest: state.reg.corpusInterest,
       snapshotId: cursor.snapshotId === '' ? null : cursor.snapshotId,
       contentSeq: cursor.contentSeq,
+      metadataSeq: cursor.metadataSeq,
       contentManifestHash: cursor.contentManifestHash === '' ? null : cursor.contentManifestHash,
+      metadataManifestHash: cursor.metadataManifestHash === '' ? null : cursor.metadataManifestHash,
       pending: this.isPending(state),
       lastApplyError: state.lastApplyError,
     };

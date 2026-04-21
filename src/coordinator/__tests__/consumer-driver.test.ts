@@ -246,7 +246,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
     }
   });
 
-  it('status() reports journal and corpus authority shapes with and without lastApplyError', async () => {
+  it('status() reports journal and corpus authority shapes with direct lastApplyError access', async () => {
     const db = createDb();
     const failureAt = new Date('2026-04-22T01:02:03.000Z');
     const successAt = new Date('2026-04-22T01:02:04.000Z');
@@ -265,10 +265,30 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
           }
         },
       });
-      const corpusHandle = driver.register({
-        id: 'corpus-status',
+      const contentHandle = driver.register({
+        id: 'corpus-status-content',
         authority: 'corpus',
         corpusInterest: 'content',
+        async apply() {
+          if (corpusShouldFail) {
+            throw new Error('corpus boom');
+          }
+        },
+      } satisfies CorpusConsumerRegistration);
+      const metadataHandle = driver.register({
+        id: 'corpus-status-metadata',
+        authority: 'corpus',
+        corpusInterest: 'metadata',
+        async apply() {
+          if (corpusShouldFail) {
+            throw new Error('corpus boom');
+          }
+        },
+      } satisfies CorpusConsumerRegistration);
+      const bothHandle = driver.register({
+        id: 'corpus-status-both',
+        authority: 'corpus',
+        corpusInterest: 'both',
         async apply() {
           if (corpusShouldFail) {
             throw new Error('corpus boom');
@@ -296,17 +316,60 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
           cause: expect.any(Error),
         },
       });
-      expect(corpusHandle.status()).toMatchObject({
+      expect(journalHandle.lastApplyError).toMatchObject({
+        message: 'journal boom',
+        at: failureAt.toISOString(),
+        cause: expect.any(Error),
+      });
+      expect(contentHandle.status()).toMatchObject({
         authority: 'corpus',
+        corpusInterest: 'content',
         snapshotId: null,
         contentSeq: 0,
+        metadataSeq: 0,
         contentManifestHash: null,
+        metadataManifestHash: null,
         pending: false,
         lastApplyError: {
           message: 'corpus boom',
           at: failureAt.toISOString(),
           cause: expect.any(Error),
         },
+      });
+      expect(metadataHandle.status()).toMatchObject({
+        authority: 'corpus',
+        corpusInterest: 'metadata',
+        snapshotId: null,
+        contentSeq: 0,
+        metadataSeq: 0,
+        contentManifestHash: null,
+        metadataManifestHash: null,
+        pending: false,
+        lastApplyError: {
+          message: 'corpus boom',
+          at: failureAt.toISOString(),
+          cause: expect.any(Error),
+        },
+      });
+      expect(bothHandle.status()).toMatchObject({
+        authority: 'corpus',
+        corpusInterest: 'both',
+        snapshotId: null,
+        contentSeq: 0,
+        metadataSeq: 0,
+        contentManifestHash: null,
+        metadataManifestHash: null,
+        pending: false,
+        lastApplyError: {
+          message: 'corpus boom',
+          at: failureAt.toISOString(),
+          cause: expect.any(Error),
+        },
+      });
+      expect(contentHandle.lastApplyError).toMatchObject({
+        message: 'corpus boom',
+        at: failureAt.toISOString(),
+        cause: expect.any(Error),
       });
 
       journalShouldFail = false;
@@ -329,14 +392,41 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         pending: false,
         lastApplyError: null,
       });
-      expect(corpusHandle.status()).toEqual({
+      expect(journalHandle.lastApplyError).toBeNull();
+      expect(contentHandle.status()).toEqual({
         authority: 'corpus',
+        corpusInterest: 'content',
         snapshotId: 'snapshot-4',
         contentSeq: 4,
+        metadataSeq: 2,
         contentManifestHash: 'content-hash-4',
+        metadataManifestHash: 'metadata-hash-2',
         pending: false,
         lastApplyError: null,
       });
+      expect(metadataHandle.status()).toEqual({
+        authority: 'corpus',
+        corpusInterest: 'metadata',
+        snapshotId: 'snapshot-4',
+        contentSeq: 4,
+        metadataSeq: 2,
+        contentManifestHash: 'content-hash-4',
+        metadataManifestHash: 'metadata-hash-2',
+        pending: false,
+        lastApplyError: null,
+      });
+      expect(bothHandle.status()).toEqual({
+        authority: 'corpus',
+        corpusInterest: 'both',
+        snapshotId: 'snapshot-4',
+        contentSeq: 4,
+        metadataSeq: 2,
+        contentManifestHash: 'content-hash-4',
+        metadataManifestHash: 'metadata-hash-2',
+        pending: false,
+        lastApplyError: null,
+      });
+      expect(contentHandle.lastApplyError).toBeNull();
     } finally {
       await driver.shutdown();
       db.close();

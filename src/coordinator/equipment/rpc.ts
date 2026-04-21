@@ -10,6 +10,7 @@ import type { EquipmentLifecycleService } from './lifecycle.js';
 import type { EquipmentRequestPort } from '../../transport/rpc-ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 
+/** Wraps lifecycle mutations with the per-slot guard so equipment RPC stays serialized by slot. */
 export function createEquipmentRpc(lifecycleService: EquipmentLifecycleService): EquipmentRequestPort {
   return {
     registerEquipment: async (request) => {
@@ -42,6 +43,7 @@ export function createEquipmentRpc(lifecycleService: EquipmentLifecycleService):
   };
 }
 
+/** Exposes a stable unavailable surface when the coordinator boots without equipment wiring. */
 export function createUnavailableEquipmentRpc(): EquipmentRequestPort {
   return {
     registerEquipment: async (request: RegisterEquipmentRequest): Promise<RegisterEquipmentResult> => {

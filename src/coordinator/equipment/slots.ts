@@ -1,6 +1,7 @@
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ConsumerHandle } from '../consumer-driver.js';
 
+/** Keeps slot ownership explicit so KB routing can swap live equipment without coordinator imports. */
 export interface EquipmentSlot<T> {
   readonly id: string;
   readonly defaultOwner: () => T;
@@ -15,6 +16,7 @@ export interface EquipmentSlotView {
   readonly handle: ConsumerHandle | null;
 }
 
+/** Centralizes slot lookup so lifecycle code owns writes and readers stay read-only. */
 export interface SlotRegistry {
   declare<T>(slot: EquipmentSlot<T>): void;
   get<T>(slotId: string): EquipmentSlot<T>;
@@ -88,6 +90,7 @@ class InMemorySlotRegistry implements SlotRegistry {
   }
 }
 
+/** Creates a mutable runtime slot that can fall back to the default owner when equipment is detached. */
 export function createEquipmentSlot<T>(options: {
   id: string;
   defaultOwner: () => T;
@@ -95,6 +98,7 @@ export function createEquipmentSlot<T>(options: {
   return new MutableEquipmentSlot(options.id, options.defaultOwner);
 }
 
+/** Provides the in-process slot registry the coordinator and lifecycle service share. */
 export function createSlotRegistry(): SlotRegistry {
   return new InMemorySlotRegistry();
 }

@@ -10,14 +10,18 @@ function createHandle(id: string): ConsumerHandle {
   return {
     id,
     registrationKind: 'equipment',
+    lastApplyError: null,
     async stop() {},
     async unregister() {},
     status() {
       return {
         authority: 'corpus',
+        corpusInterest: 'content',
         snapshotId: null,
         contentSeq: 0,
+        metadataSeq: 0,
         contentManifestHash: null,
+        metadataManifestHash: null,
         pending: false,
         lastApplyError: null,
       };

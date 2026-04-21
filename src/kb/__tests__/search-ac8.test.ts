@@ -107,9 +107,12 @@ function createCorpusHandle(
 ): ConsumerHandle {
   const status: Extract<ConsumerHandleStatus, { authority: 'corpus' }> = {
     authority: 'corpus',
+    corpusInterest: 'content',
     snapshotId: null,
     contentSeq: 0,
+    metadataSeq: 0,
     contentManifestHash: null,
+    metadataManifestHash: null,
     pending: false,
     lastApplyError: null,
     ...initial,
@@ -118,6 +121,9 @@ function createCorpusHandle(
   return {
     id: 'mock-needle-handle',
     registrationKind: 'equipment',
+    get lastApplyError() {
+      return status.lastApplyError;
+    },
     async stop() {},
     async unregister() {},
     status: () => ({ ...status }),
@@ -185,9 +191,12 @@ function seedNeedleRouteState(
 
   return {
     authority: 'corpus',
+    corpusInterest: 'content',
     snapshotId: snapshot.snapshotId,
     contentSeq: snapshot.contentSeq,
+    metadataSeq: snapshot.metadataSeq,
     contentManifestHash: snapshot.contentManifestHash,
+    metadataManifestHash: snapshot.metadataManifestHash,
     pending: false,
     lastApplyError: null,
   };

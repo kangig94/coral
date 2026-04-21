@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, rmSync, statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../consumer-driver.js';
@@ -13,7 +13,12 @@ import {
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
-import { equipmentAddonPath, equipmentInstallLockPath, type EquipmentPathOptions } from '../../infra/equipment-paths.js';
+import {
+  equipmentAddonPath,
+  equipmentDataDir,
+  equipmentInstallLockPath,
+  type EquipmentPathOptions,
+} from '../../infra/equipment-paths.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from './contract.js';
@@ -52,6 +57,12 @@ type EquipmentDescriptor = {
   slotId: 'kb.vector';
   consumerId: typeof NEEDLE_CONSUMER_ID;
   addonPath: (pathOptions?: EquipmentPathOptions) => string;
+};
+
+type PreparedActivation = {
+  descriptor: EquipmentDescriptor;
+  runtime: KbRuntime;
+  addonPath: string;
 };
 
 export interface EquipmentLifecycleServiceOptions {
@@ -142,8 +153,9 @@ export class EquipmentLifecycleService {
     const descriptor = this.requireDescriptor(name);
     const durableState = this.readStateRow(name);
     const active = this.activeBySlot.get(descriptor.slotId);
+    const addonPath = descriptor.addonPath(this.options.pathOptions);
 
-    let status: EquipmentView['status'] = 'inactive';
+    let status: EquipmentView['status'] = 'not_equipped';
     if (this.isInstallLockPresent(name)) {
       status = 'installing';
     } else if (durableState?.state === 'disabled_pending_reinstall') {
@@ -151,7 +163,7 @@ export class EquipmentLifecycleService {
     } else if (active?.name === name) {
       status = this.isCursorFresh(descriptor.consumerId) ? 'equipped' : 'catching_up';
     } else if (durableState?.state === 'equipped') {
-      status = 'unavailable';
+      status = this.isAddonFileReadable(addonPath) ? 'inactive' : 'unavailable';
     }
 
     return {
@@ -162,37 +174,18 @@ export class EquipmentLifecycleService {
   }
 
   async equip(name: string): Promise<RegisterEquipmentResult> {
-    const descriptor = this.requireDescriptor(name);
-    const active = this.activeBySlot.get(descriptor.slotId);
-    if (active?.name === name) {
+    const current = this.getEquipment(name);
+    if (current.status === 'equipped' || current.status === 'catching_up') {
       return {
         status: 'already_equipped',
-        equipment: this.getEquipment(name),
+        equipment: current,
       };
     }
-    if (active) {
-      throw documentedCoralSetupError('slot_already_equipped', {
-        slotId: descriptor.slotId,
-        equippedBy: active.name,
-      });
-    }
-
-    const runtime = this.requireKbRuntime();
-    if (resolveEmbeddingProviderConfig() === null) {
-      throw documentedCoralSetupError('equipment_embedding_provider_missing', { name: 'Needle' });
-    }
-
-    const addonPath = descriptor.addonPath(this.options.pathOptions);
-    if (!this.isAddonFileReadable(addonPath)) {
-      throw documentedCoralSetupError('equipment_binary_corrupt', { name });
-    }
-
+    const { descriptor, runtime, addonPath } = this.prepareActivation(name);
     let handle: ConsumerHandle | null = null;
     let backend: NeedleBackend | null = null;
-    let slotEquipped = false;
 
     try {
-      const slot = this.options.slotRegistry.get<VectorRetrieval>(descriptor.slotId);
       backend = this.activateNeedleFn(runtime, addonPath, {
         consumerId: descriptor.consumerId,
         ...(this.options.needleBackendOptions?.storeFactory === undefined
@@ -202,42 +195,15 @@ export class EquipmentLifecycleService {
       (backend as NeedleBackend & { onApplyFailure?: (error: ConsumerApplyError) => void }).onApplyFailure = (error) => {
         void this.handleApplyFailure(name, error);
       };
-
-      const registerTxn = this.options.db.transaction(() => {
-        handle = this.options.consumerDriver.register(backend as NeedleBackend & { onApplyFailure?: (error: ConsumerApplyError) => void });
-        this.writeStateRow(name, 'equipped');
-      });
-      registerTxn.immediate();
-
-      if (handle === null) {
-        throw new Error(`Equipment registration did not produce a handle for ${name}.`);
-      }
-
-      slot.equip(backend, handle);
-      slotEquipped = true;
-      this.activeBySlot.set(descriptor.slotId, {
-        name: descriptor.name,
-        slotId: descriptor.slotId,
-        backend,
-        handle,
-      });
-      this.options.consumerDriver.notifyCorpus(runtime.getCorpusStateSnapshot());
-
+      handle = this.registerConsumer(runtime, backend, name);
+      this.commitActivation(name, handle, backend, descriptor, runtime);
       const equipment = this.getEquipment(name);
       return {
         status: equipment.status === 'equipped' ? 'equipped' : 'catching_up',
         equipment,
       };
     } catch (error) {
-      this.activeBySlot.delete(descriptor.slotId);
-      if (slotEquipped) {
-        this.safeUnequipSlot(descriptor.slotId);
-      }
-
-      if (handle !== null) {
-        await this.rollbackFailedEquip(name, handle);
-      }
-      await this.closeRuntimeBackend(runtime);
+      await this.rollbackActivation(name, handle, backend);
 
       if (this.isBinaryLoadFailure(error)) {
         this.writeStateRow(name, 'disabled_pending_reinstall', {
@@ -255,34 +221,16 @@ export class EquipmentLifecycleService {
     const descriptor = this.requireDescriptor(name);
     const active = this.activeBySlot.get(descriptor.slotId);
     const durableState = this.readStateRow(name);
-    if (!active && durableState === null) {
+    if (!active && (durableState === null || durableState.state === 'unequipped')) {
       return { status: 'not_equipped' };
     }
 
-    if (active?.name === name) {
-      this.activeBySlot.delete(descriptor.slotId);
-      this.safeUnequipSlot(descriptor.slotId);
-      await active.handle.stop().catch(() => {});
-
-      const unregisterTxn = this.options.db.transaction(() => {
-        this.options.consumerDriver.unregisterStoppedConsumer(active.handle.id);
-        this.deleteStateStmt.run(name);
-      });
-      unregisterTxn.immediate();
-      await this.closeRuntimeBackend(this.options.resolveKbRuntime());
-      return { status: 'uninstalled' };
-    }
-
-    const unregisterTxn = this.options.db.transaction(() => {
-      this.deleteCursorStmt.run(descriptor.consumerId);
-      this.deleteStateStmt.run(name);
-    });
-    unregisterTxn.immediate();
+    await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
     return { status: 'uninstalled' };
   }
 
-  getRuntimeActivation(slotId: string): RuntimeActivationSnapshot | null {
-    const active = this.activeBySlot.get(slotId);
+  getRuntimeActivation(): RuntimeActivationSnapshot | null {
+    const active = this.activeBySlot.get('kb.vector');
     if (!active) {
       return null;
     }
@@ -314,17 +262,95 @@ export class EquipmentLifecycleService {
     });
   }
 
-  private async rollbackFailedEquip(name: string, handle: ConsumerHandle): Promise<void> {
-    await handle.stop().catch(() => {});
+  private prepareActivation(name: string): PreparedActivation {
+    const descriptor = this.requireDescriptor(name);
+    const active = this.activeBySlot.get(descriptor.slotId);
+    if (active) {
+      throw documentedCoralSetupError('slot_already_equipped', {
+        slotId: descriptor.slotId,
+        equippedBy: active.name,
+      });
+    }
+
+    const runtime = this.requireKbRuntime();
+    if (resolveEmbeddingProviderConfig() === null) {
+      throw documentedCoralSetupError('equipment_embedding_provider_missing', { name: 'Needle' });
+    }
+
+    const addonPath = descriptor.addonPath(this.options.pathOptions);
+    if (!this.isAddonFileReadable(addonPath)) {
+      throw documentedCoralSetupError('equipment_binary_corrupt', { name });
+    }
+
+    return { descriptor, runtime, addonPath };
+  }
+
+  private registerConsumer(_runtime: KbRuntime, backend: NeedleBackend, name: string): ConsumerHandle {
+    let handle: ConsumerHandle | null = null;
+    const registerTxn = this.options.db.transaction(() => {
+      handle = this.options.consumerDriver.register(backend as NeedleBackend & {
+        onApplyFailure?: (error: ConsumerApplyError) => void;
+      });
+    });
+    registerTxn.immediate();
+
+    if (handle === null) {
+      throw new Error(`Equipment registration did not produce a handle for ${name}.`);
+    }
+
+    return handle;
+  }
+
+  private commitActivation(
+    name: string,
+    handle: ConsumerHandle,
+    backend: NeedleBackend,
+    descriptor: EquipmentDescriptor,
+    runtime: KbRuntime,
+  ): void {
+    const slot = this.options.slotRegistry.get<VectorRetrieval>(descriptor.slotId);
+    const commitTxn = this.options.db.transaction(() => {
+      slot.equip(backend, handle);
+      this.activeBySlot.set(descriptor.slotId, {
+        name: descriptor.name,
+        slotId: descriptor.slotId,
+        backend,
+        handle,
+      });
+      this.writeStateRow(name, 'equipped');
+      this.options.consumerDriver.notifyCorpus(runtime.getCorpusStateSnapshot());
+    });
+    commitTxn.immediate();
+  }
+
+  private async rollbackActivation(name: string, handle: ConsumerHandle | null, backend: NeedleBackend | null): Promise<void> {
+    const descriptor = this.requireDescriptor(name);
+    const active = this.activeBySlot.get(descriptor.slotId);
+    const runtime = this.options.resolveKbRuntime();
+    const handleToStop = active?.name === name ? active.handle : handle;
+
+    if (handleToStop !== null) {
+      await handleToStop.stop().catch(() => {});
+    }
+
     const rollbackTxn = this.options.db.transaction(() => {
-      try {
-        this.options.consumerDriver.unregisterStoppedConsumer(handle.id);
-      } catch {
-        // Best-effort rollback when registration failed after the cursor row was created.
+      if (handleToStop !== null) {
+        try {
+          this.options.consumerDriver.unregisterStoppedConsumer(handleToStop.id);
+        } catch {
+          this.deleteCursorStmt.run(descriptor.consumerId);
+        }
+      } else {
+        this.deleteCursorStmt.run(descriptor.consumerId);
       }
       this.deleteStateStmt.run(name);
     });
     rollbackTxn.immediate();
+
+    this.activeBySlot.delete(descriptor.slotId);
+    this.safeUnequipSlot(descriptor.slotId);
+    await this.closeRuntimeBackend(runtime, backend);
+    rmSync(equipmentDataDir(name, this.options.pathOptions), { recursive: true, force: true });
   }
 
   private async handleApplyFailure(name: string, applyError: ConsumerApplyError): Promise<void> {
@@ -336,19 +362,10 @@ export class EquipmentLifecycleService {
     try {
       const descriptor = this.requireDescriptor(name);
       const active = this.activeBySlot.get(descriptor.slotId);
-      if (active?.name === name) {
-        this.activeBySlot.delete(descriptor.slotId);
-        this.safeUnequipSlot(descriptor.slotId);
-        await active.handle.stop().catch(() => {});
-        try {
-          this.options.consumerDriver.unregisterStoppedConsumer(active.handle.id, { preserveCursor: true });
-        } catch {
-          // If the consumer already detached, keep advancing the durable failure state.
-        }
-      }
-
-      await this.closeRuntimeBackend(this.options.resolveKbRuntime());
+      const installedAt = this.readStateRow(name)?.installed_at ?? this.now().toISOString();
+      await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
       this.writeStateRow(name, 'disabled_pending_reinstall', {
+        installedAt,
         lastErrorCode: this.isBinaryLoadFailure(applyError.cause) ? 'equipment_binary_corrupt' : null,
         lastErrorMessage: applyError.message,
       });
@@ -360,13 +377,13 @@ export class EquipmentLifecycleService {
   private writeStateRow(
     name: string,
     state: DurableEquipmentState,
-    options: { lastErrorCode?: string | null; lastErrorMessage?: string | null } = {},
+    options: { installedAt?: string | null; lastErrorCode?: string | null; lastErrorMessage?: string | null } = {},
   ): void {
     const existing = this.readStateRow(name);
     this.upsertStateStmt.run(
       name,
       state,
-      existing?.installed_at ?? this.now().toISOString(),
+      options.installedAt ?? existing?.installed_at ?? this.now().toISOString(),
       options.lastErrorCode ?? null,
       options.lastErrorMessage ?? null,
     );
@@ -401,12 +418,13 @@ export class EquipmentLifecycleService {
     return runtime;
   }
 
-  private async closeRuntimeBackend(runtime: KbRuntime | null): Promise<void> {
-    if (!runtime) {
+  private async closeRuntimeBackend(runtime: KbRuntime | null, backend: NeedleBackend | null = null): Promise<void> {
+    if (runtime !== null) {
+      await this.closeNeedleBackendFn(runtime).catch(() => {});
       return;
     }
 
-    await this.closeNeedleBackendFn(runtime).catch(() => {});
+    await backend?.close().catch(() => {});
   }
 
   private safeUnequipSlot(slotId: string): void {

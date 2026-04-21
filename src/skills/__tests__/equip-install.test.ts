@@ -759,7 +759,7 @@ describe('skills/equip/install.mjs needle flow', () => {
     }
   });
 
-  it('reports not_equipped in --list when the coordinator only knows an inactive slot and no local install exists', async () => {
+  it('preserves inactive in --list when the coordinator reports a restart-cleared registration', async () => {
     const fixture = createFixture();
     const coordinator = await startFakeCoordinator(fixture, () => ({
       result: {
@@ -768,6 +768,32 @@ describe('skills/equip/install.mjs needle flow', () => {
             slot: 'kb.vector',
             name: 'needle',
             status: 'inactive',
+          },
+        ],
+      },
+    }));
+
+    try {
+      const result = parseResult(await runInstall(fixture, ['--list']));
+      expect(findCatalogPackage(result, 'needle')).toMatchObject({
+        id: 'needle',
+        status: 'inactive',
+        statusDescription: 'Installed locally but not registered. Run /equip needle to reactivate.',
+      });
+    } finally {
+      await coordinator.close();
+    }
+  });
+
+  it('preserves not_equipped in --list when the coordinator reports the slot as absent', async () => {
+    const fixture = createFixture();
+    const coordinator = await startFakeCoordinator(fixture, () => ({
+      result: {
+        equipment: [
+          {
+            slot: 'kb.vector',
+            name: 'needle',
+            status: 'not_equipped',
           },
         ],
       },

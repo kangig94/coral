@@ -37,7 +37,7 @@ describe('createEquipmentRpc', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('delegates equip and uninstall through the lifecycle service under the slot guard', async () => {
+  it('re-activates inactive equipment instead of treating restart-cleared state as already_equipped', async () => {
     const release = vi.fn();
     const lifecycle = {
       acquireSlotGuard: vi.fn(async () => release),

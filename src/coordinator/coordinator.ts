@@ -43,7 +43,7 @@ import { createOramaBaseProjection } from '../kb/api.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
 import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
-import { runtimeActivationFromHandle } from './equipment/runtime-activation.js';
+import { emptySnapshot } from './equipment/runtime-activation.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
 export { createBackendCore } from './composition/create-backend-core.js';
 export { listInstantiatedExecutionServices } from './composition/execution-services.js';
@@ -110,7 +110,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let storeDb: ReturnType<typeof openBackendStoreDb> | null = null;
   let consumerDriver: ConsumerDriver | null = null;
   const equipmentSlots = createSlotRegistry();
-  let resolveEquipmentView: (() => ReturnType<typeof runtimeActivationFromHandle> | null) | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const providedCreateKbSubsystemFn = coreOptions.createKbSubsystemFn;
@@ -176,7 +175,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       const kbSubsystem = await (providedCreateKbSubsystemFn ?? createKbSubsystem)({
         ...ctx,
         db: getStoreDb(),
-        getEquipmentView: () => resolveEquipmentView?.() ?? null,
+        getEquipmentView: () =>
+          equipmentLifecycleService.getRuntimeActivation()
+          ?? (currentKbRuntime === null ? null : emptySnapshot(createOramaBaseProjection(currentKbRuntime))),
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => new Date(runtime.time.now()),
@@ -195,10 +196,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         defaultOwner: () => createOramaBaseProjection(kbSubsystem.kb),
       });
       equipmentSlots.declare(vectorSlot);
-      resolveEquipmentView = () => {
-        const slotView = equipmentSlots.list().find((slot) => slot.id === vectorSlot.id);
-        return slotView?.handle ? runtimeActivationFromHandle(vectorSlot.currentOwner(), slotView.handle) : null;
-      };
       if (kbSubsystem.curateScheduler) {
         kbSubsystem.curateScheduler = createCoordinatorCurateScheduler({
           scheduler: kbSubsystem.curateScheduler,

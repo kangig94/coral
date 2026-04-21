@@ -315,13 +315,8 @@ function resolveLocalNeedleStatus(entry) {
 }
 
 function resolveNeedleCatalogStatus(entry, equipmentView) {
-  const localStatus = resolveLocalNeedleStatus(entry);
   if (!isRecord(equipmentView) || typeof equipmentView.status !== 'string') {
-    return localStatus;
-  }
-
-  if (equipmentView.status === 'inactive' && localStatus === 'not_equipped') {
-    return 'not_equipped';
+    return resolveLocalNeedleStatus(entry);
   }
 
   return equipmentView.status;

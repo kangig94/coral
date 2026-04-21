@@ -6,6 +6,7 @@ export interface ActivateNeedleOptions {
   readonly storeFactory?: NeedleBackendOptions['storeFactory'];
 }
 
+/** Builds the shared Needle backend so lifecycle activation owns addon wiring in one place. */
 export function activateNeedle(
   runtime: KbRuntime,
   addonPath: string,
