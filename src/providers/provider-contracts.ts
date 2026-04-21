@@ -142,13 +142,13 @@ type CallableProviderExecutor = ProviderInvocation & {
   preflight?(runtime: PreflightRuntime): Promise<void>;
 };
 
-type LegacyProviderExecutor = {
+type ObjectProviderExecutor = {
   readonly name: string;
   execute: ProviderInvocation;
   preflight?(runtime: PreflightRuntime): Promise<void>;
 };
 
-export type ProviderExecutor = CallableProviderExecutor | LegacyProviderExecutor;
+export type ProviderExecutor = CallableProviderExecutor | ObjectProviderExecutor;
 
 /**
  * Alias of ProviderAppServerContract, named for the consumer seam (app-server lifecycle).
