@@ -87,7 +87,11 @@ export function sessionContinuity<TState>(
       const bridgeLifecycle = createBridgeLifecycle();
       const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue);
 
-      const wrappedRuntime: ProviderRuntime = { ...runtime, continuityBridge };
+      const wrappedRuntime: ProviderRuntime = {
+        ...runtime,
+        signal: createAbortAwareSignal(runtime.signal),
+        continuityBridge,
+      };
 
       try {
         for await (const event of runWithBridge(next, request, wrappedRuntime)) {
@@ -199,6 +203,40 @@ function runWithBridge(
   runtime: ProviderRuntime,
 ): ReturnType<Provider> {
   return next(request, runtime);
+}
+
+function createAbortAwareSignal(signal: AbortSignal): AbortSignal {
+  return new Proxy(signal, {
+    get(target, prop, receiver) {
+      if (prop === 'addEventListener') {
+        return (
+          type: 'abort',
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | AddEventListenerOptions,
+        ): void => {
+          if (type === 'abort' && target.aborted) {
+            notifyAbortListener(target, listener);
+            return;
+          }
+
+          target.addEventListener(type, listener, options);
+        };
+      }
+
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+function notifyAbortListener(signal: AbortSignal, listener: EventListenerOrEventListenerObject): void {
+  const event = new Event('abort');
+  if (typeof listener === 'function') {
+    listener.call(signal, event);
+    return;
+  }
+
+  listener.handleEvent(event);
 }
 
 function queueContinuityIfDelta(queue: ContinuityQueue, snapshot: ContinuitySnapshot): void {

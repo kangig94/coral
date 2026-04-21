@@ -256,7 +256,7 @@ describe('coordinator continuity lifecycle integration', () => {
   // after the tier-review middleware refactor (Job B's session-continuity helper extraction
   // + Job C's continuity-consumer rework). Other AC15 verify clauses (a/b/g/h) still pass.
   // The simpler cases are covered; this end-to-end abort+transport pair needs deeper repro.
-  it.skip('checkpoints abort continuity before the terminal event and propagates transport-closed continuity via middleware', async () => {
+  it('checkpoints abort continuity before the terminal event and propagates transport-closed continuity via middleware', async () => {
     const abortProvider: ProviderSpec = {
       name: 'abortable',
       run: wrapWithSessionContinuity(
