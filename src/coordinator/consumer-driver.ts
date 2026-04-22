@@ -164,6 +164,55 @@ function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
   return { message: 'Consumer apply failed', at, cause: err };
 }
 
+function consumerNotRegisteredError(consumerId: string, remediation: string): CoralSetupError {
+  return new CoralSetupError({
+    code: 'consumer_not_registered',
+    userMessage: `Consumer '${consumerId}' is not registered`,
+    remediation,
+    context: { consumerId },
+  });
+}
+
+function consumerAuthorityMismatchError(
+  consumerId: string,
+  existing: string,
+  requested: string,
+): CoralSetupError {
+  return new CoralSetupError({
+    code: 'consumer_authority_mismatch',
+    userMessage: `Consumer '${consumerId}' registered with conflicting authority`,
+    remediation: 'Either delete the stored cursor row or reconcile the registration.',
+    context: { consumerId, existing, requested },
+  });
+}
+
+function consumerInterestMismatchError(
+  consumerId: string,
+  existing: CorpusInterest | null,
+  requested: CorpusInterest,
+): CoralSetupError {
+  return new CoralSetupError({
+    code: 'consumer_interest_mismatch',
+    userMessage: `Consumer '${consumerId}' registered with conflicting corpus interest`,
+    remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
+    context: { consumerId, existing, requested },
+  });
+}
+
+function consumerRegistrationKindMismatchError(
+  consumerId: string,
+  existing: ConsumerRegistrationKind,
+  requested: ConsumerRegistrationKind,
+  remediation: string,
+): CoralSetupError {
+  return new CoralSetupError({
+    code: 'consumer_registration_kind_mismatch',
+    userMessage: `Consumer '${consumerId}' registered with conflicting registration kind`,
+    remediation,
+    context: { consumerId, existing, requested },
+  });
+}
+
 export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
@@ -298,12 +347,12 @@ export class ConsumerDriver {
       if (row) {
         const storedKind = this.ensureCursorRow(reg, false);
         if (storedKind !== existing.registrationKind) {
-          throw new CoralSetupError({
-            code: 'consumer_registration_kind_mismatch',
-            userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
-            remediation: 'Either delete the stored cursor row or reconcile the registrationKind.',
-            context: { consumerId: reg.id, existing: storedKind, requested: existing.registrationKind },
-          });
+          throw consumerRegistrationKindMismatchError(
+            reg.id,
+            storedKind,
+            existing.registrationKind,
+            'Either delete the stored cursor row or reconcile the registrationKind.',
+          );
         }
       } else {
         this.insertCursorRow(reg, existing.registrationKind);
@@ -384,12 +433,7 @@ export class ConsumerDriver {
   waitFreshUntil(target: number, consumerId: string, timeoutMs = 30000): Promise<void> {
     const state = this.consumers.get(consumerId);
     if (!state) {
-      throw new CoralSetupError({
-        code: 'consumer_not_registered',
-        userMessage: `Consumer '${consumerId}' is not registered`,
-        remediation: 'Call driver.register(reg) before waitFreshUntil.',
-        context: { consumerId },
-      });
+      throw consumerNotRegisteredError(consumerId, 'Call driver.register(reg) before waitFreshUntil.');
     }
     if (state.reg.authority !== 'journal') {
       throw new CoralSetupError({
@@ -449,12 +493,7 @@ export class ConsumerDriver {
   unregisterStoppedConsumer(consumerId: string, options: UnregisterStoppedConsumerOptions = {}): void {
     const state = this.consumers.get(consumerId);
     if (!state) {
-      throw new CoralSetupError({
-        code: 'consumer_not_registered',
-        userMessage: `Consumer '${consumerId}' is not registered`,
-        remediation: 'Call driver.register(reg) before unregisterStoppedConsumer.',
-        context: { consumerId },
-      });
+      throw consumerNotRegisteredError(consumerId, 'Call driver.register(reg) before unregisterStoppedConsumer.');
     }
 
     if (state.stopPromise === null) {
@@ -514,30 +553,20 @@ export class ConsumerDriver {
 
   private assertExistingRegistrationMatches(state: ConsumerState, reg: ConsumerRegistration): void {
     if (state.reg.authority !== reg.authority) {
-      throw new CoralSetupError({
-        code: 'consumer_authority_mismatch',
-        userMessage: `Consumer '${reg.id}' registered with conflicting authority`,
-        remediation: 'Either delete the stored cursor row or reconcile the registration.',
-        context: { consumerId: reg.id, existing: state.reg.authority, requested: reg.authority },
-      });
+      throw consumerAuthorityMismatchError(reg.id, state.reg.authority, reg.authority);
     }
 
     if (state.reg.authority === 'corpus' && reg.authority === 'corpus' && state.reg.corpusInterest !== reg.corpusInterest) {
-      throw new CoralSetupError({
-        code: 'consumer_interest_mismatch',
-        userMessage: `Consumer '${reg.id}' registered with conflicting corpus interest`,
-        remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
-        context: { consumerId: reg.id, existing: state.reg.corpusInterest, requested: reg.corpusInterest },
-      });
+      throw consumerInterestMismatchError(reg.id, state.reg.corpusInterest, reg.corpusInterest);
     }
 
     if (reg.registrationKind !== undefined && state.registrationKind !== reg.registrationKind) {
-      throw new CoralSetupError({
-        code: 'consumer_registration_kind_mismatch',
-        userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
-        remediation: 'Either stop and unregister the active consumer or reconcile the registrationKind.',
-        context: { consumerId: reg.id, existing: state.registrationKind, requested: reg.registrationKind },
-      });
+      throw consumerRegistrationKindMismatchError(
+        reg.id,
+        state.registrationKind,
+        reg.registrationKind,
+        'Either stop and unregister the active consumer or reconcile the registrationKind.',
+      );
     }
   }
 
@@ -547,34 +576,24 @@ export class ConsumerDriver {
 
     if (row) {
       if (row.authority !== reg.authority) {
-        throw new CoralSetupError({
-          code: 'consumer_authority_mismatch',
-          userMessage: `Consumer '${reg.id}' registered with conflicting authority`,
-          remediation: 'Either delete the stored cursor row or reconcile the registration.',
-          context: { consumerId: reg.id, existing: row.authority, requested: reg.authority },
-        });
+        throw consumerAuthorityMismatchError(reg.id, row.authority, reg.authority);
       }
       if (reg.authority === 'corpus') {
         const storedInterest = parseStoredCorpusInterest(row);
         if (storedInterest !== reg.corpusInterest) {
-          throw new CoralSetupError({
-            code: 'consumer_interest_mismatch',
-            userMessage: `Consumer '${reg.id}' registered with conflicting corpus interest`,
-            remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
-            context: { consumerId: reg.id, existing: storedInterest, requested: reg.corpusInterest },
-          });
+          throw consumerInterestMismatchError(reg.id, storedInterest, reg.corpusInterest);
         }
       }
 
       const storedKind = this.parseStoredRegistrationKind(reg.id, row.registration_kind);
       if (requestedKind !== undefined && storedKind !== requestedKind) {
         if (!allowRegistrationKindUpdate) {
-          throw new CoralSetupError({
-            code: 'consumer_registration_kind_mismatch',
-            userMessage: `Consumer '${reg.id}' registered with conflicting registration kind`,
-            remediation: 'Either delete the stored cursor row or reconcile the registrationKind.',
-            context: { consumerId: reg.id, existing: storedKind, requested: requestedKind },
-          });
+          throw consumerRegistrationKindMismatchError(
+            reg.id,
+            storedKind,
+            requestedKind,
+            'Either delete the stored cursor row or reconcile the registrationKind.',
+          );
         }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);
         return requestedKind;

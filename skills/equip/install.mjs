@@ -169,6 +169,29 @@ function buildSetupError(code, userMessage, remediation, context = undefined, ex
   };
 }
 
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildPackageInstallFailureResult(pkg, errors, suggestions) {
+  return {
+    exitCode: 1,
+    result: { status: 'error', message: `Could not install ${pkg}`, errors, suggestions },
+  };
+}
+
+function buildNeedleInstallPathErrorResult() {
+  return {
+    exitCode: 1,
+    result: buildSetupError(
+      'equipment_install_path_unwritable',
+      'Cannot write to the Coral equipment install path for needle.',
+      `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
+      { name: 'needle' },
+    ),
+  };
+}
+
 function metaPath(pkg) {
   return join(TOOLS_DIR, `.${pkg}.json`);
 }
@@ -614,7 +637,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         `Could not install ${pkg}`,
         [`Retry with '/equip ${pkg}' because only the packaged needle version is supported.`],
         {
-          errors: [error instanceof Error ? error.message : String(error)],
+          errors: [errorText(error)],
         },
       ),
     };
@@ -650,15 +673,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
       mkdirSync(dirname(installLockPath), { recursive: true });
     } catch (error) {
       if (isUnwritableInstallPathError(error)) {
-        return {
-          exitCode: 1,
-          result: buildSetupError(
-            'equipment_install_path_unwritable',
-            'Cannot write to the Coral equipment install path for needle.',
-            `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
-            { name: 'needle' },
-          ),
-        };
+        return buildNeedleInstallPathErrorResult();
       }
       throw error;
     }
@@ -679,15 +694,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         };
       }
       if (isUnwritableInstallPathError(error)) {
-        return {
-          exitCode: 1,
-          result: buildSetupError(
-            'equipment_install_path_unwritable',
-            'Cannot write to the Coral equipment install path for needle.',
-            `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
-            { name: 'needle' },
-          ),
-        };
+        return buildNeedleInstallPathErrorResult();
       }
       throw error;
     }
@@ -702,17 +709,9 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         };
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
-          return {
-            exitCode: 1,
-            result: buildSetupError(
-              'equipment_install_path_unwritable',
-              'Cannot write to the Coral equipment install path for needle.',
-              `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
-              { name: 'needle' },
-            ),
-          };
+          return buildNeedleInstallPathErrorResult();
         }
-        errors.push(`prebuild: ${error instanceof Error ? error.message : String(error)}`);
+        errors.push(`prebuild: ${errorText(error)}`);
       }
 
       try {
@@ -723,17 +722,9 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         };
       } catch (error) {
         if (isUnwritableInstallPathError(error)) {
-          return {
-            exitCode: 1,
-            result: buildSetupError(
-              'equipment_install_path_unwritable',
-              'Cannot write to the Coral equipment install path for needle.',
-              `Check filesystem permissions and free space under ${equipmentInstallRootLabel()}, then retry.`,
-              { name: 'needle' },
-            ),
-          };
+          return buildNeedleInstallPathErrorResult();
         }
-        errors.push(`source-build: ${error instanceof Error ? error.message : String(error)}`);
+        errors.push(`source-build: ${errorText(error)}`);
       }
 
       const suggestions = [];
@@ -747,10 +738,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
       }
 
-      return {
-        exitCode: 1,
-        result: { status: 'error', message: `Could not install ${pkg}`, errors, suggestions },
-      };
+      return buildPackageInstallFailureResult(pkg, errors, suggestions);
     } finally {
       releaseInstallLock?.();
     }
@@ -799,7 +787,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         result: buildResult(statusLabel, 'binary', toolPath, entry, { version: targetVersion }),
       };
     } catch (error) {
-      errors.push(`binary: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`binary: ${errorText(error)}`);
     }
   }
 
@@ -814,7 +802,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         result: buildResult(statusLabel, 'uv', cmd, entry, { version: targetVersion }),
       };
     } catch (error) {
-      errors.push(`uv: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`uv: ${errorText(error)}`);
     }
   }
 
@@ -829,7 +817,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
         result: buildResult(statusLabel, 'pipx', cmd, entry, { version: targetVersion }),
       };
     } catch (error) {
-      errors.push(`pipx: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`pipx: ${errorText(error)}`);
     }
   }
 
@@ -838,10 +826,7 @@ export async function runInstallCommand(argv = process.argv.slice(2)) {
   if (!findCmd('uv')) suggestions.push('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
   if (!findCmd('pipx')) suggestions.push('Install pipx: python3 -m pip install --user pipx');
 
-  return {
-    exitCode: 1,
-    result: { status: 'error', message: `Could not install ${pkg}`, errors, suggestions },
-  };
+  return buildPackageInstallFailureResult(pkg, errors, suggestions);
 }
 
 async function main() {
