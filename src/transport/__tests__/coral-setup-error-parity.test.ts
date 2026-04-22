@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { CoralSetupError, serializeCoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
+import {
+  documentedCoralSetupError,
+  serializeCoralSetupError,
+  type DocumentedCoralSetupErrorCode,
+  type SerializedCoralSetupError,
+} from '../../runtime/errors.js';
 import { buildTransportErrorResponse } from '../error-response.js';
 import type { HttpHandlerPorts } from '../http/contracts.js';
 import { createHttpHandler, sendJson } from '../http/handler.js';
@@ -19,16 +24,41 @@ function makeSocketPath(): string {
   return join(root, 'coordinator.sock');
 }
 
-function equipmentInstallLockContended(): SerializedCoralSetupError {
-  return {
-    code: 'equipment_install_lock_contended',
-    userMessage: 'Another /equip is in progress for needle.',
-    remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
-    context: { name: 'needle' },
-  };
+const ADDED_DOCUMENTED_SETUP_ERRORS = [
+  { code: 'unknown_equipment', context: { name: 'needle' } },
+  { code: 'equipment_runtime_unavailable', context: { name: 'needle' } },
+  { code: 'consumer_not_registered', context: { id: 'consumer-a' } },
+  {
+    code: 'consumer_authority_mismatch',
+    context: { id: 'consumer-a', expected: 'journal', actual: 'corpus' },
+  },
+  { code: 'consumer_interest_mismatch', context: { id: 'consumer-a' } },
+  {
+    code: 'consumer_registration_kind_mismatch',
+    context: { id: 'consumer-a', expected: 'base', actual: 'equipment' },
+  },
+  { code: 'consumer_lane_invalid', context: { id: 'consumer-a' } },
+  { code: 'consumer_wait_unsupported', context: { id: 'consumer-a' } },
+  { code: 'consumer_unregister_requires_stop', context: { id: 'consumer-a' } },
+  { code: 'consumer_interest_invalid', context: { id: 'consumer-a' } },
+  { code: 'consumer_registration_kind_invalid', context: { id: 'consumer-a' } },
+] satisfies Array<{
+  code: DocumentedCoralSetupErrorCode;
+  context: Record<string, unknown>;
+}>;
+
+function documentedSetupErrorPayload(
+  code: DocumentedCoralSetupErrorCode,
+  context: Record<string, unknown>,
+): SerializedCoralSetupError {
+  const payload = serializeCoralSetupError(documentedCoralSetupError(code, context));
+  if (payload === null) {
+    throw new Error(`Expected ${code} to serialize`);
+  }
+  return payload;
 }
 
-function createPorts(): HttpHandlerPorts {
+function createPorts(failWith: () => Error): HttpHandlerPorts {
   return {
     identity: {
       pluginRoot: '/plugin-root',
@@ -124,7 +154,7 @@ function createPorts(): HttpHandlerPorts {
     },
     equipment: {
       registerEquipment: vi.fn(async () => {
-        throw new CoralSetupError(equipmentInstallLockContended());
+        throw failWith();
       }),
       unregisterEquipment: vi.fn(),
       listEquipment: vi.fn(async () => ({ equipment: [] })),
@@ -165,12 +195,15 @@ afterEach(async () => {
   }
 });
 
-async function requestIpcErrorPayload(socketPath: string): Promise<SerializedCoralSetupError> {
+async function requestIpcErrorPayload(
+  socketPath: string,
+  expected: SerializedCoralSetupError,
+): Promise<SerializedCoralSetupError> {
   try {
     await requestIpcMethod(socketPath, 'coordinator.registerEquipment', { name: 'needle' });
   } catch (error: unknown) {
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe('Another /equip is in progress for needle.');
+    expect((error as Error).message).toBe(expected.userMessage);
     const structured = serializeCoralSetupError(error instanceof Error ? error.cause : null);
     expect(structured).not.toBeNull();
     return structured as SerializedCoralSetupError;
@@ -179,7 +212,11 @@ async function requestIpcErrorPayload(socketPath: string): Promise<SerializedCor
   throw new Error('Expected IPC request to fail');
 }
 
-async function requestHttpErrorPayload(baseUrl: string, token: string): Promise<SerializedCoralSetupError> {
+async function requestHttpErrorPayload(
+  baseUrl: string,
+  token: string,
+  expected: SerializedCoralSetupError,
+): Promise<SerializedCoralSetupError> {
   const response = await fetch(`${baseUrl}/coordinator/equipment`, {
     method: 'POST',
     headers: {
@@ -191,34 +228,32 @@ async function requestHttpErrorPayload(baseUrl: string, token: string): Promise<
 
   expect(response.status).toBe(500);
   const body = await response.json();
-  expect(body).toMatchObject({
-    code: 'equipment_install_lock_contended',
-    userMessage: 'Another /equip is in progress for needle.',
-    remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
-    context: { name: 'needle' },
-  });
+  expect(body).toMatchObject(expected);
   const structured = serializeCoralSetupError(body);
   expect(structured).not.toBeNull();
   return structured as SerializedCoralSetupError;
 }
 
 describe('coral setup error parity', () => {
-  it('surfaces the same structured CoralSetupError payload through IPC and HTTP', async () => {
-    const ports = createPorts();
-    const expected = equipmentInstallLockContended();
-    const socketPath = makeSocketPath();
-    const ipcListener = createIpcServer(ports);
-    const { baseUrl } = await startHttpServer(ports);
+  it.each(ADDED_DOCUMENTED_SETUP_ERRORS)(
+    'surfaces $code through IPC and HTTP with matching setup payloads',
+    async ({ code, context }) => {
+      const ports = createPorts(() => documentedCoralSetupError(code, context));
+      const expected = documentedSetupErrorPayload(code, context);
+      const socketPath = makeSocketPath();
+      const ipcListener = createIpcServer(ports);
+      const { baseUrl } = await startHttpServer(ports);
 
-    await listenIpcServer(ipcListener, socketPath);
-    try {
-      const ipcPayload = await requestIpcErrorPayload(socketPath);
-      const httpPayload = await requestHttpErrorPayload(baseUrl, ports.identity.token);
+      await listenIpcServer(ipcListener, socketPath);
+      try {
+        const ipcPayload = await requestIpcErrorPayload(socketPath, expected);
+        const httpPayload = await requestHttpErrorPayload(baseUrl, ports.identity.token, expected);
 
-      expect(ipcPayload).toEqual(expected);
-      expect(httpPayload).toEqual(expected);
-    } finally {
-      await closeIpcServer(ipcListener);
-    }
-  });
+        expect(ipcPayload).toEqual(expected);
+        expect(httpPayload).toEqual(expected);
+      } finally {
+        await closeIpcServer(ipcListener);
+      }
+    },
+  );
 });

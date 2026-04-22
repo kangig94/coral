@@ -1,5 +1,5 @@
 import { dirname, normalize } from 'node:path';
-import type { RuntimeDirentLike, StoragePort, TimePort } from '../../runtime/ports.js';
+import type { RuntimeDirentLike, StorageData, StoragePort, TimePort } from '../../runtime/ports.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 type FileNode = {
@@ -159,7 +159,7 @@ export class InMemoryStorage implements StoragePort {
     return file.content.toString(encoding);
   }
 
-  writeFileSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): void {
+  writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
     this.requireDirectory(parent);
@@ -168,7 +168,7 @@ export class InMemoryStorage implements StoragePort {
     }
     this.files.set(normalized, {
       kind: 'file',
-      content: Buffer.from(data, options?.encoding ?? 'utf-8'),
+      content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
@@ -467,7 +467,7 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(parentPath(normalized));
   }
 
-  tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+  tryExclusiveWriteSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
     const normalized = normalizePathForStorage(path);
     this.mkdirSync(parentPath(normalized), { recursive: true });
     if (this.existsSync(normalized)) {
@@ -475,7 +475,7 @@ export class InMemoryStorage implements StoragePort {
     }
     this.files.set(normalized, {
       kind: 'file',
-      content: Buffer.from(data, options?.encoding ?? 'utf-8'),
+      content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
@@ -484,7 +484,7 @@ export class InMemoryStorage implements StoragePort {
     return true;
   }
 
-  writeAtomicSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+  writeAtomicSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
     const normalized = normalizePathForStorage(path);
     const parent = parentPath(normalized);
     if (!this.directories.has(parent)) {
@@ -494,7 +494,7 @@ export class InMemoryStorage implements StoragePort {
     const tempPath = `${normalized}.tmp`;
     this.files.set(tempPath, {
       kind: 'file',
-      content: Buffer.from(data, options?.encoding ?? 'utf-8'),
+      content: bufferFromStorageData(data, options?.encoding),
       mode: options?.mode,
       mtimeMs: this.nextStamp(),
     });
@@ -503,7 +503,7 @@ export class InMemoryStorage implements StoragePort {
     return true;
   }
 
-  writeAtomicDurableSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
+  writeAtomicDurableSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean {
     return this.writeAtomicSync(path, data, options);
   }
 
@@ -688,4 +688,8 @@ export class InMemoryStorage implements StoragePort {
       cursor = parentPath(cursor);
     }
   }
+}
+
+function bufferFromStorageData(data: StorageData, encoding: BufferEncoding = 'utf-8'): Buffer {
+  return typeof data === 'string' ? Buffer.from(data, encoding) : Buffer.from(data);
 }

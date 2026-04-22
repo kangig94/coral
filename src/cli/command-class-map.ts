@@ -7,6 +7,11 @@ export type StaticCommandPath =
   | 'wait'
   | 'abort'
   | 'workflow'
+  | 'expansion list'
+  | 'expansion equip'
+  | 'expansion unequip'
+  | 'expansion update'
+  | 'expansion info'
   | 'kb search'
   | 'kb diagnose'
   | 'kb principles'
@@ -32,6 +37,11 @@ export const commandClassMap = {
   wait: 'subscribe',
   abort: 'mutate',
   workflow: 'mutate',
+  'expansion list': 'read',
+  'expansion equip': 'mutate',
+  'expansion unequip': 'mutate',
+  'expansion update': 'mutate',
+  'expansion info': 'read',
   'kb search': 'read',
   'kb diagnose': 'read',
   'kb principles': 'read',
@@ -53,13 +63,7 @@ export const commandClassMap = {
   'discuss abort': 'mutate',
 } as const satisfies Readonly<Record<StaticCommandPath, CommandClass>>;
 
-export const commandContainerPaths = new Set<string>([
-  'backend',
-  'discuss',
-  'kb',
-  'kb source',
-  'kb memo',
-]);
+export const commandContainerPaths = new Set<string>(['backend', 'discuss', 'expansion', 'kb', 'kb source', 'kb memo']);
 
 export const commandClassExemptions = {
   simulate: 'local-only simulation runner',

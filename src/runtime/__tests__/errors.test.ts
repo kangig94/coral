@@ -2,9 +2,19 @@ import { describe, it, expect } from 'vitest';
 import {
   CoralSetupError,
   documentedCoralSetupError,
-  documentedCoralSetupErrorSpec,
   type DocumentedCoralSetupErrorCode,
 } from '../errors.js';
+
+function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
+  userMessage: string;
+  remediation: string;
+}> {
+  const error = documentedCoralSetupError(code);
+  return Object.freeze({
+    userMessage: error.userMessage,
+    remediation: error.remediation,
+  });
+}
 
 describe('CoralSetupError', () => {
   it('should construct with all fields', () => {
@@ -40,20 +50,92 @@ describe('CoralSetupError', () => {
     [
       'equipment_install_lock_contended',
       { name: 'needle' },
-      'Another /equip is in progress for needle.',
+      'Another coral-cli expansion equip is in progress for needle.',
       'Wait for the in-flight install to complete or remove the stale lock file.',
     ],
     [
       'equipment_binary_corrupt',
       { name: 'needle' },
       'The installed binary for needle could not be activated.',
-      "Run '/equip needle' again to reinstall the binary.",
+      "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
+    ],
+    [
+      'installer_payload_invalid',
+      {},
+      'Expansion installer returned an invalid payload.',
+      'Retry the command. If this persists, report the code because the installer response failed internal validation.',
+    ],
+    [
+      'unknown_equipment',
+      { name: 'needle' },
+      'The equipment needle is not registered in the Coral catalog.',
+      "Run 'coral-cli expansion list' to see available equipment.",
+    ],
+    [
+      'equipment_runtime_unavailable',
+      { name: 'needle' },
+      'Equipment runtime is not available for needle.',
+      "Restart Coral or run 'coral-cli expansion equip needle' to retry.",
     ],
     [
       'equipment_embedding_provider_missing',
       { name: 'Needle' },
       'Needle needs an embedding provider before it can be equipped.',
-      'Set CORAL_EMBEDDING_PROVIDER in ~/.coral/.env (and any required companion variables) before retrying /equip.',
+      "Set CORAL_EMBEDDING_PROVIDER in ~/.coral/.env (and any required companion variables) before retrying 'coral-cli expansion equip Needle'.",
+    ],
+    [
+      'consumer_not_registered',
+      { id: 'consumer-a' },
+      'Consumer consumer-a is not registered with the coordinator.',
+      'Re-equip or verify the consumer registration.',
+    ],
+    [
+      'consumer_authority_mismatch',
+      { id: 'consumer-a', expected: 'journal', actual: 'corpus' },
+      'Consumer consumer-a authority mismatch: expected journal, got corpus.',
+      'Verify consumer registration ordering and authority.',
+    ],
+    [
+      'consumer_interest_mismatch',
+      { id: 'consumer-a' },
+      'Consumer consumer-a interest mismatch.',
+      'Verify consumer interest declaration matches the registration.',
+    ],
+    [
+      'consumer_registration_kind_mismatch',
+      { id: 'consumer-a', expected: 'base', actual: 'equipment' },
+      'Consumer consumer-a registration kind mismatch: expected base, got equipment.',
+      'Check that registration kind (base vs equipment) is consistent.',
+    ],
+    [
+      'consumer_lane_invalid',
+      { id: 'consumer-a' },
+      'Consumer consumer-a lane is invalid.',
+      'Verify lane configuration against registration.',
+    ],
+    [
+      'consumer_wait_unsupported',
+      { id: 'consumer-a' },
+      'Consumer consumer-a does not support wait.',
+      'Consumer does not support fresh-wait; use status polling.',
+    ],
+    [
+      'consumer_unregister_requires_stop',
+      { id: 'consumer-a' },
+      'Consumer consumer-a must be stopped before unregister.',
+      'Consumer must be stopped before unregister; this is an internal sequencing error. Report it with the code if persistent.',
+    ],
+    [
+      'consumer_interest_invalid',
+      { id: 'consumer-a' },
+      'Consumer consumer-a interest is invalid.',
+      'Verify consumer interest declaration structure.',
+    ],
+    [
+      'consumer_registration_kind_invalid',
+      { id: 'consumer-a' },
+      'Consumer consumer-a registration kind is invalid.',
+      'Internal error: invalid consumer registration kind. Report it with the code if persistent.',
     ],
     [
       'equipment_slot_not_declared',
@@ -65,7 +147,7 @@ describe('CoralSetupError', () => {
       'slot_already_equipped',
       { slotId: 'kb.vector', equippedBy: 'needle' },
       "Slot 'kb.vector' is equipped by 'needle'.",
-      "Run '/equip uninstall needle' first.",
+      "Run 'coral-cli expansion unequip needle' first.",
     ],
     [
       'equipment_install_path_unwritable',
@@ -90,7 +172,8 @@ describe('CoralSetupError', () => {
   it('exposes stable documented specs for known setup codes', () => {
     expect(documentedCoralSetupErrorSpec('equipment_binary_corrupt')).toEqual({
       userMessage: 'The installed binary for this equipment could not be activated.',
-      remediation: "Run '/equip needle' again to reinstall the binary.",
+      remediation:
+        "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
     });
   });
 });

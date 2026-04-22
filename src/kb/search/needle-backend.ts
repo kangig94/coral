@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { readCorpusState } from '../../store/corpus-state.js';
 import { backendLog } from '../../shared/backend-log.js';
 import { errorMessage, isRecord } from '../../shared/utils.js';
+import type { ConsumerApplyError } from '../../coordinator/consumer-driver.js';
 import type { CorpusConsumerApplyContext, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
 import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
@@ -242,6 +243,7 @@ export class NeedleBackend implements VectorRetrieval, CorpusConsumerRegistratio
   readonly corpusInterest = 'content';
   readonly registrationKind = 'equipment';
   readonly id: string;
+  onApplyFailure?: (error: ConsumerApplyError) => void;
 
   private addonPath: string;
   private pluginRoot?: string;

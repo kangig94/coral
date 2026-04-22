@@ -23,7 +23,6 @@ import {
   NEEDLE_CONSUMER_ID,
   NeedleBackendSimulatedCrashError,
 } from '../needle-backend.js';
-import { createOramaBaseProjection } from '../orama-backend.js';
 
 const FIXED_NOW = new Date('2026-04-21T00:00:00.000Z');
 const tempRoots: string[] = [];
@@ -192,7 +191,7 @@ function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: Inst
   const registry = createSlotRegistry();
   const slot = createEquipmentSlot<VectorRetrieval>({
     id: 'kb.vector',
-    defaultOwner: () => createOramaBaseProjection(kb),
+    defaultOwner: () => kb.getBaseRetrievalSurface(),
   });
   registry.declare(slot);
 

@@ -123,12 +123,17 @@ This is the sole asymmetry the two-authority model admits, and it is honest: Jou
 
 ### 2.6 Extension Model (Equipment)
 
-Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Features that intrinsically need external resources (vector search needs an embedding provider; ANN at scale needs a native addon) are documented in README with a one-line setup per feature. Users opt into heavier capabilities via explicit `/equip <name>` commands.
+Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Features that intrinsically need external resources (vector search needs an embedding provider; ANN at scale needs a native addon) are documented in README with a one-line setup per feature. Users opt into heavier capabilities via the `/equip <name>` skill, which routes to `coral-cli expansion equip <name>`.
 
 **UX philosophy — Zelda-style**:
-Equipment is **curiosity-driven**, never enforced. A user scanning the CLI notices `/equip` exists, reads what's in the catalog (`/equip --list`), and picks something interesting if they want to. Nothing prompts, nags, or requires them to equip. The base tier remains fully functional forever — equipping is a **reward for curiosity**, not a completion requirement.
+Equipment is **curiosity-driven**, never enforced. A user scanning the CLI notices `/equip` exists, reads what's in the catalog (`/equip --list`, internally `coral-cli expansion list`), and picks something interesting if they want to. Nothing prompts, nags, or requires them to equip. The base tier remains fully functional forever — equipping is a **reward for curiosity**, not a completion requirement.
 
 The metaphor: Link's base sword always works. Finding the bow is exciting because it opens new play, but Link was never broken without it. Coral's base tier always works. Finding needle is exciting because it sharpens KB search, but KB was never broken without it.
+
+**Three-layer taxonomy**:
+- **Skill** (`/equip`) = the user verb and onboarding surface.
+- **Expansion** (`src/expansion/`) = the installable noun (`needle`, `cgc`, ...).
+- **Equipment** (`src/coordinator/equipment/`) = the coordinator slot where an active expansion runs.
 
 **Two-tier runtime**:
 - **Base tier** — the default after plugin install. Zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS) works immediately. Vector search additionally requires an embedding provider (Google Gemini API key is the documented default; one-line README setup).
@@ -138,9 +143,9 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 1. Equipment **replaces a specific projection backend**, it does not add new commands. The CLI surface is identical in both tiers.
 2. Equipment **never writes events**. Events are truth; equipment maintains additional or replacement projections.
 3. Every equipped projection is **rebuildable from events alone**. Equipping = install + subscribe + replay to build local state.
-4. **`/equip uninstall <name>`** returns the replaced path to the base backend without data loss and without command availability changes.
+4. **`coral-cli expansion unequip <name>`** (surfaced to users as `/equip uninstall <name>`) returns the replaced path to the base backend without data loss and without command availability changes.
 5. Equipment is loaded via **dynamic import** — the heavy dependency enters the process only after `/equip` completes.
-6. Equipment is **never prompted** — the base tier must never display "equip X to unlock this" suggestions. Discovery is through `/equip --list` or documentation, not through nagging.
+6. Equipment is **never prompted** — the base tier must never display "equip X to unlock this" suggestions. Discovery is through `/equip --list` (internally `coral-cli expansion list`) or documentation, not through nagging.
 
 **First equipment: `/equip needle`** (catalog id: `needle`):
 - C++ N-API addon at `../coral-needle` (sibling repo). Prebuilt binaries via GitHub Releases for 5 platforms.
@@ -150,9 +155,9 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 - Hybrid RRF uses whichever vector backend is active.
 - Onboarding: embedding provider setup (local ONNX model or manual config) — see `skills/equip/SKILL.md`.
 
-The `/equip` slash command is already implemented at `skills/equip/` with a catalog-driven installer (`install.mjs`). The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
+The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/shared/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
-Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Migration 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
+Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Migration 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
 
 **Projection freshness model**:
 Equipment consumers subscribe to an **authority** (Journal or Corpus, §2). Each authority has its own monotonic version:
@@ -555,8 +560,10 @@ The KB domain does not live on the Journal. Its authority is the **Corpus** — 
 
 ~/.coral/data/kb/                   ← Corpus-derived indexes (device-local, git-ignored)
   index.json                        ← structured metadata snapshot
-  orama-index.json                  ← Orama serialized index (base-tier FTS + vector)
-  vec/                              ← needle's DuckDB (equipment-tier vector)
+  orama/                            ← Orama snapshot directory (base-tier FTS + vector)
+    orama-index.json                ← Orama serialized index
+  needle/                           ← needle runtime storage (equipment-tier vector)
+  needle-staging/                   ← needle staging area for snapshot builds
   equipment_cursors                 ← in store.db (SQLite); tracked per Corpus consumer
 ```
 
@@ -584,8 +591,8 @@ External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordina
 | Backend | Role | Tier | Substrate |
 |---|---|---|---|
 | `projection_kb` (SQLite) | metadata lookup (slug, title, content for rebuild) | base, always | Journal substrate (shares `store.db`) |
-| **Orama** (JS-native) | FTS (BM25) + vector (cosine) | base, always | `~/.coral/data/kb/orama-index.json` |
-| **coral-needle** (C++ DuckDB ScanANN) | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/vec/*.duckdb` |
+| **Orama** (JS-native) | FTS (BM25) + vector (cosine) | base, always | `~/.coral/data/kb/orama/orama-index.json` |
+| **coral-needle** (C++ DuckDB ScanANN) | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/needle/` |
 
 `projection_kb` lives in SQLite alongside Journal projections for convenience (unified query surface), but its authoritative source is the Corpus, not the Journal. Its rebuild reads markdown, not events.
 
@@ -1037,7 +1044,7 @@ Projection types:
 - Orama serialized index (base-tier FTS + future vector).
 - needle DuckDB ANN index (equipment-tier vector).
 
-The per-consumer manifest (hashes of processed entries) lives beside the consumer's storage — e.g., `~/.coral/data/kb/vec/<snapshot>/manifest.json` for needle.
+The per-consumer manifest (hashes of processed entries) lives beside the consumer's storage — e.g., `~/.coral/data/kb/needle/snapshots/<snapshot>/manifest.json` for installed needle snapshots, with staging under `~/.coral/data/kb/needle-staging/<snapshot>/manifest.json` during rebuild.
 
 ### 9.3 Why two consumer interfaces
 
@@ -1753,7 +1760,7 @@ Mitigation: update these hooks alongside the source rewrite. They are part of th
 **Skill contracts** (CLI output formats currently parsed by `skills/*/SKILL.md`):
 - Every skill parses the launch text: `Job <jobId> <launchState> (session <sessionId>)`.
 - Every skill parses wait output: `Result path: <path>`.
-- `skills/equip/SKILL.md` parses `install.mjs` JSON output status codes.
+- `skills/equip/SKILL.md` routes to `coral-cli expansion ...` and parses the shared expansion JSON contract (`InstallResult` / `InstallError`, including catalog/info status tables).
 
 Skills and CLI ship in the **same plugin artifact** and update together — no cross-version compatibility requirement. The rewrite may change CLI output shapes as the design warrants; skill files are updated in lockstep. Claude reads skill content dynamically on invocation, so rigid parsing in skills is itself legacy and the rewrite is free to move toward skills that query CLI help (`coral-cli <cmd> --help`) rather than parsing specific format strings where that improves clarity.
 
@@ -1870,13 +1877,13 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 35. Equipment **replaces specific query paths** with higher-quality implementations. It never adds new command surfaces.
 36. Unequipping returns the replaced path to the base backend without data loss and without command availability changes.
 37. Equipment loads via dynamic import; its heavy dependencies enter the process only after `/equip` completes.
-38. Equipment is **never prompted or nagged**. Base-tier commands never surface "equip X to unlock" hints. Discovery is curiosity-driven (`/equip --list`, docs), not system-driven.
+38. Equipment is **never prompted or nagged**. Base-tier commands never surface "equip X to unlock" hints. Discovery is curiosity-driven (`/equip --list`, internally `coral-cli expansion list`; docs), not system-driven.
 39. Equipment catalog entries are **tool-named** (`needle`), not capability-named (`kb`).
 40. Equipment projections are maintained by registered consumers with durable cursors in `equipment_cursors`. Journal consumers use range-based replay; Corpus consumers use snapshot-based content-hash diff. Updates flow via in-process async push (`ConsumerDriver.notify(authority, version)` after authoritative write).
 41a. Journal consumer freshness is eventually consistent relative to journal projections. Strict-freshness reads use `waitFreshUntil(version, consumerId)` — a condition-variable wake, never a polling loop.
 41b. Corpus equipment freshness is eventually consistent relative to base projections and is observed via `listEquipment` polling; Phase 7 does not add a corpus-side waiter primitive.
 42. Equipment failure never blocks coordinator writes. A failed `apply()` retains the last-successful cursor; next `notify` or startup recovery retries the gap.
-43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to `/equip uninstall Y` first.
+43. Each query path has **at most one active equipment**. Attempting `/equip X` for a path already owned by equipment Y fails with an explicit error instructing the user to unequip Y first (internal route `coral-cli expansion unequip Y`; user-facing skill grammar `/equip uninstall Y`).
 44. Consumer `apply(signal)` must be **idempotent**. The cursor advances only after `apply()` resolves successfully; a crash between apply and cursor persistence causes the same range to be re-applied on startup. Consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 45. Read-side event body decode routes through upcast-aware helpers. Outside `src/store/body-codec.ts`, `src/store/append.ts`, `src/store/rebuild.ts`, and `src/store/envelope.ts`, `schema.parse(decodeEventBody(...))`, `.parse(...)` on values sourced from `decodeEventBody(...)`, and the one-arg `rowToCoralEvent(row)` overload are forbidden.
 46. `src/coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
@@ -1915,11 +1922,12 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Provider kernel**: the leaf `Provider` function for a specific CLI/app-server — the pure execution unit.
 - **Host pool**: coordinator-owned pool of long-running app-server subprocesses (Claude, Codex).
 - **Namespace**: caller/emitter identity on an event. Not the same as `stream.kind`.
-- **Equipment**: an opt-in runtime enhancement. Installs dependencies, subscribes to events, maintains a replacement projection backend for a specific query path. Never writes events.
+- **Equipment**: an opt-in runtime enhancement and coordinator slot. An expansion installs the bits; when activated it runs through `src/coordinator/equipment/` as the active implementation for a specific query path. Equipment never writes events.
+- **Expansion**: an installable noun in `src/expansion/` (`needle`, `cgc`, ...). The skill layer routes user verbs to expansion verbs; activation may then bind the expansion into an equipment slot.
 - **Base tier**: the default runtime after plugin install (~3MB bundle, no native deps). Zero-config surface works immediately; vector search additionally needs a one-line embedding provider setup per README (Google Gemini API key default).
 - **Equipped tier**: one or more equipments active. Same commands, sharper implementations.
 - **Equipment metaphor (Zelda UX)**: curiosity-driven discovery, never enforced. Base tier always works; equipping is a reward for looking, not a gate to close. Equipment sharpens existing capabilities, never unlocks new commands.
-- **`/equip <name>`**: slash command that installs and activates an equipment. `/equip uninstall <name>` deactivates and removes.
+- **`/equip <name>`**: skill verb that routes to `coral-cli expansion equip <name>` and installs an expansion, then activates equipment when that expansion declares `activation='equipment'`. `/equip uninstall <name>` preserves the user grammar while routing internally to `coral-cli expansion unequip <name>`.
 - **Orama**: base-tier KB search engine. Provides FTS (BM25) and vector search (cosine brute-force). Pure JS, always present. Vector path requires embedding provider config.
 - **coral-needle**: first equipment. C++ N-API addon at `../coral-needle` providing DuckDB-backed ScanANN vector search (exact / USearch HNSW / ScaNN tree-AH, auto-selected). Replaces Orama's vector path when equipped; FTS stays with Orama. Distributed as prebuilt binaries via GitHub Releases.
 - **SearchBackend**: interface at `src/kb/search/contract.ts` that both Orama and needle implement. `router.ts` picks the active backend per query type based on equipment state.
@@ -1978,10 +1986,11 @@ Tracked deviations from the original design adopted during implementation. Each 
 - **Phase 4 (tag `phase-4-complete`) — new §11 clause: interactive/live subscriptions use one generic subscription primitive.** `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` slot; HTTP projects subscriptions to SSE, IPC carries notifications directly. At Phase 4 gate, subscriptions are one-per-connection; multiplexing is a transparent future optimization.
 - **Phase 4 (tag `phase-4-complete`) — CLI read commands migrate from `BackendClient` (HTTP) to `CoralStore` read facade in Phase 4.** `src/client/readers.ts` file retirement remains Phase 6/Cleanup (non-CLI importers), but CLI importers migrate now so invariant #23 actually closes at the Phase 4 gate.
 - **Phase 4 (tag `phase-4-complete`) — `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling.** The singleton lock remains the launch gate but is not the detection mechanism. Current `ensureBackend` semantics (observation lattice, compatibility on `bundleHash + flavor + namespace`, verified sick ownership, unsafe-replacement refusal, corrupt-lock quarantine) preserved literally.
-- **A1 — `/equip uninstall` replaces `/unequip` slash command** (Phase 7, tag `phase-7`). Rationale: `/equip` is already the catalog + lifecycle entry; a separate slash command duplicates surface area for no UX gain. Coordinator RPC name `unregisterEquipment` is preserved; only the CLI surface collapses.
-- **A2 — Needle identity unification** (Phase 7, tag `phase-7`). Rationale: Skill catalog id (`kb`), runtime consumer id (`kb-needle`), on-disk directory naming, and user messaging all collapse to the single name `needle`. `/equip needle`, `/equip uninstall needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`.
-- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` persisted via migration 002; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation.
+- **A1 — `/equip uninstall` replaces `/unequip` as the user skill grammar; internal route is `coral-cli expansion unequip`** (Phase 7, tag `phase-7`). Rationale: `/equip` is already the catalog + lifecycle entry; a separate slash command duplicates surface area for no UX gain. Coordinator RPC name `unregisterEquipment` is preserved; only the CLI/skill surface collapses.
+- **A2 — Needle identity unification** (Phase 7, tag `phase-7`). Rationale: Skill catalog id (`kb`), runtime consumer id (`kb-needle`), on-disk directory naming, and user messaging all collapse to the single name `needle`. User-facing grammar stays `/equip needle` and `/equip uninstall needle`; internal routes are `coral-cli expansion equip needle` and `coral-cli expansion unequip needle`; on-disk directory is `~/.coral/data/equipment/needle/`; consumer id is `needle`.
+- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` persisted via migration 002; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`.
 - **A4 — `ConsumerDriver.register()` returns per-consumer `ConsumerHandle`** (Phase 7, tag `phase-7`). Rationale: Signature changes from `void` to `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`. `onApplyFailure` callback plumbs async apply errors. `registrationKind` metadata distinguishes equipment vs base consumers for cursor-deletion semantics. Existing base-tier consumers migrate to the same handle shape via `projection-consumer.ts` helper.
 - **A5 — Legacy types retire to upcaster boundary only** (Phase 7, tag `phase-7`). Rationale: `src/shared/legacy-terminal-outcome-compat.ts` deleted; read-time body transforms moved to per-domain upcaster registrars (`jobs/upcasters.ts`, `sessions/upcasters.ts`, `workflow/upcasters.ts`). `src/store/upcasters.ts` remains assembler only. Runtime multi-event canonicalization stays in `legacy-ingest` (consumes upcaster output). Active runtime code uses canonical `SessionContinuityState` / `SessionProviderFailureReason` / `SessionFault` directly.
 - **A6 — Codex pre-turn notification mailbox** (Phase 7, tag `phase-7`). Rationale: `src/providers/codex/thread-kernel.ts` `applyNotification` replaces unconditional buffering with an admission-filtering mailbox. Notifications are admitted only if they can still belong to the active thread's lifecycle (matching `state.threadId` candidate, or lifecycle messages without thread id). `PRE_TURN_MAILBOX_CAP=64` FIFO eviction with `dropped` counter. `status()` exposed for observability. Provisional candidates seeded from persisted continuity / resume `conversationRef` (robustness against `thread/resume` id mismatch).
 - **A7 — Corpus equipment freshness observed via polling** (Phase 7, tag `phase-7`). Invariant 41 split: journal consumers keep `waitFreshUntil` condition-variable wake; corpus equipment consumers are observed via `listEquipment` polling. Rationale: adding a corpus-side waiter primitive was out of scope; `catching_up` → `equipped` transition surfaces through the existing status-read RPC.
+- **A8 — Expansion domain consolidation owns equip internals** (Phase 7, tag `phase-7`). Rationale: `skills/equip/` now retains only `SKILL.md`; the deleted helper files `install.mjs`, `coordinator-client.mjs`, `equipment-paths.mjs`, and `fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts` for RPC activation, `src/coordinator/discovery-api.ts` for passive coordinator reads, `src/expansion/paths.ts`, and `src/shared/fs-lock.ts`. The old `scripts/equip-driver.mjs` race harness is deleted; subprocess install-lock coverage now uses the invocation-adapter pattern at `src/testing/invocation/install-invocation.ts`.

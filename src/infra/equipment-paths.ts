@@ -7,7 +7,7 @@ export interface EquipmentPaths {
   equipmentRoot: string;
 }
 
-const EQUIPMENT_ADDON_FILENAMES = {
+export const EQUIPMENT_ADDON_FILENAMES = {
   needle: 'coral-needle.node',
 } as const satisfies Record<string, string>;
 

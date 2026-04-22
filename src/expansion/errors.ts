@@ -1,0 +1,140 @@
+import { CommanderError } from 'commander';
+import { ZodError } from 'zod';
+
+import { documentedCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
+import { isRecord } from '../shared/utils.js';
+import { installErrorSchema, type InstallError } from './contracts.js';
+
+const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
+const UNKNOWN_ERROR_REMEDIATION = 'Retry with --verbose or check the coordinator logs.';
+
+function nextCause(error: unknown): unknown {
+  if (error instanceof Error) {
+    return error.cause;
+  }
+
+  if (isRecord(error) && 'cause' in error) {
+    return error.cause;
+  }
+
+  return undefined;
+}
+
+function findStructuredSetupError(error: unknown): ReturnType<typeof serializeCoralSetupError> {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    const structured = serializeCoralSetupError(current);
+    if (structured !== null) {
+      return structured;
+    }
+
+    if (!(current instanceof Error) && !isRecord(current)) {
+      break;
+    }
+
+    seen.add(current);
+    current = nextCause(current);
+  }
+
+  return null;
+}
+
+function normalizeMessage(message: unknown, fallback = 'Unknown error'): string {
+  const rendered = typeof message === 'string' ? message : String(message);
+  return rendered.length > 0 ? rendered : fallback;
+}
+
+function formatZodUserMessage(error: ZodError): string {
+  if (error.issues.length === 0) {
+    return 'Expansion command validation failed.';
+  }
+
+  const details = error.issues
+    .map((issue) => {
+      if (issue.message.startsWith('--')) {
+        return issue.message;
+      }
+
+      const path = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+      return `${path}${issue.message}`;
+    })
+    .join('; ');
+
+  return `Expansion command validation failed: ${details}`;
+}
+
+function formatCommanderUserMessage(error: CommanderError): string {
+  const detail = error.message.replace(/^error:\s*/u, '').trim();
+  if (detail.length === 0 || detail === '(outputHelp)') {
+    return 'Expansion command validation failed.';
+  }
+
+  return `Expansion command validation failed: ${detail}`;
+}
+
+function finalizeInstallError(error: InstallError): InstallError {
+  return installErrorSchema.parse(error);
+}
+
+function isUserInputError(error: unknown): error is Error & { cause: ZodError } {
+  return error instanceof Error && error.name === 'UserInputError' && error.cause instanceof ZodError;
+}
+
+export function encodeInstallError(err: unknown): InstallError {
+  const structured = findStructuredSetupError(err);
+  if (structured !== null) {
+    return finalizeInstallError({
+      status: 'error',
+      code: structured.code,
+      userMessage: structured.userMessage,
+      remediation: structured.remediation,
+      ...(structured.context === undefined ? {} : { context: structured.context }),
+    });
+  }
+
+  if (isUserInputError(err)) {
+    return finalizeInstallError({
+      status: 'error',
+      code: 'invalid_usage',
+      userMessage: formatZodUserMessage(err.cause),
+      remediation: INVALID_USAGE_REMEDIATION,
+    });
+  }
+
+  if (err instanceof ZodError) {
+    const documented = documentedCoralSetupError('installer_payload_invalid');
+    return finalizeInstallError({
+      status: 'error',
+      code: documented.code,
+      userMessage: documented.userMessage,
+      remediation: documented.remediation,
+    });
+  }
+
+  if (err instanceof CommanderError) {
+    return finalizeInstallError({
+      status: 'error',
+      code: 'invalid_usage',
+      userMessage: formatCommanderUserMessage(err),
+      remediation: INVALID_USAGE_REMEDIATION,
+    });
+  }
+
+  if (err instanceof Error) {
+    return finalizeInstallError({
+      status: 'error',
+      code: 'unknown_error',
+      userMessage: normalizeMessage(err.message, err.name),
+      remediation: UNKNOWN_ERROR_REMEDIATION,
+    });
+  }
+
+  return finalizeInstallError({
+    status: 'error',
+    code: 'unknown_error',
+    userMessage: normalizeMessage(err),
+    remediation: UNKNOWN_ERROR_REMEDIATION,
+  });
+}

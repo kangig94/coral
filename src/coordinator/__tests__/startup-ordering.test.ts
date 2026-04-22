@@ -9,6 +9,7 @@ import { jobsReconcile } from '../../jobs/api.js';
 import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/api.js';
+import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { workflowRecover } from '../../workflow/api.js';
 
 const tempRoots: string[] = [];
@@ -21,6 +22,10 @@ const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
 };
 
 function createMockKb(order?: string[]) {
+  const vectorSurface: VectorRetrieval = {
+    search: vi.fn(async () => ({ hits: [] })),
+  };
+
   return {
     retryPendingCorpusPublication: vi.fn(async () => {
       order?.push('retryPendingCorpusPublication');
@@ -52,6 +57,14 @@ function createMockKb(order?: string[]) {
       order?.push('getCorpusStateSnapshot');
       return { ...EMPTY_CORPUS_SNAPSHOT };
     }),
+    getEquipmentView: vi.fn(() => ({
+      retrieval: vectorSurface,
+      snapshotId: null,
+      contentSeq: 0,
+      contentManifestHash: null,
+    })),
+    getActiveVectorSurface: vi.fn(() => vectorSurface),
+    getBaseRetrievalSurface: vi.fn(() => vectorSurface),
   } as never;
 }
 

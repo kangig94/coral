@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as CommandHelpersMod from '../command-helpers.js';
 import type * as ErrorsMod from '../errors.js';
 import type * as MainMod from '../main.js';
+import { installErrorSchema, installResultSchema } from '../../expansion/contracts.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/views.js';
 import {
@@ -38,6 +39,11 @@ const mockState = vi.hoisted(() => ({
   discussBid: vi.fn(),
   discussSpeech: vi.fn(),
   discussAbort: vi.fn(),
+  expansionList: vi.fn(),
+  expansionInfo: vi.fn(),
+  expansionEquip: vi.fn(),
+  expansionUnequip: vi.fn(),
+  expansionUpdate: vi.fn(),
   kbSearch: vi.fn(),
   kbDiagnose: vi.fn(),
   kbPrinciples: vi.fn(),
@@ -79,6 +85,14 @@ vi.mock('../follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
 }));
 
+vi.mock('../../expansion/workflow.js', () => ({
+  list: mockState.expansionList,
+  info: mockState.expansionInfo,
+  equip: mockState.expansionEquip,
+  unequip: mockState.expansionUnequip,
+  update: mockState.expansionUpdate,
+}));
+
 vi.mock('../command-helpers.js', async () => {
   const actual = await vi.importActual<typeof CommandHelpersMod>('../command-helpers.js');
   const errors = await vi.importActual<typeof ErrorsMod>('../errors.js');
@@ -93,9 +107,9 @@ vi.mock('../command-helpers.js', async () => {
           : error;
       const { envelope, exitCode } = errors.buildErrorEnvelope(normalized);
       const statusCode =
-        normalized instanceof Error
-        && 'statusCode' in normalized
-        && typeof (normalized as { statusCode?: unknown }).statusCode === 'number'
+        normalized instanceof Error &&
+        'statusCode' in normalized &&
+        typeof (normalized as { statusCode?: unknown }).statusCode === 'number'
           ? (normalized as { statusCode: number }).statusCode
           : undefined;
       process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
@@ -148,6 +162,26 @@ function toText(chunk: string | Uint8Array): string {
 async function loadMainModule(): Promise<MainModule> {
   vi.resetModules();
   return import('../main.js');
+}
+
+async function parseWithExpansionNormalization(program: Command, argv: string[]): Promise<void> {
+  const fullArgv = ['node', 'coral-cli', ...argv];
+
+  try {
+    await program.parseAsync(fullArgv);
+  } catch (error: unknown) {
+    const { handleExpansionCommanderFailure } = await import('../commands/expansion.js');
+    if (!handleExpansionCommanderFailure(error, fullArgv)) {
+      throw error;
+    }
+  }
+}
+
+function parseSingleExpansionLine(stdout: string, stderr: string) {
+  expect(stderr).toBe('');
+  expect(stdout.endsWith('\n')).toBe(true);
+  expect(stdout.trim().split('\n')).toHaveLength(1);
+  return JSON.parse(stdout);
 }
 
 function findCommand(root: Command, ...path: string[]): Command {
@@ -221,6 +255,11 @@ describe('cli main routing', () => {
     mockState.discussBid.mockReset();
     mockState.discussSpeech.mockReset();
     mockState.discussAbort.mockReset();
+    mockState.expansionList.mockReset();
+    mockState.expansionInfo.mockReset();
+    mockState.expansionEquip.mockReset();
+    mockState.expansionUnequip.mockReset();
+    mockState.expansionUpdate.mockReset();
     mockState.kbSearch.mockReset();
     mockState.kbDiagnose.mockReset();
     mockState.kbPrinciples.mockReset();
@@ -265,6 +304,7 @@ describe('cli main routing', () => {
     expect(program.name()).toBe('coral-cli');
     expect(program.commands.find((command) => command.name() === 'simulate')).toBeDefined();
     expect(program.commands.find((command) => command.name() === 'wait')).toBeDefined();
+    expect(program.commands.find((command) => command.name() === 'expansion')).toBeDefined();
   });
 
   it('preserves top-level help output via snapshot', async () => {
@@ -279,6 +319,7 @@ describe('cli main routing', () => {
     { label: 'workflow', path: ['workflow'] },
     { label: 'backend', path: ['backend'] },
     { label: 'discuss', path: ['discuss'] },
+    { label: 'expansion', path: ['expansion'] },
     { label: 'kb', path: ['kb'] },
     { label: 'kb source', path: ['kb', 'source'] },
     { label: 'kb memo', path: ['kb', 'memo'] },
@@ -288,6 +329,197 @@ describe('cli main routing', () => {
     const command = findCommand(program, ...path);
 
     expect(command.helpInformation()).toMatchSnapshot();
+  });
+
+  it.each([
+    {
+      label: 'list',
+      argv: ['expansion', 'list'],
+      setup: () => {
+        mockState.expansionList.mockResolvedValueOnce({
+          status: 'catalog',
+          packages: [],
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionList).toHaveBeenCalledWith();
+      },
+    },
+    {
+      label: 'equip',
+      argv: ['expansion', 'equip', 'needle'],
+      setup: () => {
+        mockState.expansionEquip.mockResolvedValueOnce({
+          status: 'installed',
+          method: 'equipment-addon',
+          version: '1.0.0',
+          targetDir: '/tmp/needle',
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle');
+      },
+    },
+    {
+      label: 'unequip',
+      argv: ['expansion', 'unequip', 'needle'],
+      setup: () => {
+        mockState.expansionUnequip.mockResolvedValueOnce({
+          status: 'uninstalled',
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle');
+      },
+    },
+    {
+      label: 'update',
+      argv: ['expansion', 'update', 'needle'],
+      setup: () => {
+        mockState.expansionUpdate.mockResolvedValueOnce({
+          status: 'updated',
+          method: 'equipment-addon',
+          version: '1.0.1',
+          targetDir: '/tmp/needle',
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle');
+      },
+    },
+    {
+      label: 'info',
+      argv: ['expansion', 'info', 'needle'],
+      setup: () => {
+        mockState.expansionInfo.mockResolvedValueOnce({
+          status: 'info',
+          package: {
+            id: 'needle',
+            name: 'Needle',
+            description: 'Needle vector expansion',
+            activation: 'equipment',
+            status: 'not_equipped',
+            statusDescription: 'Needle is not installed.',
+            addonPath: '/tmp/coral-needle.node',
+          },
+        });
+      },
+      assertCall: () => {
+        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle');
+      },
+    },
+  ])('routes expansion $label success as one stdout JSON line with exit 0', async ({ argv, setup, assertCall }) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    setup();
+
+    await parseWithExpansionNormalization(program, argv);
+
+    assertCall();
+    const parsed = installResultSchema.parse(parseSingleExpansionLine(stdout, stderr));
+    expect(parsed.status).not.toBe('error');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it.each([
+    {
+      label: 'list',
+      argv: ['expansion', 'list'],
+      setup: () => {
+        mockState.expansionList.mockResolvedValueOnce({
+          status: 'error',
+          code: 'equipment_runtime_unavailable',
+          userMessage: 'Equipment runtime is unavailable.',
+          remediation: 'Restart Coral and retry.',
+        });
+      },
+    },
+    {
+      label: 'equip',
+      argv: ['expansion', 'equip', 'needle'],
+      setup: () => {
+        mockState.expansionEquip.mockResolvedValueOnce({
+          status: 'error',
+          code: 'unknown_equipment',
+          userMessage: 'Unknown expansion.',
+          remediation: 'Run coral-cli expansion list.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+    {
+      label: 'unequip',
+      argv: ['expansion', 'unequip', 'needle'],
+      setup: () => {
+        mockState.expansionUnequip.mockResolvedValueOnce({
+          status: 'error',
+          code: 'unknown_equipment',
+          userMessage: 'Unknown expansion.',
+          remediation: 'Run coral-cli expansion list.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+    {
+      label: 'update',
+      argv: ['expansion', 'update', 'needle'],
+      setup: () => {
+        mockState.expansionUpdate.mockResolvedValueOnce({
+          status: 'error',
+          code: 'equipment_install_lock_contended',
+          userMessage: 'Expansion install already in progress.',
+          remediation: 'Retry after the current install finishes.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+    {
+      label: 'info',
+      argv: ['expansion', 'info', 'needle'],
+      setup: () => {
+        mockState.expansionInfo.mockResolvedValueOnce({
+          status: 'error',
+          code: 'unknown_equipment',
+          userMessage: 'Unknown expansion.',
+          remediation: 'Run coral-cli expansion list.',
+          context: { name: 'needle' },
+        });
+      },
+    },
+  ])('routes expansion $label errors as one stdout JSON line with exit 1', async ({ argv, setup }) => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    setup();
+
+    await parseWithExpansionNormalization(program, argv);
+
+    const parsed = installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr));
+    expect(parsed.code).not.toBe('invalid_usage');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('normalizes expansion unknown-flag usage failures to one stdout InstallError JSON line', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await parseWithExpansionNormalization(program, ['expansion', 'equip', 'needle', '--unknown-flag']);
+
+    expect(mockState.expansionEquip).not.toHaveBeenCalled();
+    const parsed = installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr));
+    expect(parsed.code).toBe('invalid_usage');
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('normalizes expansion missing-argument usage failures to one stdout InstallError JSON line', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    await parseWithExpansionNormalization(program, ['expansion', 'equip']);
+
+    expect(mockState.expansionEquip).not.toHaveBeenCalled();
+    const parsed = installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr));
+    expect(parsed.code).toBe('invalid_usage');
+    expect(process.exitCode).toBe(2);
   });
 
   it.each([
@@ -370,7 +602,9 @@ describe('cli main routing', () => {
 
     expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(stdout).toBe('');
-    expect(stderr).toBe(`${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--phase cannot be used with --all' })}\n`);
+    expect(stderr).toBe(
+      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--phase cannot be used with --all' })}\n`,
+    );
     expect(process.exitCode).toBe(2);
   });
 
@@ -457,24 +691,14 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    mockState.listJobs.mockResolvedValueOnce(
-      makeJobsListResponse(['job-1'], { phase: 'running', provider: 'codex' }),
-    );
+    mockState.listJobs.mockResolvedValueOnce(makeJobsListResponse(['job-1'], { phase: 'running', provider: 'codex' }));
     const result = {
       aborted: ['job-1'],
       notFound: [],
     };
     mockState.abortJobs.mockResolvedValueOnce(result);
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'abort',
-      '--phase',
-      'running',
-      '--provider',
-      'codex',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'abort', '--phase', 'running', '--provider', 'codex']);
 
     expect(mockState.listJobs).toHaveBeenCalledWith({
       projectRoot: process.cwd(),
@@ -636,11 +860,7 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const scenarioFile = join(tmpdir(), `coral-simulate-${Date.now()}.yaml`);
 
-    writeFileSync(
-      scenarioFile,
-      ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n'),
-      'utf8',
-    );
+    writeFileSync(scenarioFile, ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n'), 'utf8');
 
     try {
       await program.parseAsync(['node', 'coral-cli', 'simulate', scenarioFile]);
@@ -739,15 +959,7 @@ describe('cli main routing', () => {
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'codex',
-      '-i',
-      missingInput,
-      '-s',
-      'session-raw-text',
-    ]);
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', missingInput, '-s', 'session-raw-text']);
 
     expect(mockState.sendMessage).toHaveBeenCalledWith('session-raw-text', missingInput, {
       provider: 'codex',
@@ -889,11 +1101,13 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi', '--detach']);
 
-    expect(stdout).toBe(`${formatLaunch({
-      launchState: 'running',
-      job: 'job-1',
-      session: 'session-1',
-    })}\n`);
+    expect(stdout).toBe(
+      `${formatLaunch({
+        launchState: 'running',
+        job: 'job-1',
+        session: 'session-1',
+      })}\n`,
+    );
     expect(stderr).toBe('');
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
@@ -915,8 +1129,7 @@ describe('cli main routing', () => {
 
     expect(stdout).toBe('');
     expect(stderr).toBe(
-      'Missing prompt [code=bad_request, http=400]\n' +
-        'Detail: {"field":"prompt","reason":"required"}\n',
+      'Missing prompt [code=bad_request, http=400]\n' + 'Detail: {"field":"prompt","reason":"required"}\n',
     );
     expect(process.exitCode).toBe(1);
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
@@ -1018,15 +1231,7 @@ describe('cli main routing', () => {
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
-      await program.parseAsync([
-        'node',
-        'coral-cli',
-        'codex',
-        'architect',
-        '-i',
-        firstFile,
-        secondFile,
-      ]);
+      await program.parseAsync(['node', 'coral-cli', 'codex', 'architect', '-i', firstFile, secondFile]);
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'first content second content', {
         agent: 'architect',
@@ -1054,15 +1259,7 @@ describe('cli main routing', () => {
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
-      await program.parseAsync([
-        'node',
-        'coral-cli',
-        'codex',
-        'architect',
-        '-i',
-        materializedPromptFile,
-        'func(x)',
-      ]);
+      await program.parseAsync(['node', 'coral-cli', 'codex', 'architect', '-i', materializedPromptFile, 'func(x)']);
 
       expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hello func(x)', {
         agent: 'architect',
@@ -1188,9 +1385,7 @@ describe('cli main routing', () => {
     };
 
     const { BackendToolHttpError } = await import('../../client/http-client.js');
-    mockState.discussStart.mockRejectedValueOnce(
-      new BackendToolHttpError('HTTP 503', 503, errorBody),
-    );
+    mockState.discussStart.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync([
       'node',
@@ -1356,9 +1551,7 @@ describe('cli main routing', () => {
     };
 
     const { BackendToolHttpError } = await import('../../client/http-client.js');
-    mockState.kbSearch.mockRejectedValueOnce(
-      new BackendToolHttpError('HTTP 503', 503, errorBody),
-    );
+    mockState.kbSearch.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--output-format', 'json']);
 
@@ -1414,19 +1607,19 @@ describe('cli main routing', () => {
 
     expect(mockState.kbDiagnose).toHaveBeenCalledWith({});
     expect(stdout).toBe(
-      'entry_id: note:broken-frontmatter\n'
-        + 'locus: frontmatter-shape\n'
-        + 'canonical_incident: frontmatter-shape/missing-required-fields\n'
-        + 'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n'
-        + 'signals:\n'
-        + '{\n'
-        + '  "missingFields": [\n'
-        + '    "createdAt",\n'
-        + '    "updatedAt"\n'
-        + '  ]\n'
-        + '}\n'
-        + 'retry_count: 2\n'
-        + 'retry_not_before: 2026-04-21T00:00:00.000Z\n',
+      'entry_id: note:broken-frontmatter\n' +
+        'locus: frontmatter-shape\n' +
+        'canonical_incident: frontmatter-shape/missing-required-fields\n' +
+        'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n' +
+        'signals:\n' +
+        '{\n' +
+        '  "missingFields": [\n' +
+        '    "createdAt",\n' +
+        '    "updatedAt"\n' +
+        '  ]\n' +
+        '}\n' +
+        'retry_count: 2\n' +
+        'retry_not_before: 2026-04-21T00:00:00.000Z\n',
     );
   });
 

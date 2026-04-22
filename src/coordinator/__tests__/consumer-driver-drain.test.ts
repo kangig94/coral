@@ -195,9 +195,9 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       expect(thrown).toBeInstanceOf(CoralSetupError);
       expect((thrown as CoralSetupError).code).toBe('consumer_authority_mismatch');
       expect((thrown as CoralSetupError).context).toMatchObject({
-        consumerId: reg.id,
-        existing: 'corpus',
-        requested: 'journal',
+        id: reg.id,
+        expected: 'journal',
+        actual: 'corpus',
       });
     } finally {
       void driver.shutdown();

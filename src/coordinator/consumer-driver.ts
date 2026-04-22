@@ -6,7 +6,7 @@ import type {
   CorpusLaneHint,
   KbCorpusSnapshot as CorpusSnapshot,
 } from '../kb/contracts.js';
-import { CoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../shared/backend-log.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../store/corpus-state.js';
 
@@ -102,7 +102,7 @@ interface ConsumerState {
   lastApplyError: ConsumerApplyError | null;
 }
 
-interface StoredCursorMetadataRow {
+interface CursorMetadataRow {
   authority: string;
   lane: string | null;
   corpus_interest: string | null;
@@ -142,7 +142,7 @@ function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint | null {
   return interest === 'both' ? null : interest;
 }
 
-function parseStoredCorpusInterest(row: StoredCursorMetadataRow): CorpusInterest | null {
+function parseStoredCorpusInterest(row: CursorMetadataRow): CorpusInterest | null {
   const raw = row.corpus_interest ?? row.lane;
   return isCorpusInterest(raw) ? raw : null;
 }
@@ -164,52 +164,35 @@ function toConsumerApplyError(err: unknown, at: string): ConsumerApplyError {
   return { message: 'Consumer apply failed', at, cause: err };
 }
 
-function consumerNotRegisteredError(consumerId: string, remediation: string): CoralSetupError {
-  return new CoralSetupError({
-    code: 'consumer_not_registered',
-    userMessage: `Consumer '${consumerId}' is not registered`,
-    remediation,
-    context: { consumerId },
-  });
+function consumerNotRegisteredError(consumerId: string): CoralSetupError {
+  return documentedCoralSetupError('consumer_not_registered', { id: consumerId });
 }
 
 function consumerAuthorityMismatchError(
   consumerId: string,
-  existing: string,
-  requested: string,
+  expected: string,
+  actual: string,
 ): CoralSetupError {
-  return new CoralSetupError({
-    code: 'consumer_authority_mismatch',
-    userMessage: `Consumer '${consumerId}' registered with conflicting authority`,
-    remediation: 'Either delete the stored cursor row or reconcile the registration.',
-    context: { consumerId, existing, requested },
+  return documentedCoralSetupError('consumer_authority_mismatch', {
+    id: consumerId,
+    expected,
+    actual,
   });
 }
 
-function consumerInterestMismatchError(
-  consumerId: string,
-  existing: CorpusInterest | null,
-  requested: CorpusInterest,
-): CoralSetupError {
-  return new CoralSetupError({
-    code: 'consumer_interest_mismatch',
-    userMessage: `Consumer '${consumerId}' registered with conflicting corpus interest`,
-    remediation: 'Either delete the stored cursor row or reconcile the corpusInterest registration.',
-    context: { consumerId, existing, requested },
-  });
+function consumerInterestMismatchError(consumerId: string): CoralSetupError {
+  return documentedCoralSetupError('consumer_interest_mismatch', { id: consumerId });
 }
 
 function consumerRegistrationKindMismatchError(
   consumerId: string,
-  existing: ConsumerRegistrationKind,
-  requested: ConsumerRegistrationKind,
-  remediation: string,
+  expected: ConsumerRegistrationKind,
+  actual: ConsumerRegistrationKind,
 ): CoralSetupError {
-  return new CoralSetupError({
-    code: 'consumer_registration_kind_mismatch',
-    userMessage: `Consumer '${consumerId}' registered with conflicting registration kind`,
-    remediation,
-    context: { consumerId, existing, requested },
+  return documentedCoralSetupError('consumer_registration_kind_mismatch', {
+    id: consumerId,
+    expected,
+    actual,
   });
 }
 
@@ -217,7 +200,7 @@ export class ConsumerDriver {
   private readonly db: BetterSqlite3.Database;
   private readonly now: () => Date;
   private readonly consumers = new Map<string, ConsumerState>();
-  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], StoredCursorMetadataRow>;
+  private readonly selectCursorMetadataStmt: BetterSqlite3.Statement<[string], CursorMetadataRow>;
   private readonly insertJournalCursorRowStmt: BetterSqlite3.Statement<
     [string, Authority, string, ConsumerRegistrationKind]
   >;
@@ -242,7 +225,7 @@ export class ConsumerDriver {
   constructor(opts: ConsumerDriverOptions) {
     this.db = opts.db;
     this.now = opts.now ?? (() => new Date());
-    this.selectCursorMetadataStmt = this.db.prepare<[string], StoredCursorMetadataRow>(
+    this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
       'SELECT authority, lane, corpus_interest, registration_kind FROM equipment_cursors WHERE consumer_id = ?',
     );
     this.insertJournalCursorRowStmt = this.db.prepare<[string, Authority, string, ConsumerRegistrationKind]>(
@@ -345,13 +328,12 @@ export class ConsumerDriver {
       this.assertExistingRegistrationMatches(existing, reg);
       const row = this.selectCursorMetadataStmt.get(reg.id);
       if (row) {
-        const storedKind = this.ensureCursorRow(reg, false);
+        const storedKind = this.ensureCursorRow(reg, false, row);
         if (storedKind !== existing.registrationKind) {
           throw consumerRegistrationKindMismatchError(
             reg.id,
-            storedKind,
             existing.registrationKind,
-            'Either delete the stored cursor row or reconcile the registrationKind.',
+            storedKind,
           );
         }
       } else {
@@ -406,12 +388,7 @@ export class ConsumerDriver {
     }
 
     if (laneHint !== undefined && laneHint !== 'content' && laneHint !== 'metadata') {
-      throw new CoralSetupError({
-        code: 'consumer_lane_invalid',
-        userMessage: 'Corpus notifications require a valid routing hint when lane is provided',
-        remediation: "Call notify('corpus', snapshot, laneHint) with laneHint 'content' or 'metadata', or omit it.",
-        context: { authority, laneHint },
-      });
+      throw documentedCoralSetupError('consumer_lane_invalid', { id: 'notify(corpus)' });
     }
 
     const snapshot = versionOrSnapshot as CorpusSnapshot;
@@ -433,15 +410,10 @@ export class ConsumerDriver {
   waitFreshUntil(target: number, consumerId: string, timeoutMs = 30000): Promise<void> {
     const state = this.consumers.get(consumerId);
     if (!state) {
-      throw consumerNotRegisteredError(consumerId, 'Call driver.register(reg) before waitFreshUntil.');
+      throw consumerNotRegisteredError(consumerId);
     }
     if (state.reg.authority !== 'journal') {
-      throw new CoralSetupError({
-        code: 'consumer_wait_unsupported',
-        userMessage: `Consumer '${consumerId}' uses snapshot freshness and cannot wait on a numeric cursor`,
-        remediation: 'Use waitFreshUntil only with journal consumers.',
-        context: { consumerId, authority: state.reg.authority },
-      });
+      throw documentedCoralSetupError('consumer_wait_unsupported', { id: consumerId });
     }
 
     const current = this.readJournalCursor(consumerId);
@@ -493,16 +465,11 @@ export class ConsumerDriver {
   unregisterStoppedConsumer(consumerId: string, options: UnregisterStoppedConsumerOptions = {}): void {
     const state = this.consumers.get(consumerId);
     if (!state) {
-      throw consumerNotRegisteredError(consumerId, 'Call driver.register(reg) before unregisterStoppedConsumer.');
+      throw consumerNotRegisteredError(consumerId);
     }
 
     if (state.stopPromise === null) {
-      throw new CoralSetupError({
-        code: 'consumer_unregister_requires_stop',
-        userMessage: `Consumer '${state.reg.id}' must be stopped before unregister()`,
-        remediation: 'Call handle.stop() and await it before removing the stopped consumer.',
-        context: { consumerId },
-      });
+      throw documentedCoralSetupError('consumer_unregister_requires_stop', { id: consumerId });
     }
 
     this.finalizeStoppedConsumer(state, options);
@@ -514,74 +481,53 @@ export class ConsumerDriver {
 
   private assertValidRegistration(reg: ConsumerRegistration): void {
     if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
-      throw new CoralSetupError({
-        code: 'consumer_lane_invalid',
-        userMessage: `Consumer '${reg.id}' must not declare a corpus lane`,
-        remediation: "Use corpusInterest on the registration; lane is only an internal routing hint on notify().",
-        context: { consumerId: reg.id, authority: reg.authority, lane: (reg as { lane?: unknown }).lane },
-      });
+      throw documentedCoralSetupError('consumer_lane_invalid', { id: reg.id });
     }
     if (reg.authority === 'corpus' && !isCorpusInterest(reg.corpusInterest)) {
-      throw new CoralSetupError({
-        code: 'consumer_interest_invalid',
-        userMessage: `Corpus consumer '${reg.id}' must declare a valid corpus interest`,
-        remediation: "Register corpus consumers with corpusInterest 'content', 'metadata', or 'both'.",
-        context: { consumerId: reg.id, authority: reg.authority, corpusInterest: reg.corpusInterest },
-      });
+      throw documentedCoralSetupError('consumer_interest_invalid', { id: reg.id });
     }
     if (reg.authority === 'journal' && 'corpusInterest' in reg) {
-      throw new CoralSetupError({
-        code: 'consumer_interest_invalid',
-        userMessage: `Journal consumer '${reg.id}' must not declare a corpus interest`,
-        remediation: 'Remove the corpusInterest field from journal consumers.',
-        context: {
-          consumerId: reg.id,
-          authority: reg.authority,
-          corpusInterest: (reg as { corpusInterest?: unknown }).corpusInterest,
-        },
-      });
+      throw documentedCoralSetupError('consumer_interest_invalid', { id: reg.id });
     }
     if (reg.registrationKind !== undefined && !isRegistrationKind(reg.registrationKind)) {
-      throw new CoralSetupError({
-        code: 'consumer_registration_kind_invalid',
-        userMessage: `Consumer '${reg.id}' must declare registrationKind 'base' or 'equipment'`,
-        remediation: "Set registrationKind to 'base' or 'equipment', or omit it for the default base behavior.",
-        context: { consumerId: reg.id, registrationKind: reg.registrationKind },
-      });
+      throw documentedCoralSetupError('consumer_registration_kind_invalid', { id: reg.id });
     }
   }
 
   private assertExistingRegistrationMatches(state: ConsumerState, reg: ConsumerRegistration): void {
     if (state.reg.authority !== reg.authority) {
-      throw consumerAuthorityMismatchError(reg.id, state.reg.authority, reg.authority);
+      throw consumerAuthorityMismatchError(reg.id, reg.authority, state.reg.authority);
     }
 
     if (state.reg.authority === 'corpus' && reg.authority === 'corpus' && state.reg.corpusInterest !== reg.corpusInterest) {
-      throw consumerInterestMismatchError(reg.id, state.reg.corpusInterest, reg.corpusInterest);
+      throw consumerInterestMismatchError(reg.id);
     }
 
     if (reg.registrationKind !== undefined && state.registrationKind !== reg.registrationKind) {
       throw consumerRegistrationKindMismatchError(
         reg.id,
-        state.registrationKind,
         reg.registrationKind,
-        'Either stop and unregister the active consumer or reconcile the registrationKind.',
+        state.registrationKind,
       );
     }
   }
 
-  private ensureCursorRow(reg: ConsumerRegistration, allowRegistrationKindUpdate = true): ConsumerRegistrationKind {
-    const row = this.selectCursorMetadataStmt.get(reg.id);
+  private ensureCursorRow(
+    reg: ConsumerRegistration,
+    allowRegistrationKindUpdate = true,
+    preloadedRow?: CursorMetadataRow,
+  ): ConsumerRegistrationKind {
+    const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
     const requestedKind = reg.registrationKind;
 
     if (row) {
       if (row.authority !== reg.authority) {
-        throw consumerAuthorityMismatchError(reg.id, row.authority, reg.authority);
+        throw consumerAuthorityMismatchError(reg.id, reg.authority, row.authority);
       }
       if (reg.authority === 'corpus') {
         const storedInterest = parseStoredCorpusInterest(row);
         if (storedInterest !== reg.corpusInterest) {
-          throw consumerInterestMismatchError(reg.id, storedInterest, reg.corpusInterest);
+          throw consumerInterestMismatchError(reg.id);
         }
       }
 
@@ -590,9 +536,8 @@ export class ConsumerDriver {
         if (!allowRegistrationKindUpdate) {
           throw consumerRegistrationKindMismatchError(
             reg.id,
-            storedKind,
             requestedKind,
-            'Either delete the stored cursor row or reconcile the registrationKind.',
+            storedKind,
           );
         }
         this.updateRegistrationKindStmt.run(requestedKind, reg.id);
@@ -633,12 +578,7 @@ export class ConsumerDriver {
       return value;
     }
 
-    throw new CoralSetupError({
-      code: 'consumer_registration_kind_invalid',
-      userMessage: `Consumer '${consumerId}' has an invalid stored registration kind`,
-      remediation: "Update the stored cursor row so registration_kind is 'base' or 'equipment'.",
-      context: { consumerId, registrationKind: value },
-    });
+    throw documentedCoralSetupError('consumer_registration_kind_invalid', { id: consumerId });
   }
 
   private scheduleJournalApply(state: ConsumerState, target: number): void {
@@ -862,12 +802,7 @@ export class ConsumerDriver {
       return;
     }
     if (state.stopPromise === null) {
-      throw new CoralSetupError({
-        code: 'consumer_unregister_requires_stop',
-        userMessage: `Consumer '${state.reg.id}' must be stopped before unregister()`,
-        remediation: 'Call handle.stop() and await it before handle.unregister().',
-        context: { consumerId: state.reg.id },
-      });
+      throw documentedCoralSetupError('consumer_unregister_requires_stop', { id: state.reg.id });
     }
 
     await state.stopPromise;

@@ -43,12 +43,32 @@ describe('command class coverage', () => {
       .sort((left, right) => left.path.localeCompare(right.path));
 
     expect(containerEntries).toEqual(
-      [...commandContainerPaths]
-        .sort()
-        .map((path) => ({
-          path,
-          kind: 'container',
-        })),
+      [...commandContainerPaths].sort().map((path) => ({
+        path,
+        kind: 'container',
+      })),
     );
+  });
+
+  it('classifies the expansion command family with the declared read/mutate split', () => {
+    const coverage = collectCommandCoverage(buildProgram());
+    const expansionEntries = coverage
+      .filter((entry) => entry.path === 'expansion' || entry.path.startsWith('expansion '))
+      .map((entry) => ({
+        path: entry.path,
+        isLeaf: entry.isLeaf,
+        kind: entry.resolution.kind,
+        commandClass: entry.resolution.kind === 'class' ? entry.resolution.commandClass : null,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+
+    expect(expansionEntries).toEqual([
+      { path: 'expansion', isLeaf: false, kind: 'container', commandClass: null },
+      { path: 'expansion equip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
+      { path: 'expansion info', isLeaf: true, kind: 'class', commandClass: 'read' },
+      { path: 'expansion list', isLeaf: true, kind: 'class', commandClass: 'read' },
+      { path: 'expansion unequip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
+      { path: 'expansion update', isLeaf: true, kind: 'class', commandClass: 'mutate' },
+    ]);
   });
 });

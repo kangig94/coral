@@ -56,6 +56,24 @@ Commands:
 "
 `;
 
+exports[`cli main routing > preserves help output for 'expansion' via snapshot 1`] = `
+"Usage: coral-cli expansion [options] [command]
+
+Manage expansion packages
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  list            List installed and available expansions
+  equip <name>    Install or activate an expansion
+  unequip <name>  Deactivate and uninstall an expansion
+  update <name>   Update an installed expansion
+  info <name>     Show expansion metadata and install state
+  help [command]  display help for command
+"
+`;
+
 exports[`cli main routing > preserves help output for 'kb memo' via snapshot 1`] = `
 "Usage: coral-cli kb memo [options] [command]
 
@@ -158,6 +176,7 @@ Commands:
   backend                   Backend daemon control
   discuss                   Discussion operations
   kb [options]              Knowledge base operations
+  expansion                 Manage expansion packages
   help [command]            display help for command
 "
 `;

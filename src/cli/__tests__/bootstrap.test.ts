@@ -45,7 +45,8 @@ describe('cli bootstrap', () => {
     });
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
-    expect(process.exit).toHaveBeenCalledWith(0);
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
     expect(emitError).not.toHaveBeenCalled();
   });
 
@@ -57,7 +58,8 @@ describe('cli bootstrap', () => {
     });
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
-    expect(process.exit).toHaveBeenCalledWith(0);
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
     expect(emitError).not.toHaveBeenCalled();
   });
 

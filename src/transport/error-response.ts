@@ -23,6 +23,7 @@ export function buildTransportErrorResponse(error: unknown): TransportErrorRespo
     data: setupError,
     body: {
       code: setupError.code,
+      // Keep both for JSON-RPC error compatibility here and CoralSetupError compatibility on the receiver.
       message: setupError.userMessage,
       userMessage: setupError.userMessage,
       remediation: setupError.remediation,

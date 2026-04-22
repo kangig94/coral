@@ -40,7 +40,7 @@ Transport       KB / Corpus + Orama vector cosine + repair pipeline
             ▼
 Phase 6 — Provider middleware (scripted-provider tests only)
             ▼
-Phase 7 — Equipment (dynamic register + race/install-lock)
+Phase 7 — Equipment + simplify + expansion consolidation (dynamic register + race/install-lock, install logic migrated to `src/expansion/` as `coral-cli expansion <verb> <name>`)
             ▼
 Cleanup — hooks, skills, docs, bundle release, real-CLI E2E
 ```
@@ -440,15 +440,17 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 
 ---
 
-### Phase 7 — Equipment
+### Phase 7 — Equipment + simplify + expansion consolidation (dynamic register + race/install-lock, install logic migrated to `src/expansion/` as `coral-cli expansion <verb> <name>`)
 
 **Goal**: `/equip needle` activates live without coordinator restart. Equipment model operational. Race/install-lock infrastructure verified.
+
+**Expansion / Equipment / Skill taxonomy**: Skill (`/equip`) is the user-facing slash-command verb. Expansion (`src/expansion/`) is the installable noun (`needle`, `cgc`, ...). Equipment (`src/coordinator/equipment/`) is the coordinator slot where an expansion becomes active. The layers stay distinct: the skill routes user intent to expansion workflows, and equipped state exists only through coordinator equipment slots.
 
 **Deliverables**:
 
 - Coordinator RPC: `registerEquipment`, `unregisterEquipment`, `listEquipment`.
 - Equipment lifecycle:
-  1. `/equip needle` → `install.mjs` acquires filesystem lock at `~/.coral/data/equipment/needle/install.lock` (parent auto-created via `mkdir -p`).
+  1. `/equip needle` → `coral-cli expansion equip needle` (one unified workflow: install + activate) acquires filesystem lock at `~/.coral/data/equipment/needle/install.lock` via `src/shared/fs-lock.ts` (parent auto-created via `mkdir -p`).
   2. Downloads binary (idempotent; resume via partial-file cleanup on error).
   3. Coordinator RPC `registerEquipment` dynamically imports `coral-needle`.
   4. Creates `CorpusConsumer` wrapping the addon; registers in `coordinator/corpus-notify.ts` consumer list.
@@ -458,13 +460,13 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
   - `coordinator.unregisterEquipment` waits for in-flight drain (`ConsumerDriver.stop()`).
   - Removes consumer from notify list.
   - Deletes cursor row + equipment storage.
-- Identity unification (A2): skill catalog id, runtime consumer id, install dir, and user-facing strings all use `needle` (`/equip needle`, `/equip uninstall needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`).
-- Slot registry (A3): migration 002 persists `equipment_state`; `kb.vector` defaults to Orama and can be reassigned to `needle`. KB routing reads ownership through `KbRuntime.getEquipmentView()` without coordinator imports; no boot-time needle auto-registration remains.
+- Identity unification (A2): skill catalog id, runtime consumer id, install dir, and CLI target all use `needle` (`/equip needle`, `coral-cli expansion unequip needle`, `~/.coral/data/equipment/needle/`, consumer id `needle`). Skill grammar remains `/equip uninstall needle`; `skills/equip/SKILL.md` routes that input to `expansion unequip` internally.
+- Slot registry (A3): migration 002 persists `equipment_state`; `kb.vector` defaults to Orama and can be reassigned to `needle`. `KbRuntime` becomes single authority for vector surface (`getActiveVectorSurface()` + `getBaseVectorSurface()`) and corpus snapshot (`getCorpusStateSnapshot()`); `src/kb/search/router.ts` and `src/coordinator/coordinator.ts:178-180` stop open-coding fallback projections or calling `readCorpusState(runtime.db)` directly. KB routing reads ownership through `KbRuntime.getEquipmentView()` without coordinator imports; no boot-time needle auto-registration remains.
 - Consumer handle shape (A4): `ConsumerDriver.register()` returns `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`, with `onApplyFailure` plumbing async apply failures and `registrationKind` distinguishing equipment vs base consumers.
 - Corpus equipment freshness observation (A7): `waitFreshUntil` remains journal-only; CLI and tests observe `catching_up` → `equipped` through `listEquipment` polling rather than a new corpus waiter primitive.
 - Exclusive per-path enforcement: second equip for same query path fails with structured error.
 - `/equip --list` reads catalog + current equipment state from coordinator.
-- `skills/equip/` updates: `install.mjs` catalog uses tool names (`needle` replaces `kb`); post-install invokes `coordinator.registerEquipment` RPC (not `backend_shutdown`).
+- `skills/equip/` updates: `skills/equip/` keeps SKILL.md only; `install.mjs`, `coordinator-client.mjs`, `equipment-paths.mjs`, `fs-lock.mjs`, and `scripts/equip-driver.mjs` are deleted. Catalog ownership moves to `src/expansion/catalog.ts` with a `Strategy<Config>` interface (`equipment-addon` for needle, `github-binary` for cgc).
 
 **Acceptance criteria**:
 
@@ -476,7 +478,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - Corrupt binary: load catches, marks consumer `disabled_pending_reinstall`, CLI returns `CoralSetupError` with reinstall guidance.
 - `grep -R "kb-needle" src/ skills/` returns zero.
 - `grep -R "data/equipment/kb" src/ skills/` returns zero.
-- **Race test** (multi-process): infrastructure at `src/testing/multi-process-driver.ts` spawns two `node scripts/equip-driver.mjs` subprocesses with shared `CORAL_HOME`; asserts filesystem lock behavior. Current `vitest.integration.config.ts` `singleFork` is insufficient; this test uses `vitest` with per-worker subprocess spawn.
+- **Race test** (multi-process): infrastructure at `src/testing/multi-process-driver.ts` exposes `spawnNodeScript<T>`, which the race integration uses to spawn two subprocesses against the invocation-adapter bundle at `<os.tmpdir()>/coral-race-<pid>/install-invocation.cjs` (built once per suite from `src/testing/invocation/install-invocation.ts` via inline `esbuild.build(...)`). Subprocesses call `src/expansion/install.ts#installExpansion` directly and race on the filesystem install-lock. The old `scripts/equip-driver.mjs` harness is deleted. `vitest.integration.config.ts` `singleFork` remains sufficient because OS-level lock contention happens between the spawned child processes, not between vitest workers.
 - Git tag `phase-7-complete`.
 
 **Files touched**: ~10 new coordinator + equip files; ~3 skill updates.
@@ -600,7 +602,7 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 
 | Scenario | Resolution |
 |---|---|
-| Two `/equip needle` races | `install.mjs` acquires `~/.coral/data/equipment/needle/install.lock`; second sees "install in progress" and awaits completion. |
+| Two `/equip needle` races | `src/expansion/install.ts#installExpansion` acquires `~/.coral/data/equipment/needle/install.lock`; the losing caller receives a structured `equipment_install_lock_contended` error. |
 | Obsidian edits mid-promote | Coordinator's write path computes pre-write `content_hash`; if differs from projection's last-seen, abort with `CorpusRaceDetected` (`CoralSetupError` shape); caller retries. |
 | Journal write concurrent with Corpus rescan | Independent authorities; `projection_kb` updates inside Corpus mutation lock; Journal writes never touch it. |
 | Two CLI processes race for coordinator launch | Warm-start handoff (§Phase 3); `ensure.ts` detects in-flight launch and waits. |

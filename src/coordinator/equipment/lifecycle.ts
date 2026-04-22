@@ -1,4 +1,4 @@
-import { existsSync, rmSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../consumer-driver.js';
@@ -15,11 +15,10 @@ import { resolveEmbeddingProviderConfig } from '../../kb/search/embedding.js';
 import { NeedleAddonLoadError } from '../../kb/search/needle-store.js';
 import {
   equipmentAddonPath,
-  equipmentDataDir,
   equipmentInstallLockPath,
   type EquipmentPathOptions,
-} from '../../infra/equipment-paths.js';
-import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
+} from '../../expansion/paths.js';
+import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { errorMessage } from '../../shared/utils.js';
 import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from './contract.js';
 import { activateNeedle } from './needle-activation.js';
@@ -70,6 +69,7 @@ export interface EquipmentLifecycleServiceOptions {
   readonly consumerDriver: ConsumerDriver;
   readonly slotRegistry: SlotRegistry;
   readonly resolveKbRuntime: () => KbRuntime | null;
+  readonly removeInstallArtifacts?: (name: string) => Promise<void>;
   readonly now?: () => Date;
   readonly pathOptions?: EquipmentPathOptions;
   readonly closeNeedleBackend?: typeof closeNeedleBackend;
@@ -192,10 +192,10 @@ export class EquipmentLifecycleService {
           ? {}
           : { storeFactory: this.options.needleBackendOptions.storeFactory }),
       });
-      (backend as NeedleBackend & { onApplyFailure?: (error: ConsumerApplyError) => void }).onApplyFailure = (error) => {
+      backend.onApplyFailure = (error) => {
         void this.handleApplyFailure(name, error);
       };
-      handle = this.registerConsumer(runtime, backend, name);
+      handle = this.registerConsumer(backend, name);
       this.commitActivation(name, handle, backend, descriptor, runtime);
       const equipment = this.getEquipment(name);
       return {
@@ -226,6 +226,7 @@ export class EquipmentLifecycleService {
     }
 
     await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
+    await this.options.removeInstallArtifacts?.(name);
     return { status: 'uninstalled' };
   }
 
@@ -272,7 +273,7 @@ export class EquipmentLifecycleService {
       });
     }
 
-    const runtime = this.requireKbRuntime();
+    const runtime = this.requireKbRuntime(name);
     if (resolveEmbeddingProviderConfig() === null) {
       throw documentedCoralSetupError('equipment_embedding_provider_missing', { name: 'Needle' });
     }
@@ -285,12 +286,10 @@ export class EquipmentLifecycleService {
     return { descriptor, runtime, addonPath };
   }
 
-  private registerConsumer(_runtime: KbRuntime, backend: NeedleBackend, name: string): ConsumerHandle {
+  private registerConsumer(backend: NeedleBackend, name: string): ConsumerHandle {
     let handle: ConsumerHandle | null = null;
     const registerTxn = this.options.db.transaction(() => {
-      handle = this.options.consumerDriver.register(backend as NeedleBackend & {
-        onApplyFailure?: (error: ConsumerApplyError) => void;
-      });
+      handle = this.options.consumerDriver.register(backend);
     });
     registerTxn.immediate();
 
@@ -350,7 +349,6 @@ export class EquipmentLifecycleService {
     this.activeBySlot.delete(descriptor.slotId);
     this.safeUnequipSlot(descriptor.slotId);
     await this.closeRuntimeBackend(runtime, backend);
-    rmSync(equipmentDataDir(name, this.options.pathOptions), { recursive: true, force: true });
   }
 
   private async handleApplyFailure(name: string, applyError: ConsumerApplyError): Promise<void> {
@@ -363,6 +361,7 @@ export class EquipmentLifecycleService {
       const descriptor = this.requireDescriptor(name);
       const active = this.activeBySlot.get(descriptor.slotId);
       const installedAt = this.readStateRow(name)?.installed_at ?? this.now().toISOString();
+      // Apply-failure leaves local artifacts on disk; user must run 'coral-cli expansion unequip <name>' to reclaim.
       await this.rollbackActivation(name, active?.handle ?? null, active?.backend ?? null);
       this.writeStateRow(name, 'disabled_pending_reinstall', {
         installedAt,
@@ -396,24 +395,15 @@ export class EquipmentLifecycleService {
   private requireDescriptor(name: string): EquipmentDescriptor {
     const descriptor = this.descriptors.get(name);
     if (!descriptor) {
-      throw new CoralSetupError({
-        code: 'unknown_equipment',
-        userMessage: `Unknown equipment '${name}'.`,
-        remediation: 'Choose an equipment name from the supported catalog before retrying /equip.',
-        context: { name },
-      });
+      throw documentedCoralSetupError('unknown_equipment', { name });
     }
     return descriptor;
   }
 
-  private requireKbRuntime(): KbRuntime {
+  private requireKbRuntime(name: string): KbRuntime {
     const runtime = this.options.resolveKbRuntime();
     if (!runtime) {
-      throw new CoralSetupError({
-        code: 'equipment_runtime_unavailable',
-        userMessage: 'Equipment activation is unavailable before the KB runtime is ready.',
-        remediation: 'Wait for coordinator startup to finish, then retry /equip.',
-      });
+      throw documentedCoralSetupError('equipment_runtime_unavailable', { name });
     }
     return runtime;
   }
@@ -445,7 +435,7 @@ export class EquipmentLifecycleService {
 
   private isAddonFileReadable(path: string): boolean {
     try {
-      return existsSync(path) && statSync(path).isFile();
+      return statSync(path).isFile();
     } catch {
       return false;
     }

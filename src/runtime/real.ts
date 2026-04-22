@@ -52,6 +52,7 @@ import type {
   RuntimeExecOptions,
   RuntimePaths,
   RuntimeSpawnMode,
+  StorageData,
   StoragePort,
   TimePort,
 } from './ports.js';
@@ -677,15 +678,20 @@ function isSpawnFailure(error: unknown): error is Error & { code?: string } {
 
 function tryExclusiveWriteSyncNode(
   path: string,
-  data: string,
+  data: StorageData,
   platform: NodeJS.Platform,
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
   mkdirSync(dirname(path), { recursive: true });
-  const encoding = options?.encoding ?? 'utf-8';
   const mode = options?.mode ?? 0o600;
   try {
-    writeFileSync(path, data, { encoding, mode, flag: 'wx' });
+    writeFileSync(
+      path,
+      normalizeStorageData(data, options?.encoding),
+      options?.encoding === undefined
+        ? { mode, flag: 'wx' }
+        : { encoding: options.encoding, mode, flag: 'wx' },
+    );
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       return false;
@@ -704,14 +710,23 @@ function tryExclusiveWriteSyncNode(
 
 function writeAtomicSyncNode(
   path: string,
-  data: string,
+  data: StorageData,
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
-  const encoding = options?.encoding ?? 'utf-8';
   const mode = options?.mode;
   const tempPath = `${path}.tmp`;
   try {
-    writeFileSync(tempPath, data, mode === undefined ? { encoding } : { encoding, mode });
+    writeFileSync(
+      tempPath,
+      normalizeStorageData(data, options?.encoding),
+      mode === undefined
+        ? options?.encoding === undefined
+          ? undefined
+          : { encoding: options.encoding }
+        : options?.encoding === undefined
+          ? { mode }
+          : { encoding: options.encoding, mode },
+    );
     renameSync(tempPath, path);
     return true;
   } catch (error: unknown) {
@@ -724,10 +739,9 @@ function writeAtomicSyncNode(
 
 function writeAtomicDurableSyncNode(
   path: string,
-  data: string,
+  data: StorageData,
   options?: { encoding?: BufferEncoding; mode?: number },
 ): boolean {
-  const encoding = options?.encoding ?? 'utf-8';
   const mode = options?.mode;
   const parent = dirname(path);
   const tempPath = `${path}.tmp`;
@@ -736,7 +750,7 @@ function writeAtomicDurableSyncNode(
   let fd: number | null = null;
   try {
     fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
-    writeAllSync(fd, Buffer.from(data, encoding));
+    writeAllSync(fd, Buffer.from(normalizeStorageData(data, options?.encoding ?? 'utf-8')));
     fdatasyncSync(fd);
     closeSync(fd);
     fd = null;
@@ -757,6 +771,10 @@ function writeAtomicDurableSyncNode(
     }
     throw error;
   }
+}
+
+function normalizeStorageData(data: StorageData, encoding: BufferEncoding = 'utf-8'): string | Uint8Array {
+  return typeof data === 'string' ? data : Buffer.from(data);
 }
 
 function appendFileDurableSyncNode(path: string, data: string): boolean {

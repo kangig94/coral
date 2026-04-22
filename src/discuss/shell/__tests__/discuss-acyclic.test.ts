@@ -37,6 +37,7 @@ const SUBSYSTEM_PREFIXES = [
   'transport',
   'testing',
   'simulation',
+  'expansion',
 ] as const;
 
 type Subsystem = (typeof SUBSYSTEM_PREFIXES)[number];

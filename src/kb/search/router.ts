@@ -1,5 +1,4 @@
 import type { KbRuntime } from '../contracts.js';
-import { readCorpusState } from '../../store/corpus-state.js';
 import type {
   GraphRetrieval,
   GraphRetrievalResult,
@@ -9,7 +8,6 @@ import type {
   VectorRetrieval,
 } from './contract.js';
 import { createHybridFusion } from './hybrid.js';
-import { createOramaBaseProjection } from './orama-backend.js';
 
 export interface SearchRouter {
   text: TextRetrieval;
@@ -20,6 +18,7 @@ export interface SearchRouter {
 
 export interface SearchRouterOptions {
   graph?: GraphRetrieval;
+  vectorRoute?: ResolvedVectorRoute;
 }
 
 export interface ResolvedVectorRoute {
@@ -50,7 +49,7 @@ function activationMatchesCorpus(
     return false;
   }
 
-  const latest = readCorpusState(runtime.db);
+  const latest = runtime.getCorpusStateSnapshot();
   return (
     activation.contentSeq === latest.contentSeq &&
     activation.contentManifestHash === latest.contentManifestHash
@@ -58,9 +57,10 @@ function activationMatchesCorpus(
 }
 
 /** Chooses the active vector backend, falling back to Orama when Needle is not fresh. */
-export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBaseProjection(runtime)): ResolvedVectorRoute {
+export function resolveVectorRoute(runtime: KbRuntime, fallback = runtime.getBaseRetrievalSurface()): ResolvedVectorRoute {
   const activation = runtime.getEquipmentView();
-  if (backendKindOf(activation.retrieval) !== 'needle') {
+  const active = runtime.getActiveVectorSurface();
+  if (backendKindOf(active) !== 'needle') {
     return {
       retrieval: fallback,
       backend: 'orama',
@@ -69,7 +69,7 @@ export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBas
 
   if (activationMatchesCorpus(runtime, activation)) {
     return {
-      retrieval: activation.retrieval,
+      retrieval: active,
       backend: 'needle',
     };
   }
@@ -90,8 +90,8 @@ export function resolveVectorRoute(runtime: KbRuntime, fallback = createOramaBas
 
 /** Builds the KB search router with shared text, vector, graph, and hybrid retrieval roles. */
 export function createRouter(runtime: KbRuntime, options: SearchRouterOptions = {}): SearchRouter {
-  const orama = createOramaBaseProjection(runtime);
-  const vectorRoute = resolveVectorRoute(runtime, orama);
+  const orama = runtime.getBaseRetrievalSurface();
+  const vectorRoute = options.vectorRoute ?? resolveVectorRoute(runtime, orama);
 
   return {
     text: orama,

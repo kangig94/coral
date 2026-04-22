@@ -110,6 +110,7 @@ import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { GitSyncPathChange, GitSyncResult } from './curate/git-sync.js';
+import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 
 // TODO(phase-6-runtime-follow-up): split this module into narrower runtime slices once the
 // Phase 5 search/layering fixes have landed and stabilized.
@@ -612,6 +613,15 @@ const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
   notifyCorpusMutation() {},
 };
 
+function emptySnapshot(retrieval: VectorRetrieval): KbRuntimeActivationSnapshot {
+  return {
+    retrieval,
+    snapshotId: null,
+    contentSeq: 0,
+    contentManifestHash: null,
+  };
+}
+
 function createFallbackKbDb(runtimeDir: string): BetterSqlite3.Database {
   const runtime = createRealRuntime();
   return openStoreDatabase({
@@ -930,9 +940,10 @@ class KbRuntimeImpl implements KbRuntime {
   private indexCache: { index: KbIndex | null } | null = null;
   private cachedOramaIndex: KbCachedOramaIndex | null = null;
   private mutationLock: Promise<void> = Promise.resolve();
-  private baseProjection = createOramaBaseProjection(this);
+  private readonly baseProjection = createOramaBaseProjection(this);
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly equipmentViewResolver?: () => KbRuntimeActivationSnapshot | null;
+  private readonly emptyEquipmentView: KbRuntimeActivationSnapshot;
   private upgradeGuardDone = false;
   private corpusPublishCallbacks: KbCorpusPublishCallbacks = NOOP_CORPUS_PUBLISH_CALLBACKS;
   private activeMutationContext: MutationLockContext | null = null;
@@ -979,6 +990,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.readOnlyOrama = readOnlyOrama === true;
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.equipmentViewResolver = getEquipmentView;
+    this.emptyEquipmentView = Object.freeze(emptySnapshot(this.baseProjection));
 
     mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -990,12 +1002,15 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   getEquipmentView(): KbRuntimeActivationSnapshot {
-    return this.equipmentViewResolver?.() ?? {
-      retrieval: this.baseProjection,
-      snapshotId: null,
-      contentSeq: 0,
-      contentManifestHash: null,
-    };
+    return this.equipmentViewResolver?.() ?? this.emptyEquipmentView;
+  }
+
+  getActiveVectorSurface(): VectorRetrieval {
+    return this.getEquipmentView().retrieval;
+  }
+
+  getBaseRetrievalSurface(): TextRetrieval & VectorRetrieval {
+    return this.baseProjection;
   }
 
   notesDir(): string {

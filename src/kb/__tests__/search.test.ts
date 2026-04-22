@@ -4,16 +4,17 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as EmbeddingModule from '../search/embedding.js';
-import type { ConsumerHandle, ConsumerHandleStatus } from '../../coordinator/consumer-driver.js';
-import { createEquipmentSlot, createSlotRegistry } from '../../coordinator/equipment/slots.js';
-import { runtimeActivationFromHandle } from '../../coordinator/equipment/runtime-activation.js';
+import type * as RouterModule from '../search/router.js';
+import type { ConsumerHandleStatus } from '../../coordinator/consumer-driver.js';
 import type { KbRuntime } from '../contracts.js';
 import type { EntityGraph, KbEntryId } from '../entry-types.js';
-import type { VectorRetrieval } from '../search/contract.js';
-import { createOramaBaseProjection } from '../search/orama-backend.js';
-
-const equipmentViewResolvers = new WeakMap<KbRuntime, () => ReturnType<typeof runtimeActivationFromHandle> | null>();
-type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
+import {
+  createCorpusHandle,
+  equipVectorSlot,
+  equipmentViewResolvers,
+  seedNeedleRouteState,
+  type TaggedVectorRetrieval,
+} from './equipment-test-helpers.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -21,6 +22,11 @@ const mockState = vi.hoisted(() => ({
 
 const hybridMockState = vi.hoisted(() => ({
   createEmbeddingProvider: null as null | ((...args: any[]) => Promise<any>),
+}));
+
+const routerMockState = vi.hoisted(() => ({
+  createRouter: null as null | ((...args: unknown[]) => unknown),
+  resolveVectorRoute: null as null | ((...args: unknown[]) => unknown),
 }));
 
 vi.mock('node:os', async () => {
@@ -42,6 +48,21 @@ vi.mock('../search/embedding.js', async () => {
   };
 });
 
+vi.mock('../search/router.js', async () => {
+  const actual = await vi.importActual<typeof RouterModule>('../search/router.js');
+  return {
+    ...actual,
+    createRouter: (...args: Parameters<typeof actual.createRouter>) =>
+      routerMockState.createRouter === null
+        ? actual.createRouter(...args)
+        : (routerMockState.createRouter(...args) as ReturnType<typeof actual.createRouter>),
+    resolveVectorRoute: (...args: Parameters<typeof actual.resolveVectorRoute>) =>
+      routerMockState.resolveVectorRoute === null
+        ? actual.resolveVectorRoute(...args)
+        : (routerMockState.resolveVectorRoute(...args) as ReturnType<typeof actual.resolveVectorRoute>),
+  };
+});
+
 async function loadKbModules() {
   vi.resetModules();
   const [{ searchKb }, { reindex }, runtime, paths] = await Promise.all([
@@ -57,6 +78,12 @@ async function loadKbModules() {
     captureKbCorpusSnapshot: runtime.captureKbCorpusSnapshot,
     paths,
   };
+}
+
+function asUnknownHandler<TArgs extends unknown[], TResult>(
+  handler: (...args: TArgs) => TResult,
+): (...args: unknown[]) => unknown {
+  return (...args: unknown[]) => handler(...(args as TArgs));
 }
 
 function createRuntime(
@@ -75,67 +102,6 @@ function createRuntime(
 
 function setMtime(path: string, mtime: Date): void {
   utimesSync(path, mtime, mtime);
-}
-
-function seedNeedleRouteState(
-  kb: {
-    db: { prepare: (...args: any[]) => { run: (...params: any[]) => unknown } };
-    invalidateCorpusStateSnapshot?: () => void;
-  },
-  snapshot: {
-    snapshotId: string;
-    contentSeq: number;
-    metadataSeq: number;
-    contentManifestHash: string;
-    metadataManifestHash: string;
-  },
-  options: {
-    cursorContentManifestHash?: string;
-  } = {},
-): Extract<ConsumerHandleStatus, { authority: 'corpus' }> {
-  kb.db
-    .prepare(
-      `
-        INSERT INTO corpus_state (
-          id,
-          snapshot_id,
-          content_seq,
-          metadata_seq,
-          content_manifest_hash,
-          metadata_manifest_hash,
-          last_mutation
-        ) VALUES (1, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          snapshot_id = excluded.snapshot_id,
-          content_seq = excluded.content_seq,
-          metadata_seq = excluded.metadata_seq,
-          content_manifest_hash = excluded.content_manifest_hash,
-          metadata_manifest_hash = excluded.metadata_manifest_hash,
-          last_mutation = excluded.last_mutation
-      `,
-    )
-    .run(
-      snapshot.snapshotId,
-      snapshot.contentSeq,
-      snapshot.metadataSeq,
-      snapshot.contentManifestHash,
-      snapshot.metadataManifestHash,
-      '2026-04-01T00:00:00.000Z',
-    );
-
-  kb.invalidateCorpusStateSnapshot?.();
-
-  return {
-    authority: 'corpus',
-    corpusInterest: 'content',
-    snapshotId: snapshot.snapshotId,
-    contentSeq: snapshot.contentSeq,
-    metadataSeq: snapshot.metadataSeq,
-    contentManifestHash: options.cursorContentManifestHash ?? snapshot.contentManifestHash,
-    metadataManifestHash: snapshot.metadataManifestHash,
-    pending: false,
-    lastApplyError: null,
-  };
 }
 
 function writeNote(
@@ -403,48 +369,6 @@ function aggregateMockNeedleHits(
     }));
 }
 
-function createCorpusHandle(
-  initial: Partial<Extract<ConsumerHandleStatus, { authority: 'corpus' }>>,
-): ConsumerHandle {
-  const status: Extract<ConsumerHandleStatus, { authority: 'corpus' }> = {
-    authority: 'corpus',
-    corpusInterest: 'content',
-    snapshotId: null,
-    contentSeq: 0,
-    metadataSeq: 0,
-    contentManifestHash: null,
-    metadataManifestHash: null,
-    pending: false,
-    lastApplyError: null,
-    ...initial,
-  };
-
-  return {
-    id: 'mock-needle-handle',
-    registrationKind: 'equipment',
-    get lastApplyError() {
-      return status.lastApplyError;
-    },
-    async stop() {},
-    async unregister() {},
-    status: () => ({ ...status }),
-  };
-}
-
-function equipVectorSlot(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, handle: ConsumerHandle): void {
-  const registry = createSlotRegistry();
-  const slot = createEquipmentSlot<VectorRetrieval>({
-    id: 'kb.vector',
-    defaultOwner: () => createOramaBaseProjection(runtime),
-  });
-  registry.declare(slot);
-  slot.equip(retrieval, handle);
-  equipmentViewResolvers.set(runtime, () => {
-    const slotView = registry.list().find((entry) => entry.id === slot.id);
-    return slotView?.handle ? runtimeActivationFromHandle(slot.currentOwner(), slotView.handle) : null;
-  });
-}
-
 function installMockHybridSearch(
   kb: KbRuntime & {
     readIndex: () => { entries: Record<string, any> } | null;
@@ -501,6 +425,8 @@ describe('kb search', () => {
     mockState.tmpHome = '';
     delete process.env.CORAL_KB_PATH;
     hybridMockState.createEmbeddingProvider = null;
+    routerMockState.createRouter = null;
+    routerMockState.resolveVectorRoute = null;
     vi.resetModules();
   });
 
@@ -1027,6 +953,46 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'alpha-archive').matchedBy).toEqual([]);
     expect(resultFor(response.results, 'beta-history').matchedBy).toEqual([]);
     expect(resultFor(response.results, 'alpha-archive').snippet).toBeUndefined();
+  });
+
+  it('resolves the vector route once per hybrid search request', async () => {
+    const actualRouter = await vi.importActual<typeof RouterModule>('../search/router.js');
+    const resolveVectorRouteSpy = vi.fn(
+      (...args: Parameters<typeof actualRouter.resolveVectorRoute>) => actualRouter.resolveVectorRoute(...args),
+    );
+    const createRouterSpy = vi.fn((...args: Parameters<typeof actualRouter.createRouter>) => actualRouter.createRouter(...args));
+
+    routerMockState.resolveVectorRoute = asUnknownHandler(resolveVectorRouteSpy);
+    routerMockState.createRouter = asUnknownHandler(createRouterSpy);
+
+    const { searchKb, reindex, createKbRuntime, captureKbCorpusSnapshot, paths } = await loadKbModules();
+    const kb = createRuntime(createKbRuntime, paths);
+    mkdirSync(paths.notesDir(), { recursive: true });
+
+    writeNote(paths.notesDir(), 'semantic-note', {
+      title: 'Semantic Note',
+      body: 'Semantic retrieval target.',
+    });
+
+    await reindex(kb);
+    installMockHybridSearch(kb, seedNeedleRouteState(kb, captureKbCorpusSnapshot(kb)), {
+      searchVector: vi.fn().mockResolvedValue([
+        { chunkId: 'semantic:0', entryId: 'note:semantic-note', score: 0.99 },
+      ]),
+    });
+
+    const response = await searchKb(kb, 'semantic', 2);
+
+    expect(response.mode).toBe('hybrid');
+    expect(resolveVectorRouteSpy).toHaveBeenCalledTimes(1);
+    expect(createRouterSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        vectorRoute: expect.objectContaining({
+          backend: 'needle',
+        }),
+      }),
+    );
   });
 
   it('filters vector-only hits to the requested source scope', async () => {

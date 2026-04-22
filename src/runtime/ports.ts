@@ -20,9 +20,11 @@ export interface RuntimeDirentLike {
   isFile(): boolean;
 }
 
+export type StorageData = string | Uint8Array;
+
 export interface StoragePort {
   readFileSync(path: string, encoding: 'utf-8'): string;
-  writeFileSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): void;
+  writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void;
   renameSync(oldPath: string, newPath: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
@@ -35,9 +37,9 @@ export interface StoragePort {
   appendFileSync(path: string, data: string): void;
   appendFileDurableSync(path: string, data: string): boolean;
   unlinkSync(path: string): void;
-  tryExclusiveWriteSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
-  writeAtomicDurableSync(path: string, data: string, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  tryExclusiveWriteSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  writeAtomicSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
+  writeAtomicDurableSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): boolean;
   chmodSync(path: string, mode: number): void;
 }
 

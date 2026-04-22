@@ -35,7 +35,7 @@ import type {
 } from '../search/contract.js';
 import { createEmbeddingProvider } from '../search/embedding.js';
 import { createOramaBaseProjection } from '../search/orama-backend.js';
-import { createRouter, resolveVectorRoute } from '../search/router.js';
+import { createRouter, resolveVectorRoute, type ResolvedVectorRoute } from '../search/router.js';
 
 const MATCH_SURFACE_ORDER: KbMatchSurface[] = ['filename', 'principle', 'tag', 'title', 'content'];
 const ORAMA_SEARCH_PROPERTIES: Array<'slug' | 'title' | 'body' | 'tags' | 'principles'> = [
@@ -990,11 +990,11 @@ async function searchExplicitVectorResults(
   rawQuery: string,
   topK: number,
   scope: KbSearchScope,
+  vectorRoute: ResolvedVectorRoute,
   options: {
     allowNeedleFallbackToOrama: boolean;
   },
 ): Promise<{ hits: VectorRetrievalHit[]; responseWarnings: SearchResponseWarnings; fallbackToText: boolean }> {
-  const vectorRoute = resolveVectorRoute(rt);
   const responseWarnings: SearchResponseWarnings =
     vectorRoute.warning === undefined ? {} : { warning: vectorRoute.warning };
   let queryVector: number[] | null;
@@ -1084,6 +1084,7 @@ export async function searchKb(
   let graphContext: GraphSearchContext | null = null;
   let textStatePromise: Promise<TextSearchState> | undefined;
   let textGraphStatePromise: Promise<TextGraphSearchState> | undefined;
+  let cachedVectorRoute: ResolvedVectorRoute | undefined;
 
   const getQueryContext = (): QueryContext => {
     if (queryCtx !== undefined) {
@@ -1135,6 +1136,14 @@ export async function searchKb(
     return graphContext;
   };
 
+  const getVectorRoute = (): ResolvedVectorRoute => {
+    if (cachedVectorRoute !== undefined) {
+      return cachedVectorRoute;
+    }
+    cachedVectorRoute = resolveVectorRoute(rt);
+    return cachedVectorRoute;
+  };
+
   const getTextState = async (): Promise<TextSearchState> => {
     if (textStatePromise !== undefined) {
       return textStatePromise;
@@ -1183,6 +1192,7 @@ export async function searchKb(
       const textState = await getTextState();
       const router = createRouter(rt, {
         graph: new RuntimeGraphRetrieval(index, getGraphContext()),
+        vectorRoute: getVectorRoute(),
       });
       const nextGraphResult = await router.graph.search(rawQuery, scope);
 
@@ -1220,7 +1230,8 @@ export async function searchKb(
       return buildVectorResponse([], topK);
     }
 
-    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+    const vectorRoute = getVectorRoute();
+    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, vectorRoute, {
       allowNeedleFallbackToOrama: true,
     });
     if (vectorResult.fallbackToText) {
@@ -1256,7 +1267,8 @@ export async function searchKb(
       );
     }
 
-    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+    const vectorRoute = getVectorRoute();
+    const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, vectorRoute, {
       allowNeedleFallbackToOrama: true,
     });
     if (vectorResult.fallbackToText) {
@@ -1301,7 +1313,7 @@ export async function searchKb(
     );
   }
 
-  const vectorRoute = resolveVectorRoute(rt);
+  const vectorRoute = getVectorRoute();
   const textGraphState = await getTextGraphState();
   if (vectorRoute.backend !== 'needle') {
     const responseWarnings = vectorRoute.warning === undefined ? {} : { warning: vectorRoute.warning };
@@ -1316,7 +1328,7 @@ export async function searchKb(
     );
   }
 
-  const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, {
+  const vectorResult = await searchExplicitVectorResults(rt, rawQuery, topK, scope, vectorRoute, {
     allowNeedleFallbackToOrama: false,
   });
   if (vectorResult.fallbackToText) {

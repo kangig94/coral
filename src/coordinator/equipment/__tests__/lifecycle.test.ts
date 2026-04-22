@@ -6,15 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as EmbeddingModule from '../../../kb/search/embedding.js';
 
 import { ConsumerDriver } from '../../consumer-driver.js';
-import { EquipmentLifecycleService } from '../lifecycle.js';
+import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '../lifecycle.js';
 import { applyMigrations } from '../../../store/migrations.js';
 import { persistCorpusState } from '../../../store/corpus-state.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../../infra/equipment-paths.js';
-import { createOramaBaseProjection } from '../../../kb/api.js';
+import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../../expansion/paths.js';
 import { createKbRuntime } from '../../../kb/runtime.js';
 import { reindex } from '../../../kb/ops/reindex.js';
 import type { VectorRetrieval } from '../../../kb/search/contract.js';
 import { closeNeedleBackend } from '../../../kb/search/needle-backend.js';
+import { NeedleAddonLoadError } from '../../../kb/search/needle-store.js';
 import { resolveVectorRoute } from '../../../kb/search/router.js';
 import { createNeedleStoreFake } from '../../../testing/fixtures/needle-store-fake.js';
 import { acquireDirectoryLockSync } from '../../../shared/fs-lock.js';
@@ -64,6 +64,13 @@ type Harness = {
   currentBackendKind(): string;
   vectorRouteBackend(): 'orama' | 'needle';
   dispose(): Promise<void>;
+};
+
+type CreateHarnessOptions = {
+  storeFactory?: () => ReturnType<typeof createNeedleStoreFake>;
+  corruptAddon?: boolean;
+  removeInstallArtifacts?: EquipmentLifecycleServiceOptions['removeInstallArtifacts'];
+  activateNeedle?: EquipmentLifecycleServiceOptions['activateNeedle'];
 };
 
 function createDb(): InstanceType<typeof Database> {
@@ -117,7 +124,7 @@ function createRuntimeHarness(markdownRoot: string, runtimeDir: string, db: Inst
   });
   const vectorSlot = createEquipmentSlot<VectorRetrieval>({
     id: 'kb.vector',
-    defaultOwner: () => createOramaBaseProjection(kb),
+    defaultOwner: () => kb.getBaseRetrievalSurface(),
   });
   slotRegistry.declare(vectorSlot);
 
@@ -136,7 +143,7 @@ function equipmentBackendKind(runtime: ReturnType<typeof createKbRuntime>): stri
   return (runtime.getEquipmentView().retrieval as VectorRetrieval & { backendKind?: string }).backendKind ?? 'unknown';
 }
 
-async function createHarness(options: { storeFactory?: () => ReturnType<typeof createNeedleStoreFake>; corruptAddon?: boolean } = {}): Promise<Harness> {
+async function createHarness(options: CreateHarnessOptions = {}): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-equipment-lifecycle-'));
   tempRoots.push(root);
 
@@ -177,6 +184,8 @@ async function createHarness(options: { storeFactory?: () => ReturnType<typeof c
     resolveKbRuntime: () => kb,
     now: () => FIXED_NOW,
     pathOptions: { baseDir: coralBaseDir },
+    ...(options.removeInstallArtifacts === undefined ? {} : { removeInstallArtifacts: options.removeInstallArtifacts }),
+    ...(options.activateNeedle === undefined ? {} : { activateNeedle: options.activateNeedle }),
     ...(options.storeFactory === undefined ? {} : { needleBackendOptions: { storeFactory: () => options.storeFactory?.() ?? null } }),
   });
   runtimeHarness.setLifecycleResolver(() => lifecycle.getRuntimeActivation());
@@ -244,8 +253,14 @@ afterEach(async () => {
 });
 
 describe('EquipmentLifecycleService', () => {
-  it('transitions needle from not_equipped to catching_up to equipped and reports already_equipped when active', async () => {
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
+  function mockEmbeddingProvider(
+    overrides: Partial<EmbeddingModule.EmbeddingProviderConfig> & {
+      delayMs?: number;
+      embedDocuments?: EmbeddingModule.EmbeddingProvider['embedDocuments'];
+    } = {},
+  ): EmbeddingModule.EmbeddingProviderConfig {
+    const { delayMs, embedDocuments, ...configOverrides } = overrides;
+    const config: EmbeddingModule.EmbeddingProviderConfig = {
       kind: 'openai-compatible',
       name: 'mock-embeddings',
       model: 'mock-small',
@@ -254,17 +269,32 @@ describe('EquipmentLifecycleService', () => {
       specId: 'mock-small:3:l2',
       apiKey: 'test',
       baseUrl: 'http://localhost/mock',
-    });
-    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      embedDocuments: async (texts: string[]) => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return texts.map((text, index) => Float32Array.from([text.length, index + 1, 1]));
-      },
-      embedQuery: async () => Float32Array.from([1, 0, 0]),
-    });
+      ...configOverrides,
+    };
+    const vectorFrom = (values: number[]): Float32Array =>
+      Float32Array.from(Array.from({ length: config.dims }, (_, index) => values[index] ?? 0));
+    const provider: EmbeddingModule.EmbeddingProvider = {
+      name: config.name,
+      model: config.model,
+      dims: config.dims,
+      embedDocuments:
+        embedDocuments ??
+        (async (texts: string[]) => {
+          if (delayMs !== undefined) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+          return texts.map((text, index) => vectorFrom([text.length, index + 1, 1]));
+        }),
+      embedQuery: async () => vectorFrom([1, 0, 0]),
+    };
+
+    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue(config);
+    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue(provider);
+    return config;
+  }
+
+  it('transitions needle from not_equipped to catching_up to equipped and reports already_equipped when active', async () => {
+    mockEmbeddingProvider({ delayMs: 20 });
 
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
@@ -345,19 +375,20 @@ describe('EquipmentLifecycleService', () => {
     }
   });
 
-  it('demotes corrupt binaries to disabled_pending_reinstall after apply failure', async () => {
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: 'test',
-      baseUrl: 'http://localhost/mock',
+  it('demotes corrupt binaries to disabled_pending_reinstall after apply failure without removing local artifacts', async () => {
+    mockEmbeddingProvider();
+    let cleanupBaseDir = '';
+    const removeInstallArtifacts = vi.fn(async (name: string) => {
+      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     });
 
-    const harness = await createHarness({ corruptAddon: true });
+    const harness = await createHarness({ corruptAddon: true, removeInstallArtifacts });
+    cleanupBaseDir = harness.coralBaseDir;
 
     try {
       const first = await harness.lifecycle.equip('needle');
@@ -375,33 +406,68 @@ describe('EquipmentLifecycleService', () => {
         state: 'disabled_pending_reinstall',
         last_error_code: 'equipment_binary_corrupt',
       });
+      expect(removeInstallArtifacts).not.toHaveBeenCalled();
+      expect(existsSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }))).toBe(true);
     } finally {
       await harness.dispose();
     }
   });
 
-  it('uninstalls the active needle consumer and reverts kb.vector to the default owner', async () => {
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: 'test',
-      baseUrl: 'http://localhost/mock',
+  it('leaves local artifacts on disk when equip rollback handles a binary load failure', async () => {
+    mockEmbeddingProvider();
+    let cleanupBaseDir = '';
+    const removeInstallArtifacts = vi.fn(async (name: string) => {
+      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     });
-    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      embedDocuments: async (texts: string[]) => texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
-      embedQuery: async () => Float32Array.from([1, 0, 0]),
+    const activateNeedle: NonNullable<EquipmentLifecycleServiceOptions['activateNeedle']> = () => {
+      throw new NeedleAddonLoadError('simulated addon load failure', {
+        addonPath: equipmentAddonPath('needle', { baseDir: cleanupBaseDir }),
+      });
+    };
+
+    const harness = await createHarness({
+      removeInstallArtifacts,
+      activateNeedle,
+    } satisfies CreateHarnessOptions);
+    cleanupBaseDir = harness.coralBaseDir;
+
+    try {
+      await expect(harness.lifecycle.equip('needle')).rejects.toMatchObject({
+        code: 'equipment_binary_corrupt',
+      });
+      expect(removeInstallArtifacts).not.toHaveBeenCalled();
+      expect(readEquipmentStateRow(harness.db, 'needle')).toMatchObject({
+        state: 'disabled_pending_reinstall',
+        last_error_code: 'equipment_binary_corrupt',
+      });
+      expect(existsSync(equipmentDataDir('needle', { baseDir: harness.coralBaseDir }))).toBe(true);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('uninstalls the active needle consumer, invokes artifact cleanup, and reverts kb.vector to the default owner', async () => {
+    mockEmbeddingProvider();
+    let cleanupBaseDir = '';
+    const removeInstallArtifacts = vi.fn(async (name: string) => {
+      rmSync(equipmentDataDir(name, { baseDir: cleanupBaseDir }), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     });
 
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
+      removeInstallArtifacts,
     });
+    cleanupBaseDir = harness.coralBaseDir;
 
     try {
       await harness.lifecycle.equip('needle');
@@ -411,6 +477,8 @@ describe('EquipmentLifecycleService', () => {
 
       await expect(harness.lifecycle.uninstall('needle')).resolves.toEqual({ status: 'uninstalled' });
 
+      expect(removeInstallArtifacts).toHaveBeenCalledTimes(1);
+      expect(removeInstallArtifacts).toHaveBeenCalledWith('needle');
       expect(harness.currentBackendKind()).toBe('orama');
       expect(harness.vectorRouteBackend()).toBe('orama');
       expect(await harness.lifecycle.listEquipment()).toEqual([
@@ -441,23 +509,7 @@ describe('EquipmentLifecycleService', () => {
   });
 
   it('reports previously equipped needle as inactive on restart while the binary is still present', async () => {
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: 'test',
-      baseUrl: 'http://localhost/mock',
-    });
-    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      embedDocuments: async (texts: string[]) => texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
-      embedQuery: async () => Float32Array.from([1, 0, 0]),
-    });
+    mockEmbeddingProvider();
 
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),
@@ -504,23 +556,7 @@ describe('EquipmentLifecycleService', () => {
   });
 
   it('reports previously equipped needle as unavailable on restart when the binary was deleted externally', async () => {
-    embeddingMockState.resolveEmbeddingProviderConfig = vi.fn().mockReturnValue({
-      kind: 'openai-compatible',
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      normalization: 'l2',
-      specId: 'mock-small:3:l2',
-      apiKey: 'test',
-      baseUrl: 'http://localhost/mock',
-    });
-    embeddingMockState.createEmbeddingProvider = vi.fn().mockResolvedValue({
-      name: 'mock-embeddings',
-      model: 'mock-small',
-      dims: 3,
-      embedDocuments: async (texts: string[]) => texts.map((text, index) => Float32Array.from([text.length, index + 1, 1])),
-      embedQuery: async () => Float32Array.from([1, 0, 0]),
-    });
+    mockEmbeddingProvider();
 
     const harness = await createHarness({
       storeFactory: () => createNeedleStoreFake(),

@@ -99,7 +99,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
     try {
       expect(() => driver.register(reg)).toThrow(CoralSetupError);
-      expect(() => driver.register(reg)).toThrow(/must declare a valid corpus interest/i);
+      expect(() => driver.register(reg)).toThrow(/interest is invalid/i);
     } finally {
       void driver.shutdown();
       db.close();
@@ -224,7 +224,7 @@ describe('ConsumerDriver corpus registrations', () => {
 
     try {
       expect(() => driver.register(reg)).toThrow(CoralSetupError);
-      expect(() => driver.register(reg)).toThrow(/must not declare a corpus lane/i);
+      expect(() => driver.register(reg)).toThrow(/lane is invalid/i);
     } finally {
       void driver.shutdown();
       db.close();
@@ -268,7 +268,7 @@ describe('ConsumerDriver corpus registrations', () => {
           corpusInterest: 'content',
           async apply() {},
         }),
-      ).toThrow(/conflicting corpus interest/i);
+      ).toThrow(/interest mismatch/i);
     } finally {
       void driver.shutdown();
       db.close();

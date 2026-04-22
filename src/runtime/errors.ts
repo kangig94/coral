@@ -13,7 +13,19 @@ export type SerializedCoralSetupError = CoralSetupErrorInit;
 export type DocumentedCoralSetupErrorCode =
   | 'equipment_install_lock_contended'
   | 'equipment_binary_corrupt'
+  | 'installer_payload_invalid'
+  | 'unknown_equipment'
+  | 'equipment_runtime_unavailable'
   | 'equipment_embedding_provider_missing'
+  | 'consumer_not_registered'
+  | 'consumer_authority_mismatch'
+  | 'consumer_interest_mismatch'
+  | 'consumer_registration_kind_mismatch'
+  | 'consumer_lane_invalid'
+  | 'consumer_wait_unsupported'
+  | 'consumer_unregister_requires_stop'
+  | 'consumer_interest_invalid'
+  | 'consumer_registration_kind_invalid'
   | 'equipment_slot_not_declared'
   | 'slot_already_equipped'
   | 'equipment_install_path_unwritable';
@@ -31,20 +43,81 @@ function stringContextValue(context: CoralSetupErrorContext | undefined, key: st
 const DOCUMENTED_CORAL_SETUP_ERRORS = {
   equipment_install_lock_contended: {
     userMessage: (context) =>
-      `Another /equip is in progress for ${stringContextValue(context, 'name', 'this equipment')}.`,
+      `Another coral-cli expansion equip is in progress for ${stringContextValue(context, 'name', 'this equipment')}.`,
     remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
   },
   equipment_binary_corrupt: {
     userMessage: (context) =>
       `The installed binary for ${stringContextValue(context, 'name', 'this equipment')} could not be activated.`,
     remediation: (context) =>
-      `Run '/equip ${stringContextValue(context, 'name', 'needle')}' again to reinstall the binary.`,
+      `Run 'coral-cli expansion unequip ${stringContextValue(context, 'name', 'needle')}' before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}'.`,
+  },
+  installer_payload_invalid: {
+    userMessage: 'Expansion installer returned an invalid payload.',
+    remediation: 'Retry the command. If this persists, report the code because the installer response failed internal validation.',
+  },
+  unknown_equipment: {
+    userMessage: (context) =>
+      `The equipment ${stringContextValue(context, 'name', 'this equipment')} is not registered in the Coral catalog.`,
+    remediation: "Run 'coral-cli expansion list' to see available equipment.",
+  },
+  equipment_runtime_unavailable: {
+    userMessage: (context) =>
+      `Equipment runtime is not available for ${stringContextValue(context, 'name', 'this equipment')}.`,
+    remediation: (context) =>
+      `Restart Coral or run 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}' to retry.`,
   },
   equipment_embedding_provider_missing: {
     userMessage: (context) =>
       `${stringContextValue(context, 'name', 'This equipment')} needs an embedding provider before it can be equipped.`,
+    remediation: (context) =>
+      `Set CORAL_EMBEDDING_PROVIDER in ~/.coral/.env (and any required companion variables) before retrying 'coral-cli expansion equip ${stringContextValue(context, 'name', 'needle')}'.`,
+  },
+  consumer_not_registered: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} is not registered with the coordinator.`,
+    remediation: 'Re-equip or verify the consumer registration.',
+  },
+  consumer_authority_mismatch: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} authority mismatch: expected ${stringContextValue(context, 'expected', 'unknown')}, got ${stringContextValue(context, 'actual', 'unknown')}.`,
+    remediation: 'Verify consumer registration ordering and authority.',
+  },
+  consumer_interest_mismatch: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest mismatch.`,
+    remediation: 'Verify consumer interest declaration matches the registration.',
+  },
+  consumer_registration_kind_mismatch: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} registration kind mismatch: expected ${stringContextValue(context, 'expected', 'unknown')}, got ${stringContextValue(context, 'actual', 'unknown')}.`,
+    remediation: 'Check that registration kind (base vs equipment) is consistent.',
+  },
+  consumer_lane_invalid: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} lane is invalid.`,
+    remediation: 'Verify lane configuration against registration.',
+  },
+  consumer_wait_unsupported: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} does not support wait.`,
+    remediation: 'Consumer does not support fresh-wait; use status polling.',
+  },
+  consumer_unregister_requires_stop: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} must be stopped before unregister.`,
     remediation:
-      'Set CORAL_EMBEDDING_PROVIDER in ~/.coral/.env (and any required companion variables) before retrying /equip.',
+      'Consumer must be stopped before unregister; this is an internal sequencing error. Report it with the code if persistent.',
+  },
+  consumer_interest_invalid: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} interest is invalid.`,
+    remediation: 'Verify consumer interest declaration structure.',
+  },
+  consumer_registration_kind_invalid: {
+    userMessage: (context) =>
+      `Consumer ${stringContextValue(context, 'id', 'this consumer')} registration kind is invalid.`,
+    remediation: 'Internal error: invalid consumer registration kind. Report it with the code if persistent.',
   },
   equipment_slot_not_declared: {
     userMessage: (context) => `Equipment slot '${stringContextValue(context, 'slotId', 'unknown')}' is not declared.`,
@@ -54,7 +127,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Slot '${stringContextValue(context, 'slotId', 'unknown')}' is equipped by '${stringContextValue(context, 'equippedBy', 'another tool')}'.`,
     remediation: (context) =>
-      `Run '/equip uninstall ${stringContextValue(context, 'equippedBy', 'that tool')}' first.`,
+      `Run 'coral-cli expansion unequip ${stringContextValue(context, 'equippedBy', 'that tool')}' first.`,
   },
   equipment_install_path_unwritable: {
     userMessage: (context) =>
@@ -82,16 +155,6 @@ export function documentedCoralSetupError(
     userMessage: overrides.userMessage ?? renderDocumentedSpec(spec.userMessage, context),
     remediation: overrides.remediation ?? renderDocumentedSpec(spec.remediation, context),
     ...(context === undefined ? {} : { context }),
-  });
-}
-
-export function documentedCoralSetupErrorSpec(code: DocumentedCoralSetupErrorCode): Readonly<{
-  userMessage: string;
-  remediation: string;
-}> {
-  return Object.freeze({
-    userMessage: renderDocumentedSpec(DOCUMENTED_CORAL_SETUP_ERRORS[code].userMessage),
-    remediation: renderDocumentedSpec(DOCUMENTED_CORAL_SETUP_ERRORS[code].remediation),
   });
 }
 

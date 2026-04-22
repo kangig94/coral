@@ -139,6 +139,7 @@ async function createProjection(documents: readonly TestDocument[]): Promise<Ora
     })),
   );
 
+  let projection!: OramaBaseProjection;
   const runtime = {
     async ensureOramaIndex() {
       return {
@@ -150,9 +151,33 @@ async function createProjection(documents: readonly TestDocument[]): Promise<Ora
         },
       };
     },
+    getEquipmentView() {
+      return {
+        retrieval: projection,
+        snapshotId: null,
+        contentSeq: 0,
+        contentManifestHash: null,
+      };
+    },
+    getActiveVectorSurface() {
+      return projection;
+    },
+    getBaseRetrievalSurface() {
+      return projection;
+    },
+    getCorpusStateSnapshot() {
+      return {
+        snapshotId: 'orama-cosine-test-snapshot',
+        contentSeq: 0,
+        metadataSeq: 0,
+        contentManifestHash: '',
+        metadataManifestHash: '',
+      };
+    },
   } as unknown as KbRuntime;
 
-  return new OramaBaseProjection(runtime);
+  projection = new OramaBaseProjection(runtime);
+  return projection;
 }
 
 describe('OramaBaseProjection cosine search', () => {

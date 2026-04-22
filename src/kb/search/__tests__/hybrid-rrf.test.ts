@@ -11,7 +11,6 @@ import type { KbRuntime } from '../../contracts.js';
 import type { EntityGraph, KbEntryId } from '../../entry-types.js';
 import { createHybridFusion } from '../hybrid.js';
 import type { TextRetrievalResult, VectorRetrievalResult, VectorRetrieval } from '../contract.js';
-import { createOramaBaseProjection } from '../orama-backend.js';
 
 const equipmentViewResolvers = new WeakMap<KbRuntime, () => ReturnType<typeof runtimeActivationFromHandle> | null>();
 type TaggedVectorRetrieval = VectorRetrieval & { readonly backendKind?: 'needle' | 'orama' };
@@ -200,7 +199,7 @@ function equipVectorSlot(runtime: KbRuntime, retrieval: TaggedVectorRetrieval, h
   const registry = createSlotRegistry();
   const slot = createEquipmentSlot<VectorRetrieval>({
     id: 'kb.vector',
-    defaultOwner: () => createOramaBaseProjection(runtime),
+    defaultOwner: () => runtime.getBaseRetrievalSurface(),
   });
   registry.declare(slot);
   slot.equip(retrieval, handle);

@@ -41,9 +41,9 @@ import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } f
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
 import { createOramaBaseProjection } from '../kb/api.js';
 import type { KbRuntime } from '../kb/contracts.js';
+import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
 import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
-import { emptySnapshot } from './equipment/runtime-activation.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
 export { createBackendCore } from './composition/create-backend-core.js';
 export { listInstantiatedExecutionServices } from './composition/execution-services.js';
@@ -144,6 +144,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     consumerDriver: getConsumerDriver(),
     slotRegistry: equipmentSlots,
     resolveKbRuntime: () => currentKbRuntime,
+    removeInstallArtifacts: (name) => removeInstallArtifacts(name),
     now: () => new Date(runtime.time.now()),
   });
 
@@ -177,7 +178,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         db: getStoreDb(),
         getEquipmentView: () =>
           equipmentLifecycleService.getRuntimeActivation()
-          ?? (currentKbRuntime === null ? null : emptySnapshot(createOramaBaseProjection(currentKbRuntime))),
+          ?? currentKbRuntime?.getEquipmentView()
+          ?? null,
         persistCorpusState: (snapshot) =>
           persistCorpusStateInDb(getStoreDb(), snapshot, {
             now: () => new Date(runtime.time.now()),

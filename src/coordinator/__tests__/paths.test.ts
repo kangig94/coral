@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { composeCoralPaths } from '../paths.js';
 import { coordinatorPaths } from '../paths.js';
 import { corpusPaths } from '../../kb/corpus/paths.js';
-import { equipmentPaths } from '../../infra/equipment-paths.js';
+import { equipmentPaths } from '../../expansion/paths.js';
 import { exportsPaths } from '../../jobs/exports/paths.js';
 import { storePaths } from '../../store/paths.js';
 

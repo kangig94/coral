@@ -1,109 +1,162 @@
-import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { delimiter } from 'node:path';
 
-export interface WorkerResult {
-  readonly workerId: number;
-  readonly exitCode: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly result: Record<string, unknown>;
+import { SIGTERM_GRACE_MS } from '../shared/process-constants.js';
+
+function resolvePathKey(env: NodeJS.ProcessEnv): string | null {
+  const keys = Object.keys(env).filter((key) => key.toUpperCase() === 'PATH');
+  if (keys.includes('PATH')) {
+    return 'PATH';
+  }
+  return keys.at(-1) ?? null;
 }
 
-function parseWorkerResult(stdout: string): Record<string, unknown> {
-  const lines = stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (lines.length === 0) {
-    throw new Error('Worker did not emit JSON output.');
+function buildSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const pathKey = resolvePathKey(env);
+  if (pathKey === null) {
+    return { ...env };
   }
 
-  const parsed = JSON.parse(lines[lines.length - 1] ?? '') as unknown;
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Worker JSON output must be an object.');
+  const inheritedPathKey = resolvePathKey(process.env) ?? 'PATH';
+  const requestedPath = env[pathKey];
+  const inheritedPath = process.env[inheritedPathKey];
+  if (
+    typeof requestedPath !== 'string' ||
+    requestedPath.length === 0 ||
+    typeof inheritedPath !== 'string' ||
+    inheritedPath.length === 0 ||
+    requestedPath === inheritedPath ||
+    requestedPath.endsWith(`${delimiter}${inheritedPath}`)
+  ) {
+    return { ...env };
   }
 
-  return parsed as Record<string, unknown>;
+  return {
+    ...env,
+    [pathKey]: `${requestedPath}${delimiter}${inheritedPath}`,
+  };
 }
 
-export async function spawnEquipWorkers(opts: {
-  home: string;
-  workers: number;
-  catalog: string;
-}): Promise<WorkerResult[]> {
-  const scriptPath = join(process.cwd(), 'scripts', 'equip-driver.mjs');
-  const binDir = join(opts.home, 'bin');
+function safeKill(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    child.kill(signal);
+  } catch {
+    /* already exited */
+  }
+}
 
-  return await Promise.all(
-    Array.from({ length: opts.workers }, (_, workerId) =>
-      new Promise<WorkerResult>((resolve, reject) => {
-        const child = spawn(process.execPath, [scriptPath, opts.catalog], {
-          cwd: process.cwd(),
-          env: {
-            ...process.env,
-            HOME: opts.home,
-            USERPROFILE: opts.home,
-            TMPDIR: opts.home,
-            CORAL_HOME: opts.home,
-            CLAUDE_PLUGIN_ROOT: process.cwd(),
-            CORAL_WORKER_ID: String(workerId),
-            PATH: `${binDir}:${process.env.PATH ?? ''}`,
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
+export async function spawnNodeScript<T = never>(opts: {
+  scriptPath: string;
+  args: readonly string[];
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  parseStdout?: (stdout: string) => T;
+}): Promise<{
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  parsed: T | undefined;
+}> {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [opts.scriptPath, ...opts.args], {
+      cwd: process.cwd(),
+      env: buildSpawnEnv(opts.env),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
-        let stdout = '';
-        let stderr = '';
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    let killHandle: NodeJS.Timeout | null = null;
 
-        const timer = setTimeout(() => {
-          child.kill('SIGKILL');
-          reject(new Error(`Timed out waiting for equip worker ${workerId}.\n${stdout}${stderr}`));
-        }, 15_000);
-        timer.unref?.();
+    const clearTimers = (): void => {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      if (killHandle !== null) {
+        clearTimeout(killHandle);
+        killHandle = null;
+      }
+    };
 
-        child.stdout.setEncoding('utf-8');
-        child.stderr.setEncoding('utf-8');
-        child.stdout.on('data', (chunk: string) => {
-          stdout += chunk;
-        });
-        child.stderr.on('data', (chunk: string) => {
-          stderr += chunk;
-        });
-        child.once('error', (error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-        child.once('close', (code, signal) => {
-          clearTimeout(timer);
+    const settle = (fn: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimers();
+      fn();
+    };
 
-          let result: Record<string, unknown>;
-          try {
-            result = parseWorkerResult(stdout);
-          } catch (error) {
+    const scheduleTimeoutKill = (): void => {
+      if (settled) {
+        return;
+      }
+
+      safeKill(child, 'SIGTERM');
+      killHandle = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        safeKill(child, 'SIGKILL');
+      }, SIGTERM_GRACE_MS);
+      killHandle.unref?.();
+    };
+
+    if (child.stdout) {
+      child.stdout.setEncoding('utf-8');
+      child.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.setEncoding('utf-8');
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+    }
+
+    child.once('error', (error) => {
+      settle(() => reject(error));
+    });
+
+    child.once('close', (code, signal) => {
+      let parsed: T | undefined = undefined;
+      if (opts.parseStdout) {
+        try {
+          parsed = opts.parseStdout(stdout);
+        } catch (error) {
+          settle(() =>
             reject(
               error instanceof Error
-                ? new Error(`Could not parse worker ${workerId} output.\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
-                    cause: error,
-                  })
-                : new Error(`Worker ${workerId} produced non-Error rejection.\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
+                ? new Error(`Could not parse script output.\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error })
+                : new Error(`Script output parser rejected with a non-Error value.\nstdout:\n${stdout}\nstderr:\n${stderr}`, {
                     cause: error,
                   }),
-            );
-            return;
-          }
+            ),
+          );
+          return;
+        }
+      }
 
-          resolve({
-            workerId,
-            exitCode: code,
-            signal,
-            stdout,
-            stderr,
-            result,
-          });
-        });
-      }),
-    ),
-  );
+      settle(() =>
+        resolve({
+          exitCode: code,
+          signal,
+          stdout,
+          stderr,
+          parsed,
+        }),
+      );
+    });
+
+    timeoutHandle = setTimeout(() => {
+      scheduleTimeoutKill();
+    }, opts.timeoutMs);
+    timeoutHandle.unref?.();
+  });
 }
