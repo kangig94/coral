@@ -20,6 +20,7 @@ import {
   type KbSourceListResult,
 } from '../entry-types.js';
 import { compareLocale, assertSourceSlug } from '../validation.js';
+import { currentEntrySeq } from '../index-state.js';
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
   const stagedPath = assertWithin(kb.sourceImportStageDir(), candidate, 'KB source staged markdown path');
@@ -46,7 +47,6 @@ export async function persistPreparedSource(
   const normalizedSlug = assertSourceSlug(slug, 'source');
 
   return kb.withMutationLock(async () => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
     const filePath = kb.sourcePath(normalizedSlug);
     const principlePath = kb.principlePath(normalizedSlug);
     const stagedCandidate = assertWithin(kb.sourceImportStageDir(), stagedPath, 'KB source staged markdown path');
@@ -63,7 +63,7 @@ export async function persistPreparedSource(
       const resolvedStagedPath = resolvePreparedSourceStagePath(kb, stagedCandidate);
       const renderedSource = readFileSync(resolvedStagedPath, 'utf-8');
       const parsedMeta = parseSourceFrontmatter(renderedSource);
-      const entrySeq = kb.readIndexState().mutationSeq + 1;
+      const entrySeq = currentEntrySeq(kb.readIndexState()) + 1;
       const persistedMeta = {
         ...parsedMeta,
         entrySeq,

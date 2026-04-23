@@ -471,7 +471,7 @@ export class JobStore implements JobProgressStore {
         sessionId: record.sessionId,
         ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
       },
-      bodyVersion: 2,
+      bodyVersion: 1,
       body: {
         sessionId: record.sessionId,
         provider: record.provider,

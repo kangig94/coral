@@ -259,12 +259,6 @@ export class JobLaunchService {
         `Session ${sessionId} belongs to provider '${session.provider}'. Use \`coral-cli ${session.provider} -s ${sessionId} ...\` instead.`,
       );
     }
-    if (session.backendNamespace === undefined || session.projectRoot === undefined) {
-      return rejectLaunch(
-        'legacy_session_unsupported',
-        `Session ${sessionId} is missing stored backend scope metadata and cannot be continued by session id.`,
-      );
-    }
     if (session.backendNamespace !== this.deps.backendNamespace || session.projectRoot !== ctx.projectRoot) {
       return rejectLaunch(
         'scope_mismatch',

@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
 CREATE TABLE IF NOT EXISTS equipment_cursors (
   consumer_id            TEXT PRIMARY KEY,      -- 'orama-fts', 'orama-vector', 'needle-vector'
   authority              TEXT NOT NULL,         -- 'journal' | 'corpus'
-  lane                   TEXT,                  -- legacy/internal hint; NULL for journal and 'both' corpus consumers
+  lane                   TEXT,                  -- lane hint; NULL for journal and 'both' corpus consumers
   corpus_interest        TEXT,                  -- NULL for journal, 'content' | 'metadata' | 'both' for corpus
   cursor                 INTEGER,               -- journal only (events.seq)
   snapshot_id            TEXT,                  -- corpus only
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS equipment_state (
   last_error_message TEXT
 );
 
--- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
+-- Curate scheduler bookkeeping.
 -- Single row for scalar scheduler state; the active claim lives in kb_curate_active_claim.
 CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_community_summary_input_fingerprints (
   fingerprint                TEXT NOT NULL
 );
 
--- Curate retry queue (pendingRepair[] in the legacy file-backed state).
+-- Curate retry queue.
 -- Each entry has its own retry schedule; indexed by retry_not_before for
 -- O(log n) "who is due now" scans.
 CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (

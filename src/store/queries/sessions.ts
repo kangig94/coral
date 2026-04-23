@@ -4,12 +4,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { SessionLookup, SessionLookupRef } from '../../sessions/lookup.js';
 import type { SessionEntry } from '../../sessions/entry.js';
-import {
-  readSessionEntry,
-  readSessionEntryLenient,
-  type LenientSessionEntry,
-  type ProvenanceState,
-} from '../../sessions/shell/session-read.js';
+import { readSessionEntry } from '../../sessions/shell/session-read.js';
 import { readSessionRefs } from '../../sessions/shell/resolve.js';
 import { sessionBase } from '../../infra/paths.js';
 
@@ -113,19 +108,4 @@ export function readSessionEntryById(
   }
 
   return entry;
-}
-
-export function readSessionEntryLenientById(
-  db: BetterSqlite3.Database,
-  sessionId: string,
-): LenientSessionEntry | null {
-  const sessionPath = findSessionFilePath(db, sessionId);
-  return sessionPath === null ? null : readSessionEntryLenient(sessionPath);
-}
-
-export function readSessionProvenanceById(
-  db: BetterSqlite3.Database,
-  sessionId: string,
-): ProvenanceState | null {
-  return readSessionEntryLenientById(db, sessionId)?.provenanceState ?? null;
 }

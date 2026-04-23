@@ -100,7 +100,7 @@ export class RecoveryService {
       return;
     }
     const session = this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
-    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
+    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
     if (!continuity) {
       return;
     }
@@ -143,7 +143,7 @@ export class RecoveryService {
         conversationRef: launchRecord.request.conversationRef,
       } as Pick<SessionEntry, 'conversationRef' | 'providerContinuity'>);
     const preservedConversationRef = session.conversationRef ?? launchRecord.request.conversationRef;
-    const continuity = this.resolveAppServerContinuity(launchRecord.provider, runtimeRecord, session);
+    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
 
     let mutation: SessionContinuityMutation;
     let probeOutcome: InterruptedProbeOutcome;
@@ -379,7 +379,6 @@ export class RecoveryService {
   }
 
   private resolveAppServerContinuity(
-    providerName: string,
     runtimeRecord: AppServerRuntime,
     session?: Pick<SessionEntry, 'providerContinuity'> | null,
   ): ProviderContinuityBlob | undefined {
@@ -389,10 +388,7 @@ export class RecoveryService {
     if (isProviderContinuityBlob(session?.providerContinuity)) {
       return session.providerContinuity;
     }
-
-    return this.deps.providerRegistry
-      .get(providerName)
-      ?.recovery?.migrateLegacyContinuity?.(runtimeRecord.providerMeta as Record<string, unknown>);
+    return undefined;
   }
 
   private writeAppServerRuntimeRecord(

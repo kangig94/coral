@@ -281,8 +281,8 @@ function renderChildrenSection(children: string[]): string {
 
 function normalizeEntityGraph(index: KbIndex): EntityGraph {
   return {
-    entityMeta: index.entityMeta ?? {},
-    relationships: index.relationships ?? [],
+    entityMeta: index.entityMeta,
+    relationships: index.relationships,
   };
 }
 
@@ -1009,7 +1009,7 @@ function leafSummaryFingerprintPayload(
   index: KbIndex,
   documents: RepresentativeDocument[],
 ): string {
-  const entityMeta = index.entityMeta ?? {};
+  const entityMeta = index.entityMeta;
 
   return JSON.stringify({
     kind: 'leaf',
@@ -1119,7 +1119,7 @@ function buildLeafCommunitySummaryPrompt(
   index: KbIndex,
   documents: RepresentativeDocument[],
 ): string {
-  const entityMeta = index.entityMeta ?? {};
+  const entityMeta = index.entityMeta;
   const entityLines = uniqueSorted(community.members).map((member) => {
     const meta = entityMeta[member];
     const typeSegment = meta?.type === undefined ? '' : ` (${meta.type})`;

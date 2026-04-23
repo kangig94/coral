@@ -109,7 +109,7 @@ function buildEntitySupportMap(index: KbIndex): Map<string, number> {
     }
   }
 
-  for (const relationship of index.relationships ?? []) {
+  for (const relationship of index.relationships) {
     const evidenceCount = uniqueTrimmedList(relationship.evidence).length;
     if (evidenceCount === 0) {
       continue;
@@ -167,7 +167,7 @@ function buildClassificationPromptVocabulary(
   entries: CurateClaimedEntry[],
   index: KbIndex,
 ): ClassificationPromptVocabularyEntry[] {
-  const entityMeta = index.entityMeta ?? {};
+  const entityMeta = index.entityMeta;
   const entityNames = Object.keys(entityMeta);
   if (entityNames.length === 0) {
     return [];
@@ -175,7 +175,7 @@ function buildClassificationPromptVocabulary(
 
   const support = buildEntitySupportMap(index);
   const { liveTags, tokenSet } = buildClassificationContext(entries, index);
-  const relationships = index.relationships ?? [];
+  const relationships = index.relationships;
 
   const ranked = entityNames
     .map((name) => {
@@ -751,7 +751,7 @@ export function validateAssignments(
   index: KbIndex,
   claimedEntries: CurateClaimedEntry[],
 ): ClassificationAssignment[] {
-  const existingEntityVocabulary = new Set(Object.keys(index.entityMeta ?? {}));
+  const existingEntityVocabulary = new Set(Object.keys(index.entityMeta));
   const claimedByEntryId = new Map<KbEntryId, CurateClaimedEntry>();
   for (const entry of claimedEntries) {
     claimedByEntryId.set(entry.entryId, entry);
@@ -901,8 +901,8 @@ export function validateAssignments(
 
 export function mergeAssignmentsIntoIndexGraph(index: KbIndex, assignments: ClassificationAssignment[]): KbIndex {
   const nextIndex = cloneKbIndex(index);
-  const entityMeta = cloneEntityMetaRecord(nextIndex.entityMeta ?? {});
-  const relationships = (nextIndex.relationships ?? []).map(cloneEntityRelationship);
+  const entityMeta = cloneEntityMetaRecord(nextIndex.entityMeta);
+  const relationships = nextIndex.relationships.map(cloneEntityRelationship);
   const relationshipsByKey = new Map(
     relationships.map((relationship, index) => [classificationRelationshipKey(relationship), index] as const),
   );

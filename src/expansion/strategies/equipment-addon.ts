@@ -193,11 +193,7 @@ function needlePlatformKey(platformName: string, archName: string): string {
 
 function equipmentMetaCandidates(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): string[] {
   const targetDir = ctx.paths.equipmentDataDir(config.name);
-  return [
-    join(targetDir, `.${config.name}-meta.json`),
-    join(targetDir, '.install-meta.json'),
-    join(targetDir, '.kb-meta.json'),
-  ];
+  return [join(targetDir, `.${config.name}-meta.json`)];
 }
 
 function readEquipmentInstallMeta(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): {
@@ -213,13 +209,6 @@ function writeEquipmentInstallMeta(ctx: ExpansionInstallContext, config: Equipme
     version: config.needleVersion,
     method,
   });
-  for (const path of candidates.slice(1)) {
-    try {
-      ctx.runtime.storage.unlinkSync(path);
-    } catch {
-      /* empty */
-    }
-  }
 }
 
 function hasEquipmentArtifacts(ctx: ExpansionInstallContext, config: EquipmentAddonConfig): boolean {

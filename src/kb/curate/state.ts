@@ -11,6 +11,7 @@ import {
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
+import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../index-state.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbIndexState, KbRuntime } from '../contracts.js';
@@ -505,7 +506,7 @@ export function assignEntrySeqs(
   scannedSources: ScannedSource[],
   pendingRepair: PendingRepair[],
 ): CurateMigrationAssignment {
-  let highestExistingEntrySeq = indexState.mutationSeq;
+  let highestExistingEntrySeq = currentEntrySeq(indexState);
   for (const scannedNote of scannedNotes) {
     if (scannedNote.frontmatter.entrySeq !== undefined) {
       highestExistingEntrySeq = Math.max(highestExistingEntrySeq, scannedNote.frontmatter.entrySeq);
@@ -597,14 +598,8 @@ export function reconcileSeqs(
   indexState: KbIndexState,
   highestAssignedEntrySeq: number,
 ): void {
-  if (highestAssignedEntrySeq > indexState.mutationSeq) {
-    kb.writeIndexState({
-      ...indexState,
-      contentSeq: highestAssignedEntrySeq,
-      metadataSeq: highestAssignedEntrySeq,
-      mutationSeq: highestAssignedEntrySeq,
-      textIndexedSeq: highestAssignedEntrySeq,
-    });
+  if (highestAssignedEntrySeq > currentEntrySeq(indexState)) {
+    kb.writeIndexState(advanceIndexStateToEntrySeq(indexState, highestAssignedEntrySeq));
   }
 }
 

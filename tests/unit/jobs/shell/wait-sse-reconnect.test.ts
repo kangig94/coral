@@ -78,6 +78,7 @@ describe('wait SSE reconnect', () => {
             projectRoot,
             backendNamespace: 'wait-sse-ns',
             bundleHash: 'wait-sse-bundle',
+            jobKind: 'provider',
             pool: 'default',
             enqueueSequence: 0,
             request: {
@@ -220,6 +221,157 @@ describe('wait SSE reconnect', () => {
     });
 
     await expect(reconnectIterator.next()).resolves.toEqual({ done: true, value: undefined });
+    db.close();
+  });
+
+  it('does not lose a terminal event that arrives while building the catch-up snapshot', async () => {
+    const db = createDb();
+    const runtime = createRealRuntime();
+    runtimes.add(runtime);
+
+    const eventBus = new TypedEventBus();
+    const progressStore = new ProgressStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const append = createJournalAppender(db);
+    const jobId = 'wait-race-job';
+    const sessionId = 'wait-race-session';
+    const projectRoot = '/tmp/wait-race-project';
+
+    const appendLaunch = () =>
+      append([
+        {
+          type: 'job.launch.requested',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-race-ns',
+          project: projectRoot,
+          correlationId: 'wait-race-correlation',
+          refs: { sessionId },
+          bodyVersion: 1,
+          body: {
+            sessionId,
+            provider: 'fake-provider',
+            providerAction: 'exec',
+            projectRoot,
+            backendNamespace: 'wait-race-ns',
+            bundleHash: 'wait-race-bundle',
+            jobKind: 'provider',
+            pool: 'default',
+            enqueueSequence: 0,
+            request: {
+              prompt: 'hello',
+              cwd: projectRoot,
+              bypassPermissions: false,
+              coralEnv: {},
+            },
+            createdAt: '2026-04-19T00:00:00.000Z',
+          },
+        },
+      ]);
+
+    const appendRuntime = () =>
+      append([
+        {
+          type: 'job.runtime.started',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-race-ns',
+          project: projectRoot,
+          correlationId: 'wait-race-correlation',
+          refs: { sessionId },
+          bodyVersion: 1,
+          body: {
+            transport: 'durable-cli',
+            pid: 123,
+            stdoutPath: '/tmp/stdout',
+            stderrPath: '/tmp/stderr',
+            startedAt: '2026-04-19T00:00:01.000Z',
+          },
+        },
+      ]);
+
+    const appendProgress = () =>
+      append([
+        {
+          type: 'job.progress.emitted',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-race-ns',
+          project: projectRoot,
+          correlationId: 'wait-race-correlation',
+          refs: { sessionId },
+          bodyVersion: 1,
+          body: {
+            kind: 'message',
+            message: 'progress-before-race',
+            ts: '2026-04-19T00:00:02.000Z',
+          },
+        },
+      ]);
+
+    const appendTerminal = () =>
+      append([
+        {
+          type: 'job.terminal.recorded',
+          stream: { kind: 'job', id: jobId },
+          namespace: 'wait-race-ns',
+          project: projectRoot,
+          correlationId: 'wait-race-correlation',
+          refs: { sessionId },
+          bodyVersion: 1,
+          body: {
+            outcome: { kind: 'completed' },
+            durationMs: 4,
+            content: 'done-after-race',
+          },
+        },
+      ]);
+
+    appendLaunch();
+    appendRuntime();
+    appendProgress();
+
+    let terminalInjected = false;
+    const coordinator = new WaitCoordinator({
+      progressStore,
+      sessionManager: {} as never,
+      launchCoordinator,
+      eventBus,
+      jobPools: new Map(),
+      time: runtime.time,
+      loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
+      readJobProgress: (targetJobId) => {
+        const events = readJobProgress(db, targetJobId, progressStore);
+        if (!terminalInjected) {
+          terminalInjected = true;
+          appendTerminal();
+        }
+        return events;
+      },
+      subscribeJobEvents,
+      getCurrentJournalSeq: () =>
+        (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
+    });
+
+    const iterator = coordinator.waitForJobs({ jobIds: [jobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
+    const progress = await iterator.next();
+    expect(progress.done).toBe(false);
+    expect(progress.value).toMatchObject({
+      type: 'progress',
+      jobId,
+      eventId: 1,
+      message: 'progress-before-race',
+    });
+
+    const terminal = await iterator.next();
+    expect(terminal.done).toBe(false);
+    expect(terminal.value).toMatchObject({
+      type: 'terminal',
+      jobId,
+      result: {
+        content: 'done-after-race',
+        outcome: { kind: 'completed' },
+      },
+    });
+
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
     db.close();
   });
 });

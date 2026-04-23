@@ -54,12 +54,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
     typeof record.socketPath === 'string' && record.socketPath.length > 0 ? record.socketPath : null;
   const bundleHash =
     typeof record.bundleHash === 'string' && record.bundleHash.length > 0 ? record.bundleHash : null;
-  const flavor =
-    record.flavor === undefined
-      ? 'prod'
-      : record.flavor === 'prod' || record.flavor === 'dev'
-        ? record.flavor
-        : null;
+  const flavor = record.flavor === 'prod' || record.flavor === 'dev' ? record.flavor : null;
   const namespace =
     typeof record.namespace === 'string' && record.namespace.length > 0 ? record.namespace : null;
   const startedAt =

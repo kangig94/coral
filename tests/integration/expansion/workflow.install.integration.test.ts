@@ -19,8 +19,6 @@ import type { EnsuredIpcClient } from '#src/transport/ipc/ensure.js';
 const NEEDLE_VERSION = '0.2.0';
 const CGC_VERSION = 'v1.2.3';
 
-type MetaKind = 'canonical' | 'legacy';
-
 type FakeCoordinatorCall = {
   channel: 'ensure' | 'passive';
   method: string;
@@ -207,13 +205,12 @@ function writeInstalledNeedle(
   runtime: Runtime,
   version: string = NEEDLE_VERSION,
   method: 'prebuild' | 'source-build' = 'prebuild',
-  metaKind: MetaKind = 'canonical',
 ): void {
   const targetDir = needleTargetDir(runtime);
   runtime.storage.mkdirSync(targetDir, { recursive: true });
   runtime.storage.writeFileSync(needleAddon(runtime), Buffer.from('installed-addon'));
   runtime.storage.writeFileSync(
-    join(targetDir, metaKind === 'canonical' ? '.needle-meta.json' : '.kb-meta.json'),
+    join(targetDir, '.needle-meta.json'),
     JSON.stringify({ version, method }),
     { encoding: 'utf-8' },
   );
@@ -471,9 +468,9 @@ describe('expansion workflow/install integration (AC24)', () => {
     expect(readBuffer(runtime, needleAddon(runtime))).toEqual(addonBytes);
   });
 
-  it('returns already_installed from runtime-local metadata and still honors the legacy kb meta file', async () => {
+  it('returns already_installed from runtime-local metadata', async () => {
     const runtime = createRuntime();
-    writeInstalledNeedle(runtime, NEEDLE_VERSION, 'source-build', 'legacy');
+    writeInstalledNeedle(runtime, NEEDLE_VERSION, 'source-build');
     const fetch = stubFetch(async () => {
       throw new Error('already_installed should not download');
     });

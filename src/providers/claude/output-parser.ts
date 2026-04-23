@@ -33,9 +33,8 @@ export function parseClaudeStreamJson(output: string): ParsedClaudeStreamOutput 
     return PARSE_FAILURE_SENTINEL;
   }
 
-  // Old legacy format: result field is an object (content array or response field).
-  // Stream-json result events carry result as a string or null.
-  if (isLegacySingleJson(parsed)) return toLegacyParsedOutput(parsed);
+  // Single-result JSON carries result as an object; stream-json result events carry a string or null.
+  if (isSingleResultJson(parsed)) return toSingleResultParsedOutput(parsed);
   // Stream-json single-event (system, result with string, etc.) → NDJSON path
   return parseNdjson(lines);
 }
@@ -107,23 +106,23 @@ function parseNdjson(lines: string[]): ParsedClaudeStreamOutput {
   };
 }
 
-function isLegacySingleJson(parsed: unknown): parsed is ClaudeJsonOutput {
+function isSingleResultJson(parsed: unknown): parsed is ClaudeJsonOutput {
   return isRecord(parsed) && isRecord(parsed.result);
 }
 
-function toLegacyParsedOutput(legacy: ClaudeJsonOutput): ParsedClaudeStreamOutput {
+function toSingleResultParsedOutput(result: ClaudeJsonOutput): ParsedClaudeStreamOutput {
   return {
-    response: extractLegacyResponse(legacy),
-    sessionId: typeof legacy.session_id === 'string' ? legacy.session_id : null,
-    model: typeof legacy.model === 'string' ? legacy.model : null,
-    costUsd: typeof legacy.total_cost_usd === 'number' ? legacy.total_cost_usd : 0,
+    response: extractSingleResultResponse(result),
+    sessionId: typeof result.session_id === 'string' ? result.session_id : null,
+    model: typeof result.model === 'string' ? result.model : null,
+    costUsd: typeof result.total_cost_usd === 'number' ? result.total_cost_usd : 0,
     durationMs: null,
     numTurns: null,
     isError: false,
   };
 }
 
-function extractLegacyResponse(parsed: ClaudeJsonOutput): string {
+function extractSingleResultResponse(parsed: ClaudeJsonOutput): string {
   if (typeof parsed.result === 'string') return parsed.result;
   if (isRecord(parsed.result)) {
     if (typeof parsed.result.response === 'string') return parsed.result.response;

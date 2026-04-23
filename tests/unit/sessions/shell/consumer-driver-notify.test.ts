@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -81,6 +81,7 @@ describe('sessions consumer-driver notify', () => {
 
     const runtime = createRealRuntime();
     const workDir = join(tempHome, 'project');
+    mkdirSync(workDir, { recursive: true });
     const manager = new SessionManager(workDir, runtime, coordinatorAppendEvents);
 
     try {
@@ -89,6 +90,8 @@ describe('sessions consumer-driver notify', () => {
         name: 'alpha',
         model: 'gpt-5',
         cwd: workDir,
+        projectRoot: workDir,
+        backendNamespace: runtime.paths.pluginRootNamespace(workDir),
       });
 
       await driver.drainAll();

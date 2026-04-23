@@ -139,7 +139,9 @@ Make the contract explicit first.
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
 
     const result = await reindex(kb);
 
@@ -169,6 +171,8 @@ Make the contract explicit first.
       principles: {
         'contract-first-design': 'Make the contract explicit first.',
       },
+      entityMeta: {},
+      relationships: [],
     });
     expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
       '"coral-kb-mode"',
@@ -238,7 +242,9 @@ Shared retrieval patterns.
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     expect(readEntry({ note: 'communities:graph-rag' })).toEqual({
       kind: 'community',
       note: 'graph-rag',
@@ -544,8 +550,6 @@ Make the contract explicit first.
     kb.writeIndexState({
       contentSeq: 3,
       metadataSeq: 3,
-      mutationSeq: 3,
-      textIndexedSeq: 3,
     });
 
     const result = await reindex(kb);

@@ -527,19 +527,11 @@ export function parseSourceEnvelopeData<T>(
     .object({
       updatedAt: z.string(),
       sessions: z.array(rowSchema),
-      source: z.unknown().optional(),
-      projectRoot: z.unknown().optional(),
+      source: z.string(),
     })
     .passthrough()
     .superRefine((envelope, ctx) => {
-      let fileSource: string | null = null;
-      if (typeof envelope.source === 'string') {
-        fileSource = envelope.source;
-      } else if (typeof envelope.projectRoot === 'string') {
-        fileSource = source;
-      }
-
-      if (fileSource === source) return;
+      if (envelope.source === source) return;
 
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -563,15 +555,11 @@ export function parseDiscussSummaryIndexData(value: unknown, source: string): Di
   return parseSourceEnvelopeData(value, source, discussSummaryIndexRowSchema, 'summary index');
 }
 
-export function parseDiscussSourcesRegistry(
-  value: unknown,
-  projectSource: (projectRoot: string) => string,
-): { updatedAt?: string; sources: string[] } | null {
+export function parseDiscussSourcesRegistry(value: unknown): { updatedAt?: string; sources: string[] } | null {
   const schema = z
     .object({
       updatedAt: z.unknown().optional(),
-      sources: z.unknown().optional(),
-      projectRoots: z.unknown().optional(),
+      sources: z.unknown(),
     })
     .passthrough()
     .superRefine((registry, ctx) => {
@@ -587,30 +575,19 @@ export function parseDiscussSourcesRegistry(
         return;
       }
 
-      if (parseStringArray(registry.projectRoots) === null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'registry must provide sources or projectRoots',
-          path: ['sources'],
-        });
-      }
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'registry must provide sources',
+        path: ['sources'],
+      });
     })
     .transform((registry): DiscussSourcesRegistryData => {
       const updatedAt = typeof registry.updatedAt === 'string' ? registry.updatedAt : undefined;
-      const sources = parseStringArray(registry.sources);
-      if (sources !== null) {
-        return {
-          updatedAt,
-          sources: [...new Set(sources)],
-        };
-      }
-
-      const projectRoots = parseStringArray(registry.projectRoots) ?? [];
       return {
         updatedAt,
-        sources: [...new Set(projectRoots.map((projectRoot) => projectSource(projectRoot)))],
+        sources: [...new Set(parseStringArray(registry.sources) ?? [])],
       };
-  });
+    });
   return parseWithSchema(schema, value);
 }
 
@@ -699,12 +676,9 @@ export function readDiscussSummaryIndexForSourceWithStorage(
 
 export function readDiscussSourcesWithStorage(
   storage: Pick<StoragePort, 'readFileSync'>,
-  paths: Pick<DiscussPathResolver, 'discussSourcesPath' | 'projectSource'>,
+  paths: Pick<DiscussPathResolver, 'discussSourcesPath'>,
 ): string[] {
-  return parseDiscussSourcesRegistry(
-    readJsonFileWithStorage(storage, paths.discussSourcesPath()),
-    paths.projectSource,
-  )?.sources ?? [];
+  return parseDiscussSourcesRegistry(readJsonFileWithStorage(storage, paths.discussSourcesPath()))?.sources ?? [];
 }
 
 export function canUseDiscussSessionDirWithStorage(

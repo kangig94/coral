@@ -48,7 +48,7 @@ const discussWatchSchema = z.object({
   cursor: z.number().int().min(0).optional(),
 });
 
-const legacyDiscussParticipateSchema = z.union([discussBidSchema, discussSpeechSchema]);
+const discussParticipateSchema = z.union([discussBidSchema, discussSpeechSchema]);
 
 type DiscussToolHelpers = {
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -60,7 +60,7 @@ type DiscussSessionArgs = z.infer<typeof discussSessionSchema>;
 type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
 type DiscussBidArgs = z.infer<typeof discussBidSchema>;
 type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
-type DiscussParticipateArgs = z.infer<typeof legacyDiscussParticipateSchema>;
+type DiscussParticipateArgs = z.infer<typeof discussParticipateSchema>;
 
 function isDiscussSpeechArgs(args: DiscussParticipateArgs): args is DiscussSpeechArgs {
   return typeof args.content === 'string';
@@ -258,7 +258,7 @@ export async function handleDiscussParticipate(
   context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
-  const parsed = legacyDiscussParticipateSchema.safeParse(args);
+  const parsed = discussParticipateSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
   }

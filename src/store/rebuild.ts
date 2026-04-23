@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import { decodeEventBody, prepareBodyForUpcast } from './body-codec.js';
+import { decodeEventBody } from './body-codec.js';
 import type { ComposedReducers } from './reducers.js';
 import { applyReducer } from './reducers.js';
 import { rowToCoralEvent, type UpcasterRegistry } from './envelope.js';
@@ -45,9 +45,7 @@ export function rebuildProjections(opts: RebuildOptions): void {
       for (const row of rows) {
         const rawBody = decodeEventBody(row.body);
         const schema = opts.reducers.schemas.get(row.type);
-        const parsedBody = schema
-          ? opts.upcasters.parseBody(row.type, row.body_version, prepareBodyForUpcast(row, rawBody), schema)
-          : rawBody;
+        const parsedBody = schema ? opts.upcasters.parseBody(row.type, row.body_version, rawBody, schema) : rawBody;
 
         applyReducer(opts.db, rowToCoralEvent(row, parsedBody), opts.reducers);
       }

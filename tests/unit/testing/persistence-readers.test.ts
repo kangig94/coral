@@ -8,7 +8,6 @@ import {
   discussDiscoveryPathForSource,
   discussSourcesPath,
   discussSummaryIndexPathForSource,
-  resolveProjectSource,
 } from '#src/infra/paths.js';
 import {
   readDiscussDiscoveryForSource,
@@ -34,11 +33,6 @@ let testHomeDir: string;
 let cleanupPaths: string[];
 
 const NOW = '2026-01-01T00:00:00Z';
-
-function trackCleanup(path: string): string {
-  cleanupPaths.push(path);
-  return path;
-}
 
 function writeJsonFixture(filePath: string, value: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
@@ -76,6 +70,7 @@ function makeLaunchBody(overrides: Record<string, unknown> = {}): Record<string,
     provider: 'codex',
     projectRoot: '/tmp/project',
     backendNamespace: 'ns',
+    jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
     providerAction: 'exec',
@@ -619,17 +614,14 @@ describe('readDiscussDiscoveryForSource', () => {
     expect(result!.sessions[0].sessionId).toBe('session-1');
   });
 
-  it('accepts legacy discovery metadata that uses projectRoot instead of source', () => {
+  it('rejects discovery metadata without the current source envelope', () => {
     writeJsonFixture(discussDiscoveryPathForSource(testSource), {
       projectRoot: '/tmp/project',
       updatedAt: NOW,
       sessions: [makeDiscoverySession()],
     });
 
-    const result = readDiscussDiscoveryForSource(testSource);
-    expect(result).not.toBeNull();
-    expect(result!.source).toBe(testSource);
-    expect(result!.sessions[0].topic).toBe('Discuss topic');
+    expect(readDiscussDiscoveryForSource(testSource)).toBeNull();
   });
 
   it('rejects discovery metadata when a present source mismatches the requested source', () => {
@@ -659,39 +651,33 @@ describe('readDiscussSummaryIndexForSource', () => {
     expect(result!.sessions[0].sessionId).toBe('session-1');
   });
 
-  it('accepts legacy summary index metadata that uses projectRoot instead of source', () => {
+  it('rejects summary index metadata without the current source envelope', () => {
     writeJsonFixture(discussSummaryIndexPathForSource(testSource), {
       projectRoot: '/tmp/project',
       updatedAt: NOW,
       sessions: [makeSummaryIndexRow()],
     });
 
-    const result = readDiscussSummaryIndexForSource(testSource);
-    expect(result).not.toBeNull();
-    expect(result!.source).toBe(testSource);
-    expect(result!.sessions[0].status).toBe('bidding');
+    expect(readDiscussSummaryIndexForSource(testSource)).toBeNull();
   });
 });
 
 describe('readDiscussSources', () => {
-  it('accepts the current sources registry and ignores invalid legacy projectRoots data', () => {
+  it('accepts the current sources registry and deduplicates sources', () => {
     writeJsonFixture(discussSourcesPath(), {
       updatedAt: NOW,
       sources: [testSource, testSource, 'other/source'],
-      projectRoots: 'not-an-array',
     });
 
     expect(readDiscussSources()).toEqual([testSource, 'other/source']);
   });
 
-  it('accepts the legacy projectRoots registry when current sources are absent or invalid', () => {
-    const legacyProjectRoot = trackCleanup(mkdtempSync(join(tmpdir(), 'coral-legacy-project-')));
+  it('rejects a registry without current sources', () => {
     writeJsonFixture(discussSourcesPath(), {
       updatedAt: NOW,
-      sources: 'not-an-array',
-      projectRoots: [legacyProjectRoot, legacyProjectRoot],
+      projectRoots: ['/tmp/project'],
     });
 
-    expect(readDiscussSources()).toEqual([resolveProjectSource(legacyProjectRoot)]);
+    expect(readDiscussSources()).toEqual([]);
   });
 });

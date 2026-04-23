@@ -41,6 +41,7 @@ describe('jobs reducer equivalence (AC1)', () => {
               projectRoot: '/workspace/coral',
               backendNamespace: 'namespace-1',
               bundleHash: 'bundle-1',
+              jobKind: 'provider',
               pool: 'default',
               enqueueSequence: 4,
               request: {
@@ -281,6 +282,7 @@ describe('jobs reducer equivalence (AC1)', () => {
               providerAction: 'exec',
               projectRoot: '/workspace/coral',
               backendNamespace: 'namespace-1',
+              jobKind: 'provider',
               pool: 'default',
               enqueueSequence: 2,
               request: {

@@ -64,7 +64,7 @@ function ensureSentence(text: string): string {
 
 // AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch + assertNever.
 // Wrap with a defensive fallback for runtime values that bypass the type system
-// (e.g. legacy journal events carrying an unknown continuity string).
+// (e.g. journal events carrying an unknown continuity string).
 function safeContinuitySentenceFragment(value: SessionContinuityState): string {
   try {
     return continuitySentenceFragment(value);

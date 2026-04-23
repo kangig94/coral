@@ -29,8 +29,8 @@ export type SessionAllocateOptions = {
   name: string;
   model?: string;
   cwd: string;
-  projectRoot?: string;
-  backendNamespace?: string;
+  projectRoot: string;
+  backendNamespace: string;
   agentName?: string;
   instruction?: ProviderInstruction;
   bypassPermissions?: boolean;
@@ -82,7 +82,7 @@ function sessionOpenedEvent(entry: SessionEntry, shardDir: string): CoralEventIn
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 2,
+    bodyVersion: 1,
     body: {
       controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
       provider: entry.provider,
@@ -305,8 +305,8 @@ export class SessionManager {
       state: 'pending',
       model: options.model,
       cwd: options.cwd,
-      ...(options.projectRoot !== undefined ? { projectRoot: options.projectRoot } : {}),
-      ...(options.backendNamespace !== undefined ? { backendNamespace: options.backendNamespace } : {}),
+      projectRoot: options.projectRoot,
+      backendNamespace: options.backendNamespace,
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -332,13 +332,18 @@ export class SessionManager {
   ): SessionEntry {
     const options =
       typeof optionsOrProvider === 'string'
-        ? {
-            provider: optionsOrProvider,
-            name: name ?? `session-${this.time.now()}`,
-            model,
-            cwd: cwd ?? '',
-            ...(projectRoot !== undefined ? { projectRoot } : {}),
-          }
+        ? (() => {
+            const resolvedCwd = cwd ?? '';
+            const resolvedProjectRoot = projectRoot ?? resolvedCwd;
+            return {
+              provider: optionsOrProvider,
+              name: name ?? `session-${this.time.now()}`,
+              model,
+              cwd: resolvedCwd,
+              projectRoot: resolvedProjectRoot,
+              backendNamespace: this.paths.pluginRootNamespace(resolvedProjectRoot),
+            };
+          })()
         : optionsOrProvider;
 
     return this.open(options);

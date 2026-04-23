@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import { CORAL_SCRIPTED_PROVIDER_SPEC_ENV } from '#src/providers/bootstrap-scripted-override.js';
 import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '#src/providers/claude-appserver/protocol.js';
 import type { ProviderCliRunner } from '#src/providers/cli-runner.js';
 import type {
@@ -130,10 +129,7 @@ function makeRequest(
 }
 
 function getProductionProvider(name: RegisteredProviderName): ProviderSpec {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env[CORAL_SCRIPTED_PROVIDER_SPEC_ENV];
-
-  const provider = createBuiltInProviderRegistry(env).get(name);
+  const provider = createBuiltInProviderRegistry().get(name);
   if (!provider) {
     throw new Error(`Expected built-in provider ${name} to be registered.`);
   }

@@ -192,7 +192,6 @@ describe('launchToHttp', () => {
     ['scope_mismatch', 403],
     ['session_busy', 409],
     ['non_resumable', 409],
-    ['legacy_session_unsupported', 409],
     ['provider_mismatch', 409],
     ['invalid_request', 400],
   ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {

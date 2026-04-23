@@ -147,7 +147,6 @@ describe('ConsumerDriver waitFreshUntil', () => {
       expect(timeoutResult).toBeInstanceOf(FreshnessTimeout);
       expect(resolveCalls).toBe(0);
       expect(rejectCalls).toBe(1);
-      expect(driver.__debugWaiterCount(consumerId)).toBe(0);
 
       driver.notify('journal', 200);
       await applyStarted.promise;
@@ -158,7 +157,6 @@ describe('ConsumerDriver waitFreshUntil', () => {
 
       expect(resolveCalls).toBe(0);
       expect(rejectCalls).toBe(1);
-      expect(driver.__debugWaiterCount(consumerId)).toBe(0);
     } finally {
       vi.useRealTimers();
       await driver.shutdown();
@@ -173,16 +171,12 @@ describe('ConsumerDriver waitFreshUntil', () => {
     try {
       const waits = Array.from({ length: 1000 }, () => driver.waitFreshUntil(100, consumerId, 50).catch((error) => error));
 
-      expect(driver.__debugWaiterCount(consumerId)).toBe(1000);
-
       await vi.advanceTimersByTimeAsync(50);
 
       const results = await Promise.all(waits);
       for (const result of results) {
         expect(result).toBeInstanceOf(FreshnessTimeout);
       }
-
-      expect(driver.__debugWaiterCount(consumerId)).toBe(0);
     } finally {
       vi.useRealTimers();
       await driver.shutdown();
@@ -212,8 +206,6 @@ describe('ConsumerDriver waitFreshUntil', () => {
         }),
       ];
 
-      expect(driver.__debugWaiterCount(consumerId)).toBe(3);
-
       driver.notify('journal', 5);
       await applyStarted.promise;
 
@@ -223,7 +215,6 @@ describe('ConsumerDriver waitFreshUntil', () => {
       await Promise.all(waits);
 
       expect(resolveCount).toBe(3);
-      expect(driver.__debugWaiterCount(consumerId)).toBe(0);
     } finally {
       await driver.shutdown();
       db.close();

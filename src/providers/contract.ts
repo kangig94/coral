@@ -292,7 +292,6 @@ export interface ProviderRecoveryContract {
     messages: string[];
     newOffset: number;
   };
-  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env'>;

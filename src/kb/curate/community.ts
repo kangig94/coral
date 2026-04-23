@@ -198,8 +198,8 @@ async function prepareCommunityPayload(
   const capturedBaselineState = readCurateState(kb);
   const capturedFinalIndex = kb.readIndexOrEmpty();
   const graph = buildEntityRelationshipGraph({
-    entityMeta: capturedFinalIndex.entityMeta ?? {},
-    relationships: capturedFinalIndex.relationships ?? [],
+    entityMeta: capturedFinalIndex.entityMeta,
+    relationships: capturedFinalIndex.relationships,
   });
   const topologyHash = computeCommunityTopologyFingerprint(capturedFinalIndex, graph);
   const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);

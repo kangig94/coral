@@ -802,8 +802,6 @@ describe('curate state', () => {
       runtime.writeIndexState({
         contentSeq: 5,
         metadataSeq: 5,
-        mutationSeq: 5,
-        textIndexedSeq: 5,
       });
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
@@ -834,8 +832,6 @@ describe('curate state', () => {
       runtime.writeIndexState({
         contentSeq: 9,
         metadataSeq: 9,
-        mutationSeq: 9,
-        textIndexedSeq: 9,
       });
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
@@ -869,7 +865,9 @@ describe('curate state', () => {
       runtime.writeIndex({
         entries: {},
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
 
       const scan = scanCorpus(runtime, '2026-03-25T12:00:00.000Z');
       const writeIndexSpy = vi.spyOn(runtime, 'writeIndex');
@@ -896,12 +894,10 @@ describe('curate state', () => {
       expect(writeIndexSpy).not.toHaveBeenCalled();
     });
 
-    it('reconcileSeqs advances the index state only when assignments exceed the mutation sequence', () => {
+    it('reconcileSeqs advances the index state only when assignments exceed the current entry sequence', () => {
       runtime.writeIndexState({
         contentSeq: 10,
         metadataSeq: 10,
-        mutationSeq: 10,
-        textIndexedSeq: 8,
       });
 
       const writeIndexStateSpy = vi.spyOn(runtime, 'writeIndexState');
@@ -912,8 +908,6 @@ describe('curate state', () => {
       expect(runtime.readIndexState()).toEqual({
         contentSeq: 12,
         metadataSeq: 12,
-        mutationSeq: 12,
-        textIndexedSeq: 12,
       });
 
       writeIndexStateSpy.mockClear();
@@ -999,12 +993,12 @@ describe('curate state', () => {
         'coral-third': createIndexNote('Coral Third', 11),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 8,
       metadataSeq: 8,
-      mutationSeq: 8,
-      textIndexedSeq: 8,
     });
     writeCurateState(runtime, createCurateState());
     const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
@@ -1028,12 +1022,12 @@ describe('curate state', () => {
         'coral-third': createIndexNote('Coral Third', 11),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 13,
       metadataSeq: 13,
-      mutationSeq: 13,
-      textIndexedSeq: 13,
     });
     expect(readCurateState(runtime).initialized).toBe(true);
   });
@@ -1064,12 +1058,12 @@ describe('curate state', () => {
     runtime.writeIndex({
       entries: {},
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 5,
       metadataSeq: 5,
-      mutationSeq: 5,
-      textIndexedSeq: 5,
     });
     writeCurateState(runtime, createCurateState());
 
@@ -1087,8 +1081,6 @@ describe('curate state', () => {
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 31,
       metadataSeq: 31,
-      mutationSeq: 31,
-      textIndexedSeq: 31,
     });
   });
 
@@ -1142,12 +1134,12 @@ describe('curate state', () => {
         'coral-valid': createIndexNote('Coral Valid', 12),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 6,
       metadataSeq: 6,
-      mutationSeq: 6,
-      textIndexedSeq: 6,
     });
     writeCurateState(
       runtime,
@@ -1215,12 +1207,12 @@ describe('curate state', () => {
         'coral-late-existing': createIndexNote('Late Existing', 11),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 20,
       metadataSeq: 20,
-      mutationSeq: 20,
-      textIndexedSeq: 18,
     });
     writeCurateState(runtime, createCurateState());
 
@@ -1242,12 +1234,12 @@ describe('curate state', () => {
         'coral-needs-seq': createIndexNote('Needs Seq', 21),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 21,
       metadataSeq: 21,
-      mutationSeq: 21,
-      textIndexedSeq: 21,
     });
   });
 
@@ -1260,12 +1252,12 @@ describe('curate state', () => {
         'coral-skip': createIndexNote('Skip Migration', 4),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 4,
       metadataSeq: 4,
-      mutationSeq: 4,
-      textIndexedSeq: 4,
     });
     writeCurateState(
       runtime,
@@ -1286,12 +1278,12 @@ describe('curate state', () => {
         'coral-skip': createIndexNote('Skip Migration', 4),
       }),
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     expect(runtime.readIndexState()).toEqual({
       contentSeq: 4,
       metadataSeq: 4,
-      mutationSeq: 4,
-      textIndexedSeq: 4,
     });
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
@@ -1308,12 +1300,12 @@ describe('curate state', () => {
     runtime.writeIndex({
       entries: {},
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
     runtime.writeIndexState({
       contentSeq: 0,
       metadataSeq: 0,
-      mutationSeq: 0,
-      textIndexedSeq: 0,
     });
     mkdirSync(join(tempDir, '.coral'), { recursive: true });
     writeFileSync(

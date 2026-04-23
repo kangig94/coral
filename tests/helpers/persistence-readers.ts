@@ -27,8 +27,7 @@ import { storePaths } from '#src/store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '#src/store/queries/jobs.js';
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 
-export { isValidSessionEntry, readSessionEntry, readSessionEntryLenient } from '#src/sessions/shell/session-read.js';
-export type { LenientSessionEntry, ProvenanceState } from '#src/sessions/shell/session-read.js';
+export { isValidSessionEntry, readSessionEntry } from '#src/sessions/shell/session-read.js';
 export type {
   DiscussDiscoveryData,
   DiscussDiscoverySession,

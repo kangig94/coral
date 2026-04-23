@@ -106,6 +106,8 @@ describe('entity-graph', () => {
     kb.writeIndex({
       entries: {},
       principles: {},
+      entityMeta: {},
+      relationships: [],
     });
 
     const graph = createGraph();
@@ -128,7 +130,7 @@ describe('entity-graph', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('loads legacy index snapshots that do not contain entity graph fields', () => {
+  it('rejects index snapshots without entity graph fields', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-kb-entity-graph-'));
     const kb = createKbRuntime({
       markdownRoot: root,
@@ -140,11 +142,11 @@ describe('entity-graph', () => {
       JSON.stringify(
         {
           entries: {
-            'note:legacy-note': {
+            'note:graph-note': {
               kind: 'note',
-              slug: 'legacy-note',
-              title: 'Legacy Note',
-              tags: ['legacy-tag'],
+              slug: 'graph-note',
+              title: 'Graph Note',
+              tags: ['graph-tag'],
               principles: [],
               source: ['kangig94/coral'],
               createdAt: '2026-04-01',
@@ -161,23 +163,8 @@ describe('entity-graph', () => {
       'utf-8',
     );
 
-    expect(kb.readIndex()).toEqual({
-      entries: {
-        'note:legacy-note': {
-          kind: 'note',
-          slug: 'legacy-note',
-          title: 'Legacy Note',
-          tags: ['legacy-tag'],
-          principles: [],
-          source: ['kangig94/coral'],
-          createdAt: '2026-04-01',
-          updatedAt: '2026-04-01',
-          related: [],
-          entrySeq: 1,
-        },
-      },
-      principles: {},
-    });
+    expect(kb.readIndex()).toBeNull();
+    expect(existsSync(join(root, 'index.json'))).toBe(false);
 
     rmSync(root, { recursive: true, force: true });
   });

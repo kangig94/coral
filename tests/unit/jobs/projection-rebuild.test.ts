@@ -46,6 +46,7 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
               projectRoot: '/workspace/coral',
               backendNamespace: 'namespace-1',
               bundleHash: 'bundle-1',
+              jobKind: 'provider',
               pool: 'default',
               enqueueSequence: 4,
               request: {

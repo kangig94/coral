@@ -308,22 +308,6 @@ export function replaceSourceFrontmatter(content: string, meta: KbSourceFrontmat
   return replaceFrontmatterBlock(content, serializeSourceFrontmatter(meta));
 }
 
-export function rewriteLegacyNoteFrontmatter(content: string): string | null {
-  const record = parseFrontmatterRecord(content);
-  if (!Object.prototype.hasOwnProperty.call(record, 'mutationSeqAtPromote')) {
-    return null;
-  }
-
-  const nextRecord: Record<string, unknown> = { ...record };
-  const legacyEntrySeq = nextRecord.mutationSeqAtPromote;
-  delete nextRecord.mutationSeqAtPromote;
-  if (!Object.prototype.hasOwnProperty.call(nextRecord, 'entrySeq') && legacyEntrySeq !== undefined) {
-    nextRecord.entrySeq = legacyEntrySeq;
-  }
-
-  return replaceFrontmatterBlock(content, serializeFrontmatterRecord(nextRecord));
-}
-
 export function extractTitle(content: string): string {
   const title = content.match(/^# (.+)$/m)?.[1];
   if (!title) {

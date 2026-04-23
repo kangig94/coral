@@ -127,8 +127,8 @@ export type CuratableEntry = NoteEntry | SourceEntry;
 export interface KbIndex {
   entries: Record<string, EntryRecord>;
   principles: Record<string, string>;
-  entityMeta?: Record<string, EntityMeta>;
-  relationships?: EntityRelationship[];
+  entityMeta: Record<string, EntityMeta>;
+  relationships: EntityRelationship[];
 }
 
 export interface KbSearchResponse {

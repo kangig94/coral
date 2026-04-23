@@ -38,8 +38,8 @@ export interface SessionEntry {
   providerContinuity?: ProviderContinuityBlob;
   model?: string;
   cwd: string;
-  projectRoot?: string;
-  backendNamespace?: string;
+  projectRoot: string;
+  backendNamespace: string;
   agentName?: string;
   instruction?: ProviderInstruction;
   bypassPermissions?: boolean;
@@ -65,8 +65,8 @@ export const sessionEntrySchema = z
     providerContinuity: z.record(z.unknown()).optional(),
     model: z.string().optional(),
     cwd: z.string(),
-    projectRoot: z.string().optional(),
-    backendNamespace: z.string().optional(),
+    projectRoot: z.string(),
+    backendNamespace: z.string(),
     agentName: z.string().optional(),
     instruction: providerInstructionSchema.optional(),
     bypassPermissions: z.boolean().optional(),

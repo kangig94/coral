@@ -271,7 +271,6 @@ describe('Corpus notify crash replay', () => {
 
       await kb.retryPendingCorpusPublication();
       await kb.withMutationLock(() => {
-        kb.runEntrySeqUpgradeGuardIfNeeded();
       });
       await seedIndexedNote(kb, vaultDir);
 

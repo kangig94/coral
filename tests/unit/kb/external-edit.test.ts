@@ -75,7 +75,6 @@ function createRegisteredRuntime(root: string): KbRuntime {
 async function bootLikeCoordinator(kb: KbRuntime): Promise<void> {
   await kb.retryPendingCorpusPublication();
   await kb.withMutationLock(async () => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
     await kb.ensureOramaIndex();
   });
   await kb.retryPendingCorpusPublication();

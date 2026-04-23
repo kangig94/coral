@@ -1,29 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { createBuiltInProviderRegistry, registerBuiltInProviders } from '#src/providers/bootstrap.js';
-import type { ProviderEventBody, ProviderRuntime, ProviderSpec } from '#src/providers/contract.js';
+import type { ProviderSpec } from '#src/providers/contract.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { CORAL_SCRIPTED_PROVIDER_SPEC_ENV } from '#tests/helpers/scripted-provider.js';
-
-const BASE_RUNTIME: ProviderRuntime = {
-  signal: new AbortController().signal,
-  runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
-  acquireServer: async () => {
-    throw new Error('not used in bootstrap tests');
-  },
-  continuityBridge: {
-    checkpoint: () => {},
-    transportClosed: () => {},
-  },
-};
-
-async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<ProviderEventBody[]> {
-  const events: ProviderEventBody[] = [];
-  for await (const event of stream) {
-    events.push(event);
-  }
-  return events;
-}
 
 function providerNames(providers: ProviderSpec[]): string[] {
   return providers.map((provider) => provider.name);
@@ -96,53 +75,5 @@ describe('registerBuiltInProviders', () => {
     });
 
     expect(() => registerBuiltInProviders(registry)).toThrow(/already registered/i);
-  });
-
-  it('replaces a built-in provider when CORAL_SCRIPTED_PROVIDER_SPEC targets the same name', async () => {
-    const registry = createBuiltInProviderRegistry({
-      [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: JSON.stringify({
-        name: 'codex',
-        progress: [{ message: 'scripted registry progress' }],
-        result: {
-          content: 'scripted registry terminal',
-          conversationRef: 'scripted-registry-session',
-          outcome: { kind: 'completed' },
-        },
-      }),
-    });
-
-    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
-
-    const events = await collect(
-      registry.get('codex')!.run(
-        {
-          action: 'exec',
-          sessionId: 'job-scripted',
-          prompt: 'hello',
-          cwd: process.cwd(),
-          bypassPermissions: false,
-          coralEnv: {},
-        },
-        BASE_RUNTIME,
-      ),
-    );
-
-    expect(events).toEqual([
-      { kind: 'progress', message: 'scripted registry progress' },
-      {
-        kind: 'continuity',
-        conversationRef: 'scripted-registry-session',
-        resumable: true,
-        providerContinuity: null,
-      },
-      {
-        kind: 'terminal',
-        terminal: {
-          content: 'scripted registry terminal',
-          outcome: { kind: 'completed' },
-        },
-        diagnostics: {},
-      },
-    ]);
   });
 });

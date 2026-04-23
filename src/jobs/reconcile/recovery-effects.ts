@@ -15,7 +15,7 @@ import {
   materializeJobRecoveryFault,
   materializeProviderFault,
   type RuntimeIngestOptions,
-} from '../shell/legacy-ingest.js';
+} from '../shell/fault-materializer.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 

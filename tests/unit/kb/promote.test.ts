@@ -284,7 +284,9 @@ Original body.
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
 
     vi.setSystemTime(new Date('2026-03-24T05:06:07.000Z'));
     const result = await update(kb, {
@@ -345,7 +347,9 @@ Original body.
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
 
     const result = await deleteFn(kb, { note: 'coral-kb-promotion' });
     expect(result).toEqual({ deleted: notePath });

@@ -682,22 +682,6 @@ describe('ExecutionService', () => {
       });
     });
 
-    it('resumeBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
-      const { provider } = makeProvider();
-      mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
-      const entry = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
-      const service = createService(ctx);
-
-      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
-
-      expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'legacy_session_unsupported',
-      });
-    });
-
     it('resumeBySessionId rejects sessions outside the current scope', async () => {
       const otherCtx = createScopedContext('other-project');
       const foreignMgr = new SessionManager(otherCtx.projectRoot, runtime);
@@ -1085,22 +1069,6 @@ describe('ExecutionService', () => {
         status: 'rejected',
         phase: 'preflight',
         code: 'session_not_found',
-      });
-    });
-
-    it('forkBySessionId rejects legacy sessions without authoritative scope metadata', async () => {
-      const { provider } = makeProvider();
-      mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = new SessionManager(ctx.projectRoot, runtime);
-      const source = mgr.allocate('codex', 'legacy', 'gpt-5', ctx.projectRoot);
-      const service = createService(ctx);
-
-      const decision = await service.forkBySessionId({ sessionId: source.sessionId, prompt: 'branch' }, ctx);
-
-      expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'legacy_session_unsupported',
       });
     });
 

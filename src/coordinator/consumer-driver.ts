@@ -474,10 +474,6 @@ export class ConsumerDriver {
     this.finalizeStoppedConsumer(state, options);
   }
 
-  __debugWaiterCount(consumerId: string): number {
-    return this.consumers.get(consumerId)?.waiters.size ?? 0;
-  }
-
   private assertValidRegistration(reg: ConsumerRegistration): void {
     if ('lane' in reg && (reg as { lane?: unknown }).lane !== undefined) {
       throw documentedCoralSetupError('consumer_lane_invalid', { id: reg.id });

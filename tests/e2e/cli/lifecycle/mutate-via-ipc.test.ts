@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   cpSync,
   existsSync,
@@ -23,7 +24,6 @@ import { CoralStore, openStoreDatabase } from '#src/store/index.js';
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/store/paths.js';
-import { CORAL_SCRIPTED_PROVIDER_SPEC_ENV } from '#tests/helpers/scripted-provider.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');
@@ -38,22 +38,115 @@ type Fixture = {
   root: string;
   home: string;
   projectRoot: string;
+  binDir: string;
   flavor: 'prod' | 'dev';
 };
+
+const FAKE_CODEX_APP_SERVER = `#!/usr/bin/env node
+const readline = require('node:readline');
+
+if (process.argv[2] === 'app-server' && process.argv[3] === '--help') {
+  process.stdout.write('fake codex app-server\\n');
+  process.exit(0);
+}
+
+if (process.argv[2] !== 'app-server') {
+  process.stderr.write('unsupported fake codex command\\n');
+  process.exit(1);
+}
+
+const threadId = 'scripted-codex-session';
+const turnId = 'scripted-codex-turn';
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + '\\n');
+}
+
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const message = JSON.parse(line);
+  switch (message.method) {
+    case 'initialize':
+      send({ id: message.id, result: {} });
+      break;
+    case 'thread/start':
+      send({
+        method: 'thread/started',
+        params: {
+          thread: { id: threadId },
+        },
+      });
+      send({ id: message.id, result: { thread: { id: threadId } } });
+      break;
+    case 'turn/start':
+      send({
+        method: 'turn/started',
+        params: {
+          threadId,
+          turn: {
+            id: turnId,
+            status: 'inProgress',
+          },
+        },
+      });
+      send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
+      send({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: {
+            type: 'agentMessage',
+            phase: 'final_answer',
+            text: 'scripted terminal output',
+          },
+        },
+      });
+      send({
+        method: 'turn/completed',
+        params: {
+          threadId,
+          turn: {
+            id: turnId,
+            status: 'completed',
+          },
+        },
+      });
+      break;
+    case 'turn/interrupt':
+      send({ id: message.id, result: { threadId, turnId } });
+      break;
+    default:
+      send({ id: message.id, error: { code: -32601, message: 'unsupported method' } });
+      break;
+  }
+});
+`;
 
 function createFixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-plugin-'));
   const home = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-home-'));
   const projectRoot = join(root, 'project');
+  const binDir = join(root, 'bin');
 
   tempRoots.push(root, home);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(join(home, '.codex'), { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
   cpSync(SOURCE_MIGRATIONS_DIR, join(root, 'dist', 'store', 'migrations'), { recursive: true });
+  writeFileSync(join(binDir, 'codex'), FAKE_CODEX_APP_SERVER, 'utf-8');
+  chmodSync(join(binDir, 'codex'), 0o755);
+  writeFileSync(
+    join(home, '.codex', 'auth.json'),
+    JSON.stringify({ tokens: { access_token: 'fake-access-token' } }),
+    'utf-8',
+  );
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(SOURCE_SQLITE3_DIR, join(root, 'node_modules', 'better-sqlite3'), 'dir');
@@ -62,6 +155,7 @@ function createFixture(): Fixture {
     root,
     home,
     projectRoot,
+    binDir,
     flavor: readBuildFlavor(root),
   };
 }
@@ -132,7 +226,7 @@ afterEach(async () => {
 });
 
 describe('mutating commands via IPC', () => {
-  it('auto-launches the coordinator and completes coral-cli codex through the scripted provider', async () => {
+  it('auto-launches the coordinator and completes coral-cli codex through a fake Codex app-server', async () => {
     if (!existsSync(SOURCE_BACKEND_BUNDLE) || !existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
       throw new Error('Expected build/coral-backend.cjs, build/coral-cli.cjs, and build/manifest.json to exist.');
     }
@@ -143,16 +237,6 @@ describe('mutating commands via IPC', () => {
 
     expect(readDiscoveryRecord(fixture.home, fixture.flavor)).toBeNull();
 
-    const scriptedProviderSpec = JSON.stringify({
-      name: 'codex',
-      progress: [{ message: 'scripted progress from ipc provider' }],
-      result: {
-        content: 'scripted terminal output',
-        conversationRef: 'scripted-codex-session',
-        outcome: { kind: 'completed' },
-      },
-    });
-
     let discoveryRecord: CoordinatorDiscoveryRecord | null = null;
     try {
       const result = spawnSync('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'codex', '-i', promptPath], {
@@ -161,7 +245,7 @@ describe('mutating commands via IPC', () => {
           ...process.env,
           HOME: fixture.home,
           TMPDIR: fixture.home,
-          [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: scriptedProviderSpec,
+          PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
         },
         encoding: 'utf-8',
         timeout: 90_000,
@@ -173,7 +257,7 @@ describe('mutating commands via IPC', () => {
 
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toBe('');
-      expect(result.stdout).toContain('scripted progress from ipc provider');
+      expect(result.stdout).toContain('Thread ready (scripted-codex-session).');
 
       const launchMatch = result.stdout.match(/^Job (\S+) (running|queued) \(session (\S+)\)$/m);
       expect(launchMatch).not.toBeNull();

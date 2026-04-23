@@ -1195,6 +1195,8 @@ describe('kb search', () => {
     expect(kb.readIndex()).toEqual({
       entries: {},
       principles: {},
+      entityMeta: {},
+      relationships: [],
     });
   });
 });

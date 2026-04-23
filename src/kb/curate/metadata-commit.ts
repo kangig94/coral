@@ -64,10 +64,10 @@ type LiveMetadataDecision = {
   nextPrinciples: string[];
 };
 
-function snapshotEntityGraph(currentIndex: { entityMeta?: Record<string, EntityMeta>; relationships?: EntityRelationship[] }): EntityGraph {
+function snapshotEntityGraph(currentIndex: { entityMeta: Record<string, EntityMeta>; relationships: EntityRelationship[] }): EntityGraph {
   return {
-    entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta ?? {}),
-    relationships: (currentIndex.relationships ?? []).map(cloneEntityRelationship),
+    entityMeta: cloneEntityMetaRecord(currentIndex.entityMeta),
+    relationships: currentIndex.relationships.map(cloneEntityRelationship),
   };
 }
 
@@ -389,7 +389,6 @@ export async function commitMetadataTargets(
   plan: MetadataCommitPlan = {},
 ): Promise<void> {
   await kb.withMutationLock(async () => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
     const state = readCurateState(kb);
     await commitMetadataTargetsLocked(kb, targets, state, plan);
   });

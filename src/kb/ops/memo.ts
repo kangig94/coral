@@ -116,7 +116,7 @@ export function listMemos(projectRoot: string, ownerFilter?: string): KbMemoList
           const parsed = parseMemoFrontmatter(raw);
           owner = parsed.owner;
         } catch {
-          // Legacy memos without valid frontmatter: treat as unowned
+          // Memos without valid frontmatter are treated as unowned.
         }
 
         if (ownerFilter !== undefined && owner !== ownerFilter) {

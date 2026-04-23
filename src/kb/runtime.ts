@@ -108,7 +108,7 @@ import {
 import { createOramaBaseProjection } from './search/orama-backend.js';
 import { createCorpusStateMirror } from './runtime-state.js';
 import { loadKbNote, loadKbSource } from './read.js';
-import { runEntrySeqUpgradeGuard } from './corpus/entry-seq-guard.js';
+import { currentEntrySeq } from './index-state.js';
 import { openStoreDatabase } from '../store/db.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -125,34 +125,15 @@ export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
 const ENTITY_TYPE_SET = new Set<string>(ENTITY_TYPES);
 const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
 
-type PersistedKbIndexState = Omit<KbIndexState, 'mutationSeq' | 'textIndexedSeq'>;
 type KbIndexStateSnapshot = Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>;
 type SearchVisibleEntry = NoteEntry | SourceEntry | CommunityEntry;
 
-function maxIndexSeq(state: KbIndexStateSnapshot): number {
-  return Math.max(state.contentSeq, state.metadataSeq);
-}
-
-function withLegacyIndexStateAliases(state: PersistedKbIndexState): KbIndexState {
-  const mutationSeq = maxIndexSeq(state);
-  return {
-    ...state,
-    mutationSeq,
-    textIndexedSeq: mutationSeq,
-  };
-}
-
-function stripLegacyIndexStateAliases(state: KbIndexState): PersistedKbIndexState {
-  const { mutationSeq: _mutationSeq, textIndexedSeq: _textIndexedSeq, ...persisted } = state;
-  return persisted;
-}
-
-function withoutTextStaleReason(state: PersistedKbIndexState): PersistedKbIndexState {
+function withoutTextStaleReason(state: KbIndexState): KbIndexState {
   const { textStaleReason: _textStaleReason, ...nextState } = state;
   return nextState;
 }
 
-function captureIndexStateSnapshot(state: KbIndexState | PersistedKbIndexState | null): KbIndexStateSnapshot {
+function captureIndexStateSnapshot(state: KbIndexState | null): KbIndexStateSnapshot {
   return {
     contentSeq: state?.contentSeq ?? 0,
     metadataSeq: state?.metadataSeq ?? 0,
@@ -246,12 +227,12 @@ function diffSearchVisibleEntryIds(previous: KbIndex, next: KbIndex): {
   };
 }
 
-function applyMutationLane(state: PersistedKbIndexState, lane: KbIndexMutationLane | null): PersistedKbIndexState {
+function applyMutationLane(state: KbIndexState, lane: KbIndexMutationLane | null): KbIndexState {
   if (lane === null) {
     return state;
   }
 
-  const nextSeq = maxIndexSeq(state) + 1;
+  const nextSeq = currentEntrySeq(state) + 1;
   return {
     ...state,
     contentSeq: lane === 'content' || lane === 'both' ? nextSeq : state.contentSeq,
@@ -259,16 +240,10 @@ function applyMutationLane(state: PersistedKbIndexState, lane: KbIndexMutationLa
   };
 }
 
-function isLegacyRawIndexState(value: unknown): value is Record<string, unknown> {
-  return isRecord(value) && !('contentSeq' in value) && 'mutationSeq' in value;
-}
-
 function defaultIndexState(): KbIndexState {
   return {
     contentSeq: 0,
     metadataSeq: 0,
-    mutationSeq: 0,
-    textIndexedSeq: 0,
   };
 }
 
@@ -410,10 +385,6 @@ function parseEntryIdArray(value: unknown): string[] {
 }
 
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
-  if ('mutationSeqAtPromote' in value) {
-    throw new Error('Invalid KB index');
-  }
-
   const slug = assertNoteSlug(value.slug, 'KB index entry slug');
   if (entryId !== noteEntryId(slug)) {
     throw new Error('Invalid KB index');
@@ -434,10 +405,6 @@ function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): N
 }
 
 function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>): SourceEntry {
-  if ('mutationSeqAtPromote' in value) {
-    throw new Error('Invalid KB index');
-  }
-
   const slug = assertSourceSlug(value.slug, 'KB index entry slug');
   if (entryId !== sourceEntryId(slug)) {
     throw new Error('Invalid KB index');
@@ -485,7 +452,13 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
 }
 
 function parseIndex(value: unknown): KbIndex {
-  if (!isRecord(value) || !isRecord(value.entries) || !isRecord(value.principles)) {
+  if (
+    !isRecord(value)
+    || !isRecord(value.entries)
+    || !isRecord(value.principles)
+    || !('entityMeta' in value)
+    || !('relationships' in value)
+  ) {
     throw new Error('Invalid KB index');
   }
 
@@ -521,16 +494,11 @@ function parseIndex(value: unknown): KbIndex {
     principles[name] = statement;
   }
 
-  const entityMeta =
-    value.entityMeta === undefined ? undefined : parseEntityMetaMap(value.entityMeta, 'Invalid KB index');
-  const relationships =
-    value.relationships === undefined ? undefined : parseEntityRelationships(value.relationships, 'Invalid KB index');
-
   return {
     entries,
     principles,
-    ...(entityMeta === undefined ? {} : { entityMeta }),
-    ...(relationships === undefined ? {} : { relationships }),
+    entityMeta: parseEntityMetaMap(value.entityMeta, 'Invalid KB index'),
+    relationships: parseEntityRelationships(value.relationships, 'Invalid KB index'),
   };
 }
 
@@ -539,11 +507,12 @@ function parseIndexState(value: unknown): KbIndexState {
     throw new Error('Invalid KB index state');
   }
 
-  const hasSemanticLanes = value.contentSeq !== undefined || value.metadataSeq !== undefined;
-  const contentSeq = hasSemanticLanes ? value.contentSeq : value.mutationSeq;
-  const metadataSeq = hasSemanticLanes ? value.metadataSeq : value.mutationSeq;
-  const legacyTextIndexedSeq = value.textIndexedSeq ?? value.indexedSeq;
-  const textStaleReason = value.textStaleReason ?? value.staleReason;
+  const allowedKeys = new Set(['contentSeq', 'metadataSeq', 'textStaleReason']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error('Invalid KB index state');
+  }
+
+  const { contentSeq, metadataSeq, textStaleReason } = value;
   if (typeof contentSeq !== 'number' || !Number.isInteger(contentSeq) || contentSeq < 0) {
     throw new Error('Invalid KB index state');
   }
@@ -554,20 +523,11 @@ function parseIndexState(value: unknown): KbIndexState {
     throw new Error('Invalid KB index state');
   }
 
-  const migratedLegacyState =
-    !hasSemanticLanes && legacyTextIndexedSeq !== undefined && legacyTextIndexedSeq !== contentSeq
-      ? 'KB text snapshot requires lane-state migration rebuild.'
-      : undefined;
-
-  return withLegacyIndexStateAliases({
+  return {
     contentSeq,
     metadataSeq,
-    ...(typeof textStaleReason === 'string'
-      ? { textStaleReason }
-      : migratedLegacyState === undefined
-        ? {}
-        : { textStaleReason: migratedLegacyState }),
-  });
+    ...(typeof textStaleReason === 'string' ? { textStaleReason } : {}),
+  };
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
@@ -947,7 +907,6 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly corpusStateMirror: ReturnType<typeof createCorpusStateMirror>;
   private readonly equipmentViewResolver?: () => KbRuntimeActivationSnapshot | null;
   private readonly emptyEquipmentView: KbRuntimeActivationSnapshot;
-  private upgradeGuardDone = false;
   private corpusPublishCallbacks: KbCorpusPublishCallbacks = NOOP_CORPUS_PUBLISH_CALLBACKS;
   private activeMutationContext: MutationLockContext | null = null;
   private readonly publishQueue: PublishQueueEntry[] = [];
@@ -1148,11 +1107,7 @@ class KbRuntimeImpl implements KbRuntime {
     try {
       const raw = readFileSync(this.indexStatePath(), 'utf-8');
       const parsedRaw = JSON.parse(raw) as unknown;
-      const parsedState = parseIndexState(parsedRaw);
-      if (isLegacyRawIndexState(parsedRaw)) {
-        this.writeIndexState(parsedState);
-      }
-      return parsedState;
+      return parseIndexState(parsedRaw);
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
         return null;
@@ -1170,27 +1125,13 @@ class KbRuntimeImpl implements KbRuntime {
 
   writeIndexState(state: KbIndexState): void {
     const previousSnapshot = captureIndexStateSnapshot(this.readIndexStateIfPresent());
-    const normalizedState = withLegacyIndexStateAliases(stripLegacyIndexStateAliases(state));
-    writeJsonAtomic(this.indexStatePath(), stripLegacyIndexStateAliases(normalizedState));
+    const normalizedState = parseIndexState(state);
+    writeJsonAtomic(this.indexStatePath(), normalizedState);
     this.capturePublicationFromStateChange(previousSnapshot, captureIndexStateSnapshot(normalizedState));
   }
 
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
     this.corpusPublishCallbacks = corpusPublishCallbacks;
-  }
-
-  runEntrySeqUpgradeGuardIfNeeded(): boolean {
-    if (this.upgradeGuardDone) {
-      return false;
-    }
-
-    const changed = runEntrySeqUpgradeGuard(this);
-    this.upgradeGuardDone = true;
-    if (changed) {
-      this.manifestAuthority.seedFromFullCollectors(this);
-      this.recordMutationCommitted('both', 'KB text snapshot is stale after entry-seq upgrade.');
-    }
-    return changed;
   }
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
@@ -1200,44 +1141,44 @@ class KbRuntimeImpl implements KbRuntime {
         this.activeMutationContext.pendingMutationReason = reason;
       }
 
-      const state = stripLegacyIndexStateAliases(this.readIndexState());
-      return withLegacyIndexStateAliases({
+      const state = this.readIndexState();
+      return {
         ...applyMutationLane(state, this.activeMutationContext.pendingMutationLane),
         ...(this.activeMutationContext.pendingMutationReason === undefined
           ? state.textStaleReason === undefined
             ? {}
             : { textStaleReason: state.textStaleReason }
           : { textStaleReason: this.activeMutationContext.pendingMutationReason }),
-      });
+      };
     }
 
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       ...applyMutationLane(state, lane),
       ...(reason === undefined ? {} : { textStaleReason: reason }),
-    });
+    };
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
     return nextState;
   }
 
   recordIndexSyncSuccess(): KbIndexState {
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
-    });
+    };
     this.writeIndexState(nextState);
     return nextState;
   }
 
   recordIndexSyncFailure(reason: string): KbIndexState {
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       contentSeq: state.contentSeq,
       metadataSeq: state.metadataSeq,
       textStaleReason: reason,
-    });
+    };
     this.writeIndexState(nextState);
     return nextState;
   }
@@ -1252,9 +1193,7 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     this.manifestAuthority.seedFromFullCollectors(this);
-    const nextState = withLegacyIndexStateAliases({
-      ...applyMutationLane(withoutTextStaleReason(stripLegacyIndexStateAliases(state)), externalMutation),
-    });
+    const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation);
     this.writeIndexState(nextState);
     return nextState;
   }
@@ -1270,7 +1209,6 @@ class KbRuntimeImpl implements KbRuntime {
   async ensureIndex(): Promise<KbIndex> {
     if (this.textArtifactsNeedRebuild()) {
       await this.withMutationLock(async () => {
-        this.runEntrySeqUpgradeGuardIfNeeded();
         const state = this.readIndexStateIfPresent();
         if (!this.textArtifactsNeedRebuild(state)) {
           return;
@@ -1898,15 +1836,15 @@ class KbRuntimeImpl implements KbRuntime {
       return;
     }
 
-    const state = stripLegacyIndexStateAliases(this.readIndexState());
-    const nextState = withLegacyIndexStateAliases({
+    const state = this.readIndexState();
+    const nextState = {
       ...applyMutationLane(state, lockContext.pendingMutationLane),
       ...(lockContext.pendingMutationReason === undefined
         ? state.textStaleReason === undefined
           ? {}
           : { textStaleReason: state.textStaleReason }
         : { textStaleReason: lockContext.pendingMutationReason }),
-    });
+    };
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
   }

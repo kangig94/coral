@@ -10,6 +10,7 @@ import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/i
 import { buildNoteIndexEntry } from '../corpus/index-records.js';
 import type { KbRuntime } from '../contracts.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';
+import { currentEntrySeq } from '../index-state.js';
 
 export async function promote(
   rt: KbRuntime,
@@ -37,14 +38,13 @@ export async function promote(
   }
 
   const result = await rt.withMutationLock(async () => {
-    rt.runEntrySeqUpgradeGuardIfNeeded();
     if (existsSync(notePath)) {
       throw new Error(`KB note already exists: ${notePath}`);
     }
 
     const memoContent = readFileSync(memoPath, 'utf-8');
     const { source } = parseMemoFrontmatter(memoContent);
-    const entrySeq = rt.readIndexState().mutationSeq + 1;
+    const entrySeq = currentEntrySeq(rt.readIndexState()) + 1;
     const createdAt = nowIsoString();
     const noteMeta = {
       tags: [domain],

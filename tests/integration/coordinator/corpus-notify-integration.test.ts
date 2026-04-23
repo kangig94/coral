@@ -232,7 +232,6 @@ async function createHarness(options?: {
 
   await kb.retryPendingCorpusPublication();
   await kb.withMutationLock(() => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
   });
 
   return {

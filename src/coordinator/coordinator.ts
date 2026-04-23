@@ -199,7 +199,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await kbSubsystem.kb.retryPendingCorpusPublication();
       // Boot step 2: rebuild the local text surface before exposing coordinator-owned read paths.
       await kbSubsystem.kb.withMutationLock(async () => {
-        kbSubsystem.kb.runEntrySeqUpgradeGuardIfNeeded();
         await kbSubsystem.kb.ensureOramaIndex();
       });
       const driver = getConsumerDriver();

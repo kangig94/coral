@@ -242,15 +242,17 @@ function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
   const provider = overrides.provider ?? 'fakeprovider'
 
   return {
+    ...overrides,
     sessionId,
     provider,
-    name: `${sessionId}-name`,
-    state: 'ready',
-    cwd: '/workspace',
-    createdAt: NOW,
-    lastUsedAt: NOW,
-    version: 1,
-    ...overrides,
+    name: overrides.name ?? `${sessionId}-name`,
+    state: overrides.state ?? 'ready',
+    cwd: overrides.cwd ?? '/workspace',
+    projectRoot: overrides.projectRoot ?? '/workspace',
+    backendNamespace: overrides.backendNamespace ?? 'test-ns',
+    createdAt: overrides.createdAt ?? NOW,
+    lastUsedAt: overrides.lastUsedAt ?? NOW,
+    version: overrides.version ?? 1,
   }
 }
 

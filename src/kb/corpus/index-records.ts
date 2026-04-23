@@ -76,8 +76,8 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
       Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)]),
     ),
     principles: { ...index.principles },
-    ...(index.entityMeta === undefined ? {} : { entityMeta: cloneEntityMetaRecord(index.entityMeta) }),
-    ...(index.relationships === undefined ? {} : { relationships: index.relationships.map(cloneEntityRelationship) }),
+    entityMeta: cloneEntityMetaRecord(index.entityMeta),
+    relationships: index.relationships.map(cloneEntityRelationship),
   };
 }
 

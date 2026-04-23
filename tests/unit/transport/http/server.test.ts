@@ -425,7 +425,7 @@ function stubSessionProjection(
         namespace: overrides.backendNamespace,
         project: overrides.projectRoot,
         refs: { sessionId: overrides.sessionId },
-        bodyVersion: 2,
+        bodyVersion: 1,
         body: {
           controller: 'default',
           provider: overrides.provider,
@@ -492,7 +492,6 @@ describe('execution backend server', () => {
       kb: {
         retryPendingCorpusPublication: vi.fn(async () => {}),
         withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
-        runEntrySeqUpgradeGuardIfNeeded: vi.fn(() => false),
         ensureOramaIndex: vi.fn(async () => ({
           db: {} as never,
           tokenizer: {} as never,
@@ -601,7 +600,7 @@ describe('execution backend server', () => {
     return store;
   }
 
-  it('defaults legacy backend info flavor to prod and preserves flavored writes', async () => {
+  it('preserves flavored backend info and rejects records without flavor', async () => {
     const { backendInfo } = await loadExecutionModules();
     const pluginRoot = createProjectRoot('backend-info-flavor');
     const namespace = pluginRootNamespace(pluginRoot);
@@ -631,20 +630,16 @@ describe('execution backend server', () => {
         pid: process.pid,
         port: 4101,
         socketPath: '/tmp/coral-prod.sock',
-        token: 'legacy-token',
+        token: 'missing-flavor-token',
         version: '9.9.9',
-        bundleHash: 'legacyhash1234',
-        instanceId: 'backend-info-legacy',
+        bundleHash: 'missingflavor1234',
+        instanceId: 'backend-info-missing-flavor',
         namespace,
         startedAt: 2,
       }),
       'utf-8',
     );
-    expect(backendInfo.readBackendInfo(pluginRoot)).toMatchObject({
-      host: '127.0.0.1',
-      flavor: 'prod',
-      namespace,
-    });
+    expect(backendInfo.readBackendInfo(pluginRoot)).toBeNull();
   });
 
   it('returns 200 from /health with execution metadata', async () => {
@@ -3983,28 +3978,15 @@ describe('execution backend server', () => {
       projectRoot: foreignProjectRoot,
       backendNamespace: testBackendNamespace,
     });
-    const legacy = new SessionManager(projectRoot, runtime).allocate(
-      'codex',
-      'legacy',
-      'gpt-5',
-      projectRoot,
-      projectRoot,
-    );
     stubSessionProjection(progressStore, {
       sessionId: foreign.sessionId,
       provider: 'codex',
       projectRoot: foreignProjectRoot,
       backendNamespace: testBackendNamespace,
     });
-    stubSessionProjection(progressStore, {
-      sessionId: legacy.sessionId,
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-    });
 
     const backend = await startBackendServer({ progressStore });
-    const [missingResponse, mismatchResponse, legacyResponse] = await Promise.all([
+    const [missingResponse, mismatchResponse] = await Promise.all([
       fetch(`${backend.baseUrl}/sessions/missing-session/messages`, {
         method: 'POST',
         headers: {
@@ -4027,17 +4009,6 @@ describe('execution backend server', () => {
           projectRoot,
         }),
       }),
-      fetch(`${backend.baseUrl}/sessions/${legacy.sessionId}/forks`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
-        },
-        body: JSON.stringify({
-          prompt: 'branch',
-          projectRoot,
-        }),
-      }),
     ]);
 
     expect(missingResponse.status).toBe(404);
@@ -4045,9 +4016,6 @@ describe('execution backend server', () => {
 
     expect(mismatchResponse.status).toBe(403);
     expect(await mismatchResponse.json()).toMatchObject({ code: 'scope_mismatch' });
-
-    expect(legacyResponse.status).toBe(409);
-    expect(await legacyResponse.json()).toMatchObject({ code: 'legacy_session_unsupported' });
   });
 
   it('returns 400 when /jobs/wait omits or empties projectRoot', async () => {

@@ -1,15 +1,7 @@
-export {
-  CORAL_SCRIPTED_PROVIDER_SPEC_ENV,
-  readScriptedProviderSpecFromEnv,
-  scriptedProviderSpecSchema,
-  type ScriptedProviderSpec,
-} from '#src/providers/bootstrap-scripted-override.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
-import {
-  CORAL_SCRIPTED_PROVIDER_SPEC_ENV,
-  resolveScriptedProviderOverride,
-  type ScriptedProviderSpec,
-} from '#src/providers/bootstrap-scripted-override.js';
+import { z } from 'zod';
+
 import type { SessionContinuityMutation } from '#src/providers/continuity-mutation.js';
 import type {
   PreflightRuntime,
@@ -25,17 +17,101 @@ import type {
   ProviderSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
+import { terminalOutcomeSchema, usageSummarySchema } from '#src/providers/contract.js';
+import { streamProviderEvents } from '#src/providers/stream.js';
+import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 
 export type { ArtifactCleanupRuntime, PreflightRuntime } from '#src/providers/contract.js';
 
+const scriptedProviderProgressSchema = z
+  .object({
+    delayMs: z.number().int().nonnegative().optional(),
+    message: z.string(),
+    ts: z.string().optional(),
+  })
+  .strict();
+
+const scriptedProviderResultSchema = z
+  .object({
+    content: z.string().optional(),
+    conversationRef: z.string().optional(),
+    model: z.string().optional(),
+    durationMs: z.number().optional(),
+    nonResumable: z.boolean().optional(),
+    exitCode: z.number().nullable().optional(),
+    warnings: z.array(z.string()).optional(),
+    usage: usageSummarySchema.optional(),
+    outcome: terminalOutcomeSchema.optional(),
+  })
+  .strict();
+
+export const scriptedProviderSpecSchema = z
+  .object({
+    name: z.string().min(1),
+    progress: z.array(scriptedProviderProgressSchema).optional(),
+    result: scriptedProviderResultSchema.optional(),
+    preflightError: z.string().optional(),
+  })
+  .strict();
+
+export type ScriptedProviderSpec = z.infer<typeof scriptedProviderSpecSchema>;
+
+function resolveConversationRef(
+  request: ProviderRequest,
+  spec: ScriptedProviderSpec,
+): string {
+  return spec.result?.conversationRef ?? request.conversationRef ?? `scripted-${request.sessionId}`;
+}
+
 export function createScriptedProvider(spec: ScriptedProviderSpec): ProviderSpec {
-  const provider = resolveScriptedProviderOverride({
-    [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: JSON.stringify(spec),
-  });
-  if (provider === null) {
-    throw new Error('Expected scripted provider override to resolve a provider spec.');
-  }
-  return provider;
+  const parsed = scriptedProviderSpecSchema.parse(spec);
+
+  return {
+    name: parsed.name,
+    run(request, runtime) {
+      const progress = parsed.progress ?? [];
+      const conversationRef = resolveConversationRef(request, parsed);
+
+      return streamProviderEvents(async (emit) => {
+        for (const entry of progress) {
+          if ((entry.delayMs ?? 0) > 0) {
+            await delay(entry.delayMs, undefined, { signal: runtime.signal }).catch(() => undefined);
+          }
+          emit({
+            kind: 'progress',
+            message: entry.message,
+          });
+        }
+
+        emit({
+          kind: 'continuity',
+          conversationRef,
+          resumable: parsed.result?.nonResumable !== true,
+          providerContinuity: null,
+        });
+        emit({
+          kind: 'terminal',
+          terminal: buildJobTerminal({
+            content: parsed.result?.content ?? '',
+            outcome: parsed.result?.outcome ?? { kind: 'completed' },
+            ...(parsed.result?.model === undefined ? {} : { model: parsed.result.model }),
+            ...(parsed.result?.durationMs === undefined ? {} : { durationMs: parsed.result.durationMs }),
+            ...(parsed.result?.exitCode === undefined ? {} : { exitCode: parsed.result.exitCode }),
+            ...(parsed.result?.warnings === undefined ? {} : { warnings: [...parsed.result.warnings] }),
+            ...(parsed.result?.usage === undefined ? {} : { usage: { ...parsed.result.usage } }),
+          }),
+          diagnostics: buildJobDiagnostics({}),
+        });
+      });
+    },
+    ...(parsed.preflightError
+      ? {
+          async preflight(_runtime: PreflightRuntime): Promise<void> {
+            throw new Error(parsed.preflightError);
+          },
+        }
+      : {}),
+  };
 }
 
 type TestProviderInvocation = (
@@ -58,7 +134,6 @@ type TestAppServerLifecycle = {
     continuity: ProviderContinuityBlob,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
-  migrateLegacyContinuity?(meta: Record<string, unknown>): ProviderContinuityBlob | undefined;
 };
 
 type TestArtifactRecovery = {
@@ -130,9 +205,6 @@ export function toProviderSpec(provider: Provider | ProviderSpec | undefined): P
         ) =>
           appServerLifecycle.buildServerSpec(persistedContinuity, request),
         interrupt: appServerLifecycle.interrupt,
-        ...(appServerLifecycle.migrateLegacyContinuity
-          ? { migrateLegacyContinuity: appServerLifecycle.migrateLegacyContinuity }
-          : {}),
       }
     : undefined;
 

@@ -260,6 +260,7 @@ export class LaunchOrchestrator {
         projectRoot,
         backendNamespace,
         bundleHash,
+        jobKind: 'provider',
         pool,
         enqueueSequence,
         request: {

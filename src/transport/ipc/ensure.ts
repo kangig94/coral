@@ -254,7 +254,6 @@ function readDiscoverySnapshot(paths: CoordinatorFilePaths): DiscoverySnapshot |
     if (!parsed || typeof parsed !== 'object') return { raw, info: null };
     const record = parsed as Record<string, unknown>;
     record.host ??= '127.0.0.1';
-    if (!('flavor' in record)) record.flavor = 'prod';
     return { raw, info: isObservedBackendInfo(record) ? record : null };
   } catch (error: unknown) {
     if (isNoEntryError(error) || error instanceof SyntaxError) return null;
@@ -313,7 +312,7 @@ function verifySickOwnership(
   const infoProcessStartedAt = info.processStartedAt;
   const lockProcessStartedAt = lockSnapshot.record.processStartedAt;
   if (infoProcessStartedAt === undefined || lockProcessStartedAt === undefined) {
-    return { kind: 'unverified', reason: 'legacy-no-processStartedAt' };
+    return { kind: 'unverified', reason: 'missing-processStartedAt' };
   }
 
   if (

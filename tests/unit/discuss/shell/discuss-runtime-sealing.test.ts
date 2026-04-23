@@ -306,14 +306,12 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     ]);
   });
 
-  it('discovers legacy projectRoots through the injected runtime projectSource resolver', () => {
+  it('discovers persisted sources from the current registry envelope', () => {
     const harness = createHarness();
-    const legacyProjectRoot = '/legacy/checkout-only-in-runtime';
-    const projectSource = vi.fn((root: string) => `runtime-resolved:${root}`);
-    (harness.runtime.paths as unknown as { projectSource: (root: string) => string }).projectSource = projectSource;
+    const source = 'runtime/source';
     writeJson(harness.runtime, harness.runtime.paths.discussSourcesPath(), {
       updatedAt: START_TS,
-      projectRoots: [legacyProjectRoot],
+      sources: [source, source],
     });
 
     const sources = knownDiscussSources({
@@ -325,8 +323,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       readDiscussSources: () => readDiscussSourcesWithStorage(harness.runtime.storage, harness.runtime.paths),
     });
 
-    expect([...sources]).toEqual([`runtime-resolved:${legacyProjectRoot}`]);
-    expect(projectSource).toHaveBeenCalledWith(legacyProjectRoot);
+    expect([...sources]).toEqual([source]);
     expect(harness.runtime.observer.events).toEqual([]);
   });
 

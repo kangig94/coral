@@ -864,7 +864,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       writeCurateState(
         runtime,
         createCurateState({
@@ -891,7 +893,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
 
       await expect(internals.claimCurateRun('2026-03-25')).resolves.toBeNull();
     });
@@ -912,7 +914,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -963,7 +965,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1012,7 +1014,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1081,7 +1083,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      };
+      entityMeta: {},
+      relationships: [],
+};
       const assignments: ClassificationAssignment[] = [
         {
           entry: noteEntryId('coral-alpha'),
@@ -1146,7 +1150,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
 
       await internals.commitMetadataTargets([
         {
@@ -1183,7 +1189,8 @@ describe('curate', () => {
         entrySeq: 4,
       });
       expect(runtime.readIndexState()).toMatchObject({
-        mutationSeq: 1,
+        contentSeq: 0,
+        metadataSeq: 1,
       });
       expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-alpha', 4));
     });
@@ -1220,7 +1227,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
 
       await internals.commitMetadataTargets([
         {
@@ -1260,7 +1269,8 @@ describe('curate', () => {
       expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-stale'))).toEqual(['coral']);
       expect(readIndexEntryTags(runtime.readIndex(), noteEntryId('coral-fresh'))).toEqual(['coral', 'kb']);
       expect(runtime.readIndexState()).toMatchObject({
-        mutationSeq: 1,
+        contentSeq: 0,
+        metadataSeq: 1,
       });
       expect(readCurateState(runtime).processedThrough).toEqual(cursor('coral-missing', 1));
     });
@@ -1294,7 +1304,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       writeCurateState(
         runtime,
         createCurateState({
@@ -1381,7 +1393,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
 
       await internals.commitMetadataTargets([
         {
@@ -1423,7 +1437,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
 
       await internals.commitMetadataTargets([
         {
@@ -1529,7 +1545,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1592,7 +1608,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1660,6 +1676,8 @@ describe('curate', () => {
         principles: {
           'single-source-of-truth': 'Keep exactly one source for each fact.',
         },
+        entityMeta: {},
+        relationships: [],
       });
       writeCurateState(
         runtime,
@@ -1733,6 +1751,8 @@ describe('curate', () => {
         principles: {
           'single-owner': 'Attach payloads to one owner.',
         },
+        entityMeta: {},
+        relationships: [],
       });
       writeCurateState(
         runtime,
@@ -1794,7 +1814,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -1935,7 +1955,9 @@ describe('curate', () => {
       runtime.writeIndex({
         entries: createIndexEntries(notes),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       writeCurateState(runtime, {
         ...readCurateState(runtime),
         initialized: true,
@@ -2010,12 +2032,10 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       runtime.writeIndexState({
         contentSeq: 10,
         metadataSeq: 10,
-        mutationSeq: 10,
-        textIndexedSeq: 10,
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
@@ -2078,7 +2098,9 @@ describe('curate', () => {
             }),
           }),
           principles: {},
-        }),
+        entityMeta: {},
+        relationships: [],
+}),
       ).rejects.toMatchObject({
         name: 'CurateJsonParseError',
         message: 'Curate classification returned invalid JSON.',
@@ -2101,7 +2123,7 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       writeCurateState(
         runtime,
         createCurateState({
@@ -2139,12 +2161,10 @@ describe('curate', () => {
         });
       }
 
-      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {} });
+      runtime.writeIndex({ entries: createIndexEntries(notes), principles: {}, entityMeta: {}, relationships: [] });
       runtime.writeIndexState({
         contentSeq: 10,
         metadataSeq: 10,
-        mutationSeq: 10,
-        textIndexedSeq: 10,
       });
       writeCurateState(runtime, createCurateState({
         initialized: true,
@@ -2246,7 +2266,9 @@ describe('curate', () => {
       runtime.writeIndex({
         entries: createIndexEntries(notes),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       const graph: EntityGraph = {
         entityMeta: {
           attention: { type: 'concept', description: 'Attention mechanisms.' },
@@ -2344,7 +2366,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       await runtime.writeEntityGraph({
         entityMeta: {
           'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
@@ -2419,7 +2443,9 @@ describe('curate', () => {
           }),
         }),
         principles: {},
-      });
+      entityMeta: {},
+      relationships: [],
+});
       await runtime.writeEntityGraph({
         entityMeta: {
           'community-backoff': { type: 'concept', description: 'Tick-based community backoff.' },

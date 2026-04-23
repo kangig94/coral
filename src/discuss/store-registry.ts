@@ -12,12 +12,12 @@ import {
 
 export type DiscussJournalBody<K extends DiscussEventKind = DiscussEventKind> =
   DiscussEventEnvelope<K, unknown>['payload'] & {
-    legacySeq: number;
+    sourceSeq: number;
   };
 
 const discussJournalBodySchema = z
   .object({
-    legacySeq: z.number().int().positive(),
+    sourceSeq: z.number().int().positive(),
   })
   // Preserve the Phase 1 live discuss payload contract while Journal ownership stays additive.
   .passthrough();
@@ -50,7 +50,7 @@ export function toJournalInput(
     bodyVersion: 1,
     body: {
       ...domainEvent.payload,
-      legacySeq: domainEvent.seq,
+      sourceSeq: domainEvent.seq,
     },
     tsOverride: domainEvent.ts,
   };

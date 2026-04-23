@@ -29,11 +29,7 @@ import {
   type DiscussReadRef,
   type DiscussSnapshotRow,
 } from './queries/discuss.js';
-import {
-  readSessionEntryById,
-  readSessionEntryLenientById,
-  readSessionProvenanceById,
-} from './queries/sessions.js';
+import { readSessionEntryById } from './queries/sessions.js';
 import type {
   KbDiagnoseResult,
   KbMemoListInput,
@@ -46,7 +42,6 @@ import type {
   KbSearchResponse,
   KbSourceListResult,
 } from '../kb/entry-types.js';
-import type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
@@ -83,8 +78,6 @@ export class CoralStore implements StoreReadContext {
   };
   public readonly sessions: {
     readEntry: (sessionId: string) => SessionEntry;
-    readEntryLenient: (sessionId: string) => LenientSessionEntry | null;
-    provenance: (sessionId: string) => ProvenanceState | null;
   };
 
   constructor(
@@ -130,8 +123,6 @@ export class CoralStore implements StoreReadContext {
 
     this.sessions = {
       readEntry: (sessionId) => readSessionEntryById(this.db, sessionId),
-      readEntryLenient: (sessionId) => readSessionEntryLenientById(this.db, sessionId),
-      provenance: (sessionId) => readSessionProvenanceById(this.db, sessionId),
     };
   }
 

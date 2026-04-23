@@ -34,7 +34,7 @@ import { rejectLaunch, SessionClaimError } from '../../jobs/shell/contracts.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
-import { materializeSessionInterrupted } from '../../jobs/shell/legacy-ingest.js';
+import { materializeSessionInterrupted } from '../../jobs/shell/fault-materializer.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];

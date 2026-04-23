@@ -319,7 +319,10 @@ export function detectTextArtifactRebuildInfo(
     let externalMutation: KbIndexMutationLane | null = null;
 
     if (!existsSync(kb.entityGraphPath())) {
-      if (currentIndex?.entityMeta !== undefined || currentIndex?.relationships !== undefined) {
+      if (
+        currentIndex !== null &&
+        (Object.keys(currentIndex.entityMeta).length > 0 || currentIndex.relationships.length > 0)
+      ) {
         externalMutation = mergeMutationLane(externalMutation, 'metadata');
       }
     } else if (fileModifiedAfter(kb.entityGraphPath(), indexMtime)) {
@@ -343,8 +346,8 @@ export function detectTextArtifactRebuildInfo(
     };
   } catch {
     return {
-      needsRebuild: false,
-      externalMutation: null,
+      needsRebuild: true,
+      externalMutation: 'both',
     };
   }
 }
@@ -438,8 +441,8 @@ function prepareCommunityTopologyRefresh(
 } {
   const state = readCurateState(kb);
   const graph = buildEntityRelationshipGraph({
-    entityMeta: index.entityMeta ?? {},
-    relationships: index.relationships ?? [],
+    entityMeta: index.entityMeta,
+    relationships: index.relationships,
   });
   const topologyHash = computeCommunityTopologyFingerprint(index, graph);
   if (state.communityTopologyHash === topologyHash) {
@@ -669,12 +672,8 @@ function buildKbIndex(
   return {
     entries,
     principles: Object.fromEntries(principles),
-    ...(entityGraph === null
-      ? {}
-      : {
-          entityMeta: entityGraph.entityMeta,
-          relationships: entityGraph.relationships,
-        }),
+    entityMeta: entityGraph?.entityMeta ?? {},
+    relationships: entityGraph?.relationships ?? [],
   };
 }
 
@@ -688,7 +687,7 @@ function buildCounts(
   ReindexResult,
   'notes' | 'sources' | 'communities' | 'principles' | 'tags' | 'entities' | 'relationships' | 'entityCoverage'
 > {
-  const entityMeta = index.entityMeta ?? {};
+  const entityMeta = index.entityMeta;
   const uniqueTags = new Set([
     ...notes.flatMap((note) => note.tags),
     ...sources.flatMap((source) => source.tags),
@@ -833,7 +832,7 @@ export async function rebuildTextArtifacts(
 /**
  * @precondition Caller already holds `kb.withMutationLock()`.
  *
- * Legacy divergence retained intentionally: this rebuild path still refreshes curate repair state
+ * This rebuild path still refreshes curate repair state
  * in addition to rebuilding the base projection. AC4 write-lock installers use
  * `OramaBaseProjection.installFullSnapshotInWriteLock()` instead so lock-held delta/full installs stay
  * pure and do not regenerate repair or curate side effects.

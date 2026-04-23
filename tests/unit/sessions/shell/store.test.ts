@@ -92,6 +92,8 @@ describe('sessions shell store', () => {
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-a',
     });
 
     expect(entry.state).toBe('pending');
@@ -135,7 +137,7 @@ describe('sessions shell store', () => {
         'session.opened',
         'session.continuity.checkpointed',
       ]);
-      expect(rows[0]?.body_version).toBe(2);
+      expect(rows[0]?.body_version).toBe(1);
       expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toEqual({
         controller: 'team-a',
         provider: 'codex',
@@ -160,23 +162,20 @@ describe('sessions shell store', () => {
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: '/my/project',
+      backendNamespace: 'ns-beta',
     });
 
     expect(entry.projectRoot).toBe('/my/project');
+    expect(entry.backendNamespace).toBe('ns-beta');
     expect(mgr.get('codex', entry.sessionId)?.projectRoot).toBe('/my/project');
   });
 
-  it('allocate omits projectRoot when not provided', () => {
+  it('string allocation derives projectRoot from cwd', () => {
     const { mgr, workDir } = setup('alloc-no-root');
 
-    const entry = mgr.allocate({
-      provider: 'codex',
-      name: 'gamma',
-      model: 'gpt-5',
-      cwd: workDir,
-    });
+    const entry = mgr.allocate('codex', 'gamma', 'gpt-5', workDir);
 
-    expect(entry.projectRoot).toBeUndefined();
+    expect(entry.projectRoot).toBe(workDir);
   });
 
   it('allocate persists backend provenance and stored profile fields', () => {

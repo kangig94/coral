@@ -18,10 +18,9 @@ import {
 import { codexThreadProvider } from './codex/thread-provider.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
 import { ProviderRegistry } from './registry.js';
-import { resolveScriptedProviderOverride } from './bootstrap-scripted-override.js';
 
 function buildProviderRecovery(
-  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>,
+  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>,
   finalizeFromArtifacts: ProviderRecoveryContract['finalizeFromArtifacts'],
   providerName: string,
 ): ProviderRecoveryContract {
@@ -33,9 +32,6 @@ function buildProviderRecovery(
     probe: probe.bind(lifecycle),
     finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
     finalizeFromArtifacts,
-    ...(lifecycle.migrateLegacyContinuity
-      ? { migrateLegacyContinuity: lifecycle.migrateLegacyContinuity.bind(lifecycle) }
-      : {}),
   };
 }
 
@@ -161,22 +157,8 @@ const claudeProviderSpec: ProviderSpec = {
 
 const BUILT_IN_PROVIDERS = [codexProviderSpec, claudeProviderSpec] as const;
 
-function resolveBuiltInProviders(env: NodeJS.ProcessEnv = process.env): ProviderSpec[] {
-  const scriptedProvider = resolveScriptedProviderOverride(env);
-  if (scriptedProvider === null) {
-    return [...BUILT_IN_PROVIDERS];
-  }
-
-  const replacedProviders = BUILT_IN_PROVIDERS.map((provider) =>
-    provider.name === scriptedProvider.name ? scriptedProvider : provider);
-  if (replacedProviders.some((provider) => provider === scriptedProvider)) {
-    return replacedProviders;
-  }
-  return [...replacedProviders, scriptedProvider];
-}
-
-export function registerBuiltInProviders(registry: ProviderRegistry, env: NodeJS.ProcessEnv = process.env): void {
-  const providers = resolveBuiltInProviders(env);
+export function registerBuiltInProviders(registry: ProviderRegistry): void {
+  const providers = [...BUILT_IN_PROVIDERS];
   const existingProviders = providers.map((provider) => ({
     provider,
     existing: registry.get(provider.name),
@@ -200,8 +182,8 @@ export function registerBuiltInProviders(registry: ProviderRegistry, env: NodeJS
   }
 }
 
-export function createBuiltInProviderRegistry(env: NodeJS.ProcessEnv = process.env): ProviderRegistry {
+export function createBuiltInProviderRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
-  registerBuiltInProviders(registry, env);
+  registerBuiltInProviders(registry);
   return registry;
 }

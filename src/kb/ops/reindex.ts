@@ -6,7 +6,6 @@ export async function reindex(kb: KbRuntime): Promise<ReindexResult> {
   const startedAt = Date.now();
 
   const textResult = await kb.withMutationLock(async () => {
-    kb.runEntrySeqUpgradeGuardIfNeeded();
     const startState = kb.readIndexState();
     let rebuildResult: Awaited<ReturnType<typeof rebuildTextArtifactsAndPersistRepairState>>;
 

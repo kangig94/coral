@@ -11,7 +11,9 @@ import type { JobProjectionDetail } from '../read-contracts.js';
 import { resultPathFor } from './result-artifact.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 
-const ABORTED = Symbol('wait-aborted');
+const ABORTED = 'wait-aborted' as const;
+const JOURNAL_WAIT_POLL_MS = 100;
+const POLL_JOURNAL = 'poll-journal' as const;
 
 function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
   if (!signal) {
@@ -314,63 +316,6 @@ export class WaitCoordinator {
     const emittedQueued = new Set<string>();
     const currentMaxSeq = getCurrentJournalSeq();
 
-    for (const jobId of [...pending]) {
-      const status = this.readQueryStatus(jobId);
-      if (!status) {
-        continue;
-      }
-
-      if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
-        emittedQueued.add(jobId);
-        const pool = jobPools.get(jobId) ?? 'default';
-        yield {
-          type: 'queued',
-          jobId,
-          sessionId: status.sessionId,
-          queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
-          runningJobIds: launchCoordinator.getActiveJobIds(pool),
-        };
-      }
-
-      const history = readJobProgress(jobId).filter(
-        (event) => event.seq <= currentMaxSeq && event.eventId > (fromEventIds[jobId] ?? 0),
-      );
-      for (const event of history) {
-        fromEventIds[jobId] = event.eventId;
-        if (event.type === 'progress') {
-          yield {
-            type: 'progress',
-            jobId,
-            eventId: event.eventId,
-            message: event.message ?? '',
-          };
-          continue;
-        }
-
-        yield {
-          type: 'terminal',
-          jobId,
-          remainingJobIds: [...pending].filter((id) => id !== jobId),
-          resultPath: resultPathFor(jobId),
-          result: event.result ?? { content: '', outcome: { kind: 'completed' } },
-          continuity: event.continuity ?? this.readQueryContinuity(jobId),
-        };
-        return;
-      }
-
-      if (status && isTerminalPhase(status.phase)) {
-        yield {
-          type: 'terminal',
-          jobId,
-          remainingJobIds: [...pending].filter((id) => id !== jobId),
-          resultPath: resultPathFor(jobId),
-          result: status.result ?? { content: '', outcome: { kind: 'completed' } },
-          continuity: status.continuity ?? null,
-        };
-        return;
-      }
-    }
-
     const controller = new AbortController();
     const onExternalAbort = () => {
       controller.abort();
@@ -385,8 +330,110 @@ export class WaitCoordinator {
       jobIds,
       abortSignal: controller.signal,
     })[Symbol.asyncIterator]();
+    // Prime the live tail before reading the catch-up snapshot so terminal events
+    // cannot land in the gap between the snapshot and subscriber registration.
+    let pendingNext: Promise<IteratorResult<JobProgress>> | null = iterator.next();
 
     try {
+      const catchUpMaxSeq = getCurrentJournalSeq();
+      let observedSeq = catchUpMaxSeq;
+      for (const jobId of [...pending]) {
+        const status = this.readQueryStatus(jobId);
+        if (!status) {
+          continue;
+        }
+
+        if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
+          emittedQueued.add(jobId);
+          const pool = jobPools.get(jobId) ?? 'default';
+          yield {
+            type: 'queued',
+            jobId,
+            sessionId: status.sessionId,
+            queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
+            runningJobIds: launchCoordinator.getActiveJobIds(pool),
+          };
+        }
+
+        const history = readJobProgress(jobId).filter(
+          (event) => event.seq <= catchUpMaxSeq && event.eventId > (fromEventIds[jobId] ?? 0),
+        );
+        for (const event of history) {
+          fromEventIds[jobId] = event.eventId;
+          if (event.type === 'progress') {
+            yield {
+              type: 'progress',
+              jobId,
+              eventId: event.eventId,
+              message: event.message ?? '',
+            };
+            continue;
+          }
+
+          yield {
+            type: 'terminal',
+            jobId,
+            remainingJobIds: [...pending].filter((id) => id !== jobId),
+            resultPath: resultPathFor(jobId),
+            result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+            continuity: event.continuity ?? this.readQueryContinuity(jobId),
+          };
+          return;
+        }
+
+        if (status && isTerminalPhase(status.phase)) {
+          yield {
+            type: 'terminal',
+            jobId,
+            remainingJobIds: [...pending].filter((id) => id !== jobId),
+            resultPath: resultPathFor(jobId),
+            result: status.result ?? { content: '', outcome: { kind: 'completed' } },
+            continuity: status.continuity ?? null,
+          };
+          return;
+        }
+      }
+
+      const readContinuity = (jobId: string) => this.readQueryContinuity(jobId);
+      const catchUpFromJournal = function* (
+        maxSeq: number,
+      ): Generator<WaitStreamEvent, 'terminal' | 'progress' | 'empty'> {
+        let emitted = false;
+        for (const jobId of [...pending]) {
+          const history = readJobProgress(jobId).filter(
+            (event) =>
+              event.seq > observedSeq &&
+              event.seq <= maxSeq &&
+              event.eventId > (fromEventIds[jobId] ?? 0),
+          );
+
+          for (const event of history) {
+            emitted = true;
+            fromEventIds[jobId] = event.eventId;
+            if (event.type === 'progress') {
+              yield {
+                type: 'progress',
+                jobId,
+                eventId: event.eventId,
+                message: event.message ?? '',
+              };
+              continue;
+            }
+
+            yield {
+              type: 'terminal',
+              jobId,
+              remainingJobIds: [...pending].filter((id) => id !== jobId),
+              resultPath: resultPathFor(jobId),
+              result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+              continuity: event.continuity ?? readContinuity(jobId),
+            };
+            return 'terminal';
+          }
+        }
+        return emitted ? 'progress' : 'empty';
+      };
+
       while (pending.size > 0) {
         const now = this.deps.time.now();
         if (now > deadlineMs) {
@@ -396,9 +443,10 @@ export class WaitCoordinator {
 
         const remainingMs = deadlineMs - now;
         const abortWaiter = createAbortWaiter(abortSignal);
+        const pollMs = Math.min(remainingMs, JOURNAL_WAIT_POLL_MS);
         const next = await Promise.race([
-          iterator.next(),
-          this.deps.time.sleep(remainingMs).then(() => ({ done: true, value: null as JobProgress | null })),
+          pendingNext,
+          this.deps.time.sleep(pollMs).then(() => POLL_JOURNAL),
           ...(abortWaiter ? [abortWaiter.promise] : []),
         ]);
         abortWaiter?.dispose();
@@ -407,12 +455,30 @@ export class WaitCoordinator {
           return;
         }
 
+        if (next === POLL_JOURNAL) {
+          const maxSeq = getCurrentJournalSeq();
+          if (maxSeq > observedSeq) {
+            const replay = catchUpFromJournal(maxSeq);
+            for (const event of replay) {
+              yield event;
+              if (event.type === 'terminal') {
+                return;
+              }
+            }
+            observedSeq = maxSeq;
+          }
+          continue;
+        }
+
         if (next.done || !next.value) {
-          yield { type: 'waiting', waitingJobIds: [...pending] };
-          return;
+          continue;
         }
 
         const event = next.value;
+        pendingNext = iterator.next();
+        if (event.eventId <= (fromEventIds[event.jobId] ?? 0)) {
+          continue;
+        }
         fromEventIds[event.jobId] = event.eventId;
 
         if (event.type === 'progress') {
@@ -438,6 +504,7 @@ export class WaitCoordinator {
     } finally {
       abortSignal?.removeEventListener('abort', onExternalAbort);
       controller.abort();
+      await pendingNext?.catch(() => undefined);
       await iterator.return?.();
     }
   }

@@ -36,10 +36,6 @@ function createMockKb(order?: string[]) {
       order?.push('withMutationLock:end');
       return result;
     }),
-    runEntrySeqUpgradeGuardIfNeeded: vi.fn(() => {
-      order?.push('runEntrySeqUpgradeGuardIfNeeded');
-      return false;
-    }),
     ensureOramaIndex: vi.fn(async () => {
       order?.push('ensureOramaIndex');
       return {
@@ -310,15 +306,13 @@ describe('coordinator startup ordering', () => {
       expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(false);
       expect(order).toContain('retryPendingCorpusPublication');
       expect(order).toContain('withMutationLock:start');
-      expect(order).toContain('runEntrySeqUpgradeGuardIfNeeded');
       expect(order).toContain('ensureOramaIndex');
       expect(order).toContain('withMutationLock:end');
       expect(order).toContain('notifyCorpus');
       expect(order).toContain('curateScheduler.start');
       expect(order).toContain('listenFn');
       expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('withMutationLock:start'));
-      expect(order.indexOf('withMutationLock:start')).toBeLessThan(order.indexOf('runEntrySeqUpgradeGuardIfNeeded'));
-      expect(order.indexOf('runEntrySeqUpgradeGuardIfNeeded')).toBeLessThan(order.indexOf('ensureOramaIndex'));
+      expect(order.indexOf('withMutationLock:start')).toBeLessThan(order.indexOf('ensureOramaIndex'));
       expect(order.indexOf('ensureOramaIndex')).toBeLessThan(order.indexOf('withMutationLock:end'));
       expect(order.indexOf('withMutationLock:end')).toBeLessThan(order.indexOf('notifyCorpus'));
       expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));

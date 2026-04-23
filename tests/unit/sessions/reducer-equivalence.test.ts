@@ -39,6 +39,7 @@ describe('sessions reducer equivalence (AC2)', () => {
             body: {
               controller: 'team-a',
               provider: 'codex',
+              shard_dir: join(sessionBase(), createHash('sha1').update('session-1').digest('hex').slice(0, 12)),
             },
           },
           {
@@ -164,13 +165,13 @@ describe('sessions reducer equivalence (AC2)', () => {
     }
   });
 
-  it('round-trips v2 session.opened rows without rewriting shard_dir or body_version', () => {
+  it('round-trips canonical session.opened rows without rewriting shard_dir or body_version', () => {
     const db = new Database(':memory:');
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
-      const shardDir = join(sessionBase(), 'v2-shard');
+      const shardDir = join(sessionBase(), 'canonical-shard');
 
       const appended = appendEvents(
         db,
@@ -179,7 +180,7 @@ describe('sessions reducer equivalence (AC2)', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-2' },
             refs: { sessionId: 'session-2' },
-            bodyVersion: 2,
+            bodyVersion: 1,
             body: {
               controller: 'team-b',
               provider: 'claude',
@@ -201,7 +202,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         { now: () => NOW, reducers, upcasters },
       );
 
-      const v2OpenEvent = db
+      const openedEvent = db
         .prepare(
           `SELECT body_version
            FROM events
@@ -231,7 +232,7 @@ describe('sessions reducer equivalence (AC2)', () => {
         shard_dir: shardDir,
         last_seq: appended.at(-1)?.seq,
       });
-      expect(v2OpenEvent?.body_version).toBe(2);
+      expect(openedEvent?.body_version).toBe(1);
 
       rebuildProjections({
         db,

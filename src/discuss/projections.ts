@@ -19,7 +19,7 @@ type ProjectionDiscussRow = {
 };
 
 type DiscussProjectionBody = Record<string, unknown> & {
-  legacySeq: number;
+  sourceSeq: number;
 };
 
 function readProjectionDiscuss(db: Database, discussId: string): ProjectionDiscussRow | null {
@@ -68,14 +68,14 @@ function toDiscussDomainEvent(
   event: CoralEvent<DiscussProjectionBody>,
   previous: PersistedDiscussSnapshot | null,
 ): DiscussDomainEvent {
-  const { legacySeq, ...payload } = event.body;
+  const { sourceSeq, ...payload } = event.body;
 
   return {
     v: 1,
     sessionId: event.stream.id,
     projectRoot: event.project ?? previous?.projectRoot ?? '',
     topic: topicForEvent(event, previous),
-    seq: legacySeq,
+    seq: sourceSeq,
     kind: event.type.slice('discuss.'.length) as DiscussDomainEvent['kind'],
     ts: event.ts,
     payload,

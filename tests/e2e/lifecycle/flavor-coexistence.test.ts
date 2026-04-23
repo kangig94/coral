@@ -133,6 +133,7 @@ function seedCompletedJob(
             projectRoot,
             backendNamespace: namespace,
             bundleHash,
+            jobKind: 'provider',
             pool: 'default',
             enqueueSequence: 0,
             providerAction: 'exec',

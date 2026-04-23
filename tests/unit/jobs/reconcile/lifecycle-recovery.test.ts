@@ -279,7 +279,7 @@ function appendSessionOpenedEvent(
         namespace: overrides.backendNamespace,
         project: overrides.projectRoot,
         refs: { sessionId: overrides.sessionId },
-        bodyVersion: 2,
+        bodyVersion: 1,
         body: {
           controller: 'default',
           provider: overrides.provider,

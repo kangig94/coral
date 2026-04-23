@@ -14,7 +14,6 @@ export async function applyNoteUpdateLocked(
   rt: KbRuntime,
   input: { note: string; title?: string; content?: string },
 ): Promise<{ path: string }> {
-  rt.runEntrySeqUpgradeGuardIfNeeded();
   const notePath = rt.notePath(input.note);
   const { frontmatter, title: existingTitle, body: existingBody } = loadKbNote(notePath);
   const nextTitle = input.title ?? existingTitle;

@@ -55,8 +55,6 @@ export interface KbIndexState {
   contentSeq: number;
   metadataSeq: number;
   textStaleReason?: string;
-  mutationSeq: number;
-  textIndexedSeq: number;
 }
 
 export interface KbCachedOramaIndex {
@@ -90,7 +88,6 @@ export interface KbRuntime {
   readIndexState(): KbIndexState;
   writeIndexState(state: KbIndexState): void;
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void;
-  runEntrySeqUpgradeGuardIfNeeded(): boolean;
   recordMutationCommitted(lane?: KbIndexMutationLane, reason?: string): KbIndexState;
   recordIndexSyncSuccess(): KbIndexState;
   recordIndexSyncFailure(reason: string): KbIndexState;

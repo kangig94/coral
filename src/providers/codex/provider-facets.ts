@@ -124,19 +124,6 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const codexRecoveryLifecycle = {
-  migrateLegacyContinuity(meta) {
-    const continuity: Record<string, unknown> = {};
-    if (typeof meta.provider === 'string' && meta.provider.length > 0) {
-      continuity.provider = meta.provider;
-    }
-    if (typeof meta.threadId === 'string' && meta.threadId.length > 0) {
-      continuity.threadId = meta.threadId;
-    }
-    if (typeof meta.turnId === 'string' && meta.turnId.length > 0) {
-      continuity.turnId = meta.turnId;
-    }
-    return Object.keys(continuity).length > 0 ? continuity : undefined;
-  },
   async probe(lease, continuity) {
     const parsed = readCodexPersistedContinuity(continuity);
     const updatedContinuity = clearCodexTurnContinuity(continuity);
@@ -189,4 +176,4 @@ export const codexRecoveryLifecycle = {
       ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted' | 'migrateLegacyContinuity'>;
+} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;

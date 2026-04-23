@@ -46,6 +46,7 @@ describe('jobs queries', () => {
           projectRoot: '/workspace/coral',
           backendNamespace: 'tests',
           bundleHash: 'bundle-completed',
+          jobKind: 'provider',
           pool: 'default',
           enqueueSequence: 1,
           request: {
@@ -121,6 +122,7 @@ describe('jobs queries', () => {
           providerAction: 'exec',
           projectRoot: '/workspace/coral',
           backendNamespace: 'tests',
+          jobKind: 'provider',
           pool: 'default',
           enqueueSequence: 2,
           request: {
@@ -156,6 +158,7 @@ describe('jobs queries', () => {
           providerAction: 'exec',
           projectRoot: '/workspace/coral',
           backendNamespace: 'tests',
+          jobKind: 'provider',
           pool: 'default',
           enqueueSequence: 3,
           request: {

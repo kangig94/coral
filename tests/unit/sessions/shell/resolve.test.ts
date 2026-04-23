@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -176,8 +175,8 @@ describe('sessions shell resolve', () => {
     });
   });
 
-  it('projection lookup upcasts a legacy v1 session.opened shard mapping deterministically', () => {
-    const { mgr, workDir } = setup('legacy-lookup');
+  it('projection lookup reads the canonical session.opened shard mapping deterministically', () => {
+    const { mgr, workDir } = setup('canonical-lookup');
     const entry = mgr.allocate({
       provider: 'codex',
       name: 'alpha',
@@ -186,6 +185,8 @@ describe('sessions shell resolve', () => {
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
+    const shard = createFilesystemSessionLookup(runtime).lookupSessionShard(entry.sessionId);
+    expect(shard).not.toBeNull();
     const db = createSessionDb();
 
     try {
@@ -201,6 +202,7 @@ describe('sessions shell resolve', () => {
             body: {
               controller: 'default',
               provider: 'codex',
+              shard_dir: shard!.shardDir,
             },
           },
         ],
@@ -213,7 +215,7 @@ describe('sessions shell resolve', () => {
 
       const sessionLookup = createProjectionSessionLookup(db);
       expect(sessionLookup.lookupSessionShard(entry.sessionId)).toEqual({
-        shardDir: join(runtime.paths.sessionBase(), createHash('sha1').update(entry.sessionId).digest('hex').slice(0, 12)),
+        shardDir: shard!.shardDir,
         provider: 'codex',
       });
     } finally {

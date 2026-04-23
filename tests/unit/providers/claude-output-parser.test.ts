@@ -78,7 +78,7 @@ describe('parseClaudeStreamJson', () => {
     expect(parsed.isError).toBe(false);
   });
 
-  it('supports legacy single JSON output fallback', () => {
+  it('supports single JSON output fallback', () => {
     const output = JSON.stringify({
       type: 'result',
       result: {
@@ -442,7 +442,7 @@ describe('parseClaudeStreamJson — adversarial', () => {
     });
   });
 
-  describe('single-JSON fallback path — backward compat', () => {
+  describe('single-JSON fallback path', () => {
     it('parses single JSON where result is a plain string', () => {
       const singleJson = JSON.stringify({
         type: 'result',

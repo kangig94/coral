@@ -213,7 +213,9 @@ describe('curate AC6/AC8', () => {
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
 
     await internals.commitMetadataTargets([
       {
@@ -266,7 +268,9 @@ describe('curate AC6/AC8', () => {
         },
       },
       principles: {},
-    });
+    entityMeta: {},
+    relationships: [],
+});
 
     await internals.commitMetadataTargets([
       {
@@ -371,12 +375,10 @@ describe('curate AC6/AC8', () => {
       });
     }
 
-    runtime.writeIndex({ entries, principles: {} });
+    runtime.writeIndex({ entries, principles: {}, entityMeta: {}, relationships: [] });
     runtime.writeIndexState({
       contentSeq: 10,
       metadataSeq: 10,
-      mutationSeq: 10,
-      textIndexedSeq: 10,
     });
     writeCurateState(runtime, {
       processedThrough: null,

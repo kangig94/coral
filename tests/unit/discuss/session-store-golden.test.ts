@@ -40,7 +40,7 @@ describe('discuss session-store golden master (AC3)', () => {
 
       for (const [index, domainEvent] of events.entries()) {
         const input = toJournalInput(domainEvent);
-        const event: CoralEvent<Record<string, unknown> & { legacySeq: number }> = {
+        const event: CoralEvent<Record<string, unknown> & { sourceSeq: number }> = {
           seq: index + 1,
           ts: input.tsOverride ?? '<ts>',
           type: input.type,

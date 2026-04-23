@@ -374,8 +374,8 @@ function stableEntityGraph(graph: EntityGraph): EntityGraph {
 
 function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): boolean {
   const loadedGraph = stableEntityGraph({
-    entityMeta: index.entityMeta ?? {},
-    relationships: index.relationships ?? [],
+    entityMeta: index.entityMeta,
+    relationships: index.relationships,
   });
 
   return JSON.stringify(loadedGraph) === JSON.stringify(stableEntityGraph(currentGraph));
