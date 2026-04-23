@@ -14,7 +14,7 @@ import { createProviderHostManager } from '../../live/provider-hosts/pool.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { getInternals } from '../../../jobs/shell/__tests__/__helpers__/service-fixture.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '../../../providers/contract.js';
 import { providerTerminalEventBodySchema, jobTerminalSchema } from '../../../providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '../../../jobs/events.js';
@@ -111,7 +111,7 @@ describe('coordinator continuity lifecycle integration', () => {
   let eventBus: TypedEventBus;
   let launchCoordinator: LaunchCoordinator;
   let spawnProviderServer: SpawnProviderServerFn;
-  let ctx: CallerContext;
+  let ctx: InvocationContext;
 
   beforeEach(() => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });

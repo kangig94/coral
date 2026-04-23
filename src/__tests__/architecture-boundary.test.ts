@@ -48,7 +48,12 @@ const RETIRED_CORPUS_PATHS = ['src', 'kb', 'corpus', 'paths.ts'].join('/');
 const RETIRED_INFRA_INDEX = ['src', 'infra', 'index.ts'].join('/');
 const RETIRED_SIMULATION_INDEX = ['src', 'simulation', 'index.ts'].join('/');
 const RETIRED_SIMULATION_CORE_INDEX = ['src', 'simulation', 'core', 'index.ts'].join('/');
-const RETIRED_REQUEST_CONTEXT = ['src', 'infra', 'request-context.ts'].join('/');
+const RETIRED_INFRA_REQUEST_CONTEXT = ['src', 'infra', 'request-context.ts'].join('/');
+const RETIRED_TRANSPORT_REQUEST_CONTEXT = ['src', 'transport', 'request-context.ts'].join('/');
+const RETIRED_TRANSPORT_SHARED_CONTEXT = ['src', 'transport', 'shared-context.ts'].join('/');
+const RETIRED_COORDINATOR_CALLER_CONTEXT = ['src', 'coordinator', 'caller-context.ts'].join('/');
+const RETIRED_STORE_CORPUS_CONSUMER = ['src', 'store', 'corpus-consumer.ts'].join('/');
+const RETIRED_KB_CORPUS_REPAIR_TYPES = ['src', 'kb', 'corpus', 'repair', 'types.ts'].join('/');
 const RETIRED_SIMULATION_WORLD = ['src', 'simulation', 'world.ts'].join('/');
 const RETIRED_SIMULATION_SCHEMA = ['src', 'simulation', 'schema.ts'].join('/');
 const RETIRED_SIMULATION_NORMALIZE = ['src', 'simulation', 'normalize.ts'].join('/');
@@ -164,6 +169,25 @@ function assertNoViolations(violations: BoundaryViolation[]): void {
       )
       .join('\n\n'),
   );
+}
+
+function collectRuntimeDeclarationsInTypesFiles(): string[] {
+  const runtimeDeclarationPatterns: Array<[RegExp, string]> = [
+    [/^\s*(?:export\s+)?(?:async\s+)?function\s+\w+\s*\(/m, 'function declaration'],
+    [/^\s*(?:export\s+)?const\s+\w+\s*=\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|\w+)\s*=>)/m, 'function-valued const'],
+    [/^\s*export\s+(?:class|enum)\s+\w+\b/m, 'runtime export'],
+  ];
+
+  return PRODUCTION_SOURCE_FILES.flatMap((filePath) => {
+    if (!filePath.endsWith('/types.ts')) {
+      return [];
+    }
+
+    const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
+    return runtimeDeclarationPatterns
+      .filter(([pattern]) => pattern.test(source))
+      .map(([, label]) => `${filePath}: ${label}`);
+  });
 }
 
 describe('architecture boundary guard', () => {
@@ -301,9 +325,14 @@ describe('architecture boundary guard', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_NORMALIZE);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_NORMALIZE))).toBe(false);
   });
-  it('the retired request-context owner must remain deleted', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_REQUEST_CONTEXT);
-    expect(existsSync(resolve(REPO_ROOT, RETIRED_REQUEST_CONTEXT))).toBe(false);
+  it('the retired request-context owners must remain deleted', () => {
+    for (const retiredPath of [
+      RETIRED_INFRA_REQUEST_CONTEXT,
+      RETIRED_TRANSPORT_REQUEST_CONTEXT,
+    ]) {
+      expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
+      expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
+    }
   });
   it('the retired fallback helper filenames must remain deleted', () => {
     for (const retiredPath of [
@@ -320,10 +349,17 @@ describe('architecture boundary guard', () => {
       RETIRED_COMMAND_HELPERS,
       RETIRED_STORE_KB_QUERIES,
       RETIRED_STORE_CORPUS_STATE,
+      RETIRED_TRANSPORT_SHARED_CONTEXT,
+      RETIRED_COORDINATOR_CALLER_CONTEXT,
+      RETIRED_STORE_CORPUS_CONSUMER,
+      RETIRED_KB_CORPUS_REPAIR_TYPES,
     ]) {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
       expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
     }
+  });
+  it('production types.ts files remain declaration-only', () => {
+    expect(collectRuntimeDeclarationsInTypesFiles()).toEqual([]);
   });
   it('store schema no longer contains projection_kb residue', () => {
     const schemaSql = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');

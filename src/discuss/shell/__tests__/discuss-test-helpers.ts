@@ -19,7 +19,7 @@ import { buildWatchEvents } from '../../projections.js';
 import { DiscussSessionStore } from '../../shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '../../shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/backend.js';
@@ -73,7 +73,7 @@ export function createExecutionServiceStub(overrides: Partial<ExecutionService> 
 export type DiscussHarness = {
   tmpRoot: string;
   projectRoot: string;
-  ctx: CallerContext;
+  ctx: InvocationContext;
   store: DiscussSessionStore;
   context: DiscussContext;
   registry: DiscussContextRegistry;
@@ -160,7 +160,7 @@ export function createDiscussHarness(
     store,
     createDiscussContextOptions(runtime),
   );
-  const ctx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
+  const ctx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
   let cleaned = false;
 
   const harness: DiscussHarness = {

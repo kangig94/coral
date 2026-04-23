@@ -197,7 +197,7 @@ export class SimulationWorld {
 
     const projectRoot = step.projectRoot ?? this.current.backend.projectRoot;
     const service = this.current.backend.createService(projectRoot);
-    const ctx = this.current.backend.createCallerContext(projectRoot, step.coralEnv);
+    const ctx = this.current.backend.createInvocationContext(projectRoot, step.coralEnv);
     return service.start(
       step.provider ?? 'fake-provider',
       {

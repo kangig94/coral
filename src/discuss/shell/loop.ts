@@ -2,7 +2,7 @@ import { decideBidRoundClose, decideEnd } from '../state-machine.js';
 import { nowIsoString } from '../../infra/time.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './runtime-build.js';
 import { type DiscussContext, DiscussManagerError } from './context.js';
 import { commitDecision } from './persistence.js';
@@ -43,7 +43,7 @@ async function waitForObserverBidWindow(
 async function handleBidRoundClose(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<{ shouldResume: boolean }> {
   const resolved = await commitDecision(ctx, sessionId, (latest) =>
     decideBidRoundClose(
@@ -57,7 +57,7 @@ async function handleBidRoundClose(
     return { shouldResume: true };
   }
   if (resolved.error === 'quorum_not_met') {
-    return collectBids(ctx, sessionId, callerCtx);
+    return collectBids(ctx, sessionId, invocationCtx);
   }
   if (resolved.error === 'session_not_found') {
     return { shouldResume: false };
@@ -86,7 +86,7 @@ async function forceEndAfterLoopFailure(ctx: DiscussContext, sessionId: string, 
   }
 }
 
-export function resumeLoop(ctx: DiscussContext, sessionId: string, callerCtx: CallerContext): void {
+export function resumeLoop(ctx: DiscussContext, sessionId: string, invocationCtx: InvocationContext): void {
   const session = getSession(ctx, sessionId);
   if (!session || session.loopState.running || session.controller.signal.aborted) {
     return;
@@ -94,7 +94,7 @@ export function resumeLoop(ctx: DiscussContext, sessionId: string, callerCtx: Ca
 
   const resumeScheduledAt = ctx.runtime.time.now();
   const timer = ctx.runtime.time.setTimeout(() => {
-    void continueLoop(ctx, sessionId, callerCtx, resumeScheduledAt).catch((error: unknown) => {
+    void continueLoop(ctx, sessionId, invocationCtx, resumeScheduledAt).catch((error: unknown) => {
       void forceEndAfterLoopFailure(ctx, sessionId, error).catch((endErr: unknown) => {
         backendLog.error(`Discuss session ${sessionId} force-end also failed`, endErr);
       });
@@ -106,7 +106,7 @@ export function resumeLoop(ctx: DiscussContext, sessionId: string, callerCtx: Ca
 export async function continueLoop(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
   resumeScheduledAt?: number,
 ): Promise<void> {
   const session = getSession(ctx, sessionId);
@@ -130,7 +130,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'synthesize') {
-        const result = await handleSynthesis(ctx, sessionId, callerCtx);
+        const result = await handleSynthesis(ctx, sessionId, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -138,7 +138,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'evaluate_epoch') {
-        const result = await handleEpochTransition(ctx, sessionId, callerCtx);
+        const result = await handleEpochTransition(ctx, sessionId, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -146,7 +146,7 @@ export async function continueLoop(
       }
 
       if (snapshot.runtime.controlPhase === 'collect_follow_up') {
-        const result = await runFollowUpTurns(ctx, sessionId, callerCtx);
+        const result = await runFollowUpTurns(ctx, sessionId, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -164,7 +164,7 @@ export async function continueLoop(
         if (isManualParticipant(snapshot, snapshot.state.current_speaker)) {
           return;
         }
-        const result = await collectSpeech(ctx, sessionId, snapshot.state.current_speaker, callerCtx);
+        const result = await collectSpeech(ctx, sessionId, snapshot.state.current_speaker, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -182,7 +182,7 @@ export async function continueLoop(
           Math.max(0, snapshot.state.min_bid_delay_ms - resumeElapsedMs),
           current.controller.signal,
         );
-        const result = await handleBidRoundClose(ctx, sessionId, callerCtx);
+        const result = await handleBidRoundClose(ctx, sessionId, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
@@ -194,14 +194,14 @@ export async function continueLoop(
       }
 
       if (hasActiveBidWork(snapshot) || hasPendingAutoBidders(snapshot)) {
-        const result = await collectBids(ctx, sessionId, callerCtx);
+        const result = await collectBids(ctx, sessionId, invocationCtx);
         if (!result.shouldResume) {
           return;
         }
         continue;
       }
 
-      const result = await handleBidRoundClose(ctx, sessionId, callerCtx);
+      const result = await handleBidRoundClose(ctx, sessionId, invocationCtx);
       if (!result.shouldResume) {
         return;
       }

@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState } from '../control.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
@@ -56,7 +56,7 @@ export type BackendCoreOptions = {
   listenFn?: (server: Server) => Promise<{ port: number; host: string }>;
   listenIpcFn?: (listener: IpcListener) => Promise<{ socketPath: string }>;
   createIdleTimer?: () => IdleTimer;
-  createExecutionService?: (ctx: CallerContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
+  createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   verifyBackendOwnershipFn?: VerifyBackendOwnershipFn;
   acquireLockFn?: (
     pluginRoot: string,
@@ -100,11 +100,11 @@ export type BackendCoreResult = {
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
   equipmentLifecycleService: EquipmentLifecycleService | null;
-  getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   resolveProjectSource: (projectRoot: string) => string;
   isDrainRequested: () => boolean;
   requestDrain: (reason: string) => void;

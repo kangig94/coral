@@ -1093,7 +1093,7 @@ src/
                                        locking (one coordinator per flavor), separate from SQLite's BEGIN
                                        IMMEDIATE (which serializes writes within one coordinator).
     discovery-api.ts                 — passive reads of the coordinator discovery record for non-owner callers
-    caller-context.ts                — per-request caller identity scope
+    invocation-scope.ts              — per-invocation event metadata scope
     consumer-driver.ts               — projection consumer driver: push-triggered,
                                        single-in-flight drain, condition-var waitFreshUntil
     composition/                     — coordinator assembly helpers split out of the former execution root
@@ -1132,7 +1132,8 @@ src/
       001_initial.sql
     append.ts                        — transactional append primitive (single-writer gate)
     reducers.ts                      — per-domain event-to-projection reducers
-    projection-consumer.ts           — shared journal consumer registration factory
+    consumer-contract.ts             — neutral consumer error/kind vocabulary
+    projection-consumer.ts           — journal projection registration factory
     index.ts                         — public barrel
     queries/
       jobs.ts                        — JobView queries + progress/event lookup
@@ -1142,6 +1143,9 @@ src/
     json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
     rpc-catalog.ts                   — single coordinator RPC catalog shared by HTTP + IPC carriage
     rpc-ports.ts                     — typed request-port surface projected from coordinator composition
+    context-profile.ts               — transport-context field ↔ CORAL env mapping
+    invocation-context.ts            — request/query → runtime InvocationContext builder
+    dispatch.ts                      — catalog method dispatch over injected request ports
     ipc/
       server.ts                      — Unix socket server
       client.ts                      — Unix socket client
@@ -1155,6 +1159,7 @@ src/
       tool-response.ts               — MCP-style response wrapper
 
   runtime/                           ← 6-subport Runtime; simulation substrate
+    invocation-context.ts            — transport-independent project/plugin/env invocation input
     ports.ts                         — time, storage, paths, process, ids, env
     real.ts                          — production implementations
 
@@ -1224,13 +1229,23 @@ src/
     read.ts                          — load entry from markdown
     read-contract.ts                 — read interface
     corpus/                          — Corpus authority: markdown I/O
-      paths.ts                       — resolve note/source/principle/community paths under ~/.coral/kb
+      consumer-contract.ts           — Corpus consumer registration/apply contract
+      snapshot.ts                    — Corpus freshness snapshot identity
       frontmatter.ts                 — parse/serialize YAML frontmatter
       markdown-entries.ts            — markdown ↔ entry conversion
       mutation-lock.ts               — single-writer lock around the Corpus
-      mutation-helpers.ts            — writeFileAtomic + commitIndexUpdate + contentSeq bumps
+      file-atomic.ts                 — atomic writes for markdown authority files
+      index-mutations.ts             — content/metadata sequence commits
+      index-records.ts               — markdown entry → index record builders
+      manifest-authority.ts          — manifest hash/delta authority checks
       entry-seq-guard.ts             — entrySeq upgrade guard
+      repair/                        — Corpus repair detection and remediation
+        corpus-scan.ts               — scan/incident types plus filesystem scan
+        classify.ts, fix.ts, incident-ids.ts
     runtime-state.ts                 — in-memory Corpus state mirror (`kb_corpus_state`, index handles)
+    state/
+      corpus-state.ts                — persisted Corpus snapshot cursors
+      schema.ts                      — Corpus state row contracts
     queries.ts                       — Corpus read/search/list/diagnose facade for read paths
     search/                          — search backend abstraction (equipment-aware)
       contract.ts                    — SearchBackend interface (fts, vector, hybrid)
@@ -1356,7 +1371,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
-**Principle**: any §10 file name that would exceed 500 lines in reality decomposes to sub-files named by the responsibility it carries. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility; a domain-root `types.ts` is not.
+**Principle**: any §10 file name that would exceed 500 lines in reality decomposes to sub-files named by the responsibility it carries. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility and the file remains declaration-only; runtime functions move to responsibility-named modules.
 
 ### 10.2 Layering invariants
 
@@ -1379,7 +1394,7 @@ These principles prevent `shared/` re-emergence without introducing a central re
 5. `runtime/*` owns only port interfaces. Concrete implementations do not add to this layer.
 6. The only cross-cutting union type is `CauseRef` (`{stream, seq}`), declared in `src/jobs/outcome.ts` alongside `TerminalOutcome`. All other fault information lives on domain events — there is no central fault union.
 
-The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`shared.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold. That is the whole enforcement surface — no normative registry, no CI gate on a map.
+The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`shared.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold, (d) leaf `types.ts` files contain declarations only. That is the whole enforcement surface — no normative registry, no CI gate on a map.
 
 ---
 

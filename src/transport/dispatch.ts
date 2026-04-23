@@ -1,11 +1,11 @@
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ToolDomainResult } from '../transport/tool-result.js';
 import { domainError, domainResultToHttp, launchToHttp } from './http/tool-response.js';
 import type { HttpHandlerPorts } from './http/contracts.js';
 import type { RpcMethodSpec } from './rpc-catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc-ports.js';
-import { buildCallerContext, buildCallerContextFromQuery, decodePathSegment } from './shared-context.js';
+import { buildInvocationContext, buildInvocationContextFromQuery, decodePathSegment } from './invocation-context.js';
 
 export type CatalogRequestExecution =
   | { kind: 'unary'; body: unknown; statusCode?: number }
@@ -30,18 +30,18 @@ function unaryDomain(result: ToolDomainResult, successStatusCode = 200): Catalog
   return unary(response.body, result.ok ? successStatusCode : response.statusCode);
 }
 
-function buildBodyCallerContext(
+function buildBodyInvocationContext(
   request: Record<string, unknown>,
   rpcPorts: HttpHandlerPorts,
-): CallerContext | null {
-  return buildCallerContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
+): InvocationContext | null {
+  return buildInvocationContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
 function buildQueryContext(
   request: { projectRoot: string },
   rpcPorts: HttpHandlerPorts,
-): CallerContext {
-  return buildCallerContextFromQuery(request.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
+): InvocationContext {
+  return buildInvocationContextFromQuery(request.projectRoot, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot);
 }
 
 function stripTransportContextKeys<T extends Record<string, unknown>>(
@@ -93,7 +93,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.start(
@@ -116,7 +116,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.resumeBySessionId(
@@ -139,7 +139,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.forkBySessionId(
@@ -162,7 +162,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand } = parsed;
@@ -268,7 +268,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
@@ -310,7 +310,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { sessionId, ...args } = stripTransportContextKeys(parsed);
@@ -321,7 +321,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { sessionId, ...args } = stripTransportContextKeys(parsed);
@@ -360,7 +360,7 @@ export async function executeCatalogRequest(
 
     case 'kb.note.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       return unaryDomain(await rpcPorts.kb.createNote(stripTransportContextKeys(parsed), ctx), 201);
@@ -439,7 +439,7 @@ export async function executeCatalogRequest(
 
     case 'kb.memo.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyCallerContext(parsed, rpcPorts);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const args = stripTransportContextKeys(parsed);

@@ -22,7 +22,7 @@ import type {
   ProviderServerSpec,
   ProviderSpec,
 } from '../providers/contract.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { EffortLevel } from '../providers/request-policy.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -41,9 +41,9 @@ type ResumeIntent = JobResumeRequest;
 type ForkIntent = JobForkRequest;
 
 interface CoordinatorSessionOps {
-  start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision>;
-  resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision>;
-  forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision>;
+  start(providerName: string, input: ExecIntent, ctx: InvocationContext): Promise<LaunchDecision>;
+  resumeBySessionId(input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision>;
+  forkBySessionId(input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 interface CoordinatorJobOps {
@@ -59,7 +59,7 @@ interface CoordinatorWorkflowOps {
     providerName: string,
     ast: PipelineAST,
     input: WorkflowCommand,
-    ctx: CallerContext,
+    ctx: InvocationContext,
     workDir?: string,
   ): Promise<LaunchDecision>;
 }

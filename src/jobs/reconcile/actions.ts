@@ -3,7 +3,7 @@ import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
 import type { JobLaunch, JobRuntime, JobTerminal } from '../records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   ProviderRecoveryContract,
 } from '../../providers/contract.js';
@@ -33,8 +33,8 @@ type RecoveryActionContext = {
   runningRecoverable: RunningRecoverableJob[];
   log: (message: string) => void;
   runtime: Runtime;
-  createCallerContext: (projectRoot: string) => CallerContext;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   sessionLookup: Pick<SessionLookup, 'lookupSessionShard'>;
   emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
 };
@@ -47,7 +47,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
     runningRecoverable,
     log,
     runtime,
-    createCallerContext,
+    createInvocationContext,
     getRecoveryService,
     sessionLookup,
     emitSessionReleased,
@@ -90,7 +90,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       if (isAppServerRuntime(action.runtimeRecord)) {
         const runtimeRecord = action.runtimeRecord;
         recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () => {
-          const service = getRecoveryService(createCallerContext(action.launchRecord.projectRoot));
+          const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
           void service.interruptAppServerJob(action.launchRecord, runtimeRecord).catch((error: unknown) => {
             log(`Failed to interrupt recovered app-server job ${action.jobId}: ${formatError(error)}\n`);
           });

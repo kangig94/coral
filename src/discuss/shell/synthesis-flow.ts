@@ -1,5 +1,5 @@
 import { decideSynthesis } from '../state-machine.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from './runtime-build.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
@@ -9,7 +9,7 @@ import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext, rend
 export async function handleSynthesis(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SubflowResult> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot || snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'synthesize') {
@@ -37,7 +37,7 @@ export async function handleSynthesis(
       sessionId,
       prompt,
       instruction: 'You are writing the final synthesis for a discussion. Return only the synthesis text.',
-      callerCtx,
+      invocationCtx,
       timeoutMs: SPEECH_TIMEOUT_MS,
       purpose: PURPOSE_SYNTHESIS,
     });

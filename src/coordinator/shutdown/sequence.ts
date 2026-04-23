@@ -5,7 +5,7 @@ import { listLiveJobs } from '../../jobs/reconcile/recovery-effects.js';
 import { isAppServerRuntime } from '../../jobs/records.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { KbRuntime } from '../../kb/contracts.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -35,7 +35,7 @@ type FinalizeLiveAppServerJobsForHandoffContext = {
   progressStore: ProgressStore;
   namespace: string;
   pluginRoot: string;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   providerHostManager: ProviderHostManager;
   log: (message: string) => void;
 };
@@ -94,7 +94,7 @@ type RunShutdownSequenceContext = {
   terminateAllFn: () => void;
   progressStore: ProgressStore;
   pluginRoot: string;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;

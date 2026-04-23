@@ -1,17 +1,13 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CorpusSnapshot as KbCorpusSnapshot } from '../kb/corpus/snapshot.js';
+import type { ConsumerApplyError, ConsumerRegistrationKind } from '../../store/consumer-contract.js';
+import type { CorpusSnapshot } from './snapshot.js';
 
-export type CorpusSnapshot = KbCorpusSnapshot;
+export type { ConsumerApplyError, ConsumerRegistrationKind } from '../../store/consumer-contract.js';
+export type { CorpusSnapshot } from './snapshot.js';
+
 export type CorpusLaneHint = 'content' | 'metadata';
 export type CorpusInterest = CorpusLaneHint | 'both';
-export type ConsumerRegistrationKind = 'base' | 'equipment';
-
-export interface ConsumerApplyError {
-  readonly message: string;
-  readonly at: string;
-  readonly cause?: unknown;
-}
 
 export interface CorpusConsumerApplyContext {
   readonly snapshot: CorpusSnapshot;

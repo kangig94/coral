@@ -16,7 +16,7 @@ import type {
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProgress, JobStatus } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import type { KbToolResult } from '../kb/result.js';
 import type { ToolDomainResult } from '../transport/tool-result.js';
@@ -68,9 +68,9 @@ export type JobDetail = {
 };
 
 export interface SessionRequestPort {
-  start(providerName: string, input: SessionStartInput, ctx: CallerContext): Promise<LaunchDecision>;
-  resumeBySessionId(input: SessionResumeInput, ctx: CallerContext): Promise<LaunchDecision>;
-  forkBySessionId(input: SessionForkInput, ctx: CallerContext): Promise<LaunchDecision>;
+  start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
+  resumeBySessionId(input: SessionResumeInput, ctx: InvocationContext): Promise<LaunchDecision>;
+  forkBySessionId(input: SessionForkInput, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 export interface JobsRequestPort {
@@ -82,7 +82,7 @@ export interface JobsRequestPort {
 }
 
 export interface WorkflowRequestPort {
-  execute(request: WorkflowPortInput, ctx: CallerContext): Promise<WorkflowPortResult>;
+  execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
 }
 
 export interface KbRequestPort {
@@ -91,30 +91,30 @@ export interface KbRequestPort {
   readNote(slug: string): KbToolResult;
   readSource(slug: string): KbToolResult;
   readCommunity(slug: string): KbToolResult;
-  readMemo(slug: string, ctx: CallerContext): KbToolResult;
+  readMemo(slug: string, ctx: InvocationContext): KbToolResult;
   readPrinciple(slug: string): KbToolResult;
   listSources(): Promise<KbToolResult>;
-  listMemos(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
+  listMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
   listPrinciples(args: Record<string, unknown>): Promise<KbToolResult>;
-  createNote(args: Record<string, unknown>, ctx: CallerContext): Promise<KbToolResult>;
+  createNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   updateNote(args: Record<string, unknown>): Promise<KbToolResult>;
   deleteNote(slug: string): Promise<KbToolResult>;
   createSource(args: Record<string, unknown>): Promise<KbToolResult>;
   deleteSource(slug: string): Promise<KbToolResult>;
-  createMemo(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
-  deleteMemos(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
+  createMemo(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
+  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
   reindex(): Promise<KbToolResult>;
 }
 
 export interface DiscussRequestPort {
   seed(args: unknown): ToolDomainResult;
-  start(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
+  start(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   listSessions(): DiscussSummaryDto[];
   loadDetail(projectRoot: string, sessionId: string, view: DiscussView): DiscussDetailResponse | 'audit_requires_ended_session' | null;
-  watch(args: Record<string, unknown>, ctx: CallerContext): ToolDomainResult;
-  bid(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
-  speech(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
-  abort(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
+  watch(args: Record<string, unknown>, ctx: InvocationContext): ToolDomainResult;
+  bid(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
+  speech(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
+  abort(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
 }
 
 export interface EquipmentRequestPort {

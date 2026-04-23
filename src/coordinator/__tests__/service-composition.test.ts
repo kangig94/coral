@@ -34,7 +34,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../live/pro
 import { createRealRuntime } from '../../runtime/real.js';
 import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '../../testing/scripted-provider.js';
@@ -120,7 +120,7 @@ function restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' |
 }
 
 function createService(
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
@@ -465,7 +465,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
 
 async function occupyProviderSlots(
   service: ExecutionService,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   providerName: string,
 ): Promise<string[]> {
   const decisions = await Promise.all(
@@ -500,12 +500,12 @@ async function waitForTerminalEvent(
   throw new Error(`Expected terminal event for ${jobId}`);
 }
 
-function realizePluginRoot(ctx: CallerContext): string {
+function realizePluginRoot(ctx: InvocationContext): string {
   mkdirSync(ctx.pluginRoot, { recursive: true });
   return pluginRootNamespace(ctx.pluginRoot);
 }
 
-function createScopedContext(name: string): CallerContext {
+function createScopedContext(name: string): InvocationContext {
   const projectRoot = join(mockState.tmpHome, name);
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
@@ -514,7 +514,7 @@ function createScopedContext(name: string): CallerContext {
 }
 
 describe('ExecutionService', () => {
-  let ctx: CallerContext;
+  let ctx: InvocationContext;
 
   beforeEach(() => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
@@ -2536,7 +2536,7 @@ describe('ExecutionService', () => {
 
 // @flaky — timing-sensitive concurrent fork tests; passes in isolation, retry under parallel suite
 describe('ExecutionService adversarial', { retry: 2 }, () => {
-  let ctx: CallerContext;
+  let ctx: InvocationContext;
 
   beforeEach(() => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });

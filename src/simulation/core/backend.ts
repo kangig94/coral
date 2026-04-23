@@ -13,7 +13,7 @@ import type {
   ProviderSpec,
 } from '../../providers/contract.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
   providerProgressEvent,
   providerTerminalEvent,
@@ -372,7 +372,7 @@ export type SimulationBackend = {
   namespace: string;
   hooks: SimulationHookLog;
   handleRequest: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
-  createCallerContext: (projectRoot?: string, coralEnv?: Record<string, string>) => CallerContext;
+  createInvocationContext: (projectRoot?: string, coralEnv?: Record<string, string>) => InvocationContext;
   createService: (projectRoot?: string, coralEnv?: Record<string, string>) => ExecutionService;
   service: ExecutionService;
   advance: (ms: number) => Promise<void>;
@@ -427,7 +427,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     recoverPersistedDiscussCalls: 0,
   };
 
-  const createCallerContext = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): CallerContext => ({
+  const createInvocationContext = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): InvocationContext => ({
     projectRoot: root,
     pluginRoot,
     coralEnv: { ...coralEnv },
@@ -523,7 +523,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,
-      createCallerContext,
+      createInvocationContext,
       recoveryCoordinator,
       assertStartupStillActive,
       cleanupStaleJobs,
@@ -537,7 +537,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         progressStore,
         providerRegistry,
         getRecoveryService,
-        createCallerContext,
+        createInvocationContext,
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
@@ -552,7 +552,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
-        createCallerContext,
+        createInvocationContext,
         assertStartupStillActive,
       });
       assertStartupStillActive();
@@ -561,7 +561,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         db: storeDb,
         progressStore,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
-        createCallerContext,
+        createInvocationContext,
       });
       assertStartupStillActive();
 
@@ -577,7 +577,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   };
 
   const createService = (root = projectRoot, coralEnv = { ...runtime.env.coralSnapshot() }): ExecutionService =>
-    core.getExecutionService(createCallerContext(root, coralEnv)) as ExecutionService;
+    core.getExecutionService(createInvocationContext(root, coralEnv)) as ExecutionService;
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -604,7 +604,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     namespace,
     hooks,
     handleRequest,
-    createCallerContext,
+    createInvocationContext,
     createService,
     service: createService(projectRoot),
     advance: async (ms: number) => {

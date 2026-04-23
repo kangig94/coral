@@ -1,4 +1,4 @@
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
@@ -30,7 +30,7 @@ export type WaitForAtomsOptions = {
 export type WaitStaleRecoveryHandler = (
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
@@ -213,7 +213,7 @@ export function handleWaitEvent(
 export async function awaitWaitCycle(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: WaitForAtomsOptions,
   buildPartialStepDetailsForCycle: () => StepDetail[],
 ): Promise<'stream-ended' | 'stale-recovered'> {
@@ -248,7 +248,7 @@ export async function awaitStepCompletion(
   atoms: LaunchedAtom[],
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: WaitForAtomsOptions,
 ): Promise<void> {
   const completedStepDetails = options.completedStepDetails ?? [];
@@ -288,7 +288,7 @@ export async function awaitStepCompletion(
 export async function waitForAtoms(
   atoms: LaunchedAtom[],
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: WaitForAtomsOptions,
 ): Promise<Map<string, string>> {
   const state = createAwaitStepState(atoms, options.initialState);

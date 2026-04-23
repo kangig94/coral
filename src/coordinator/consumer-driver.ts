@@ -1,24 +1,22 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type {
-  ConsumerApplyError,
-  ConsumerRegistrationKind,
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
-  CorpusSnapshot,
-} from '../store/corpus-consumer.js';
+  KbCorpusSnapshot,
+} from '../kb/contracts.js';
+import type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../infra/backend-log.js';
 import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
 
 export type {
-  ConsumerApplyError,
-  ConsumerRegistrationKind,
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
-} from '../store/corpus-consumer.js';
+} from '../kb/contracts.js';
+export type { ConsumerApplyError, ConsumerRegistrationKind } from '../store/consumer-contract.js';
 
 export class FreshnessTimeout extends Error {
   constructor(consumerId: string, target: number, timeoutMs: number) {
@@ -95,7 +93,7 @@ interface ConsumerState {
   readonly registrationKind: ConsumerRegistrationKind;
   inFlight: Promise<void> | null;
   pendingTarget: number | null;
-  pendingCorpusSnapshot: CorpusSnapshot | null;
+  pendingCorpusSnapshot: KbCorpusSnapshot | null;
   waiters: Set<Waiter>;
   stopped: boolean;
   stopPromise: Promise<void> | null;
@@ -376,8 +374,8 @@ export class ConsumerDriver {
   }
 
   notify(authority: 'journal', version: number): void;
-  notify(authority: 'corpus', snapshot: CorpusSnapshot, laneHint?: CorpusLaneHint): void;
-  notify(authority: Authority, versionOrSnapshot: number | CorpusSnapshot, laneHint?: CorpusLaneHint): void {
+  notify(authority: 'corpus', snapshot: KbCorpusSnapshot, laneHint?: CorpusLaneHint): void;
+  notify(authority: Authority, versionOrSnapshot: number | KbCorpusSnapshot, laneHint?: CorpusLaneHint): void {
     if (authority === 'journal') {
       for (const state of this.consumers.values()) {
         if (state.reg.authority !== 'journal') {
@@ -392,7 +390,7 @@ export class ConsumerDriver {
       throw documentedCoralSetupError('consumer_lane_invalid', { id: 'notify(corpus)' });
     }
 
-    const snapshot = versionOrSnapshot as CorpusSnapshot;
+    const snapshot = versionOrSnapshot as KbCorpusSnapshot;
     for (const state of this.consumers.values()) {
       if (state.reg.authority !== 'corpus') {
         continue;
@@ -404,7 +402,7 @@ export class ConsumerDriver {
     }
   }
 
-  notifyCorpus(snapshot: CorpusSnapshot, laneHint?: CorpusLaneHint): void {
+  notifyCorpus(snapshot: KbCorpusSnapshot, laneHint?: CorpusLaneHint): void {
     this.notify('corpus', snapshot, laneHint);
   }
 
@@ -619,7 +617,7 @@ export class ConsumerDriver {
     })();
   }
 
-  private scheduleCorpusApply(state: ConsumerState, snapshot: CorpusSnapshot): void {
+  private scheduleCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot): void {
     if (state.stopped || state.reg.authority !== 'corpus') {
       return;
     }
@@ -686,7 +684,7 @@ export class ConsumerDriver {
     }
   }
 
-  private async runCorpusApply(state: ConsumerState, snapshot: CorpusSnapshot): Promise<boolean> {
+  private async runCorpusApply(state: ConsumerState, snapshot: KbCorpusSnapshot): Promise<boolean> {
     try {
       if (state.reg.authority !== 'corpus') {
         return true;
@@ -727,7 +725,7 @@ export class ConsumerDriver {
     return row?.cursor ?? 0;
   }
 
-  private readCorpusCursor(consumerId: string): CorpusSnapshot {
+  private readCorpusCursor(consumerId: string): KbCorpusSnapshot {
     return normalizeCorpusCursor(this.readCorpusCursorStmt.get(consumerId));
   }
 
@@ -736,7 +734,7 @@ export class ConsumerDriver {
     this.advanceJournalCursorStmt.run(newCursor, reg.id, newCursor);
   }
 
-  private advanceCorpusCursor(reg: CorpusConsumerRegistration, snapshot: CorpusSnapshot): void {
+  private advanceCorpusCursor(reg: CorpusConsumerRegistration, snapshot: KbCorpusSnapshot): void {
     this.ensureCursorRow(reg);
 
     if (reg.corpusInterest === 'content') {

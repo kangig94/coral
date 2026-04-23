@@ -96,7 +96,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     progressStore: world.progressStore,
   });
 
-  const readOnlyCallerContext = {
+  const readOnlyInvocationContext = {
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
@@ -135,8 +135,8 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
       waitStream: (request) =>
         services
           .getExecutionService({
-            ...readOnlyCallerContext,
-            projectRoot: request.projectRoot ?? readOnlyCallerContext.projectRoot,
+            ...readOnlyInvocationContext,
+            projectRoot: request.projectRoot ?? readOnlyInvocationContext.projectRoot,
           })
           .waitStream(request),
       list: (filters) => {
@@ -195,7 +195,7 @@ export function createBackendCore(options: BackendCoreOptions): BackendCoreResul
     kb: {
       readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
       diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
-      readNote: (slug) => withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyCallerContext, runtime, kbSubsystem)),
+      readNote: (slug) => withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
       readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
       readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
       readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),

@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProgressStore } from '../../jobs/job-store.js';
 import { SimulationRuntime } from '../../simulation/core/backend.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import { applyMigrations } from '../../store/migrations.js';
@@ -143,13 +143,13 @@ function createHarness(options: {
     cleanupWorkflowSessions: vi.fn(),
   };
 
-  const createCallerContext = (projectRoot: string): CallerContext => ({
+  const createInvocationContext = (projectRoot: string): InvocationContext => ({
     projectRoot,
     pluginRoot: '/tmp/coral-workflow-plugin',
     coralEnv: {},
   });
 
-  return { db, plan, progressStore, executionSvc, createCallerContext, waitRequests };
+  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };
 }
 
 describe('workflow recovery branch rules (AC4)', () => {
@@ -160,7 +160,7 @@ describe('workflow recovery branch rules (AC4)', () => {
         db: harness.db,
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
-        createCallerContext: harness.createCallerContext,
+        createInvocationContext: harness.createInvocationContext,
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -184,7 +184,7 @@ describe('workflow recovery branch rules (AC4)', () => {
         db: harness.db,
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
-        createCallerContext: harness.createCallerContext,
+        createInvocationContext: harness.createInvocationContext,
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -208,7 +208,7 @@ describe('workflow recovery branch rules (AC4)', () => {
         db: harness.db,
         progressStore: harness.progressStore,
         getExecutionService: () => harness.executionSvc,
-        createCallerContext: harness.createCallerContext,
+        createInvocationContext: harness.createInvocationContext,
       });
 
       expect(resumed).toEqual(['workflow-1']);
@@ -220,7 +220,7 @@ describe('workflow recovery branch rules (AC4)', () => {
           jobId: 'atom-1',
           workflowSlotId: harness.plan.slots[0].slotId,
         }),
-        harness.createCallerContext(PROJECT_ROOT),
+        harness.createInvocationContext(PROJECT_ROOT),
       );
       expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith('atom-1', expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);

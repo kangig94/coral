@@ -1,4 +1,4 @@
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { noopAppendEvents } from '../../store/append.js';
 import type { ProjectRequestPort } from '../../coordinator/contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -10,7 +10,7 @@ type CreateExecutionServicesDeps = {
   runtime: Runtime;
   bundleHash: string;
   backendNamespace: string;
-  createExecutionService: (ctx: CallerContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
+  createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
 export function listInstantiatedExecutionServices(
@@ -26,13 +26,13 @@ export function createExecutionServices({
   backendNamespace,
   createExecutionService,
 }: CreateExecutionServicesDeps): {
-  getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
 } {
   const services = new Map<string, ProjectRequestPort>();
 
-  function getExecutionService(ctx: CallerContext): ProjectRequestPort {
+  function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
     const existing = services.get(key);
     if (existing) return existing;
@@ -52,7 +52,7 @@ export function createExecutionServices({
     return created;
   }
 
-  function getRecoveryService(ctx: CallerContext): RecoveryCapableService {
+  function getRecoveryService(ctx: InvocationContext): RecoveryCapableService {
     return getExecutionService(ctx) as unknown as RecoveryCapableService;
   }
 

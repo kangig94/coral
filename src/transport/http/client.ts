@@ -4,7 +4,7 @@ import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-communication.js';
 import { BackendToolHttpError } from './client-errors.js';
 import type { AbortResult } from '../../jobs/abort-result.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   DiscussDetailResponse,
   DiscussSummaryDto,
@@ -121,7 +121,7 @@ export type KbSourceDeleteResponse = {
 };
 
 type SessionRequestOptions = {
-  context?: CallerContext;
+  context?: InvocationContext;
   provider?: string;
   model?: string;
   workDir?: string;
@@ -137,7 +137,7 @@ type CreateSessionOptions = SessionRequestOptions & {
 };
 
 type WaitJobsOptions = {
-  context?: CallerContext;
+  context?: InvocationContext;
   timeoutSeconds?: number;
   cursor?: WaitCursor;
 };
@@ -154,17 +154,17 @@ type WorkflowOptions = {
 export { isBackendHealth };
 export type { BackendHealth };
 export { BackendToolHttpError } from './client-errors.js';
-export type { CallerContext } from '../../transport/request-context.js';
+export type { InvocationContext } from '../../runtime/invocation-context.js';
 
 export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;
-  private readonly defaultContext?: CallerContext;
+  private readonly defaultContext?: InvocationContext;
   private readonly defaultPluginRoot?: string;
 
   constructor(
     options: {
       ensureBackend?: (pluginRoot?: string) => Promise<BackendHandle>;
-      defaultContext?: CallerContext;
+      defaultContext?: InvocationContext;
     } = {},
   ) {
     this.defaultContext = options.defaultContext
@@ -264,11 +264,11 @@ export class BackendClient {
     }
   }
 
-  async abortJobs(jobIds: string[], context?: CallerContext): Promise<AbortResult> {
+  async abortJobs(jobIds: string[], context?: InvocationContext): Promise<AbortResult> {
     return this.postRoute('/jobs/abort', { jobs: jobIds }, this.resolveContext(context));
   }
 
-  async listJobs(options: ListJobsOptions = {}, context?: CallerContext): Promise<JobsListResponse> {
+  async listJobs(options: ListJobsOptions = {}, context?: InvocationContext): Promise<JobsListResponse> {
     const ctx = this.resolveContext(context, 'job list');
     return this.getRoute(
       this.buildRoutePath('/jobs', {
@@ -288,15 +288,15 @@ export class BackendClient {
   async workflow(expression: string, options: WorkflowOptions): Promise<WorkflowLaunchResponse>;
   async workflow(
     expression: string,
-    context: CallerContext,
+    context: InvocationContext,
     options: WorkflowOptions,
   ): Promise<WorkflowLaunchResponse>;
   async workflow(
     expression: string,
-    contextOrOptions: CallerContext | WorkflowOptions,
+    contextOrOptions: InvocationContext | WorkflowOptions,
     maybeOptions?: WorkflowOptions,
   ): Promise<WorkflowLaunchResponse> {
-    const callerContext = maybeOptions === undefined ? undefined : (contextOrOptions as CallerContext);
+    const invocationContext = maybeOptions === undefined ? undefined : (contextOrOptions as InvocationContext);
     const options = maybeOptions ?? (contextOrOptions as WorkflowOptions);
 
     return this.postRoute(
@@ -305,7 +305,7 @@ export class BackendClient {
         expression,
         ...options,
       },
-      this.resolveContext(callerContext),
+      this.resolveContext(invocationContext),
     );
   }
 
@@ -316,7 +316,7 @@ export class BackendClient {
       seed: number;
       demographics?: { origin_weights: Record<string, number>; outlier_ratio?: number };
     },
-    context?: CallerContext,
+    context?: InvocationContext,
   ): Promise<PersonaSeedOutput> {
     return this.postRoute('/discuss/persona-sets', args, context, { injectContext: false });
   }
@@ -333,17 +333,17 @@ export class BackendClient {
       }>;
       config?: { min_bid_delay_ms?: number };
     },
-    context?: CallerContext,
+    context?: InvocationContext,
   ): Promise<DiscussStartResponse> {
     return this.postRoute('/discuss/sessions', args, this.resolveContext(context, 'discuss session creation'));
   }
 
-  async discussWatch(session: string, context?: CallerContext): Promise<WatchState>;
-  async discussWatch(session: string, cursor?: number, context?: CallerContext): Promise<WatchState>;
+  async discussWatch(session: string, context?: InvocationContext): Promise<WatchState>;
+  async discussWatch(session: string, cursor?: number, context?: InvocationContext): Promise<WatchState>;
   async discussWatch(
     session: string,
-    cursorOrContext?: number | CallerContext,
-    maybeContext?: CallerContext,
+    cursorOrContext?: number | InvocationContext,
+    maybeContext?: InvocationContext,
   ): Promise<WatchState> {
     const cursor = typeof cursorOrContext === 'number' ? cursorOrContext : undefined;
     const context = typeof cursorOrContext === 'number' ? maybeContext : cursorOrContext;
@@ -364,7 +364,7 @@ export class BackendClient {
       score: number;
       thought: string;
     },
-    context?: CallerContext,
+    context?: InvocationContext,
   ): Promise<BidResult> {
     const { session, ...body } = args;
     return this.postRoute(
@@ -380,7 +380,7 @@ export class BackendClient {
       agent_name: string;
       content: string;
     },
-    context?: CallerContext,
+    context?: InvocationContext,
   ): Promise<SpeechResult> {
     const { session, ...body } = args;
     return this.postRoute(
@@ -390,7 +390,7 @@ export class BackendClient {
     );
   }
 
-  async discussAbort(session: string, context?: CallerContext): Promise<DiscussAbortResponse> {
+  async discussAbort(session: string, context?: InvocationContext): Promise<DiscussAbortResponse> {
     const ctx = this.resolveContext(context, 'discuss abort');
     return this.deleteRoute(
       this.buildRoutePath(`/discuss/sessions/${encodeURIComponent(session)}`, {
@@ -400,20 +400,20 @@ export class BackendClient {
     );
   }
 
-  async listDiscussSessions(context?: CallerContext): Promise<DiscussSessionsListResponse> {
+  async listDiscussSessions(context?: InvocationContext): Promise<DiscussSessionsListResponse> {
     return this.getRoute('/discuss/sessions', context);
   }
 
-  async getDiscussSession(id: string, context?: CallerContext): Promise<DiscussDetailResponse>;
+  async getDiscussSession(id: string, context?: InvocationContext): Promise<DiscussDetailResponse>;
   async getDiscussSession(
     id: string,
     view?: DiscussView,
-    context?: CallerContext,
+    context?: InvocationContext,
   ): Promise<DiscussDetailResponse>;
   async getDiscussSession(
     id: string,
-    viewOrContext?: DiscussView | CallerContext,
-    maybeContext?: CallerContext,
+    viewOrContext?: DiscussView | InvocationContext,
+    maybeContext?: InvocationContext,
   ): Promise<DiscussDetailResponse> {
     const view = typeof viewOrContext === 'string' ? viewOrContext : undefined;
     const context = typeof viewOrContext === 'string' ? maybeContext : viewOrContext;
@@ -427,7 +427,7 @@ export class BackendClient {
     );
   }
 
-  async kbSearch(args: KbSearchInput, context?: CallerContext): Promise<KbSearchResponse> {
+  async kbSearch(args: KbSearchInput, context?: InvocationContext): Promise<KbSearchResponse> {
     return this.getRoute(
       this.buildRoutePath('/kb/entries', {
         q: args.query,
@@ -439,7 +439,7 @@ export class BackendClient {
     );
   }
 
-  async kbPrinciples(args: KbPrinciplesInput, context?: CallerContext): Promise<KbPrinciplesResult> {
+  async kbPrinciples(args: KbPrinciplesInput, context?: InvocationContext): Promise<KbPrinciplesResult> {
     return this.getRoute(
       this.buildRoutePath('/kb/principles', {
         q: args.query,
@@ -450,7 +450,7 @@ export class BackendClient {
     );
   }
 
-  async kbRead(args: KbReadInput, context?: CallerContext): Promise<KbReadResult> {
+  async kbRead(args: KbReadInput, context?: InvocationContext): Promise<KbReadResult> {
     const selector = parseKbSelector(args.note);
     if (selector.kind !== null) {
       return this.kbReadByKind(selector.kind, selector.slug, context);
@@ -482,11 +482,11 @@ export class BackendClient {
     throw new Error(`KB entry not found: ${args.note}`);
   }
 
-  async kbPromote(args: KbPromoteInput, context?: CallerContext): Promise<KbPromoteResponse> {
+  async kbPromote(args: KbPromoteInput, context?: InvocationContext): Promise<KbPromoteResponse> {
     return this.postRoute('/kb/notes', args, this.resolveContext(context, 'kb note creation'));
   }
 
-  async kbUpdate(args: KbUpdateInput, context?: CallerContext): Promise<KbUpdateResponse> {
+  async kbUpdate(args: KbUpdateInput, context?: InvocationContext): Promise<KbUpdateResponse> {
     const { note, ...body } = args;
     return this.putRoute(
       `/kb/notes/${encodeURIComponent(note)}`,
@@ -495,27 +495,27 @@ export class BackendClient {
     );
   }
 
-  async kbDelete(args: KbDeleteInput, context?: CallerContext): Promise<KbDeleteResponse> {
+  async kbDelete(args: KbDeleteInput, context?: InvocationContext): Promise<KbDeleteResponse> {
     return this.deleteRoute(`/kb/notes/${encodeURIComponent(args.note)}`, context);
   }
 
-  async kbSourceImport(args: KbSourcePersistInput, context?: CallerContext): Promise<KbSourceImportResponse> {
+  async kbSourceImport(args: KbSourcePersistInput, context?: InvocationContext): Promise<KbSourceImportResponse> {
     return this.postRoute('/kb/sources', args, this.resolveContext(context, 'kb source import'));
   }
 
-  async kbSourceList(context?: CallerContext): Promise<KbSourceListResult> {
+  async kbSourceList(context?: InvocationContext): Promise<KbSourceListResult> {
     return this.getRoute('/kb/sources', context);
   }
 
-  async kbSourceDelete(args: KbSourceDeleteInput, context?: CallerContext): Promise<KbSourceDeleteResponse> {
+  async kbSourceDelete(args: KbSourceDeleteInput, context?: InvocationContext): Promise<KbSourceDeleteResponse> {
     return this.deleteRoute(`/kb/sources/${encodeURIComponent(args.slug)}`, context);
   }
 
-  async kbMemo(args: KbMemoInput, context?: CallerContext): Promise<KbMemoResponse> {
+  async kbMemo(args: KbMemoInput, context?: InvocationContext): Promise<KbMemoResponse> {
     return this.postRoute('/kb/memos', args, this.resolveContext(context, 'kb memo creation'));
   }
 
-  async kbMemoList(args: KbMemoListInput, context?: CallerContext): Promise<KbMemoListResult> {
+  async kbMemoList(args: KbMemoListInput, context?: InvocationContext): Promise<KbMemoListResult> {
     const ctx = this.resolveContext(context, 'kb memo list');
     return this.getRoute(
       this.buildRoutePath('/kb/memos', {
@@ -526,7 +526,7 @@ export class BackendClient {
     );
   }
 
-  async kbMemoDelete(args: KbMemoDeleteInput, context?: CallerContext): Promise<KbMemoDeleteResult> {
+  async kbMemoDelete(args: KbMemoDeleteInput, context?: InvocationContext): Promise<KbMemoDeleteResult> {
     const ctx = this.resolveContext(context, 'kb memo delete');
     return this.deleteRoute(
       this.buildRoutePath('/kb/memos', {
@@ -538,7 +538,7 @@ export class BackendClient {
     );
   }
 
-  async kbMemoPurge(args: KbMemoPurgeInput, context?: CallerContext): Promise<KbMemoPurgeResult> {
+  async kbMemoPurge(args: KbMemoPurgeInput, context?: InvocationContext): Promise<KbMemoPurgeResult> {
     const ctx = this.resolveContext(context, 'kb memo purge');
     return this.deleteRoute(
       this.buildRoutePath('/kb/memos', {
@@ -550,7 +550,7 @@ export class BackendClient {
     );
   }
 
-  async kbReindex(args: KbReindexInput = {}, context?: CallerContext): Promise<ReindexResult> {
+  async kbReindex(args: KbReindexInput = {}, context?: InvocationContext): Promise<ReindexResult> {
     void args;
     return this.postRoute('/kb/index', {}, this.resolveContext(context, 'kb reindex'));
   }
@@ -596,18 +596,18 @@ export class BackendClient {
     }
   }
 
-  private resolveContext(context?: CallerContext, operation = 'backend tool calls'): CallerContext {
+  private resolveContext(context?: InvocationContext, operation = 'backend tool calls'): InvocationContext {
     const resolvedContext = context ?? this.defaultContext;
     if (resolvedContext) return resolvedContext;
-    throw new Error(`CallerContext is required for ${operation}`);
+    throw new Error(`InvocationContext is required for ${operation}`);
   }
 
-  private resolveBackendHandle(context?: CallerContext): Promise<BackendHandle> {
+  private resolveBackendHandle(context?: InvocationContext): Promise<BackendHandle> {
     const pluginRoot = context?.pluginRoot ?? this.defaultPluginRoot;
     return this.ensureBackendHandle(pluginRoot);
   }
 
-  private buildRequestBody(args: Record<string, unknown>, ctx: CallerContext): Record<string, unknown> {
+  private buildRequestBody(args: Record<string, unknown>, ctx: InvocationContext): Record<string, unknown> {
     const body: Record<string, unknown> = {
       ...args,
       projectRoot: ctx.projectRoot,
@@ -645,7 +645,7 @@ export class BackendClient {
     return queryString.length > 0 ? `${path}?${queryString}` : path;
   }
 
-  private resolveMemoOwner(owner: string | undefined, ctx: CallerContext): string | undefined {
+  private resolveMemoOwner(owner: string | undefined, ctx: InvocationContext): string | undefined {
     if (owner !== undefined) {
       return owner;
     }
@@ -703,7 +703,7 @@ export class BackendClient {
     }
   }
 
-  private async getRoute<T>(path: string, context?: CallerContext): Promise<T> {
+  private async getRoute<T>(path: string, context?: InvocationContext): Promise<T> {
     const handle = await this.resolveBackendHandle(context);
     return this.requestRoute('GET', path, handle);
   }
@@ -711,7 +711,7 @@ export class BackendClient {
   private async putRoute<T>(
     path: string,
     args: Record<string, unknown>,
-    context?: CallerContext,
+    context?: InvocationContext,
     options: { injectContext?: boolean } = {},
   ): Promise<T> {
     const handle = await this.resolveBackendHandle(context);
@@ -720,7 +720,7 @@ export class BackendClient {
     return this.requestRoute('PUT', path, handle, body);
   }
 
-  private async deleteRoute<T>(path: string, context?: CallerContext): Promise<T> {
+  private async deleteRoute<T>(path: string, context?: InvocationContext): Promise<T> {
     const handle = await this.resolveBackendHandle(context);
     return this.requestRoute('DELETE', path, handle);
   }
@@ -728,7 +728,7 @@ export class BackendClient {
   private async postRoute<T>(
     path: string,
     args: Record<string, unknown>,
-    context?: CallerContext,
+    context?: InvocationContext,
     options: { injectContext?: boolean } = {},
   ): Promise<T> {
     const handle = await this.resolveBackendHandle(context);
@@ -737,7 +737,7 @@ export class BackendClient {
     return this.requestRoute('POST', path, handle, body);
   }
 
-  private kbReadByKind(kind: KbReadKind, slug: string, context?: CallerContext): Promise<KbReadResult> {
+  private kbReadByKind(kind: KbReadKind, slug: string, context?: InvocationContext): Promise<KbReadResult> {
     switch (kind) {
       case 'note':
         return this.kbReadNote(slug, context);
@@ -752,11 +752,11 @@ export class BackendClient {
     }
   }
 
-  private kbReadNote(slug: string, context?: CallerContext): Promise<KbReadResult> {
+  private kbReadNote(slug: string, context?: InvocationContext): Promise<KbReadResult> {
     return this.getRoute(`/kb/notes/${encodeURIComponent(slug)}`, context);
   }
 
-  private kbReadMemo(slug: string, context: CallerContext): Promise<KbReadResult> {
+  private kbReadMemo(slug: string, context: InvocationContext): Promise<KbReadResult> {
     return this.getRoute(
       this.buildRoutePath(`/kb/memos/${encodeURIComponent(slug)}`, {
         projectRoot: context.projectRoot,
@@ -765,15 +765,15 @@ export class BackendClient {
     );
   }
 
-  private kbReadSource(slug: string, context?: CallerContext): Promise<KbReadResult> {
+  private kbReadSource(slug: string, context?: InvocationContext): Promise<KbReadResult> {
     return this.getRoute(`/kb/sources/${encodeURIComponent(slug)}`, context);
   }
 
-  private kbReadCommunity(slug: string, context?: CallerContext): Promise<KbReadResult> {
+  private kbReadCommunity(slug: string, context?: InvocationContext): Promise<KbReadResult> {
     return this.getRoute(`/kb/communities/${encodeURIComponent(slug)}`, context);
   }
 
-  private kbReadPrinciple(slug: string, context?: CallerContext): Promise<KbReadResult> {
+  private kbReadPrinciple(slug: string, context?: InvocationContext): Promise<KbReadResult> {
     return this.getRoute(`/kb/principles/${encodeURIComponent(slug)}`, context);
   }
 

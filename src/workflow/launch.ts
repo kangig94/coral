@@ -1,4 +1,4 @@
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { WorkflowPlan, PlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,
@@ -19,7 +19,7 @@ type LaunchContext = {
   context?: string;
   workDir?: string;
   executionSvc: WorkflowExecutionPort;
-  ctx: CallerContext;
+  ctx: InvocationContext;
   signal?: AbortSignal;
   completedStepDetails: StepDetail[];
   workflowJobId?: string;
@@ -142,7 +142,7 @@ export async function launchStepAtoms(
   stepIndex: number,
   stepPrompt: string,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     context?: string;
     workDir?: string;

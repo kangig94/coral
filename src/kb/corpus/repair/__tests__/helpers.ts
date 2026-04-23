@@ -22,7 +22,7 @@ import {
   createCorpusScanView,
   type CorpusMarkdownKind,
   type DetectedIncident,
-} from '../types.js';
+} from '../corpus-scan.js';
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures', import.meta.url));
 const DETECTORS = [

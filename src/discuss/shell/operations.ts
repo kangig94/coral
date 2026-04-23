@@ -9,7 +9,7 @@ import {
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { buildWatchEvents } from '../projections.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { buildAgentExecutionConfig, isManualParticipant } from './runtime-build.js';
 import * as discussLoop from './loop.js';
 import {
@@ -109,7 +109,7 @@ export async function startDiscussSession(
   topic: string,
   agents: AgentConfig[],
   config: DiscussConfig,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<LiveDiscussSession> {
   const input: DiscussCreateInput = {
     topic,
@@ -138,8 +138,8 @@ export async function startDiscussSession(
   const session = attachSession(ctx, snapshot);
   afterCommit(ctx, sessionId, snapshot, created);
 
-  await collectBids(ctx, sessionId, callerCtx);
-  discussLoop.resumeLoop(ctx, sessionId, callerCtx);
+  await collectBids(ctx, sessionId, invocationCtx);
+  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
   return session;
 }
 
@@ -149,7 +149,7 @@ export async function submitManualBid(
   agentName: string,
   score: number,
   thought: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<BidResult> {
   const session = requireLiveSession(ctx, sessionId);
   const snapshot = session.snapshot;
@@ -177,7 +177,7 @@ export async function submitManualBid(
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
-  discussLoop.resumeLoop(ctx, sessionId, callerCtx);
+  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
   return {
     action: 'listen',
     speaker: null,
@@ -190,7 +190,7 @@ export async function submitManualSpeech(
   sessionId: string,
   agentName: string,
   content: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SpeechResult> {
   const session = requireLiveSession(ctx, sessionId);
   const snapshot = session.snapshot;
@@ -224,7 +224,7 @@ export async function submitManualSpeech(
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
-  discussLoop.resumeLoop(ctx, sessionId, callerCtx);
+  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
   return { action: 'speech_recorded' };
 }
 
@@ -327,13 +327,13 @@ export function getWatchState(ctx: DiscussContext, sessionId: string, cursor?: n
 export type RecoveredDiscussResume = {
   ctx: DiscussContext;
   sessionId: string;
-  callerCtx: CallerContext;
+  invocationCtx: InvocationContext;
 };
 
 export async function recoverPersistedSessionsFromStore(
   store: DiscussSessionStore,
   resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
-  resolveCallerContext: (snapshot: PersistedDiscussSnapshot) => CallerContext,
+  resolveInvocationContext: (snapshot: PersistedDiscussSnapshot) => InvocationContext,
 ): Promise<RecoveredDiscussResume[]> {
   const recovered: RecoveredDiscussResume[] = [];
 
@@ -368,7 +368,7 @@ export async function recoverPersistedSessionsFromStore(
       recovered.push({
         ctx,
         sessionId: snapshot.sessionId,
-        callerCtx: resolveCallerContext(snapshot),
+        invocationCtx: resolveInvocationContext(snapshot),
       });
     }
   }

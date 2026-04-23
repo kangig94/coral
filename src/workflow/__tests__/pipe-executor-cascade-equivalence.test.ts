@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitRequest, WaitStreamEvent } from '../../jobs/wait.js';
 import { executePipeline } from '../executor.js';
@@ -13,7 +13,7 @@ import type { WorkflowExecutionPort } from '../command.js';
 
 const GOLDEN_PATH = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/pipe-executor-cascade.golden.json');
 
-const ctx: CallerContext = {
+const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},

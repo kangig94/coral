@@ -1,7 +1,7 @@
 import { formatError } from '../../infra/error-format.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
@@ -45,8 +45,8 @@ type RecoveryCoordinatorContext = {
   runtimeState: LaunchFenceState;
   eventBus: JobEventBus;
   providerRegistry: ProviderCatalog;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  createCallerContext: (projectRoot: string) => CallerContext;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
 };
 
@@ -56,8 +56,8 @@ type StartupRecoveryContext = {
   runtime: Runtime;
   progressStore: ProgressStore;
   providerRegistry: ProviderCatalog;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  createCallerContext: (projectRoot: string) => CallerContext;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
   assertStartupStillActive: () => void;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;
@@ -77,7 +77,7 @@ export function createRecoveryCoordinator({
   eventBus,
   providerRegistry,
   getRecoveryService,
-  createCallerContext,
+  createInvocationContext,
   log,
 }: RecoveryCoordinatorContext): RecoveryCoordinator {
   const state: RecoveryCoordinatorState = {
@@ -151,7 +151,7 @@ export function createRecoveryCoordinator({
     for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
       let cleanup: (() => void) | null = null;
       try {
-        const service = getRecoveryService(createCallerContext(launchRecord.projectRoot));
+        const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         const recovery = providerRegistry.get(launchRecord.provider)?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
           assertStartupStillActive();
@@ -259,7 +259,7 @@ export function createRecoveryCoordinator({
 
     for (const { jobId, launchRecord } of queuedJobs) {
       try {
-        const service = getRecoveryService(createCallerContext(launchRecord.projectRoot));
+        const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         assertStartupStillActive();
         service.recoverQueuedJob(launchRecord);
         state.recoveryRegistry?.remove(jobId);
@@ -311,7 +311,7 @@ export function createRecoveryCoordinator({
             runningRecoverable,
             log,
             runtime,
-            createCallerContext,
+            createInvocationContext,
             getRecoveryService,
             sessionLookup: ctx.sessionLookup,
             emitSessionReleased: (payload) => {

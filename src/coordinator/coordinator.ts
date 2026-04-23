@@ -234,7 +234,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,
-      createCallerContext,
+      createInvocationContext,
       recoveryCoordinator,
       assertStartupStillActive,
       cleanupStaleJobs,
@@ -267,7 +267,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         progressStore,
         providerRegistry,
         getRecoveryService,
-        createCallerContext,
+        createInvocationContext,
         assertStartupStillActive,
         log: identity.log,
         cleanupStaleJobs,
@@ -279,7 +279,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
-        createCallerContext,
+        createInvocationContext,
         assertStartupStillActive,
       });
       assertStartupStillActive();
@@ -288,7 +288,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         db,
         progressStore,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
-        createCallerContext,
+        createInvocationContext,
       });
       assertStartupStillActive();
 

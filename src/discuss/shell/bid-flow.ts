@@ -1,6 +1,6 @@
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { decideBid, decideEnd, decideExpel } from '../state-machine.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { buildBidPrompt, buildFirstTurnInstruction } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
@@ -138,7 +138,7 @@ async function collectBidOutcome(
   sessionId: string,
   snapshot: PersistedDiscussSnapshot,
   agentName: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<BidOutcome> {
   const run = currentAgentRun(snapshot, agentName, DEFAULT_DISCUSS_PROVIDER, undefined);
   const priorSpeech = lastSpeech(snapshot.state.transcript);
@@ -180,7 +180,7 @@ async function collectBidOutcome(
       prompt,
       instruction,
       cwd: ctx.projectRoot,
-      callerCtx,
+      invocationCtx,
       purpose: PURPOSE_BID,
       timeoutMs: BID_ATTEMPT_TIMEOUT_MS,
     });
@@ -248,7 +248,7 @@ async function collectBidOutcome(
 export async function collectBids(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SubflowResult> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot || snapshot.state.status !== 'bidding') {
@@ -267,7 +267,7 @@ export async function collectBids(
   }
 
   const outcomes = await Promise.all(
-    bidders.map((agentName) => collectBidOutcome(ctx, sessionId, snapshot, agentName, callerCtx)),
+    bidders.map((agentName) => collectBidOutcome(ctx, sessionId, snapshot, agentName, invocationCtx)),
   );
 
   const committed = await commitDecision(ctx, sessionId, (current) => ({

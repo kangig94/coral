@@ -1,4 +1,4 @@
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import {
   createWorkflowExecutionError,
@@ -33,7 +33,7 @@ function staleFailureMetadata(
 export async function recoverStaleAtom(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: RecoverStaleOptions,
 ): Promise<boolean> {
   const now = Date.now();

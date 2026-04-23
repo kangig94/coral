@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'node:http';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
@@ -44,7 +44,7 @@ export {
   jobPhaseSchema,
 };
 export {
-  buildCallerContextFromQuery,
+  buildInvocationContextFromQuery,
   queryParamsToObject,
 } from './query-coerce.js';
 export {
@@ -166,7 +166,7 @@ export interface HttpHandlerPorts extends RpcPorts {
 }
 
 export type {
-  CallerContext,
+  InvocationContext,
   DiscussDetailResponse,
   DiscussSummaryDto,
   DiscussView,

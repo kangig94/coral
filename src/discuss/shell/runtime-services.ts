@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { formatError } from '../../infra/error-format.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './context.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
@@ -30,7 +30,7 @@ type CreateDiscussRuntimeDeps = {
     };
   };
   runtime: Runtime;
-  getExecutionService: (ctx: CallerContext) => {
+  getExecutionService: (ctx: InvocationContext) => {
     start(...args: unknown[]): Promise<DiscussLaunchDecision>;
     resumeBySessionId(...args: unknown[]): Promise<DiscussLaunchDecision>;
     waitStreamOnce(...args: unknown[]): Promise<DiscussWaitResult>;
@@ -43,7 +43,7 @@ export function createDiscussRuntime({
   getExecutionService,
 }: CreateDiscussRuntimeDeps): {
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readHelpersDeps: DiscussReadHelpersDeps;
   hooks: {
     onShutdown(mode: 'handoff' | 'hard'): Promise<void>;
@@ -78,7 +78,7 @@ export function createDiscussRuntime({
     return getDiscussStoreForSource(world.resolveProjectSource(projectRoot));
   }
 
-  function getDiscussContext(ctx: CallerContext): DiscussContext {
+  function getDiscussContext(ctx: InvocationContext): DiscussContext {
     const store = getDiscussStore(ctx.projectRoot);
     const executionService = getExecutionService(ctx);
     const jobStatusReader = {
@@ -138,7 +138,7 @@ export function createDiscussRuntime({
     onRecoveryComplete: async (resumes: RecoveredDiscussResume[]) => {
       for (const recovered of resumes) {
         try {
-          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.callerCtx);
+          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.invocationCtx);
         } catch (error: unknown) {
           backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${formatError(error)}`);
         }

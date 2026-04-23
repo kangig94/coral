@@ -1,6 +1,6 @@
 import { errorMessage } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { DiscussContext } from './shell/context.js';
 import type { DiscussSessionStore } from './shell/session-store.js';
 import type { RecoveredDiscussResume } from './shell/operations.js';
@@ -9,8 +9,8 @@ import * as discussOperations from './shell/operations.js';
 export type DiscussStartupDeps = {
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
-  readonly createCallerContext: (projectRoot: string) => CallerContext;
+  readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
+  readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly assertStartupStillActive: () => void;
 };
 
@@ -24,8 +24,8 @@ export const runStartup: DiscussRunStartup = async (deps) => {
       recoveredDiscussResumes.push(
         ...(await discussOperations.recoverPersistedSessionsFromStore(
           deps.getDiscussStoreForSource(source),
-          (snapshot) => deps.getDiscussContext(deps.createCallerContext(snapshot.projectRoot)),
-          (snapshot) => deps.createCallerContext(snapshot.projectRoot),
+          (snapshot) => deps.getDiscussContext(deps.createInvocationContext(snapshot.projectRoot)),
+          (snapshot) => deps.createInvocationContext(snapshot.projectRoot),
         )),
       );
     } catch (error: unknown) {

@@ -1,5 +1,5 @@
 import { decideSpeech, decideSpeechTimeout } from '../state-machine.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { buildSpeechPrompt } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
@@ -19,7 +19,7 @@ export async function collectSpeech(
   ctx: DiscussContext,
   sessionId: string,
   winnerName: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SubflowResult> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot || snapshot.state.status !== 'speaking' || snapshot.state.current_speaker !== winnerName) {
@@ -41,7 +41,7 @@ export async function collectSpeech(
     prompt,
     instruction: CONTINUE_TURN_INSTRUCTION,
     cwd: ctx.projectRoot,
-    callerCtx,
+    invocationCtx,
     purpose: PURPOSE_SPEECH,
     timeoutMs: SPEECH_TIMEOUT_MS,
   });

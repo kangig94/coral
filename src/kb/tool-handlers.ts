@@ -36,7 +36,7 @@ import {
   kbValidationError,
   type KbToolResult,
 } from './result.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/owner-id.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
@@ -171,7 +171,7 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
 
 export function handleKbNoteRead(
   slug: string,
-  _ctx: CallerContext,
+  _ctx: InvocationContext,
   runtime: KbToolRuntime,
   kbSubsystem?: KnowledgeBaseRuntime,
 ): KbToolResult {
@@ -278,7 +278,7 @@ export function handleKbCommunityRead(
   }
 }
 
-export function handleKbMemoRead(slug: string, ctx: CallerContext, runtime: KbToolRuntime): KbToolResult {
+export function handleKbMemoRead(slug: string, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'memo');
   if (!normalized.ok) {
     return normalized.result;
@@ -339,7 +339,7 @@ export function handleKbPrincipleRead(
 
 export function handleKbRead(
   args: KbArgs,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   runtime: KbToolRuntime,
   kbSubsystem?: KnowledgeBaseRuntime,
 ): KbToolResult {
@@ -368,7 +368,7 @@ export function handleKbRead(
 export async function handleKbPromote(
   args: KbArgs,
   kbSubsystem: KnowledgeBaseRuntime,
-  ctx: CallerContext,
+  ctx: InvocationContext,
 ): Promise<KbToolResult> {
   const parsed = kbPromoteSchema.safeParse(args);
   if (!parsed.success) {
@@ -524,7 +524,7 @@ export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBas
   });
 }
 
-export function handleKbMemo(args: KbArgs, ctx: CallerContext): KbToolResult {
+export function handleKbMemo(args: KbArgs, ctx: InvocationContext): KbToolResult {
   const parsed = kbMemoSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -544,7 +544,7 @@ export function handleKbMemo(args: KbArgs, ctx: CallerContext): KbToolResult {
   );
 }
 
-export function handleKbMemoList(args: KbArgs, ctx: CallerContext): KbToolResult {
+export function handleKbMemoList(args: KbArgs, ctx: InvocationContext): KbToolResult {
   const parsed = kbMemoListSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -558,7 +558,7 @@ export function handleKbMemoList(args: KbArgs, ctx: CallerContext): KbToolResult
   return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
 }
 
-export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): KbToolResult {
+export function handleKbMemoDelete(args: KbArgs, ctx: InvocationContext): KbToolResult {
   const parsed = kbMemoDeleteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -567,7 +567,7 @@ export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): KbToolResu
   return handleKbMemoDeleteConsolidated(parsed.data, ctx);
 }
 
-export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): KbToolResult {
+export function handleKbMemoPurge(args: KbArgs, ctx: InvocationContext): KbToolResult {
   const parsed = kbMemoPurgeSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -578,7 +578,7 @@ export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): KbToolResul
 
 export function handleKbMemoDeleteConsolidated(
   args: { pattern?: string; owner?: string; all?: boolean },
-  ctx: CallerContext,
+  ctx: InvocationContext,
 ): KbToolResult {
   const parsed = kbMemoDeleteConsolidatedSchema.safeParse(args);
   if (!parsed.success) {

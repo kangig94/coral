@@ -22,6 +22,7 @@ const DOMAIN_ROOTS = [
   'src/kb/',
   'src/simulation/',
   'src/providers/',
+  'src/expansion/',
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
@@ -43,6 +44,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
   'src/kb/read-contract.ts',
+  'src/expansion/equipment-contract.ts',
   'src/providers/request-policy.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
@@ -81,6 +83,7 @@ const DOMAIN_ROOT_DIRS = [
   'src/kb',
   'src/simulation',
   'src/providers',
+  'src/expansion',
 ] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
@@ -120,7 +123,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
         return false;
       }
 
-      return startsWithAny(target, DOMAIN_ROOTS) || target.startsWith('src/coordinator/') || target.startsWith('src/shared/');
+      return startsWithAny(target, DOMAIN_ROOTS) || target.startsWith('src/coordinator/');
     });
 
     expect(violations).toEqual([]);

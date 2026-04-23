@@ -3,7 +3,7 @@ declare const __PLUGIN_ROOT__: string;
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
@@ -147,7 +147,7 @@ export function resolveBackendDefaults(
   }
 
   const createExecutionService: NonNullable<BackendCoreOptions['createExecutionService']> =
-    options.createExecutionService ?? ((ctx: CallerContext, deps) => new DefaultExecutionService(ctx, deps));
+    options.createExecutionService ?? ((ctx: InvocationContext, deps) => new DefaultExecutionService(ctx, deps));
   const fetchFn: FetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
   const verifyBackendOwnershipFn =
     options.verifyBackendOwnershipFn ?? createDefaultBackendOwnershipVerifier(runtime, fetchFn);

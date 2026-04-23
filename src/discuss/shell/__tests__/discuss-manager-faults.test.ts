@@ -36,7 +36,7 @@ async function recoverSessions(harness: DiscussHarness) {
 
 function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
-    discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
+    discussLoop.resumeLoop(session.ctx, session.sessionId, session.invocationCtx);
   }
 }
 

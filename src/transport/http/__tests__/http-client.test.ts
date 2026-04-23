@@ -4,7 +4,7 @@ import type { BackendHandle } from '../backend-handle.js';
 import {
   BackendClient,
   BackendToolHttpError,
-  type CallerContext,
+  type InvocationContext,
   type SessionCreateResponse,
   type WorkflowLaunchResponse,
 } from '../client.js';
@@ -16,7 +16,7 @@ const backendHandle: BackendHandle = {
   instanceId: 'backend-instance',
 };
 
-const defaultContext: CallerContext = {
+const defaultContext: InvocationContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
   coralEnv: {
@@ -897,12 +897,12 @@ describe('transport/http http-client', () => {
       name: 'kbRead bare',
       invoke: (client: BackendClient) => client.kbRead({ note: 'bridge-removal-plan' }),
     },
-  ])('requires CallerContext for scoped route handling in $name', async ({ invoke }) => {
+  ])('requires InvocationContext for scoped route handling in $name', async ({ invoke }) => {
     const client = new BackendClient({
       ensureBackend: async () => backendHandle,
     });
 
-    await expect(invoke(client)).rejects.toThrow(/CallerContext is required/);
+    await expect(invoke(client)).rejects.toThrow(/InvocationContext is required/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

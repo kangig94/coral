@@ -8,7 +8,7 @@ import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import type { JobStatus } from '../../jobs/records.js';
 import { errorMessage } from '../../infra/error-format.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type {
@@ -69,7 +69,7 @@ export type ExecuteAgentAttemptParams = {
   prompt: string;
   instruction: string;
   cwd: string;
-  callerCtx: CallerContext;
+  invocationCtx: InvocationContext;
   purpose: DiscussPurpose;
   timeoutMs?: number;
 };
@@ -80,7 +80,7 @@ export type RunFacilitatorTurnParams = {
   sessionId: string;
   prompt: string;
   instruction: string;
-  callerCtx: CallerContext;
+  invocationCtx: InvocationContext;
   timeoutMs: number;
   purpose: DiscussPurpose;
 };
@@ -238,7 +238,7 @@ export async function executeAgentAttempt(
   ctx: DiscussContext,
   params: ExecuteAgentAttemptParams,
 ): Promise<AttemptResult> {
-  const { agentName, sessionId, provider, model, prompt, instruction, cwd, callerCtx, purpose, timeoutMs } = params;
+  const { agentName, sessionId, provider, model, prompt, instruction, cwd, invocationCtx, purpose, timeoutMs } = params;
 
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot) {
@@ -341,7 +341,7 @@ export async function executeAgentAttempt(
               content: instruction,
             },
           },
-          callerCtx,
+          invocationCtx,
         )
       : await ctx.service.resume(
           provider,
@@ -353,7 +353,7 @@ export async function executeAgentAttempt(
             cwd,
             bypassPermissions: true,
           },
-          callerCtx,
+          invocationCtx,
         );
 
   if (launch.status === 'rejected') {
@@ -489,7 +489,7 @@ export async function runFacilitatorTurn(
     prompt: params.prompt,
     instruction: params.instruction,
     cwd: ctx.projectRoot,
-    callerCtx: params.callerCtx,
+    invocationCtx: params.invocationCtx,
     purpose: params.purpose,
     timeoutMs: params.timeoutMs,
   });

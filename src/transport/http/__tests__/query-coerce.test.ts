@@ -11,7 +11,7 @@ import {
   kbSearchQuerySchema,
 } from '../../../kb/tool-contracts.js';
 import {
-  buildCallerContextFromQuery,
+  buildInvocationContextFromQuery,
   parseBooleanQuery,
   queryParamsToObject,
 } from '../query-coerce.js';
@@ -148,8 +148,8 @@ describe('query-coerce transport helpers', () => {
     }
   });
 
-  it('rebuilds CallerContext from query params using the injected CORAL env snapshot only', () => {
-    const context = buildCallerContextFromQuery('/repo/project', '/plugin/root', {
+  it('rebuilds InvocationContext from query params using the injected CORAL env snapshot only', () => {
+    const context = buildInvocationContextFromQuery('/repo/project', '/plugin/root', {
       CORAL_OWNER: 'transport-owner',
       CORAL_EFFORT: 'high',
     });

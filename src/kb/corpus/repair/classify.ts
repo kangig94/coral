@@ -1,4 +1,4 @@
-import type { DetectedIncident } from './types.js';
+import type { DetectedIncident } from './corpus-scan.js';
 import { REPAIR_INCIDENT_ID, type RepairIncidentId } from './incident-ids.js';
 
 export type IncidentClassification = 'auto-fixable' | 'needs-manual' | 'unrecoverable';

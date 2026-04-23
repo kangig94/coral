@@ -1,5 +1,5 @@
-import { currentEventMetadata, withCallerContext } from './caller-context.js';
-import type { CallerContext } from '../transport/request-context.js';
+import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type {
   ExecutionLaunchPool as LaunchPool,
   ExecutionServiceDeps,
@@ -46,9 +46,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   private readonly abortService: JobAbortService;
   private readonly waitService: JobWaitService;
   private readonly recoveryService: RecoveryService;
-  private callerCorrelationSeq = 0;
+  private invocationCorrelationSeq = 0;
 
-  constructor(ctx: CallerContext, deps: ExecutionServiceDeps) {
+  constructor(ctx: InvocationContext, deps: ExecutionServiceDeps) {
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
@@ -143,11 +143,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       executionPort: {
         coralDispatch: (providerName, coralName, input, requestCtx) =>
-          this.runWithCallerContext(requestCtx, () =>
+          this.runWithInvocationScope(requestCtx, () =>
             this.launchService.coralDispatch(providerName, coralName, input as CoralIntent, requestCtx),
           ),
         resume: (providerName, input, requestCtx) =>
-          this.runWithCallerContext(requestCtx, () =>
+          this.runWithInvocationScope(requestCtx, () =>
             this.launchService.resume(providerName, input as ResumeIntent, requestCtx),
           ),
         abort: (jobIds) => this.abortService.abort(jobIds),
@@ -168,51 +168,51 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
   }
 
-  private runWithCallerContext<T>(ctx: CallerContext, run: () => T): T {
-    return withCallerContext(
+  private runWithInvocationScope<T>(ctx: InvocationContext, run: () => T): T {
+    return withInvocationScope(
       {
         namespace: this.backendNamespace,
         project: ctx.projectRoot,
-        correlationId: `${this.backendNamespace}:${this.projectRoot}:${++this.callerCorrelationSeq}`,
+        correlationId: `${this.backendNamespace}:${this.projectRoot}:${++this.invocationCorrelationSeq}`,
       },
       run,
     );
   }
 
-  async start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.start(providerName, input, ctx));
+  async start(providerName: string, input: ExecIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+    return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
   }
 
-  async resume(providerName: string, input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.resume(providerName, input, ctx));
+  async resume(providerName: string, input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+    return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
-  async fork(providerName: string, input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.fork(providerName, input, ctx));
+  async fork(providerName: string, input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+    return this.runWithInvocationScope(ctx, async () => this.launchService.fork(providerName, input, ctx));
   }
 
-  async resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.resumeBySessionId(input, ctx));
+  async resumeBySessionId(input: ResumeIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+    return this.runWithInvocationScope(ctx, async () => this.launchService.resumeBySessionId(input, ctx));
   }
 
-  async forkBySessionId(input: ForkIntent, ctx: CallerContext): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.forkBySessionId(input, ctx));
+  async forkBySessionId(input: ForkIntent, ctx: InvocationContext): Promise<LaunchDecision> {
+    return this.runWithInvocationScope(ctx, async () => this.launchService.forkBySessionId(input, ctx));
   }
 
   async coralDispatch(
     providerName: string,
     coralName: string,
     input: CoralIntent,
-    ctx: CallerContext,
+    ctx: InvocationContext,
   ): Promise<LaunchDecision> {
-    return this.runWithCallerContext(ctx, async () => this.launchService.coralDispatch(providerName, coralName, input, ctx));
+    return this.runWithInvocationScope(ctx, async () => this.launchService.coralDispatch(providerName, coralName, input, ctx));
   }
 
   async executeWorkflow(
     providerName: string,
     ast: PipelineAST,
     input: WorkflowCommand,
-    ctx: CallerContext,
+    ctx: InvocationContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
     return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir);

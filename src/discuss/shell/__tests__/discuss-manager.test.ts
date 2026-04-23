@@ -51,7 +51,7 @@ async function recoverSessions(harness: DiscussHarness) {
 
 function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSessions>>): void {
   for (const session of recovered) {
-    discussLoop.resumeLoop(session.ctx, session.sessionId, session.callerCtx);
+    discussLoop.resumeLoop(session.ctx, session.sessionId, session.invocationCtx);
   }
 }
 
@@ -119,7 +119,7 @@ describe('Discuss executor and operations', () => {
       prompt: 'Bid now',
       instruction: 'System turn contract',
       cwd: '/repo',
-      callerCtx: harness.ctx,
+      invocationCtx: harness.ctx,
       purpose: PURPOSE_BID,
     });
 
@@ -186,7 +186,7 @@ describe('Discuss executor and operations', () => {
       prompt: 'Speak now',
       instruction: 'Resume turn contract',
       cwd: '/repo',
-      callerCtx: harness.ctx,
+      invocationCtx: harness.ctx,
       purpose: PURPOSE_SPEECH,
     });
 

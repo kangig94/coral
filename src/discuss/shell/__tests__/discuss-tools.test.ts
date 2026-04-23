@@ -19,7 +19,7 @@ import {
   handleDiscussWatch,
 } from '../../shell/tools.js';
 import { getSession } from '../../shell/registry.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { ToolDomainResult } from '../../../transport/http/tool-response.js';
 import {
@@ -39,8 +39,8 @@ function createHelpers(
   service: ExecutionService,
 ) {
   return {
-    getExecutionService: (_ctx: CallerContext) => service,
-    getDiscussContext: (ctx: CallerContext) => {
+    getExecutionService: (_ctx: InvocationContext) => service,
+    getDiscussContext: (ctx: InvocationContext) => {
       const harness = stores.get(ctx.projectRoot);
       if (!harness) {
         throw new Error(`Missing discuss store for ${ctx.projectRoot}`);
@@ -82,9 +82,9 @@ async function callDiscussTool(
   request: {
     name: 'discuss_seed' | 'discuss_start' | 'discuss_abort' | 'discuss_watch' | 'discuss_bid' | 'discuss_speech';
     args: Record<string, unknown>;
-    context: CallerContext;
+    context: InvocationContext;
   },
-  helpers: { getDiscussContext: (ctx: CallerContext) => DiscussContext },
+  helpers: { getDiscussContext: (ctx: InvocationContext) => DiscussContext },
 ): Promise<ToolDomainResult> {
   switch (request.name) {
     case 'discuss_seed':
@@ -844,8 +844,8 @@ describe('execution discuss tools', () => {
     it('discuss_watch returns discuss_error for non-DiscussManagerError', async () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
-        getExecutionService: (_ctx: CallerContext) => harness.service,
-        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new TypeError('Cannot read property'); },
+        getExecutionService: (_ctx: InvocationContext) => harness.service,
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new TypeError('Cannot read property'); },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
@@ -871,8 +871,8 @@ describe('execution discuss tools', () => {
     it('discuss_bid returns discuss_error for non-DiscussManagerError', async () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
-        getExecutionService: (_ctx: CallerContext) => harness.service,
-        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        getExecutionService: (_ctx: InvocationContext) => harness.service,
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new RangeError('out of bounds'); },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };
@@ -903,8 +903,8 @@ describe('execution discuss tools', () => {
     it('discuss_speech returns discuss_error for non-DiscussManagerError', async () => {
       const harness = createDiscussHarness();
       const throwingHelpers = {
-        getExecutionService: (_ctx: CallerContext) => harness.service,
-        getDiscussContext: (_ctx: CallerContext): DiscussContext => { throw new RangeError('out of bounds'); },
+        getExecutionService: (_ctx: InvocationContext) => harness.service,
+        getDiscussContext: (_ctx: InvocationContext): DiscussContext => { throw new RangeError('out of bounds'); },
         abortJobs: (_jobIds: string[]) => ({ aborted: [], notFound: [] }),
         scopeCheckJobs: (_jobIds: string[], _projectRoot: string) => ({ valid: [], missing: [], mismatch: [] }),
       };

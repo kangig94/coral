@@ -1302,7 +1302,7 @@ describe('execution backend server', () => {
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
       runtimeState.setKbSubsystem(options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem);
 
-      const readOnlyCallerContext = {
+      const readOnlyInvocationContext = {
         projectRoot: '',
         pluginRoot: '/tmp/plugin',
         coralEnv: coralEnvSnapshot,
@@ -1454,7 +1454,7 @@ describe('execution backend server', () => {
           readSearch: (args: Record<string, unknown>) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
           diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
           readNote: (slug: string) =>
-            withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyCallerContext, deps.runtime, kbSubsystem)),
+            withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, deps.runtime, kbSubsystem)),
           readSource: (slug: string) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, deps.runtime)),
           readCommunity: (slug: string) =>
             withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, deps.runtime)),
@@ -1582,7 +1582,7 @@ describe('execution backend server', () => {
 
       const { createHttpHandler } = await import('../handler.js');
       const created = createHttpHandlerDeps(options);
-      const readOnlyCallerContext = {
+      const readOnlyInvocationContext = {
         projectRoot: '',
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
@@ -1634,7 +1634,7 @@ describe('execution backend server', () => {
         diagnose: () => withKb((kbSubsystem) => mockKbTools.handleKbDiagnose({}, kbSubsystem)),
         readNote: (slug: string) =>
           withKb((kbSubsystem) =>
-            mockKbTools.handleKbNoteRead(slug, readOnlyCallerContext, created.deps.runtime, kbSubsystem),
+            mockKbTools.handleKbNoteRead(slug, readOnlyInvocationContext, created.deps.runtime, kbSubsystem),
           ),
         readSource: (slug: string) =>
           withKb((kbSubsystem) => mockKbTools.handleKbSourceRead(slug, kbSubsystem, created.deps.runtime)),

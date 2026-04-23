@@ -29,7 +29,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '../../../kb/tool-handlers.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),
@@ -103,7 +103,7 @@ function createKbSubsystem(): KnowledgeBaseRuntime {
   };
 }
 
-const testContext: CallerContext = {
+const testContext: InvocationContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
   coralEnv: {},

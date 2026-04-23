@@ -41,7 +41,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../../../co
 import { createRealRuntime } from '../../../runtime/real.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '../../../testing/scripted-provider.js';
@@ -127,7 +127,7 @@ function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' 
 }
 
 function createService(
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     progressStore?: ProgressStore;
     bundleHash?: string;
@@ -459,7 +459,7 @@ function makeSharedClaudeAppServerProvider(spec: {
 
 async function occupyProviderSlots(
   service: ExecutionService,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   providerName: string,
 ): Promise<string[]> {
   const decisions = await Promise.all(
@@ -496,7 +496,7 @@ async function waitForTerminalEvent(
 
 function _createClaimedJob(
   service: ExecutionService,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: { initialPhase?: JobPhase } = {},
 ): {
   jobId: string;
@@ -527,12 +527,12 @@ function _createClaimedJob(
   };
 }
 
-function realizePluginRoot(ctx: CallerContext): string {
+function realizePluginRoot(ctx: InvocationContext): string {
   mkdirSync(ctx.pluginRoot, { recursive: true });
   return pluginRootNamespace(ctx.pluginRoot);
 }
 
-function _createScopedContext(name: string): CallerContext {
+function _createScopedContext(name: string): InvocationContext {
   const projectRoot = join(mockState.tmpHome, name);
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
@@ -551,7 +551,7 @@ async function _flushMicrotasks(count = 5): Promise<void> {
 }
 
 function _makeStatusRecord(
-  ctx: CallerContext,
+  ctx: InvocationContext,
   jobId: string,
   phase: JobPhase,
   options: {
@@ -596,7 +596,7 @@ function _makeTerminalReplay(
 }
 
 describe('ExecutionService launch', () => {
-  let ctx: CallerContext;
+  let ctx: InvocationContext;
 
   beforeEach(() => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });

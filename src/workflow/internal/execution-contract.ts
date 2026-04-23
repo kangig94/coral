@@ -1,7 +1,7 @@
 // Invariant #31 bans generic filenames at domain roots. The internal execution
 // contract stays under workflow/internal/ so workflow ownership remains explicit.
 import type { AbortResult } from '../../jobs/abort-result.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { LaunchState } from '../../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
@@ -58,7 +58,7 @@ export interface ResumeInput {
 }
 
 export interface WorkflowExecutionPort {
-  coralDispatch(providerName: string, coralName: string, input: CoralDispatchInput, ctx: CallerContext): Promise<{
+  coralDispatch(providerName: string, coralName: string, input: CoralDispatchInput, ctx: InvocationContext): Promise<{
     status: 'running' | 'queued' | 'rejected';
     job?: string;
     session?: string;
@@ -66,7 +66,7 @@ export interface WorkflowExecutionPort {
     code?: string;
     message?: string;
   }>;
-  resume(providerName: string, input: ResumeInput, ctx: CallerContext): Promise<{
+  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<{
     status: 'running' | 'queued' | 'rejected';
     job?: string;
     session?: string;

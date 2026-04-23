@@ -1,6 +1,6 @@
 import { makeEvent, type FollowUpQueueItem } from '../events.js';
 import { decideEnd, decideEpochSummary } from '../state-machine.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
   FOLLOW_UP_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -37,7 +37,7 @@ async function collectFollowUpAnswer(
   ctx: DiscussContext,
   sessionId: string,
   item: FollowUpQueueItem,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<string> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot) {
@@ -66,7 +66,7 @@ async function collectFollowUpAnswer(
       prompt,
       instruction: FOLLOW_UP_TURN_INSTRUCTION,
       cwd: ctx.projectRoot,
-      callerCtx,
+      invocationCtx,
       purpose: PURPOSE_FOLLOW_UP,
       timeoutMs: SPEECH_TIMEOUT_MS,
     });
@@ -118,7 +118,7 @@ async function collectFollowUpAnswer(
 export async function evaluateEpoch(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<EpochEvaluation> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot) {
@@ -144,7 +144,7 @@ export async function evaluateEpoch(
       prompt,
       instruction:
         'You are evaluating convergence in a discussion. Return only valid JSON that matches the requested schema.',
-      callerCtx,
+      invocationCtx,
       timeoutMs: EPOCH_EVAL_TIMEOUT_MS,
       purpose: PURPOSE_EPOCH_EVALUATION,
     });
@@ -157,14 +157,14 @@ export async function evaluateEpoch(
 export async function handleEpochTransition(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SubflowResult> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
   if (!snapshot || snapshot.runtime.controlPhase !== 'evaluate_epoch') {
     return { shouldResume: false };
   }
 
-  const evaluation = await evaluateEpoch(ctx, sessionId, callerCtx);
+  const evaluation = await evaluateEpoch(ctx, sessionId, invocationCtx);
   const committed = await commitDecision(ctx, sessionId, (current) => {
     if (current.runtime.controlPhase !== 'evaluate_epoch' || current.state.status !== 'bidding') {
       return { ok: true, value: [] };
@@ -234,7 +234,7 @@ export async function handleEpochTransition(
 export async function runFollowUpTurns(
   ctx: DiscussContext,
   sessionId: string,
-  callerCtx: CallerContext,
+  invocationCtx: InvocationContext,
 ): Promise<SubflowResult> {
   while (true) {
     const snapshot = loadAttachedOrPersistedSnapshot(ctx, sessionId);
@@ -262,7 +262,7 @@ export async function runFollowUpTurns(
     const answers = await Promise.all(
       queue.map(async (item) => ({
         item,
-        answer: await collectFollowUpAnswer(ctx, sessionId, item, callerCtx),
+        answer: await collectFollowUpAnswer(ctx, sessionId, item, invocationCtx),
       })),
     );
     const committed = await commitDecision(ctx, sessionId, (current) => ({

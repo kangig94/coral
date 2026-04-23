@@ -14,7 +14,7 @@ import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '../../../providers/contract.js';
 import { toProviderSpec, type Provider } from '../../../testing/scripted-provider.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { streamProviderTerminal } from '../../../providers/stream.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
@@ -108,7 +108,7 @@ describe('pipe executor coral cascade invariant', () => {
         },
       );
 
-      const ctx: CallerContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
+      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',

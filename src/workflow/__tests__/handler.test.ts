@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { streamProviderTerminal } from '../../providers/stream.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { toProviderSpec } from '../../testing/scripted-provider.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { WorkflowCommand } from '../api.js';
 
-const ctx: CallerContext = {
+const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},

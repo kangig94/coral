@@ -6,7 +6,7 @@ import { coordinatorPaths } from '../infra/coordinator-paths.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { DiscussContext } from '../discuss/shell/context.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
@@ -214,8 +214,8 @@ export type RegisterBuiltInProvidersFn = (providerRegistry: ProviderRegistry) =>
 export type RecoverPersistedDiscussDeps = {
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
-  readonly createCallerContext: (projectRoot: string) => CallerContext;
+  readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
+  readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly assertStartupStillActive: () => void;
 };
 
@@ -228,12 +228,12 @@ export type StartupRecoveryDeps = {
   readonly runtime: Runtime;
   readonly progressStore: ProgressStore;
   readonly providerRegistry: ProviderRegistry;
-  readonly getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
-  readonly getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
+  readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
-  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
-  readonly createCallerContext: (projectRoot: string) => CallerContext;
+  readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
+  readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
   readonly assertStartupStillActive: () => void;
   readonly cleanupStaleJobs: (currentBundleHash: string) => void;
@@ -255,12 +255,12 @@ export type LifecycleDeps = {
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
   readonly server: Server;
-  readonly getExecutionService: (ctx: CallerContext) => ProjectRequestPort;
-  readonly getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
+  readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
+  readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
-  readonly getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly acquireLockFn: (
     pluginRoot: string,
     instanceId: string,
@@ -304,7 +304,7 @@ type LifecycleControlState = LifecycleWiringState & {
 type LifecycleStartupContext = {
   deps: LifecycleDeps;
   state: LifecycleControlState;
-  createCallerContext: (projectRoot: string) => CallerContext;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
   recoveryCoordinator: RecoveryCoordinator;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
   shutdown: (reason: string) => Promise<void>;
@@ -313,7 +313,7 @@ type LifecycleStartupContext = {
 async function runLifecycleStartup({
   deps,
   state,
-  createCallerContext,
+  createInvocationContext,
   recoveryCoordinator,
   ownershipChecker,
   shutdown,
@@ -398,7 +398,7 @@ async function runLifecycleStartup({
       knownDiscussSources,
       getDiscussStoreForSource,
       getDiscussContext,
-      createCallerContext,
+      createInvocationContext,
       recoveryCoordinator,
       assertStartupStillActive,
       cleanupStaleJobs: cleanupStaleJobsFn,
@@ -529,11 +529,11 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     eventBus: deps.eventBus,
     providerRegistry,
     getRecoveryService,
-    createCallerContext,
+    createInvocationContext,
     log,
   });
 
-  function createCallerContext(projectRoot: string): CallerContext {
+  function createInvocationContext(projectRoot: string): InvocationContext {
     return { projectRoot, pluginRoot, coralEnv: {} };
   }
 
@@ -587,7 +587,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       return await runLifecycleStartup({
         deps,
         state,
-        createCallerContext,
+        createInvocationContext,
         recoveryCoordinator,
         ownershipChecker,
         shutdown,

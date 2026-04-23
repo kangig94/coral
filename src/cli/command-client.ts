@@ -3,7 +3,7 @@ declare const __PLUGIN_ROOT__: string;
 import type { Command } from 'commander';
 
 import {
-  type CallerContext,
+  type InvocationContext,
   type DiscussAbortResponse,
   type DiscussStartResponse,
   type JobsListResponse,
@@ -282,7 +282,7 @@ export function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
 }
 
-function createDefaultCallerContext(projectRoot: string): CallerContext {
+function createDefaultInvocationContext(projectRoot: string): InvocationContext {
   return {
     pluginRoot,
     projectRoot,
@@ -290,7 +290,7 @@ function createDefaultCallerContext(projectRoot: string): CallerContext {
   };
 }
 
-function buildTransportContextBody(args: Record<string, unknown>, context: CallerContext): Record<string, unknown> {
+function buildTransportContextBody(args: Record<string, unknown>, context: InvocationContext): Record<string, unknown> {
   const body: Record<string, unknown> = {
     ...args,
     projectRoot: context.projectRoot,
@@ -312,7 +312,7 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Calle
 
 function buildProjectScopedQuery(
   args: Record<string, unknown>,
-  context: CallerContext,
+  context: InvocationContext,
 ): Record<string, unknown> {
   return {
     ...args,
@@ -320,7 +320,7 @@ function buildProjectScopedQuery(
   };
 }
 
-function resolveMemoOwner(owner: string | undefined, context: CallerContext): string | undefined {
+function resolveMemoOwner(owner: string | undefined, context: InvocationContext): string | undefined {
   if (owner !== undefined) {
     return owner;
   }
@@ -350,7 +350,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   }
 
   const commandClass = resolution.commandClass;
-  const defaultContext = createDefaultCallerContext(projectRoot);
+  const defaultContext = createDefaultInvocationContext(projectRoot);
 
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
     if (commandClass === 'remote') {

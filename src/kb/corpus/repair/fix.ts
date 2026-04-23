@@ -48,7 +48,7 @@ import {
 } from '../frontmatter.js';
 import { classifyIncident, type IncidentClassification } from './classify.js';
 import { REPAIR_INCIDENT_ID, type RepairIncidentId } from './incident-ids.js';
-import type { DetectedIncident } from './types.js';
+import type { DetectedIncident } from './corpus-scan.js';
 
 const ENTRYSEQ_QUOTED_DECIMAL_PATTERN =
   /(^|\r?\n)(\s*entrySeq:\s*)(["'])([0-9]+)\3(\s*(?:#.*)?)(?=\r?\n|$)/;

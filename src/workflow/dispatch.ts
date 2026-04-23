@@ -1,4 +1,4 @@
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import type { PipelineAST } from './ast.js';
 import type { CompiledWorkflow } from './compile.js';
@@ -11,12 +11,12 @@ export const workflowCommands = {
         providerName: string,
         ast: PipelineAST,
         input: WorkflowCommand,
-        ctx: CallerContext,
+        ctx: InvocationContext,
         workDir?: string,
       ): Promise<LaunchDecision>;
     },
     compiled: CompiledWorkflow,
-    ctx: CallerContext,
+    ctx: InvocationContext,
   ): Promise<LaunchDecision> {
     const effectiveCtx =
       compiled.owner === undefined ? ctx : { ...ctx, coralEnv: { ...ctx.coralEnv, CORAL_OWNER: compiled.owner } };

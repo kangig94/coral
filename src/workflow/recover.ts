@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
 import type { ProgressStore } from '../jobs/job-store.js';
@@ -184,7 +184,7 @@ async function resumeWorkflow(
   db: BetterSqlite3.Database,
   progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   plan: WorkflowPlan,
   options: {
     onProgress: (workflowId: string, message: string) => void;
@@ -341,8 +341,8 @@ async function resumeWorkflow(
 export async function resumeAll(options: {
   db: BetterSqlite3.Database;
   progressStore: Pick<ProgressStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
-  getExecutionService: (ctx: CallerContext) => WorkflowExecutionPort;
-  createCallerContext: (projectRoot: string) => CallerContext;
+  getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   pollIntervalMs?: number;
@@ -360,7 +360,7 @@ export async function resumeAll(options: {
     const projection = readWorkflowProjection(options.db, jobId);
     if (!projection) continue;
 
-    const ctx = options.createCallerContext(status.projectRoot);
+    const ctx = options.createInvocationContext(status.projectRoot);
     await resumeWorkflow(options.db, options.progressStore, options.getExecutionService(ctx), ctx, projection.plan, {
       onProgress,
       staleTimeoutMs,

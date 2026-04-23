@@ -31,7 +31,7 @@ describe('kb contracts boundary', () => {
   it('keeps kb runtime-type consumers pointed at contracts.ts instead of runtime.ts', () => {
     for (const [fileName, contractImport] of [
       ['curate/state.ts', "from '../contracts.js'"],
-      ['corpus/mutation-helpers.ts', "from '../contracts.js'"],
+      ['corpus/index-mutations.ts', "from '../contracts.js'"],
       ['curate/text-artifacts.ts', "from '../contracts.js'"],
     ] as const) {
       const source = readKbFile(fileName);

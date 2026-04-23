@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { PipelineAST } from './ast.js';
 import {
@@ -88,7 +88,7 @@ export function buildPartialStepDetails(
 async function drainLaunchedAtoms(
   launchedAtoms: LaunchedAtom[],
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
@@ -125,7 +125,7 @@ async function awaitLaunchedStepResults(
   launchedAtoms: LaunchedAtom[],
   stepIndex: number,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     signal?: AbortSignal;
     staleTimeoutMs: number;
@@ -196,7 +196,7 @@ export async function executePlannedSteps(
   plan: WorkflowPlan,
   initialPrompt: string,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: ExecutePlannedStepsOptions,
 ): Promise<PipelineResult & { plan: WorkflowPlan }> {
   const stepDetails: StepDetail[] = [...(options.completedStepDetails ?? [])];
@@ -280,7 +280,7 @@ export async function executePipeline(
   initialPrompt: string,
   defaultProviderName: string,
   executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
+  ctx: InvocationContext,
   options: {
     context?: string;
     workDir?: string;

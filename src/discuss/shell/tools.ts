@@ -5,7 +5,7 @@ import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartS
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../persona-seed.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 
 type ToolDomainResult =
   | { ok: true; data: unknown }
@@ -51,7 +51,7 @@ const discussWatchSchema = z.object({
 const legacyDiscussParticipateSchema = z.union([discussBidSchema, discussSpeechSchema]);
 
 type DiscussToolHelpers = {
-  getDiscussContext: (ctx: CallerContext) => DiscussContext;
+  getDiscussContext: (ctx: InvocationContext) => DiscussContext;
 };
 
 type DiscussSeedArgs = z.infer<typeof discussSeedSchema>;
@@ -91,7 +91,7 @@ function executeDiscussSeed(args: DiscussSeedArgs): ToolDomainResult {
 
 async function executeDiscussStart(
   args: DiscussStartArgs,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   try {
@@ -113,7 +113,7 @@ async function executeDiscussStart(
 
 async function executeDiscussAbort(
   args: DiscussSessionArgs,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   try {
@@ -126,7 +126,7 @@ async function executeDiscussAbort(
 
 function executeDiscussWatch(
   args: DiscussWatchArgs,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): ToolDomainResult {
   try {
@@ -140,7 +140,7 @@ function executeDiscussWatch(
 
 async function executeDiscussBid(
   args: DiscussBidArgs,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   try {
@@ -161,7 +161,7 @@ async function executeDiscussBid(
 
 async function executeDiscussSpeech(
   args: DiscussSpeechArgs,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   try {
@@ -190,7 +190,7 @@ export function handleDiscussSeed(args: unknown): ToolDomainResult {
 
 export function handleDiscussWatch(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): ToolDomainResult {
   const parsed = discussWatchSchema.safeParse(args);
@@ -203,7 +203,7 @@ export function handleDiscussWatch(
 
 export async function handleDiscussStart(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   const parsed = discussStartSchema.safeParse(args);
@@ -216,7 +216,7 @@ export async function handleDiscussStart(
 
 export async function handleDiscussAbort(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   const parsed = discussSessionSchema.safeParse(args);
@@ -229,7 +229,7 @@ export async function handleDiscussAbort(
 
 export async function handleDiscussBid(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   const parsed = discussBidSchema.safeParse(args);
@@ -242,7 +242,7 @@ export async function handleDiscussBid(
 
 export async function handleDiscussSpeech(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   const parsed = discussSpeechSchema.safeParse(args);
@@ -255,7 +255,7 @@ export async function handleDiscussSpeech(
 
 export async function handleDiscussParticipate(
   args: unknown,
-  context: CallerContext,
+  context: InvocationContext,
   helpers: DiscussToolHelpers,
 ): Promise<ToolDomainResult> {
   const parsed = legacyDiscussParticipateSchema.safeParse(args);

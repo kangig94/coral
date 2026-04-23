@@ -8,7 +8,7 @@ import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } fro
 import { renderEntries } from '../../transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
-import type { CallerContext } from '../../../transport/request-context.js';
+import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { parseJobStatus, type JobStatus } from '../../../jobs/records.js';
 import { nowIsoString } from '../../../infra/time.js';
 import {
@@ -41,7 +41,7 @@ type SimulationDiscussHarness = {
   store: DiscussSessionStore;
   registry: DiscussContextRegistry;
   context: DiscussContext;
-  callerCtx: CallerContext;
+  invocationCtx: InvocationContext;
   service: ExecutionService;
 };
 
@@ -142,8 +142,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       read: (jobId) => readStatusRecordForRuntime(runtime, jobId),
     },
   });
-  const callerCtx: CallerContext = { projectRoot, pluginRoot, coralEnv: {} };
-  return { runtime, projectRoot, pluginRoot, source, store, registry, context, callerCtx, service };
+  const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
+  return { runtime, projectRoot, pluginRoot, source, store, registry, context, invocationCtx, service };
 }
 
 function writeJson(runtime: SimulationRuntime, filePath: string, value: unknown): void {
@@ -197,7 +197,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       TOPIC,
       manualAgents(),
       {},
-      harness.callerCtx,
+      harness.invocationCtx,
     );
     expect(session.snapshot.sessionId).toBe('sim-discuss-1');
 
@@ -208,7 +208,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       'alpha',
       88,
       'Open the walkable core first.',
-      harness.callerCtx,
+      harness.invocationCtx,
     );
     const afterBid = harness.store.load('sim-discuss-1');
     expect(afterBid).not.toBeNull();
@@ -429,7 +429,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       prompt: 'Recover the active job.',
       instruction: 'Use recovered output.',
       cwd: harness.projectRoot,
-      callerCtx: harness.callerCtx,
+      invocationCtx: harness.invocationCtx,
       purpose: 'bid',
     });
 
@@ -442,7 +442,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     const epochMs = Date.parse('2044-05-06T07:08:09.000Z');
     const harness = createHarness({ epochMs });
 
-    await startDiscussSession(harness.context, 'virtual-time-session', TOPIC, manualAgents(), {}, harness.callerCtx);
+    await startDiscussSession(harness.context, 'virtual-time-session', TOPIC, manualAgents(), {}, harness.invocationCtx);
     harness.runtime.time.tick(1_234);
     await submitManualBid(
       harness.context,
@@ -450,7 +450,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
       'alpha',
       77,
       'This bid timestamp comes from virtual time.',
-      harness.callerCtx,
+      harness.invocationCtx,
     );
 
     const events = readSessionEvents(harness.context, 'virtual-time-session');

@@ -20,7 +20,7 @@ import { recordMetadataMutation } from '../corpus/index-mutations.js';
 import { computeFullCollectorManifestHash } from '../corpus/manifest-authority.js';
 import { applyDetectedIncidentFixes } from '../corpus/repair/fix.js';
 import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '../corpus/repair/incident-ids.js';
-import type { DetectedIncident } from '../corpus/repair/types.js';
+import type { DetectedIncident } from '../corpus/repair/corpus-scan.js';
 import type { SpawnCliFn } from '../curate/types.js';
 
 const tempRoots: string[] = [];

@@ -1,6 +1,6 @@
 import type { ProgressStore } from './job-store.js';
 import type { RecoveryCapableService } from './reconcile/contracts.js';
-import type { CallerContext } from '../transport/request-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
@@ -13,8 +13,8 @@ export type JobsStartupDeps = {
   runtime: Runtime;
   progressStore: ProgressStore;
   providerRegistry: ProviderCatalog;
-  getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
-  createCallerContext: (projectRoot: string) => CallerContext;
+  getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
+  createInvocationContext: (projectRoot: string) => InvocationContext;
   assertStartupStillActive: () => void;
   log: (message: string) => void;
   cleanupStaleJobs: (currentBundleHash: string) => void;

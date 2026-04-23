@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { CallerContext } from '../../transport/request-context.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
@@ -57,7 +57,7 @@ export class WorkflowExecutionService {
     providerName: string,
     ast: PipelineAST,
     input: WorkflowCommand,
-    ctx: CallerContext,
+    ctx: InvocationContext,
     workDir?: string,
   ): Promise<LaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
@@ -169,7 +169,7 @@ export class WorkflowExecutionService {
     providerName: string,
     ast: PipelineAST,
     input: WorkflowCommand,
-    ctx: CallerContext,
+    ctx: InvocationContext,
     workDir?: string,
   ): void {
     const signal = this.deps.abortRegistry.getSignal(jobId);

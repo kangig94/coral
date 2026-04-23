@@ -1,4 +1,4 @@
-export { buildCallerContextFromQuery } from '../shared-context.js';
+export { buildInvocationContextFromQuery } from '../invocation-context.js';
 
 export function parseBooleanQuery(value: unknown): boolean | undefined {
   if (value === 'true' || value === '1') return true;

@@ -1,6 +1,6 @@
 import { normalizePrincipleReference } from '../../frontmatter.js';
 import { parseKbEntryId } from '../../../entry-types.js';
-import type { DetectedIncident, Detector } from '../types.js';
+import type { DetectedIncident, Detector } from '../corpus-scan.js';
 import { REPAIR_INCIDENT_ID } from '../incident-ids.js';
 
 const ORPHAN_ENTITY_GRAPH_REFS_CANONICAL = REPAIR_INCIDENT_ID.REFERENCE_INTEGRITY.ORPHAN_ENTITY_GRAPH_REFS;

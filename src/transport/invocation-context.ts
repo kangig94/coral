@@ -1,5 +1,5 @@
-import type { CallerContext } from '../transport/request-context.js';
-import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
 
 export function decodePathSegment(segment: string): string | null {
   try {
@@ -23,11 +23,11 @@ export function buildControllerEnv(
   return env;
 }
 
-export function buildCallerContext(
+export function buildInvocationContext(
   body: Record<string, unknown>,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
-): CallerContext | null {
+): InvocationContext | null {
   if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
     return null;
   }
@@ -38,10 +38,10 @@ export function buildCallerContext(
   };
 }
 
-export function buildCallerContextFromQuery(
+export function buildInvocationContextFromQuery(
   projectRoot: string,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
-): CallerContext {
+): InvocationContext {
   return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot } };
 }

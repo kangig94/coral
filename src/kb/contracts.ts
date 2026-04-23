@@ -12,7 +12,7 @@ export type {
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
-} from '../store/corpus-consumer.js';
+} from './corpus/consumer-contract.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
