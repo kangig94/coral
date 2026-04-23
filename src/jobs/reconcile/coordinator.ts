@@ -1,7 +1,7 @@
-import { formatError } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
 import { isTerminalPhase } from '../phase.js';
-import { isAppServerRuntime } from '../views.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { isAppServerRuntime } from '../records.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';

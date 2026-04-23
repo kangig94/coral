@@ -5,22 +5,23 @@ import {
   removeBackendInfoIfOwner,
   writeBackendInfo,
   type BackendInfo,
-} from '../../coordinator/discovery.js';
+} from '../../infra/backend-discovery.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type {
   JobTerminal,
   PreflightRuntime,
   ProviderSpec,
 } from '../../providers/contract.js';
-import { readAppendedLines } from '../../shared/file-tail.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { readAppendedLines } from '../../infra/file-tail.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import {
   providerProgressEvent,
   providerTerminalEvent,
   streamProviderEvents,
 } from '../../providers/stream.js';
 import { providerRequestFailed } from '../../providers/fault.js';
-import { formatError, nowIsoString } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
 import { SimulationRuntime } from '../runtime.js';
 import { sendJson } from '../../transport/http/handler.js';
 import { TypedEventBus } from '../../coordinator/control.js';
@@ -30,7 +31,7 @@ import { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime, StoragePort } from '../../runtime/ports.js';
 import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
 import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
-import { coordinatorPaths } from '../../coordinator/paths.js';
+import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService } from '../../coordinator/execution-service.js';
 import { jobsReconcile } from '../../jobs/api.js';

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
-import type { Runtime } from '../runtime/index.js';
+import type { Runtime } from '../runtime/ports.js';
 import { catalogEntrySchema, onboardingSchema, type CatalogEntry, type Onboarding } from './contracts.js';
 import { EQUIPMENT_ADDON_FILENAMES } from './paths.js';
 import {

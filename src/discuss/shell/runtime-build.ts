@@ -5,12 +5,12 @@ import {
 } from '../events.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
 import { readDiscussSourcesWithStorage } from './discuss-sources-catalog.js';
-import { backendLog } from '../../shared/backend-log.js';
-import { nowIsoString } from '../util/time.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import type { JobStatus } from '../../jobs/views.js';
-import { errorMessage, formatError } from '../../shared/utils.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import type { JobStatus } from '../../jobs/records.js';
+import { errorMessage, formatError } from '../../infra/error-format.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type {

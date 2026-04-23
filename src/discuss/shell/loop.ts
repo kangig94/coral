@@ -1,8 +1,8 @@
 import { decideBidRoundClose, decideEnd } from '../state-machine.js';
-import { nowIsoString } from '../util/time.js';
-import { errorMessage } from '../../shared/utils.js';
-import { backendLog } from '../../shared/backend-log.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { nowIsoString } from '../../infra/time.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { backendLog } from '../../infra/backend-log.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './runtime-build.js';
 import { type DiscussContext, DiscussManagerError } from './context.js';
 import { commitDecision } from './persistence.js';

@@ -1,19 +1,16 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { BackendToolHttpError } from '../transport/http/client-errors.js';
-import type { AcceptedLaunchResponse } from '../transport/http/http-client.js';
+import type { AcceptedLaunchResponse } from '../transport/http/client.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
-import type { JobTerminal } from '../jobs/views.js';
+import type { JobTerminal } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
-import { HEALTH_TIMEOUT_MS } from '../shared/sse-parser.js';
-import {
-  TransientHttpError,
-  assertNever,
-  isRecord,
-  isTransientStreamError,
-} from '../shared/utils.js';
+import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
+import { TransientHttpError, isTransientStreamError } from '../infra/http-errors.js';
+import { assertNever } from '../infra/error-format.js';
+import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { getSharedReadCoralStore } from './read-coral-store.js';
 import {

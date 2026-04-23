@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
-import { isNoEntryError, isRecord } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { isRecord } from '../../infra/json.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionEntry } from '../entry.js';
 import { SessionManager } from './store.js';

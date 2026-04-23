@@ -3,7 +3,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { coordinatorPaths } from '../paths.js';
+import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 
 const mockState = vi.hoisted(() => ({
   home: '',
@@ -31,7 +31,7 @@ afterEach(() => {
 
 async function importDiscovery() {
   vi.resetModules();
-  return import('../discovery.js');
+  return import('../../infra/backend-discovery.js');
 }
 
 function makeHome(): string {

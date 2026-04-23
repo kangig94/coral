@@ -19,10 +19,10 @@ import {
   type SessionCreateResponse,
   type SessionMessageResponse,
   type WorkflowLaunchResponse,
-} from '../transport/http/http-client.js';
+} from '../transport/http/client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
-import type { JobStatus } from '../jobs/views.js';
+import type { JobStatus } from '../jobs/records.js';
 import type {
   KbDiagnoseInput,
   KbDiagnoseResult,
@@ -54,10 +54,10 @@ import {
   flushPendingReadStoreNote,
   getSharedReadCoralStore,
 } from './read-coral-store.js';
-import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../shared/controller-profile.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../shared/sse-parser.js';
-import { collectCoralEnv } from '../shared/utils.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
+import type { AbortResult } from '../jobs/abort-result.js';
+import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
+import { collectCoralEnv } from '../infra/coral-env.js';
 import { buildErrorEnvelope, UsageError } from './errors.js';
 import {
   formatErrorEnvelope,

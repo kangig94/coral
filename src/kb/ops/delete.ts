@@ -1,5 +1,5 @@
 import { rmSync } from 'node:fs';
-import { isNoEntryError } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/mutation-helpers.js';

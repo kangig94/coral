@@ -1,7 +1,8 @@
-import { MAX_INLINE } from '../shared/schemas.js';
+import { MAX_INLINE } from '../infra/text.js';
 import { describeTerminalOutcome, type CauseRef } from '../jobs/outcome.js';
-import type { JobsListResponse } from '../transport/http/http-client.js';
-import { assertNever, isRecord } from '../shared/utils.js';
+import type { JobsListResponse } from '../transport/http/client.js';
+import { assertNever } from '../infra/error-format.js';
+import { isRecord } from '../infra/json.js';
 import type { BackendStatusFull, ShutdownResult } from '../transport/http/backend-helpers.js';
 import type {
   AcceptedLaunchResponse,
@@ -13,7 +14,7 @@ import type {
   KbSourceDeleteResponse,
   KbSourceImportResponse,
   KbUpdateResponse,
-} from '../transport/http/http-client.js';
+} from '../transport/http/client.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {
@@ -28,8 +29,8 @@ import type {
   KbSourceListResult,
   ReindexResult,
 } from '../kb/entry-types.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import type { JobStatus, JobTerminal } from '../jobs/views.js';
+import type { AbortResult } from '../jobs/abort-result.js';
+import type { JobStatus, JobTerminal } from '../jobs/records.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 import type { CliErrorEnvelope } from './errors.js';
 

@@ -1,11 +1,8 @@
 import { CommanderError } from 'commander';
 
 import { BackendToolHttpError } from '../transport/http/client-errors.js';
-import {
-  BackendUnreachableError,
-  TransientHttpError,
-  isRecord,
-} from '../shared/utils.js';
+import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
+import { isRecord } from '../infra/json.js';
 
 export class UsageError extends Error {
   constructor(message: string) {

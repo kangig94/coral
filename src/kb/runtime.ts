@@ -3,8 +3,10 @@ import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import type BetterSqlite3 from 'better-sqlite3';
-import { errorMessage, isNoEntryError, isRecord, isStringArray } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
+import { errorMessage } from '../infra/error-format.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { isRecord, isStringArray } from '../infra/json.js';
+import { backendLog } from '../infra/backend-log.js';
 import { readPendingRepairRows, type PendingRepairRetryCandidate } from './curate/retry.js';
 import {
   type CanonicalFrontmatterRecord,

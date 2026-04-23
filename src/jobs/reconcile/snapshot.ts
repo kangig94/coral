@@ -1,6 +1,6 @@
-import { formatError } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../views.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../records.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../job-store.js';

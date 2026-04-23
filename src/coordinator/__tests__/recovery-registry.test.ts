@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { RecoveryRegistry } from '../composition/recovery-registry.js';
-import type { AppServerRuntime, JobLaunch } from '../../jobs/views.js';
+import { RecoveryRegistry } from '../../jobs/reconcile/registry.js';
+import type { AppServerRuntime, JobLaunch } from '../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 
 function makeLaunchRecord(overrides: Partial<JobLaunch> = {}): JobLaunch {

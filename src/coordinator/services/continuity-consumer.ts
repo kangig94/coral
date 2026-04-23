@@ -5,7 +5,7 @@ import type {
   ProviderEventBody,
 } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { isProviderContinuityBlob } from './execution-shared.js';
 
 type SessionContinuityApi = {

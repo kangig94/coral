@@ -1,4 +1,4 @@
-import { isRecord } from './utils.js';
+import { isRecord } from '../infra/json.js';
 
 export type ToolDomainResult =
   | { ok: true; data: unknown }

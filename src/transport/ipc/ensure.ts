@@ -7,16 +7,13 @@ import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pluginRootNamespace } from '../../infra/paths.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
-import { type LockRecord } from '../../shared/lock-types.js';
-import { isProcessAlive, probeProcessStartedAtSeconds } from '../../shared/node-process.js';
-import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../../shared/sse-parser.js';
-import {
-  BackendUnreachableError,
-  isNoEntryError,
-  isRecord,
-  readBuildFlavor,
-  readBundleHash,
-} from '../../shared/utils.js';
+import { type LockRecord } from '../../infra/lock-record.js';
+import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../../transport/http/sse.js';
+import { BackendUnreachableError } from '../../infra/http-errors.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { isRecord } from '../../infra/json.js';
+import { readBuildFlavor, readBundleHash } from '../../infra/bridge-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 
 export const STARTUP_POLL_MS = 200;

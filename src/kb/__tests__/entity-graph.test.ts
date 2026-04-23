@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { createKbRuntime } from '../runtime.js';
 import type { EntityGraph } from '../entry-types.js';
 

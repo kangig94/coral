@@ -5,7 +5,7 @@ import type {
   RegisterEquipmentResult,
   UnregisterEquipmentRequest,
   UnregisterResult,
-} from './contract.js';
+} from '../../expansion/equipment-contract.js';
 import type { EquipmentLifecycleService } from './lifecycle.js';
 import type { EquipmentRequestPort } from '../../transport/rpc-ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';

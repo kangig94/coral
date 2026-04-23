@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatToolProgress } from '../../shared/format-progress.js';
+import { formatToolProgress } from '../../infra/format-progress.js';
 import { extractClaudeProgressMessage } from '../claude/progress.js';
 import type { ClaudeStreamEvent } from '../claude/types.js';
 

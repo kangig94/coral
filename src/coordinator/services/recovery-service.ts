@@ -4,24 +4,23 @@ import type {
   ProviderServerSpec,
 } from '../../providers/contract.js';
 import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import {
   describeSessionInterrupted,
   type SessionInterruptedFault,
 } from '../../sessions/fault.js';
 import {
   isAppServerRuntime,
-  isTerminalPhase,
   type AppServerRuntime,
   type JobLaunch,
-  type JobPhase,
   type JobRuntime,
   type JobTerminal,
-  writeWorkflowResult,
-} from '../../jobs/api.js';
+} from '../../jobs/records.js';
+import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
+import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
-import { nowIsoString } from '../../shared/utils.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type {
   ExecutionLaunchCoordinator,

@@ -2,7 +2,7 @@ import { CommanderError } from 'commander';
 import { ZodError } from 'zod';
 
 import { documentedCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
-import { isRecord } from '../shared/utils.js';
+import { isRecord } from '../infra/json.js';
 import { installErrorSchema, type InstallError } from './contracts.js';
 
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";

@@ -8,7 +8,7 @@ import type {
   DiscussDiscoveryData,
   DiscussDiscoverySession,
   DiscussSummaryIndexData,
-} from '../shared/persistence-types.js';
+} from '../discuss/persistence-types.js';
 import type { DiscussPathResolver, StoragePort } from '../runtime/ports.js';
 import {
   discussSourcesPath,
@@ -21,7 +21,7 @@ import {
   currentBuildFlavor,
   resolveProjectSource,
 } from '../infra/paths.js';
-import type { JobProgress, JobStatus } from '../jobs/views.js';
+import type { JobProgress, JobStatus } from '../jobs/records.js';
 import { openStoreDatabase } from '../store/db.js';
 import { storePaths } from '../store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
@@ -34,7 +34,7 @@ export type {
   DiscussDiscoverySession,
   DiscussSummaryIndexData,
   DiscussSummaryIndexRow,
-} from '../shared/persistence-types.js';
+} from '../discuss/persistence-types.js';
 
 /** Test-only persisted state readers for assertions against on-disk discuss and store artifacts. */
 

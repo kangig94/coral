@@ -1,9 +1,9 @@
 import { z, ZodError } from 'zod';
 import type { ProviderCatalog } from '../providers/catalog.js';
-import type { CallerContext } from '../shared/request-context.js';
+import type { CallerContext } from '../infra/request-context.js';
 import type { LaunchDecision } from '../jobs/launch.js';
-import { identPattern, providerIdentPattern } from '../shared/identifiers.js';
-import { isOwnerId } from '../shared/utils.js';
+import { identPattern, providerIdentPattern } from '../infra/identifiers.js';
+import { isOwnerId } from '../infra/owner-id.js';
 import type { PipelineAST } from './ast.js';
 import { executePipeline } from './executor.js';
 import { normalizeAst, validateNamespaces, validateParallelDuplicates, findUnknownProviders, WorkflowInputError } from './normalize.js';
@@ -119,7 +119,7 @@ export const workflowRecover = {
 export { WorkflowInputError };
 export { WorkflowExecutionError } from './command.js';
 export { createWorkflowJournal, readWorkflowProjection } from './projections.js';
-export type { LaunchDecision } from '../jobs/api.js';
+export type { LaunchDecision } from '../jobs/launch.js';
 export type { PipelineAST } from './ast.js';
 export type {
   PipelineResult,

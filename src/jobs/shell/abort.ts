@@ -1,4 +1,4 @@
-import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
 
 import type { AbortRegistry } from './abort-registry.js';
 

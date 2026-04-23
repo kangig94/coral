@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isRecord, isStringArray } from '../../shared/utils.js';
+import { isRecord, isStringArray } from '../../infra/json.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';

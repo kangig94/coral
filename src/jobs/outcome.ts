@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { assertNever } from '../shared/utils.js';
+import { assertNever } from '../infra/error-format.js';
 import type { JobPhase } from './phase.js';
 
 export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';

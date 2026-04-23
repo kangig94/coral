@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { createCurateTestHandle, type CurateTestHandle } from '../curate/__tests__/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle } from '../curate/scheduler.js';
 import type { KbRuntime } from '../contracts.js';

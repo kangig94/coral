@@ -1,5 +1,5 @@
-import { readDiscoveryRecord } from './discovery.js';
-import type { CoordinatorDiscoveryRecord } from './discovery.js';
+import { readDiscoveryRecord } from '../infra/backend-discovery.js';
+import type { CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import type { BuildFlavor } from '../runtime/flavor.js';
 
 export type { CoordinatorDiscoveryRecord };

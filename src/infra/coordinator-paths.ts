@@ -2,7 +2,7 @@ import { platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
-import { hashToken } from '../shared/hash.js';
+import { hashToken } from './hash.js';
 import { coralRoot } from './paths.js';
 
 export interface CoordinatorPaths {

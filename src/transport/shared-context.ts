@@ -1,5 +1,5 @@
-import type { CallerContext } from '../shared/request-context.js';
-import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../shared/controller-profile.js';
+import type { CallerContext } from '../infra/request-context.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 
 export function decodePathSegment(segment: string): string | null {
   try {

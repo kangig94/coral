@@ -1,4 +1,4 @@
-import { formatError } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
 import {
   describeJobProgressFault,
   describeTerminalOutcome,
@@ -7,7 +7,7 @@ import {
   type TerminalOutcome,
 } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
 import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import {

@@ -14,7 +14,7 @@ import {
   type KbIndex,
   type RelationshipType,
 } from '../entry-types.js';
-import { isRecord, isStringArray } from '../../shared/utils.js';
+import { isRecord, isStringArray } from '../../infra/json.js';
 import { type EntityConsolidationDelta } from './entity-consolidation.js';
 import { approximateTokenCount, parseJsonArray, uniqueTrimmedList } from './shared.js';
 import type {

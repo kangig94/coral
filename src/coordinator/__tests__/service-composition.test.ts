@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../../jobs/shell/agent-resolution.js';
 import { createDeferred } from '../../simulation/core/test-deferred.js';
-import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/views.js';
+import type { AppServerRuntime, JobLaunch, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -34,7 +34,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../live/pro
 import { createRealRuntime } from '../../runtime/real.js';
 import { createFilesystemSessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { ExecutionService } from '../execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '../../testing/scripted-provider.js';

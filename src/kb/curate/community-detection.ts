@@ -5,7 +5,7 @@ import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
 import type { AbstractGraph, GraphConstructor } from 'graphology-types';
-import { unlinkIfExists } from '../../shared/utils.js';
+import { unlinkIfExists } from '../../infra/fs-errors.js';
 import {
   captureCommunityManifestDelta,
   captureRemovedCommunityManifestDelta,

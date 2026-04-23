@@ -9,7 +9,7 @@ import {
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
-} from '../../../kb/api.js';
+} from '../../../kb/tool-contracts.js';
 import {
   buildCallerContextFromQuery,
   parseBooleanQuery,

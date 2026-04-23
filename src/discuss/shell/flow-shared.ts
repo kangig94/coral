@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-import { errorMessage } from '../../shared/utils.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { reduceDiscussEvent } from '../reducer.js';
 import { resolveAgentName, type DecisionContext } from '../state-machine.js';
 import type { DiscussState, TranscriptEntry } from '../session-types.js';
 import { renderEntries, renderHeader } from '../transcript.js';
-import { nowIsoString } from '../util/time.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { DiscussContext } from './context.js';
 
 export const BID_ATTEMPT_TIMEOUT_MS = 3 * 60 * 1000;

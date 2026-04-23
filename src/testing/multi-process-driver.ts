@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { delimiter } from 'node:path';
 
-import { SIGTERM_GRACE_MS } from '../shared/process-constants.js';
+import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 
 function resolvePathKey(env: NodeJS.ProcessEnv): string | null {
   const keys = Object.keys(env).filter((key) => key.toUpperCase() === 'PATH');

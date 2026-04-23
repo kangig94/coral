@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { BackendClient, BackendToolHttpError } from '../../transport/http/http-client.js';
+import { BackendClient, BackendToolHttpError } from '../../transport/http/client.js';
 import * as AgentResolution from '../../jobs/shell/agent-resolution.js';
 import type { MutableRuntimeState } from '../../coordinator/control.js';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
@@ -20,8 +20,9 @@ import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '../../providers/contract.js';
 import { toProviderSpec, type Provider } from '../../testing/scripted-provider.js';
-import type { CallerContext } from '../../shared/request-context.js';
-import * as Schemas from '../../shared/schemas.js';
+import type { CallerContext } from '../../infra/request-context.js';
+import * as ProviderRequestPolicy from '../../providers/request-policy.js';
+import * as ToolInputSchemas from '../../transport/http/tool-input.js';
 import { streamProviderTerminal } from '../../providers/stream.js';
 import type { LifecycleState } from '../../coordinator/control.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
@@ -36,8 +37,11 @@ beforeAll(() => {
   for (const [name, value] of Object.entries(AgentResolution)) {
     assertNotMocked(`AgentResolution.${name}`, value);
   }
-  for (const [name, value] of Object.entries(Schemas)) {
-    assertNotMocked(`Schemas.${name}`, value);
+  for (const [name, value] of Object.entries(ProviderRequestPolicy)) {
+    assertNotMocked(`ProviderRequestPolicy.${name}`, value);
+  }
+  for (const [name, value] of Object.entries(ToolInputSchemas)) {
+    assertNotMocked(`ToolInputSchemas.${name}`, value);
   }
   assertNotMocked('BackendClient.prototype.createSession', BackendClient.prototype.createSession);
 });

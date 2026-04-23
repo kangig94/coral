@@ -1,15 +1,17 @@
 import type { Server, ServerResponse } from 'node:http';
-import { errorMessage, formatError } from '../../shared/utils.js';
-import { backendLog } from '../../shared/backend-log.js';
-import { isAppServerRuntime, listLiveJobs, type ProgressStore } from '../../jobs/api.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { errorMessage, formatError } from '../../infra/error-format.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { listLiveJobs } from '../../jobs/reconcile/job-helpers.js';
+import { isAppServerRuntime } from '../../jobs/records.js';
+import type { ProgressStore } from '../../jobs/job-store.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import type { MutableRuntimeState } from '../control.js';
 import type { DiscussSessionStore } from '../../discuss/api.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../contracts.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';
-import { closeNeedleBackend } from '../../kb/api.js';
+import { closeNeedleBackend } from '../../kb/search/needle-backend.js';
 import { shutdownModeFromReason, type ShutdownMode } from './mode.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 

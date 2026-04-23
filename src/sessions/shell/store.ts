@@ -2,11 +2,13 @@ import { join, resolve } from 'node:path';
 
 import { noopAppendEvents, type AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
-import { backendLog } from '../../shared/backend-log.js';
-import { acquireDirectoryLock } from '../../shared/fs-lock.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { ProviderInstruction } from '../../providers/contract.js';
 import type { SessionContinuityMutation } from '../../providers/continuity-mutation.js';
-import { isNoEntryError, nowIsoString, providerIdentPattern } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { nowIsoString } from '../../infra/time.js';
+import { providerIdentPattern } from '../../infra/identifiers.js';
 import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeStoragePort, RuntimeTimePort } from '../../runtime/ports.js';
 import {
   DEFAULT_SESSION_CONTROLLER,

@@ -4,20 +4,17 @@ import { withAbortTimeout } from './backend-handle.js';
 import { isBackendHealth } from './backend-health.js';
 import { BackendToolHttpError } from './client-errors.js';
 import { readBackendInfo } from '../../infra/backend-discovery.js';
-import {
-  BackendUnreachableError,
-  TransientHttpError,
-  errorMessage,
-  isRecord,
-  readBuildFlavor,
-} from '../../shared/utils.js';
-import { isProcessAlive } from '../../shared/node-process.js';
+import { BackendUnreachableError, TransientHttpError } from '../../infra/http-errors.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
+import { readBuildFlavor } from '../../infra/bridge-manifest.js';
+import { isProcessAlive } from '../../infra/node-process.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
-} from '../../shared/sse-parser.js';
-import type { WaitStreamEvent } from '../../jobs/api.js';
-import { parseSerializedWaitCursor, serializeWaitCursor } from '../../jobs/api.js';
+} from '../../transport/http/sse.js';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
+import { parseSerializedWaitCursor, serializeWaitCursor } from '../../jobs/wait.js';
 import { createIpcClient } from '../ipc/client.js';
 
 export type BackendStatus = {

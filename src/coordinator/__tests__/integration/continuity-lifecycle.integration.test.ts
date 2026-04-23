@@ -14,7 +14,7 @@ import { createProviderHostManager } from '../../live/provider-hosts/pool.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { getInternals } from '../../../jobs/shell/__tests__/__helpers__/service-fixture.js';
-import type { CallerContext } from '../../../shared/request-context.js';
+import type { CallerContext } from '../../../infra/request-context.js';
 import type { ProviderSpec, Provider, ProviderContinuityUpdate, ProviderTransportClose } from '../../../providers/contract.js';
 import { providerTerminalEventBodySchema, jobTerminalSchema } from '../../../providers/contract.js';
 import { jobTerminalRecordedBodySchema } from '../../../jobs/events.js';
@@ -29,7 +29,7 @@ import { getSession } from '../../../discuss/shell/registry.js';
 import { startDiscussSession } from '../../../discuss/shell/operations.js';
 import * as discussLoop from '../../../discuss/shell/loop.js';
 import type { AgentConfig } from '../../../discuss/shell/context.js';
-import { parseJobStatus } from '../../../jobs/views.js';
+import { parseJobStatus } from '../../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../../jobs/continuity.js';
 
 const mockState = vi.hoisted(() => ({

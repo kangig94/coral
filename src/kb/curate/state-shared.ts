@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
-import { errorMessage } from '../../shared/utils.js';
+import { errorMessage } from '../../infra/error-format.js';
 import {
   noteEntryId,
   parseKbEntryId,

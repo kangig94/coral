@@ -1,6 +1,6 @@
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import type { KbRuntimeActivationSnapshot } from '../../kb/contracts.js';
-import type { ConsumerHandle } from '../../store/consumer-driver.js';
+import type { ConsumerHandle } from '../../coordinator/consumer-driver.js';
 
 /** Re-exports the KB-facing runtime activation shape so coordinator equipment code shares one contract. */
 export type RuntimeActivationSnapshot = KbRuntimeActivationSnapshot;

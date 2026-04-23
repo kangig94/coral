@@ -1,7 +1,7 @@
 import type { ProviderSpec } from '../../providers/contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
-import { resolveEffort } from '../../shared/schemas.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { resolveEffort } from '../../providers/request-policy.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
@@ -13,7 +13,7 @@ import {
 } from '../../jobs/shell/contracts.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
-import type { LaunchDecision } from '../../jobs/api.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { ExecutionLaunchPool as LaunchPool, ListResult } from '../contracts.js';
 import {

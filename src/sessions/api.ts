@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
-import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../shared/identifiers.js';
+import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
 import type { SessionCloseReason, SessionInterruptedFault } from './fault.js';
 import type { SessionEntry, SessionHandle } from './entry.js';
 import type { ContinuitySnapshot } from './continuity.js';

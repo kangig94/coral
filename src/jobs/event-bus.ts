@@ -1,5 +1,5 @@
 import type { JobPhase } from './phase.js';
-import type { JobTerminal } from './views.js';
+import type { JobTerminal } from './records.js';
 
 export type JobEventBusEvents = {
   'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };

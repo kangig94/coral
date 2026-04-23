@@ -27,7 +27,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/backend-world.ts',
   'src/coordinator/composition/create-backend-core.ts',
   'src/coordinator/composition/execution-services.ts',
-  'src/coordinator/composition/recovery-registry.ts',
   'src/coordinator/composition/runtime-state.ts',
   'src/coordinator/consumer-driver.ts',
   'src/coordinator/contracts.ts',
@@ -35,8 +34,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/corpus-notify.ts',
   'src/coordinator/discovery-api.ts',
-  'src/coordinator/discovery.ts',
-  'src/coordinator/equipment/contract.ts',
   'src/coordinator/equipment/lifecycle.ts',
   'src/coordinator/equipment/needle-activation.ts',
   'src/coordinator/equipment/rpc.ts',
@@ -44,7 +41,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/equipment/slots.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
-  'src/coordinator/index.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
@@ -56,8 +52,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/provider-hosts/recovery.ts',
   'src/coordinator/live/worker-limits.ts',
   'src/coordinator/lock.ts',
-  'src/coordinator/log.ts',
-  'src/coordinator/paths.ts',
   'src/coordinator/recording/observer.ts',
   'src/coordinator/services/continuity-consumer.ts',
   'src/coordinator/services/execution-shared.ts',
@@ -77,7 +71,6 @@ const DOMAIN_API_TARGETS = new Set([
   'src/sessions/api.ts',
   'src/discuss/api.ts',
   'src/workflow/api.ts',
-  'src/kb/api.ts',
 ]);
 const CONTRACT_TARGETS = new Set([
   'src/kb/contracts.ts',
@@ -89,15 +82,18 @@ const CONTRACT_TARGETS = new Set([
 const TRANSPORT_TARGETS = new Set([
   'src/transport/ipc/server.ts',
 ]);
-
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
   'src/coordinator/contracts.ts',
+  'src/coordinator/control.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/workflow-cleanup.ts',
+  'src/coordinator/shutdown/sequence.ts',
+  'src/coordinator/live/curate-scheduler.ts',
+  'src/coordinator/live/durable-transport.ts',
 ]);
 
 const BROAD_IMPORT_PREFIXES = [
@@ -147,7 +143,6 @@ describe('coordinator topology invariants', () => {
         || target.startsWith('src/store/')
         || target.startsWith('src/runtime/')
         || target.startsWith('src/infra/')
-        || target.startsWith('src/shared/')
       ) {
         return false;
       }

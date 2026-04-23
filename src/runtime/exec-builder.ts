@@ -1,4 +1,4 @@
-import { SIGTERM_GRACE_MS } from '../shared/process-constants.js';
+import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type {
   ChildProcessLike,
   ExecResult,

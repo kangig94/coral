@@ -1,6 +1,7 @@
 import type { CoralStore, CoralEvent } from '../../store/index.js';
 import { continuitySentenceFragment, type SessionContinuityState, type SessionProviderFailureReason } from '../../sessions/fault.js';
-import { assertNever, isRecord } from '../../shared/utils.js';
+import { assertNever } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import {
   causeRefSchema,
   describeJobProgressFault,

@@ -1,5 +1,5 @@
 import { readdirSync } from 'node:fs';
-import { isNoEntryError } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { compareLocale } from '../validation.js';
 
 export function sortedMarkdownEntries(dirPath: string): string[] {

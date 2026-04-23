@@ -1,4 +1,4 @@
-import { isRecord } from '../../shared/utils.js';
+import { isRecord } from '../../infra/json.js';
 import type { ClaudeJsonOutput } from './types.js';
 
 export interface ParsedClaudeStreamOutput {

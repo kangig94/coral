@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { consumeJobStream } from '../continuity-consumer.js';
-import { backendLog } from '../../../shared/backend-log.js';
+import { backendLog } from '../../../infra/backend-log.js';
 
 describe('consumeJobStream', () => {
   afterEach(() => {

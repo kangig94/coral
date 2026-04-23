@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'node:http';
-import type { CallerContext } from '../../shared/request-context.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
@@ -10,23 +10,23 @@ import {
 } from '../../discuss/api.js';
 import {
   belongsToNamespace,
-  isLivePhase,
-  jobPhaseSchema,
-  type JobPhase,
   type JobProgress,
   type JobStatus,
   type JobTerminal,
-  type LaunchDecision,
-  type WaitCursor,
-  type WaitStreamEvent,
-  type WaitStreamRequest,
-} from '../../jobs/api.js';
+} from '../../jobs/records.js';
+import {
+  isLivePhase,
+  jobPhaseSchema,
+  type JobPhase,
+} from '../../jobs/phase.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import {
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
   kbPrinciplesQuerySchema,
   kbSearchQuerySchema,
-} from '../../kb/api.js';
+} from '../../kb/tool-contracts.js';
 import type { RpcPorts } from '../rpc-ports.js';
 
 export {

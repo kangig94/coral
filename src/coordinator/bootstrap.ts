@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { BackendAlreadyRunningError } from './lock.js';
 import { StartupInterruptedError } from './control.js';
 import { createCoordinatorServer } from './coordinator.js';
-import { coordinatorLog } from './log.js';
+import { backendLog } from '../infra/backend-log.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { StoragePort } from '../runtime/ports.js';
 
@@ -34,7 +34,7 @@ function resolveSmokeMigrationsDir(storage: Pick<StoragePort, 'existsSync'>): st
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
   if (pathIdx === -1 || !argv[pathIdx + 1]) {
-    coordinatorLog.error('smoke open-store: missing --path');
+    backendLog.error('smoke open-store: missing --path');
     return 1;
   }
 
@@ -70,13 +70,13 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
       );
 
       if (!event) {
-        coordinatorLog.error('smoke append failed');
+        backendLog.error('smoke append failed');
         return 1;
       }
 
       const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq, readCtx);
       if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
-        coordinatorLog.error('smoke read-back failed');
+        backendLog.error('smoke read-back failed');
         return 1;
       }
 
@@ -87,7 +87,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    coordinatorLog.error('smoke open-store failed', message);
+    backendLog.error('smoke open-store failed', message);
     return 1;
   }
 }
@@ -102,7 +102,7 @@ export async function main(): Promise<number> {
       process.exit(0);
     },
     onFatalShutdownError: (error) => {
-      coordinatorLog.error('Fatal shutdown error', error);
+      backendLog.error('Fatal shutdown error', error);
       process.exit(1);
     },
   });
@@ -116,18 +116,18 @@ export async function main(): Promise<number> {
 
   try {
     const info = await coordinator.start();
-    coordinatorLog.info(`Running on ${info.host}:${info.port}`);
+    backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
     if (error instanceof BackendAlreadyRunningError) {
-      coordinatorLog.info(error.message);
+      backendLog.info(error.message);
       return 0;
     }
     if (error instanceof StartupInterruptedError) {
       return 0;
     }
 
-    coordinatorLog.error('Fatal startup error', error);
+    backendLog.error('Fatal startup error', error);
     return 1;
   }
 }
@@ -140,7 +140,7 @@ if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN_
       }
     })
     .catch((error: unknown) => {
-      coordinatorLog.error('Fatal startup error', error);
+      backendLog.error('Fatal startup error', error);
       process.exit(1);
     });
 }

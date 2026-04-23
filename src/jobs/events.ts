@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
-import { MAX_BUFFER } from '../shared/process-constants.js';
+import { MAX_BUFFER } from '../infra/process-constants.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';

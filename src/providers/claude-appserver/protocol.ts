@@ -1,5 +1,6 @@
-import { truncate } from '../../shared/format-progress.js';
-import { buildJsonRpcError, isRecord } from '../../shared/utils.js';
+import { truncate } from '../../infra/format-progress.js';
+import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
+import { isRecord } from '../../infra/json.js';
 import type { PermissionMode, SDKSystemMessage } from '../claude/control-protocol.js';
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);

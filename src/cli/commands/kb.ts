@@ -5,7 +5,7 @@ import type { Command } from 'commander';
 import type { KbPromoteInput } from '../../kb/entry-types.js';
 import { prepareSourceImport } from '../../kb/ops/source-import.js';
 import { assertSourceSlug } from '../../kb/validation.js';
-import { assertOwnerId } from '../../shared/utils.js';
+import { assertOwnerId } from '../../infra/owner-id.js';
 import { UsageError } from '../errors.js';
 import {
   emit,

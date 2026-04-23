@@ -1,4 +1,4 @@
-import { providerIdentPattern } from '../shared/utils.js';
+import { providerIdentPattern } from '../infra/identifiers.js';
 import type { PipeAtom, PipelineAST, PipeStep, PromptAtom } from './ast.js';
 
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

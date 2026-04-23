@@ -9,12 +9,13 @@ import type {
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/contract.js';
-import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';

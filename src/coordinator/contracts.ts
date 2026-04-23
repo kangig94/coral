@@ -4,6 +4,7 @@ import type {
   JobResumeRequest,
   LaunchDecision,
 } from '../jobs/launch.js';
+import type { ProgressStore } from '../jobs/api.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type { JobContinuitySnapshot } from '../jobs/continuity.js';
@@ -14,22 +15,21 @@ import type {
   JobRuntime,
   JobTerminal,
   LaunchState,
-} from '../jobs/views.js';
+} from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type {
   ProviderServerLease,
   ProviderServerSpec,
   ProviderSpec,
 } from '../providers/contract.js';
-import type { CallerContext } from '../shared/request-context.js';
-import type { EffortLevel } from '../shared/schemas.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProgressStore } from '../jobs/job-store.js';
+import type { CallerContext } from '../infra/request-context.js';
+import type { EffortLevel } from '../providers/request-policy.js';
+import type { AbortResult } from '../jobs/abort-result.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';
 import type { AppendEventsFn } from '../store/append.js';
-import type { ProviderRegistry } from '../providers/api.js';
+import type { ProviderRegistry } from '../providers/registry.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/api.js';
 import type { TypedEventBus } from './event-bus.js';

@@ -14,10 +14,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '../../../../coordinator/discovery.js';
-import { coordinatorPaths } from '../../../../coordinator/paths.js';
-import { isProcessAlive } from '../../../../shared/node-process.js';
-import { readBuildFlavor } from '../../../../shared/utils.js';
+import type { CoordinatorDiscoveryRecord } from '../../../../infra/backend-discovery.js';
+import { coordinatorPaths } from '../../../../infra/coordinator-paths.js';
+import { isProcessAlive } from '../../../../infra/node-process.js';
+import { readBuildFlavor } from '../../../../infra/bridge-manifest.js';
 import { createIpcClient } from '../../../../transport/ipc/client.js';
 import { CoralStore, openStoreDatabase } from '../../../../store/index.js';
 import { createDefaultStoreReadContext } from '../../../../store/read-context.js';

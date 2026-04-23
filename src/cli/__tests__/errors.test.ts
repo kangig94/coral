@@ -2,7 +2,7 @@ import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '../../transport/http/client-errors.js';
-import { BackendUnreachableError, TransientHttpError } from '../../shared/utils.js';
+import { BackendUnreachableError, TransientHttpError } from '../../infra/http-errors.js';
 import { UsageError, buildErrorEnvelope, errorCodeToExit } from '../errors.js';
 
 describe('cli errors', () => {

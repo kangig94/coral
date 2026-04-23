@@ -7,7 +7,7 @@ import {
   type CallerContext,
   type SessionCreateResponse,
   type WorkflowLaunchResponse,
-} from '../http-client.js';
+} from '../client.js';
 
 const backendHandle: BackendHandle = {
   port: 4100,

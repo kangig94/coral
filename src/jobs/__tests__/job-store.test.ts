@@ -10,7 +10,7 @@ import { applyMigrations } from '../../store/migrations.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { isLivePhase } from '../phase.js';
 import { JobStore } from '../job-store.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../views.js';
+import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
 
 const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
   readFileSync: (path, encoding) => readFileSync(path, encoding),

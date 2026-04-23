@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
-import type { JobPhase, JobTerminal } from '../jobs/api.js';
-import { backendLog } from '../shared/backend-log.js';
+import type { JobPhase } from '../jobs/phase.js';
+import type { JobTerminal } from '../jobs/records.js';
+import { backendLog } from '../infra/backend-log.js';
 
 export type EventBusEvents = {
   'job:created': { jobId: string; sessionId: string; provider: string; projectRoot: string };

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { causeRefSchema, type CauseRef } from '../jobs/outcome.js';
-import { assertNever } from '../shared/utils.js';
+import { assertNever } from '../infra/error-format.js';
 
 export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 export type SessionInterruptTrigger = z.infer<typeof sessionInterruptTriggerSchema>;

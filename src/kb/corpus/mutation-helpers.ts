@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { errorMessage } from '../../shared/utils.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { KbIndexState, KbRuntime } from '../contracts.js';
 import {
   type EntityMeta,

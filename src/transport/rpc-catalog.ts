@@ -39,7 +39,7 @@ import {
   kbSourceDeleteRequestSchema,
   kbSourceListRequestSchema,
   kbSourceReadRequestSchema,
-} from '../kb/api.js';
+} from '../kb/tool-contracts.js';
 import {
   sessionCreateSchema,
   sessionForkRequestSchema,

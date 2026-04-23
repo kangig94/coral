@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../../views.js';
+import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../../records.js';
 import type { DurableProcessExit } from '../../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../../sessions/entry.js';
 import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '../plan.js'

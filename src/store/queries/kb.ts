@@ -15,12 +15,8 @@ import type {
   KbSourceListResult,
 } from '../../kb/entry-types.js';
 import { isNoteEntry } from '../../kb/entry-types.js';
-import {
-  buildKbDiagnoseResult,
-  handleKbRead,
-  kbPrinciplesSchema,
-  kbSearchSchema,
-} from '../../kb/api.js';
+import { buildKbDiagnoseResult } from '../../kb/diagnose.js';
+import { readEntry } from '../../kb/read.js';
 import { readCurateRetryQueue } from '../../kb/curate/retry.js';
 import { listMemos } from '../../kb/ops/memo.js';
 import { searchKb } from '../../kb/ops/search.js';
@@ -31,29 +27,14 @@ import { kbRuntimeDir } from '../../kb/paths.js';
 import { kbRoot } from '../../infra/paths.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { openBackendStoreDb } from '../db.js';
-import { readBuildFlavor } from '../../shared/utils.js';
-import type { CallerContext } from '../../shared/request-context.js';
-import type { ToolDomainResult } from '../../shared/tool-domain-result.js';
+import { readBuildFlavor } from '../../infra/bridge-manifest.js';
 
 type KbQueryContext = {
   projectRoot?: string;
   pluginRoot?: string;
 };
 
-const EMPTY_CALLER_CONTEXT: Omit<CallerContext, 'projectRoot'> = {
-  pluginRoot: '',
-  coralEnv: {},
-};
-
 let sharedKbQueryDb: ReturnType<typeof openBackendStoreDb> | null = null;
-
-function unwrapDomainResult<T>(result: ToolDomainResult): T {
-  if (result.ok) {
-    return result.data as T;
-  }
-
-  throw new Error(result.message);
-}
 
 function createKbQueryRuntime(): ReturnType<typeof createKbRuntime> {
   if (sharedKbQueryDb === null) {
@@ -73,12 +54,11 @@ export async function searchKnowledgeBase(
   args: KbSearchInput,
   context: KbQueryContext = {},
 ): Promise<KbSearchResponse> {
-  const parsed = kbSearchSchema.parse(args);
   const kb = createKbQueryRuntime();
 
   try {
     void context;
-    return await searchKb(kb, parsed.query, parsed.top_k ?? 20, parsed.scope ?? 'all', parsed.mode);
+    return await searchKb(kb, args.query, args.top_k ?? 20, args.scope ?? 'all', args.mode);
   } finally {
     await closeNeedleBackend(kb);
   }
@@ -88,28 +68,13 @@ export function readKnowledgeBaseEntry(
   selector: KbReadInput,
   context: KbQueryContext = {},
 ): KbReadResult {
-  const projectRoot = context.projectRoot ?? process.cwd();
-  return unwrapDomainResult<KbReadResult>(
-    handleKbRead(
-      selector as Record<string, unknown>,
-      {
-        ...EMPTY_CALLER_CONTEXT,
-        projectRoot,
-      },
-      {
-        storage: {
-          existsSync: (filePath) => existsSync(filePath),
-          readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
-        },
-      },
-    ),
-  );
+  void context.pluginRoot;
+  return readEntry(selector, { projectRoot: context.projectRoot ?? process.cwd() });
 }
 
 export async function listKnowledgeBasePrinciples(
   args: KbPrinciplesInput,
 ): Promise<KbPrinciplesResult> {
-  const parsed = kbPrinciplesSchema.parse(args);
   const kb = createKbQueryRuntime();
 
   try {
@@ -118,13 +83,13 @@ export async function listKnowledgeBasePrinciples(
     const total = allNames.length;
     let names = allNames;
 
-    if (parsed.query?.trim()) {
-      const loweredQuery = parsed.query.toLowerCase();
+    if (args.query?.trim()) {
+      const loweredQuery = args.query.toLowerCase();
       names = allNames.filter((name) => name.toLowerCase().includes(loweredQuery));
     }
 
-    names = names.slice(0, parsed.top_k ?? 100);
-    if (parsed.verbose !== true) {
+    names = names.slice(0, args.top_k ?? 100);
+    if (args.verbose !== true) {
       return { principles: names, total };
     }
 

@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isRecord } from '../../shared/utils.js';
+import { isRecord } from '../../infra/json.js';
 import { buildClaudeChildArgs, createClaudeBrokerServer } from '../claude-appserver/server.js';
 import {
   buildClaudeChildEnv,

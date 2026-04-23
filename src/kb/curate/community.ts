@@ -1,4 +1,4 @@
-import { nowIsoString } from '../../shared/utils.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contracts.js';
 import { buildCommunityIndexEntry, cloneKbIndex, recordMetadataMutation } from '../corpus/mutation-helpers.js';
 import { captureKbCorpusSnapshot } from '../runtime.js';

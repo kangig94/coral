@@ -7,8 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProgressStore } from '../../jobs/job-store.js';
 import { SimulationRuntime } from '../../simulation/core/index.js';
-import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminal } from '../../jobs/views.js';
+import type { CallerContext } from '../../infra/request-context.js';
+import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';

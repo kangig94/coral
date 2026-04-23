@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
-import { identPattern, isRecord, isStringArray } from '../../shared/utils.js';
+import { identPattern } from '../../infra/identifiers.js';
+import { isRecord, isStringArray } from '../../infra/json.js';
 import {
   entryIdToVaultLink,
   parseKbEntryId,

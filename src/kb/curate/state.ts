@@ -2,8 +2,8 @@ import type {
   CurateActiveClaimRow,
   CurateCommunitySummaryInputFingerprintRow,
 } from '../../store/schema.js';
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage } from '../../shared/utils.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import {
   replaceFrontmatter,
   replaceSourceFrontmatter,

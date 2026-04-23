@@ -48,7 +48,7 @@ import type {
 } from '../kb/entry-types.js';
 import type { LenientSessionEntry, ProvenanceState } from '../sessions/shell/session-read.js';
 import type { SessionEntry } from '../sessions/entry.js';
-import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../shared/persistence-types.js';
+import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
 export type CoralStoreOptions = {
   namespace?: string;

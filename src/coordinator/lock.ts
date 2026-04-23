@@ -2,12 +2,12 @@ import { readFileSync } from 'node:fs';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { Runtime, RuntimeStoragePort } from '../runtime/ports.js';
-import type { LockRecord } from '../shared/lock-types.js';
-import { isNoEntryError } from '../shared/utils.js';
-import { readBuildFlavor } from '../shared/utils.js';
-import { probeCoordinator, probeProcessStartedAtSeconds } from './discovery.js';
-import { coordinatorLog } from './log.js';
-import { coordinatorPaths } from './paths.js';
+import { probeCoordinator, probeProcessStartedAtSeconds } from '../infra/backend-discovery.js';
+import { backendLog } from '../infra/backend-log.js';
+import { coordinatorPaths } from '../infra/coordinator-paths.js';
+import type { LockRecord } from '../infra/lock-record.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { readBuildFlavor } from '../infra/bridge-manifest.js';
 
 const RETRY_DELAY_MS = 200;
 const HEALTHCHECK_TIMEOUT_MS = 1_000;
@@ -15,7 +15,7 @@ const DEFAULT_HOST = '127.0.0.1';
 
 export const STARTUP_DEADLINE = 30_000;
 export const CONTENDER_BUDGET = 90_000;
-export type { LockRecord } from '../shared/lock-types.js';
+export type { LockRecord } from '../infra/lock-record.js';
 export type BackendOwnershipState = 'healthy' | 'contended' | 'stale';
 export type VerifyBackendOwnershipFn = (options: {
   pluginRoot: string;
@@ -283,8 +283,9 @@ async function inspectIncumbent(
 
   if (record.processStartedAt !== undefined) {
     const cacheKey = `${record.pid}:${record.processStartedAt}`;
-    let probed = probeCache.get(cacheKey);
-    if (probed === undefined && !probeCache.has(cacheKey)) {
+    const hasProbed = probeCache.has(cacheKey);
+    let probed = hasProbed ? (probeCache.get(cacheKey) ?? null) : null;
+    if (!hasProbed) {
       probed = probeProcessStartedAtSeconds(record.pid, runtime.env.platform() as NodeJS.Platform);
       probeCache.set(cacheKey, probed);
     }
@@ -333,7 +334,7 @@ export async function acquireLock(
 
   while (true) {
     if (runtime.time.now() - contenderStartedAt >= CONTENDER_BUDGET) {
-      coordinatorLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
+      backendLog.error(`Coordinator lock acquisition timed out after ${CONTENDER_BUDGET}ms`);
       throw new Error('Coordinator lock acquisition timed out');
     }
 

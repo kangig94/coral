@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 
 import type { RuntimeStoragePort } from '../../runtime/ports.js';
-import { isNoEntryError, isRecord } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
+import { isRecord } from '../../infra/json.js';
 import { sessionEntrySchema, type SessionEntry } from '../entry.js';
 
 export type ProvenanceState = 'authoritative' | 'legacy_unresolved';

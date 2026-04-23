@@ -1,8 +1,9 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { readCorpusState } from '../../store/corpus-state.js';
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage, isRecord } from '../../shared/utils.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
 import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';

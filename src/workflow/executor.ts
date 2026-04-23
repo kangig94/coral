@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CallerContext } from '../shared/request-context.js';
-import { errorMessage } from '../shared/utils.js';
+import type { CallerContext } from '../infra/request-context.js';
+import { errorMessage } from '../infra/error-format.js';
 import type { PipelineAST } from './ast.js';
 import {
   formatStepOutput,

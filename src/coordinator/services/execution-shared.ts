@@ -4,23 +4,23 @@ import type {
   ProviderInstruction,
   ProviderSpec,
 } from '../../providers/contract.js';
-import { errorMessage } from '../../shared/utils.js';
-import type { EffortLevel } from '../../shared/schemas.js';
+import { errorMessage } from '../../infra/error-format.js';
+import type { EffortLevel } from '../../providers/request-policy.js';
 import type { JobLaunchRequest } from '../../jobs/launch.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
+import type { TerminalOutcome } from '../../jobs/outcome.js';
+import type { WorkflowResultMeta } from '../../jobs/result.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
-  buildCoralInstruction,
   InvalidAgentRefError,
   parseAgentMeta,
   parseAgentRef,
   resolveAgent,
   stripAgentMetadata,
   type AgentResolutionContext,
-  type LaunchDecision,
-  type TerminalOutcome,
-  type WorkflowResultMeta,
-} from '../../jobs/api.js';
+} from '../../jobs/shell/agent-resolution.js';
+import { buildCoralInstruction } from '../../jobs/shell/instruction.js';
 import type { SessionAllocateOptions } from '../../sessions/shell/store.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import {
@@ -35,7 +35,7 @@ import type { ProgressStore } from '../../jobs/job-store.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
 import { materializeSessionInterrupted } from '../../jobs/shell/legacy-ingest.js';
-import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../shared/controller-profile.js';
+import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
 
 export type ExecIntent = Parameters<ProjectRequestPort['start']>[1];
 export type ResumeIntent = Parameters<ProjectRequestPort['resumeBySessionId']>[0];

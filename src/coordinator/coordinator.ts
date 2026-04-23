@@ -1,7 +1,7 @@
 import { registerBuiltInProviders } from '../providers/bootstrap.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
-import { readBuildFlavor } from '../shared/utils.js';
+import { readBuildFlavor } from '../infra/bridge-manifest.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -36,10 +36,10 @@ import { workflowRegistry } from '../workflow/events.js';
 import { registerWorkflowConsumer } from '../workflow/consumer.js';
 import { workflowRecover } from '../workflow/api.js';
 import { createNotifyCorpusMutation } from './corpus-notify.js';
-import { ConsumerDriver } from '../store/consumer-driver.js';
+import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import { releaseLock, acquireLock, CONTENDER_BUDGET } from './lock.js';
-import { createOramaBaseProjection } from '../kb/api.js';
+import { createOramaBaseProjection } from '../kb/search/orama-backend.js';
 import type { KbRuntime } from '../kb/contracts.js';
 import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';

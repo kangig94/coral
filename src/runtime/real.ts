@@ -57,8 +57,8 @@ import type {
   TimePort,
 } from './ports.js';
 import { CoralSetupError } from './errors.js';
-import { MAX_BUFFER } from '../shared/process-constants.js';
-import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../shared/env-sanitize.js';
+import { MAX_BUFFER } from '../infra/process-constants.js';
+import { composeChildEnv, parsePassthrough, resolveEnvBudgetBytes } from '../infra/env-sanitize.js';
 import { isDurableCliRuntime } from './durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runtime.js';
 import { buildExecPromise } from './exec-builder.js';

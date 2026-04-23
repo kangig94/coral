@@ -1,5 +1,5 @@
 import { documentedCoralSetupError } from '../../runtime/errors.js';
-import type { ConsumerHandle } from '../../store/consumer-driver.js';
+import type { ConsumerHandle } from '../../coordinator/consumer-driver.js';
 
 /** Keeps slot ownership explicit so KB routing can swap live equipment without coordinator imports. */
 export interface EquipmentSlot<T> {

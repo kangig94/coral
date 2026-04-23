@@ -1,6 +1,6 @@
-import { errorMessage } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
-import type { CallerContext } from '../shared/request-context.js';
+import { errorMessage } from '../infra/error-format.js';
+import { backendLog } from '../infra/backend-log.js';
+import type { CallerContext } from '../infra/request-context.js';
 import type { DiscussContext } from './shell/context.js';
 import type { DiscussSessionStore } from './shell/session-store.js';
 import type { RecoveredDiscussResume } from './shell/operations.js';

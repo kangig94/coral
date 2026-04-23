@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isNoEntryError } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   captureNoteManifestDeltas,

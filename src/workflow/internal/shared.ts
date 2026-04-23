@@ -1,8 +1,8 @@
 // Invariant #31 bans generic filenames at domain roots. `internal/shared.ts` is
 // permitted because the enclosing `internal/` scope already supplies workflow ownership.
-import type { AbortResult } from '../../shared/execution-contracts.js';
-import type { CallerContext } from '../../shared/request-context.js';
-import type { LaunchState } from '../../jobs/views.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
+import type { CallerContext } from '../../infra/request-context.js';
+import type { LaunchState } from '../../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
 

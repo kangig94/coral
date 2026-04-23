@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { backendInfoPath } from '../../coordinator/discovery.js';
-import { MAX_BUFFER } from '../../shared/process-constants.js';
+import { backendInfoPath } from '../../infra/backend-discovery.js';
+import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import {
   InMemoryPaths,

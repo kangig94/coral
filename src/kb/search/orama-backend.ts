@@ -15,7 +15,7 @@ import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
 import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import { isNoEntryError } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { createEmbeddingProvider, type EmbeddingProvider } from './embedding.js';
 import type {
   RetrievalScope,

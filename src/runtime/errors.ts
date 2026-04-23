@@ -1,4 +1,4 @@
-import { isRecord } from '../shared/utils.js';
+import { isRecord } from '../infra/json.js';
 
 export interface CoralSetupErrorInit {
   code: string;

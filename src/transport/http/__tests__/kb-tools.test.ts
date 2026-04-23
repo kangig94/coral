@@ -4,7 +4,8 @@ import type * as MemoMod from '../../../kb/ops/memo.js';
 import { memoDir, notePathFromName } from '../../../kb/paths.js';
 import type * as SearchMod from '../../../kb/ops/search.js';
 import type * as SourceStoreMod from '../../../kb/ops/source-store.js';
-import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '../../../shared/kb-read-contract.js';
+import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '../../../kb/read-contract.js';
+import type { KnowledgeBaseRuntime } from '../../../kb/subsystem.js';
 import {
   handleKbCommunityRead,
   handleKbDelete,
@@ -27,9 +28,8 @@ import {
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
-  type KnowledgeBaseRuntime,
-} from '../../../kb/api.js';
-import type { CallerContext } from '../../../shared/request-context.js';
+} from '../../../kb/tool-handlers.js';
+import type { CallerContext } from '../../../infra/request-context.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),

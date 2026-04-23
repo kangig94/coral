@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import { composeChildEnv } from '../shared/env-sanitize.js';
-import { MAX_BUFFER } from '../shared/process-constants.js';
+import { composeChildEnv } from '../infra/env-sanitize.js';
+import { MAX_BUFFER } from '../infra/process-constants.js';
 import type { Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
 import { copyMigrationAssets, resolveDefaultMigrationsDir } from '../store/migrations.js';
 import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';

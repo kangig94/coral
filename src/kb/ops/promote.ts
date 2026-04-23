@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { nowIsoString } from '../../shared/utils.js';
+import { nowIsoString } from '../../infra/time.js';
 import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';

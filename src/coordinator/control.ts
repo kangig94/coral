@@ -1,24 +1,24 @@
 import type { Server, ServerResponse } from 'node:http';
-import { errorMessage } from '../shared/utils.js';
-import { backendLog } from '../shared/backend-log.js';
+import { errorMessage } from '../infra/error-format.js';
+import { backendLog } from '../infra/backend-log.js';
+import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from '../infra/backend-discovery.js';
+import { coordinatorPaths } from '../infra/coordinator-paths.js';
 import { type LaunchCoordinator } from './live/admission.js';
-import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from './discovery.js';
-import type { RecoveryRegistry } from './composition/recovery-registry.js';
+import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
-import type { CallerContext } from '../shared/request-context.js';
+import type { CallerContext } from '../infra/request-context.js';
 import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import {
-  createRecoveryCoordinator,
-  createReplacementBackendOwnershipChecker,
   isTerminalPhase,
-  listLiveJobs,
-  markJobAsError,
-  StartupInterruptedError,
-  type ProgressStore,
-  type RecoveryCoordinator,
-} from '../jobs/api.js';
-import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/api.js';
+} from '../jobs/phase.js';
+import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
+import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
+import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
+import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
+import { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
+import type { ProgressStore } from '../jobs/job-store.js';
+import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
 import type { Runtime } from '../runtime/ports.js';
 import { resolveClientHost } from './shutdown/network.js';
@@ -26,12 +26,12 @@ import { SHUTDOWN_POLL_MS, runShutdownSequence, type LifecycleWiringState } from
 import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
-import { coordinatorPaths } from './paths.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 export type { EventBusEvents } from './event-bus.js';
 export { TypedEventBus } from './event-bus.js';
 
-export { adoptOrphanedCrossNamespaceJobs, StartupInterruptedError } from '../jobs/api.js';
+export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
+export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 export {
   HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,

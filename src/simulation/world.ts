@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { createReplayCursor, type ReplayCursor } from '../jobs/job-store.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import type { BackendServerInfo, LifecycleState } from '../coordinator/control.js';
-import { backendInfoPath } from '../coordinator/discovery.js';
+import { backendInfoPath } from '../infra/backend-discovery.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
@@ -21,7 +21,7 @@ import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema
 import { noopAppendEvents } from '../store/append.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import { isTerminalPhase } from '../jobs/phase.js';
-import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../jobs/views.js';
+import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../runtime/durable-runtime.js';
 import type { SessionEntry } from '../sessions/entry.js';
 

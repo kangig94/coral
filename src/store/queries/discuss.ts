@@ -22,7 +22,7 @@ import type { DiscussPathResolver, StoragePort } from '../../runtime/ports.js';
 import type {
   DiscussDiscoveryData,
   DiscussSummaryIndexData,
-} from '../../shared/persistence-types.js';
+} from '../../discuss/persistence-types.js';
 
 export type DiscussSnapshotRow = PersistedDiscussSnapshot;
 export type DiscussEventLogEntry = DiscussDomainEvent;

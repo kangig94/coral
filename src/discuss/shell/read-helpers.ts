@@ -11,7 +11,7 @@ import {
   type DiscussDetailResponse,
   type DiscussSummaryDto,
   type DiscussView,
-} from '../views.js';
+} from '../api.js';
 import { listAttachedSessions, type DiscussContextRegistry } from './live-registry.js';
 import type { DiscussSessionStore } from './session-store.js';
 

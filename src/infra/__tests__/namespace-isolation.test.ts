@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../paths.js';
-import { readBuildFlavor, readBundleHash } from '../../shared/utils.js';
+import { readBuildFlavor, readBundleHash } from '../../infra/bridge-manifest.js';
 
 const tempRoots: string[] = [];
 

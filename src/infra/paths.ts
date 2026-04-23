@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { hashToken } from '../shared/hash.js';
+import { hashToken } from './hash.js';
 
 export function jobsDir(): string {
   return join(tmpdir(), 'coral-jobs');

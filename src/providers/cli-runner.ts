@@ -1,5 +1,5 @@
 import type { LaunchCoordinator, LaunchPool } from '../jobs/shell/contracts.js';
-import type { JobRuntime } from '../jobs/views.js';
+import type { JobRuntime } from '../jobs/records.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 
 export type ProviderCliRequest = {

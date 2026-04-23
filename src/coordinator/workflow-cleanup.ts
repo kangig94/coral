@@ -1,6 +1,6 @@
 import type { ArtifactCleanupRuntime, ProviderSpec } from '../providers/contract.js';
 import type { Runtime } from '../runtime/ports.js';
-import { errorMessage } from '../shared/utils.js';
+import { errorMessage } from '../infra/error-format.js';
 import type { WorkflowSessionHandle } from '../workflow/api.js';
 
 export interface WorkflowSessionCleanupDeps {

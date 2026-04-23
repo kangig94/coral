@@ -1,4 +1,4 @@
-import { nowIsoString } from '../../shared/utils.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   isNoteEntry,

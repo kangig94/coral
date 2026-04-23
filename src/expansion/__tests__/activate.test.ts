@@ -133,7 +133,7 @@ describe('expansion activation (AC6)', () => {
     try {
       const [{ setBuildFlavor }, { writeDiscoveryRecord }, { readEquipmentStatus: readEquipmentStatusFresh }] = await Promise.all([
         import('../../infra/paths.js'),
-        import('../../coordinator/discovery.js'),
+        import('../../infra/backend-discovery.js'),
         import('../activate.js'),
       ]);
       const request = vi.fn().mockResolvedValue({ equipment: [] });

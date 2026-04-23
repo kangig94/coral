@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-import { isRecord } from '../../shared/utils.js';
+import { isRecord } from '../../infra/json.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';

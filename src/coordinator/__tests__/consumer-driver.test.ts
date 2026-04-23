@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StoragePort } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { applyMigrations } from '../../store/migrations.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import {
   ConsumerDriver,
   type ConsumerApplyError,

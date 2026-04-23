@@ -1,15 +1,35 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerHandle, JournalConsumerRegistration } from './consumer-driver.js';
+import type { ConsumerApplyError, ConsumerRegistrationKind } from './corpus-consumer.js';
 import type { StoreReadContext } from './body-codec.js';
 import { getEventsSince } from './queries/events.js';
 import { applyReducer, composeReducers, type ComposedReducers, type DomainEventRegistry } from './reducers.js';
 import { createDefaultUpcasterRegistry } from './upcasters.js';
 
-export type ProjectionConsumerHandle = ConsumerHandle;
+export interface ProjectionConsumerHandle {
+  readonly id: string;
+  readonly registrationKind: ConsumerRegistrationKind;
+  readonly lastApplyError: ConsumerApplyError | null;
+  stop(): Promise<void>;
+  unregister(): Promise<void>;
+}
+
+export interface JournalApplyContext {
+  readonly fromSeq: number;
+  readonly upToSeq: number;
+  readonly db: BetterSqlite3.Database;
+}
+
+export interface JournalConsumerRegistration {
+  readonly id: string;
+  readonly authority: 'journal';
+  readonly registrationKind?: ConsumerRegistrationKind;
+  readonly onApplyFailure?: (err: ConsumerApplyError) => void;
+  apply(ctx: JournalApplyContext): Promise<void>;
+}
 
 export type JournalConsumerRegistrar = {
-  register(reg: JournalConsumerRegistration): ConsumerHandle;
+  register(reg: JournalConsumerRegistration): ProjectionConsumerHandle;
 };
 
 async function applyProjectionRange(
@@ -47,7 +67,7 @@ export function registerJournalProjectionConsumer(
   db: BetterSqlite3.Database,
   consumerId: string,
   registry: DomainEventRegistry,
-): ConsumerHandle {
+): ProjectionConsumerHandle {
   const reducers = composeReducers(registry);
   const eventTypes = new Set(registry.types);
   const readCtx: StoreReadContext = {

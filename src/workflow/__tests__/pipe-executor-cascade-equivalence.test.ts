@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CallerContext } from '../../shared/request-context.js';
-import type { JobTerminal } from '../../jobs/views.js';
+import type { CallerContext } from '../../infra/request-context.js';
+import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitRequest, WaitStreamEvent } from '../../jobs/wait.js';
 import { executePipeline } from '../executor.js';
 import { parseExpression } from '../parser.js';

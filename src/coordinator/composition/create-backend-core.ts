@@ -1,7 +1,8 @@
 import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
-import { formatError, nowIsoString } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
 import { discussQueries } from '../../discuss/api.js';
 import { knownDiscussSources } from '../../discuss/shell/read-helpers.js';
@@ -33,7 +34,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
   handleKbDelete,
-} from '../../kb/api.js';
+} from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import type { RpcPorts } from '../../transport/rpc-ports.js';
@@ -53,8 +54,8 @@ import { createExecutionServices } from './execution-services.js';
 import { createBackendWorld } from './backend-world.js';
 import { createRuntimeState } from './runtime-state.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import { belongsToNamespace } from '../../jobs/views.js';
-import { coordinatorPaths } from '../paths.js';
+import { belongsToNamespace } from '../../jobs/records.js';
+import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
 
 export type {

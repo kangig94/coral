@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { jobAbortSchema, jobWaitSchema } from '../../jobs/api.js';
+import { jobAbortSchema, jobWaitSchema } from '../jobs/api.js';
 import {
   agentIdentSchema,
   sessionCreateSchema,
   sessionForkSchema,
   sessionMessageSchema,
-} from '../../sessions/api.js';
-import { workflowCommandSchema, workflowRequestSchema } from '../../workflow/api.js';
+} from '../sessions/api.js';
+import { workflowCommandSchema, workflowRequestSchema } from '../workflow/api.js';
 import {
   abortInputSchema,
   waitInputSchema,
-} from '../schemas.js';
+} from '../transport/http/tool-input.js';
 
 const AGENT_IDENT_CASES: ReadonlyArray<
   readonly [input: string, accepted: boolean, canonicalForm: string | null]

@@ -1,4 +1,4 @@
-import type { AppServerRuntime, JobLaunch, JobRuntime } from '../views.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime } from '../records.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobTerminal } from '../result.js';
 import type { JobPhase } from '../phase.js';

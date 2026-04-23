@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import type { EffortLevel } from '../providers/contract.js';
 
 export type { EffortLevel } from '../providers/contract.js';
@@ -50,28 +49,3 @@ export function resolveModelTier(model: string | undefined, cap?: string): strin
   }
   return undefined;
 }
-
-/** Maximum serialized emitted CallToolResult body length for optional content embedding. */
-export const MAX_INLINE = 10_000;
-
-/**
- * Wait tool input schema — accepts a list of jobIds to monitor.
- */
-export const waitInputSchema = z
-  .object({
-    jobs: z.array(z.string()).min(1, 'At least one job required'),
-    timeout_seconds: z.number().min(1).max(1200).optional(),
-    cursor: z.string().min(1).optional(),
-  })
-  .strict();
-
-export type WaitInput = z.infer<typeof waitInputSchema>;
-
-/**
- * Abort tool input schema — accepts a list of jobIds to abort.
- */
-export const abortInputSchema = z.object({
-  jobs: z.array(z.string().min(1)).min(1, 'At least one job required'),
-});
-
-export type AbortInput = z.infer<typeof abortInputSchema>;

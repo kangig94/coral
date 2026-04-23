@@ -1,5 +1,5 @@
 import { currentEventMetadata, withCallerContext } from './caller-context.js';
-import type { CallerContext } from '../shared/request-context.js';
+import type { CallerContext } from '../infra/request-context.js';
 import type {
   ExecutionLaunchPool as LaunchPool,
   ExecutionServiceDeps,
@@ -7,12 +7,15 @@ import type {
   ProjectRequestPort,
   RecoveryCapableService,
 } from './contracts.js';
-import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, JobTerminal, LaunchDecision, LaunchState } from '../jobs/api.js';
+import type { LaunchDecision } from '../jobs/launch.js';
+import type { AbortReason } from '../jobs/outcome.js';
+import type { JobPhase } from '../jobs/phase.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, LaunchState } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST, WorkflowCommand, WorkflowSessionHandle } from '../workflow/api.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
+import type { AbortResult } from '../jobs/abort-result.js';
 import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
-import { AbortRegistry } from '../jobs/api.js';
+import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';

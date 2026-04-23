@@ -1,4 +1,5 @@
-import { errorMessage, isRecord } from '../../shared/utils.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import type { Provider, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
 import {

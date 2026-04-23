@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '../../../runtime/real.js';
-import type { JobRuntime } from '../../../jobs/api.js';
+import type { JobRuntime } from '../../../jobs/records.js';
 import { LaunchCoordinator } from '../admission.js';
 
 function createProviderServerScript(): string {

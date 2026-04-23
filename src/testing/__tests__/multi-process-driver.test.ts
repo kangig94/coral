@@ -6,7 +6,7 @@ import { PassThrough } from 'node:stream';
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { SIGTERM_GRACE_MS } from '../../shared/process-constants.js';
+import { SIGTERM_GRACE_MS } from '../../infra/process-constants.js';
 
 const tempRoots: string[] = [];
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BackendToolHttpError } from '../client-errors.js';
 import { streamWait, throwBackendCommunicationError } from '../backend-helpers.js';
-import { BackendUnreachableError } from '../../../shared/utils.js';
+import { BackendUnreachableError } from '../../../infra/http-errors.js';
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),

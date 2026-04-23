@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { insertMultiple } from '@orama/orama';
-import { errorMessage, isRecord } from '../../shared/utils.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
+import { backendLog } from '../../infra/backend-log.js';
 import {
   extractMalformedEntryRepair,
   readCurateState,

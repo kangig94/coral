@@ -4,8 +4,8 @@ import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
   type WaitStreamEvent,
-} from '../../jobs/api.js';
-import { isRecord } from '../../shared/utils.js';
+} from '../../jobs/wait.js';
+import { isRecord } from '../../infra/json.js';
 import { executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts } from '../rpc-catalog.js';
 import type { RpcMethodSpec } from '../rpc-catalog.js';

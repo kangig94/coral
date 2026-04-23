@@ -1,7 +1,7 @@
 import type { WaitCoordinator } from '../../jobs/shell/wait.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobProgress, LaunchState } from '../../jobs/api.js';
+import type { JobProgress, LaunchState } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
 

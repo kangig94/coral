@@ -4,13 +4,13 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoordinatorDiscoveryRecord } from '../../coordinator/discovery-api.js';
-import type { ActivationDeps } from '../../expansion/activate.js';
-import { installResponseSchema } from '../../expansion/contracts.js';
-import { installExpansion, uninstallExpansion } from '../../expansion/install.js';
-import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../expansion/paths.js';
-import { equip, info, list, unequip, update } from '../../expansion/workflow.js';
+import type { ActivationDeps } from '../activate.js';
+import { installResponseSchema } from '../contracts.js';
+import { installExpansion, uninstallExpansion } from '../install.js';
+import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../paths.js';
+import { equip, info, list, unequip, update } from '../workflow.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
-import type { Runtime } from '../../runtime/index.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { ExecResult, StoragePort } from '../../runtime/ports.js';
 import { SimulationRuntime } from '../../simulation/runtime.js';
 import type { IpcClient } from '../../transport/ipc/client.js';
@@ -303,13 +303,13 @@ function createActivationHarness(opts: {
       return await (opts.passiveRequest?.(method, params) ?? { equipment: [] }) as TResult;
     },
     subscribe: async () => {
-      throw new Error('Subscriptions are not used in equip-install.test.ts');
+      throw new Error('Subscriptions are not used in workflow.install.integration.test.ts');
     },
     health: async () => {
-      throw new Error('Health checks are not used in equip-install.test.ts');
+      throw new Error('Health checks are not used in workflow.install.integration.test.ts');
     },
     shutdown: async () => {
-      throw new Error('Shutdown is not used in equip-install.test.ts');
+      throw new Error('Shutdown is not used in workflow.install.integration.test.ts');
     },
   });
   const createEnsuredClient = (): EnsuredIpcClient => ({

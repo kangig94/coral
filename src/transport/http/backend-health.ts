@@ -1,4 +1,4 @@
-import { isRecord } from '../../shared/utils.js';
+import { isRecord } from '../../infra/json.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.

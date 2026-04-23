@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { errorMessage, isRecord } from '../../shared/utils.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../command-schemas.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../persona-seed.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import type { CallerContext } from '../../infra/request-context.js';
 
 type ToolDomainResult =
   | { ok: true; data: unknown }

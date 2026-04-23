@@ -40,7 +40,7 @@ import {
 } from '../../../infra/paths.js';
 import type { BackendServerController } from '../../../coordinator/coordinator.js';
 import type { LifecycleState } from '../../../coordinator/control.js';
-import type { JobLaunch } from '../../../jobs/views.js';
+import type { JobLaunch } from '../../../jobs/records.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '../tool-response.js';
 import {
@@ -62,7 +62,7 @@ import {
   handleKbSourceList,
   handleKbSourceRead,
   handleKbUpdate,
-} from '../../../kb/api.js';
+} from '../../../kb/tool-handlers.js';
 import {
   LaunchCoordinator,
   TypedEventBus,
@@ -1131,7 +1131,7 @@ describe('execution backend server', () => {
   });
 
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
-    const { handleKbPrinciples } = await import('../../../kb/api.js');
+    const { handleKbPrinciples } = await import('../../../kb/tool-handlers.js');
 
     const response = await handleKbPrinciples({ query: 'contract', verbose: true, top_k: 5 }, {
       kb: {

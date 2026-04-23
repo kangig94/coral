@@ -1,6 +1,5 @@
 /**
- * Discuss view DTO types shared between views.ts (canonical definitions)
- * and projections.ts (builders). Extracted to break the views ↔ projections cycle.
+ * Discuss transcript DTO types shared between api.ts and projections.ts.
  */
 import type { TranscriptEntry } from './session-types.js';
 

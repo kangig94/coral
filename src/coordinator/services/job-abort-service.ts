@@ -1,16 +1,16 @@
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage } from '../../shared/utils.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import {
   isAppServerRuntime,
-  type AbortReason,
   type AppServerRuntime,
   type JobLaunch,
-} from '../../jobs/api.js';
+} from '../../jobs/records.js';
+import type { AbortReason } from '../../jobs/outcome.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { ExecutionLaunchCoordinator, ExecutionLaunchPool as LaunchPool } from '../contracts.js';
 import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
-import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: AbortRegistry;

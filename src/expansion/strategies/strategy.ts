@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import type { Runtime } from '../../runtime/index.js';
+import type { Runtime } from '../../runtime/ports.js';
 import type { InstallResult } from '../contracts.js';
 import {
   equipmentAddonPath as resolveEquipmentAddonPath,

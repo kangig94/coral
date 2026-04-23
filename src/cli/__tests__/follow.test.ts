@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AcceptedLaunchResponse } from '../../transport/http/http-client.js';
+import type { AcceptedLaunchResponse } from '../../transport/http/client.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
 import { createRealRuntime } from '../../runtime/real.js';
@@ -385,7 +385,7 @@ describe('cli follow', () => {
 
   it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
     const { launchAndFollow } = await loadFollowModule();
-    const { BackendUnreachableError } = await import('../../shared/utils.js');
+    const { BackendUnreachableError } = await import('../../infra/http-errors.js');
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
     mockState.ensure.mockResolvedValue(makeBackend());

@@ -8,7 +8,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { jobsReconcile } from '../../jobs/api.js';
 import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
-import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/api.js';
+import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/contracts.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
 import { workflowRecover } from '../../workflow/api.js';
 

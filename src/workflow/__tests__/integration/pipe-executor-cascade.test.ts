@@ -14,7 +14,7 @@ import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { ProviderRegistry } from '../../../providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '../../../providers/contract.js';
 import { toProviderSpec, type Provider } from '../../../testing/scripted-provider.js';
-import type { CallerContext } from '../../../shared/request-context.js';
+import type { CallerContext } from '../../../infra/request-context.js';
 import { streamProviderTerminal } from '../../../providers/stream.js';
 import { workflowCommands, workflowCompiler } from '../../api.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';

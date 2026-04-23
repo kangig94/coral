@@ -19,11 +19,11 @@ import { buildWatchEvents } from '../../projections.js';
 import { DiscussSessionStore } from '../../shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '../../shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
-import type { CallerContext } from '../../../shared/request-context.js';
+import type { CallerContext } from '../../../infra/request-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/index.js';
-import { parseJobStatus } from '../../../jobs/views.js';
+import { parseJobStatus } from '../../../jobs/records.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';
 export const DEFAULT_TS = '2026-03-10T00:00:00.000Z';

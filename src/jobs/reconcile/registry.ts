@@ -1,6 +1,6 @@
-import type { JobLaunch, JobRuntime } from '../views.js';
+import type { JobLaunch, JobRuntime } from '../records.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
-import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
 import type { RuntimeProcessPort } from '../../runtime/ports.js';
 
 export interface RecoveryEntry {

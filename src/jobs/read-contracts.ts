@@ -1,4 +1,4 @@
-import type { JobExit, JobLaunch, JobRuntime, JobStatus } from './views.js';
+import type { JobExit, JobLaunch, JobRuntime, JobStatus } from './records.js';
 
 export type JobProjectionDetail = {
   status: JobStatus | null;

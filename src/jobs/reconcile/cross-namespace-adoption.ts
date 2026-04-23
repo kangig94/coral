@@ -1,4 +1,4 @@
-import { formatError } from '../../shared/utils.js';
+import { formatError } from '../../infra/error-format.js';
 import type { ProgressStore } from '../job-store.js';
 
 /**

@@ -8,8 +8,8 @@ import {
 } from '../state-machine.js';
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { buildWatchEvents } from '../projections.js';
-import { nowIsoString } from '../util/time.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { nowIsoString } from '../../infra/time.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { buildAgentExecutionConfig, isManualParticipant } from './runtime-build.js';
 import * as discussLoop from './loop.js';
 import {
@@ -25,7 +25,7 @@ import {
 import { attachSession, detachSession, getSession, getWatchState as getRegistryWatchState } from './registry.js';
 import { appendRuntimeEvents, afterCommit, commitDecision, isAbortEnded, readSessionEvents } from './persistence.js';
 import type { DiscussSessionStore } from './session-store.js';
-import { backendLog } from '../../shared/backend-log.js';
+import { backendLog } from '../../infra/backend-log.js';
 import { collectBids } from './bid-flow.js';
 import { makeDecisionContext } from './flow-shared.js';
 

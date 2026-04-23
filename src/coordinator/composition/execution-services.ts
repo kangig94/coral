@@ -1,4 +1,4 @@
-import type { CallerContext } from '../../shared/request-context.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { noopAppendEvents } from '../../store/append.js';
 import type { ProjectRequestPort } from '../../coordinator/contracts.js';
 import type { Runtime } from '../../runtime/ports.js';

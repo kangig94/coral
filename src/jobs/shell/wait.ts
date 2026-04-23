@@ -1,5 +1,5 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobProgress, JobStatus } from '../views.js';
+import type { JobProgress, JobStatus } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
 import { createReplayCursor, type ProgressStore } from '../job-store.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';

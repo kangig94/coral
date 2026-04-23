@@ -4,7 +4,7 @@ import { z, ZodError } from 'zod';
 import { BackendToolHttpError } from '../../transport/http/client-errors.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
-import type { JobStatus } from '../../jobs/views.js';
+import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import {
   emitError,

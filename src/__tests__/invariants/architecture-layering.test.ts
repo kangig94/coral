@@ -25,20 +25,32 @@ const DOMAIN_ROOTS = [
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
 const TRANSPORT_ALLOWED = new Set([
   'src/jobs/api.ts',
+  'src/jobs/abort-result.ts',
+  'src/jobs/launch.ts',
+  'src/jobs/phase.ts',
+  'src/jobs/records.ts',
+  'src/jobs/wait.ts',
+  'src/jobs/wait-stream-event.ts',
   'src/sessions/api.ts',
   'src/discuss/api.ts',
   'src/workflow/api.ts',
-  'src/kb/api.ts',
-  'src/store/index.ts',
+  'src/kb/entry-types.ts',
+  'src/kb/tool-contracts.ts',
+  'src/kb/read-contract.ts',
+  'src/providers/request-policy.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/coordinator.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/api.ts',
   'src/coordinator/contracts.ts',
+  'src/coordinator/control.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/workflow-cleanup.ts',
+  'src/coordinator/shutdown/sequence.ts',
+  'src/coordinator/live/curate-scheduler.ts',
+  'src/coordinator/live/durable-transport.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
@@ -50,7 +62,6 @@ const COORDINATOR_ALLOWED = new Set([
   'src/sessions/api.ts',
   'src/discuss/api.ts',
   'src/workflow/api.ts',
-  'src/kb/api.ts',
   'src/kb/contracts.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
@@ -87,7 +98,6 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
         target.startsWith('src/transport/')
         || target.startsWith('src/runtime/')
         || target.startsWith('src/infra/')
-        || target.startsWith('src/shared/')
       ) {
         return false;
       }
@@ -96,7 +106,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
         return false;
       }
 
-      return startsWithAny(target, DOMAIN_ROOTS) || target.startsWith('src/coordinator/');
+      return startsWithAny(target, DOMAIN_ROOTS) || target.startsWith('src/coordinator/') || target.startsWith('src/shared/');
     });
 
     expect(violations).toEqual([]);
@@ -117,7 +127,6 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
         || target.startsWith('src/runtime/')
         || target.startsWith('src/infra/')
         || target.startsWith('src/store/')
-        || target.startsWith('src/shared/')
       ) {
         return false;
       }
@@ -135,6 +144,17 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
   it('#30: production files never import src/testing', () => {
     const violations = collectViolations(
       (source, target) => !source.startsWith('src/testing/') && target.startsWith('src/testing/'),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('kb tool contracts stay on the transport and kb tool-handler seams', () => {
+    const violations = collectViolations(
+      (source, target) =>
+        target === 'src/kb/tool-contracts.ts' &&
+        !source.startsWith('src/transport/') &&
+        source !== 'src/kb/tool-handlers.ts',
     );
 
     expect(violations).toEqual([]);

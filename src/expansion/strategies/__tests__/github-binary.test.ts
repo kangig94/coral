@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '../../../runtime/real.js';
-import type { Runtime } from '../../../runtime/index.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import { GithubBinaryStrategy, type GithubBinaryConfig } from '../github-binary.js';
 import type { ExpansionInstallContext, ExpansionPathHelpers } from '../strategy.js';
 

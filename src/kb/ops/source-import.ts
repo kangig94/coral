@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, extname, join } from 'node:path'
 import { promisify } from 'node:util'
-import { nowIsoString } from '../../shared/utils.js'
+import { nowIsoString } from '../../infra/time.js'
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js'
 import { kbRuntimeDir, sourceImportStageDir } from '../paths.js'
 import type { KbSourceFrontmatter } from '../entry-types.js'

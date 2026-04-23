@@ -1,4 +1,4 @@
-import { nowIsoString } from '../../shared/utils.js';
+import { nowIsoString } from '../../infra/time.js';
 import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { serializeNote } from '../corpus/frontmatter.js';
 import { loadKbNote } from '../read.js';

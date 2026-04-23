@@ -1,5 +1,6 @@
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage, nowIsoString } from '../../shared/utils.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   buildEntityConsolidationDelta,

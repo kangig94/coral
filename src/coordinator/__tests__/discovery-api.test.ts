@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '../discovery.js';
+import type { CoordinatorDiscoveryRecord } from '../../infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   readDiscoveryRecord: vi.fn<(flavor: 'prod' | 'dev') => CoordinatorDiscoveryRecord | null>(),
 }));
 
-vi.mock('../discovery.js', async () => {
-  const actual = await vi.importActual<typeof import('../discovery.js')>('../discovery.js');
+vi.mock('../../infra/backend-discovery.js', async () => {
+  const actual = await vi.importActual<typeof import('../../infra/backend-discovery.js')>(
+    '../../infra/backend-discovery.js',
+  );
   return {
     ...actual,
     readDiscoveryRecord: mockState.readDiscoveryRecord,

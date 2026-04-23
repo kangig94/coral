@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../paths.js';
 import type { Onboarding } from '../../contracts.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import type { Runtime } from '../../../runtime/index.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import { EquipmentAddonStrategy, type EquipmentAddonConfig } from '../equipment-addon.js';
 import type { ExpansionInstallContext, ExpansionPathHelpers } from '../strategy.js';
 

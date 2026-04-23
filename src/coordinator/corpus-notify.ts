@@ -1,5 +1,5 @@
-import type { ConsumerDriver } from '../store/consumer-driver.js';
-import type { KbCorpusPublishCallbacks } from '../kb/api.js';
+import type { ConsumerDriver } from './consumer-driver.js';
+import type { KbCorpusPublishCallbacks } from '../kb/contracts.js';
 
 export function createNotifyCorpusMutation(driver: ConsumerDriver): KbCorpusPublishCallbacks['notifyCorpusMutation'] {
   return async (publication) => {

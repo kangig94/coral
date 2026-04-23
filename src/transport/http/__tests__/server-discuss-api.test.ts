@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
 import { makeEvent } from '../../../discuss/events.js';
-import type { DiscussDetailResponse, DiscussSummaryDto } from '../../../discuss/views.js';
+import type { DiscussDetailResponse, DiscussSummaryDto } from '../../../discuss/api.js';
 import * as discussLoop from '../../../discuss/shell/loop.js';
 import {
   createDiscussContextRegistry,

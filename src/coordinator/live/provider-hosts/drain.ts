@@ -1,4 +1,4 @@
-import { raceTimeout } from '../../../shared/utils.js';
+import { raceTimeout } from '../../../infra/async.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';

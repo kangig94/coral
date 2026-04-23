@@ -2,7 +2,7 @@ import type BetterSqlite3 from 'better-sqlite3';
 
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { AppendedEvent } from '../../store/append.js';
-import type { JobProgress, JobTerminal } from '../views.js';
+import type { JobProgress, JobTerminal } from '../records.js';
 
 export type JobEvent = JobProgress;
 

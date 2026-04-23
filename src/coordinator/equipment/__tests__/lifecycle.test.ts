@@ -17,7 +17,7 @@ import { closeNeedleBackend } from '../../../kb/search/needle-backend.js';
 import { NeedleAddonLoadError } from '../../../kb/search/needle-store.js';
 import { resolveVectorRoute } from '../../../kb/search/router.js';
 import { createNeedleStoreFake } from '../../../testing/fixtures/needle-store-fake.js';
-import { acquireDirectoryLockSync } from '../../../shared/fs-lock.js';
+import { acquireDirectoryLockSync } from '../../../infra/fs-lock.js';
 import { createEquipmentSlot, createSlotRegistry } from '../slots.js';
 
 const FIXED_NOW = new Date('2026-04-22T00:00:00.000Z');

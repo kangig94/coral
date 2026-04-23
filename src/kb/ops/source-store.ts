@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { isNoEntryError } from '../../shared/utils.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import {
   captureRemovedSourceManifestDeltas,
   captureSourceManifestDeltas,

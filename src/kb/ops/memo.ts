@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProjectSource } from '../../infra/paths.js';
-import { isNoEntryError, unlinkIfExists } from '../../shared/utils.js';
+import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
 import { parseMemoFrontmatter, serializeMemoFrontmatter } from '../corpus/frontmatter.js';
 import type {
   KbMemoDeleteInput,

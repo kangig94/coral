@@ -1,6 +1,6 @@
 // Bundles abort/scope job-control (lifecycleController-bound) with the drain admission gate (idleTimer-bound) as one control-plane helper. The two halves share zero state; if drain logic grows beyond the current 4 lines, split into job-control.ts + drain-gate.ts rather than packing more concerns here.
-import type { AbortResult } from '../../shared/execution-contracts.js';
-import { belongsToNamespace } from '../../jobs/views.js';
+import type { AbortResult } from '../../jobs/abort-result.js';
+import { belongsToNamespace } from '../../jobs/records.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { LifecycleController } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';

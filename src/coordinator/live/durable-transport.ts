@@ -1,8 +1,9 @@
 import { createInterface, type Interface } from 'node:readline';
-import { backendLog } from '../../shared/backend-log.js';
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../shared/process-constants.js';
-import { buildJsonRpcError, errorMessage } from '../../shared/utils.js';
-import type { JobRuntime } from '../../jobs/api.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../infra/process-constants.js';
+import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
+import { errorMessage } from '../../infra/error-format.js';
+import type { JobRuntime } from '../../jobs/records.js';
 import { CliBusyError, type CliBusyErrorDetail } from '../../runtime/cli-busy.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';

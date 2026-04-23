@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 import yaml from 'yaml';
-import { isRecord } from '../../../shared/utils.js';
+import { isRecord } from '../../../infra/json.js';
 import {
   extractTitle,
   parseCommunityFrontmatter,

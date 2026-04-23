@@ -1,13 +1,13 @@
 import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
-import type { AbortResult } from '../shared/execution-contracts.js';
+import type { AbortResult } from '../jobs/abort-result.js';
 import type { ProgressStore } from './job-store.js';
 import type { RecoveryRegistry } from './reconcile/registry.js';
 import type { RecoveryCapableService } from './reconcile/contracts.js';
-import type { CallerContext } from '../shared/request-context.js';
-import { providerIdentPattern } from '../shared/identifiers.js';
-import type { JobProgress, JobStatus } from './views.js';
+import type { CallerContext } from '../infra/request-context.js';
+import { providerIdentPattern } from '../infra/identifiers.js';
+import type { JobProgress, JobStatus } from './records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -217,43 +217,4 @@ export const jobsReconcile = {
   },
 } as const;
 
-export { isLivePhase, isTerminalPhase, jobPhaseSchema } from './phase.js';
-export { belongsToNamespace, isAppServerRuntime } from './views.js';
 export type { ProgressStore } from './job-store.js';
-export { AbortRegistry } from './shell/abort-registry.js';
-export type { JobEvent } from './shell/event-subscription.js';
-export { buildCoralInstruction } from './shell/instruction.js';
-export { writeWorkflowResult } from './shell/result-artifact.js';
-export {
-  parseAgentMeta,
-  parseAgentRef,
-  resolveAgent,
-  stripAgentMetadata,
-  AgentNotFoundError,
-  AgentNamespaceNotFoundError,
-  InvalidAgentRefError,
-} from './shell/agent-resolution.js';
-export { createRecoveryCoordinator } from './reconcile/coordinator.js';
-export type { RecoveryCoordinator } from './reconcile/coordinator.js';
-export { createReplacementBackendOwnershipChecker } from './reconcile/ownership-checker.js';
-export { listLiveJobs, markJobAsError } from './reconcile/job-helpers.js';
-export { adoptOrphanedCrossNamespaceJobs } from './reconcile/cross-namespace-adoption.js';
-export { StartupInterruptedError } from './reconcile/errors.js';
-export type { AgentResolutionContext } from './shell/agent-resolution.js';
-export type { JobProjectionDetail } from './read-contracts.js';
-export type { JobLaunchRequest, JobResumeRequest, JobForkRequest, LaunchDecision } from './launch.js';
-export type { JobPhase } from './phase.js';
-export type {
-  AppServerRuntime,
-  JobExit,
-  JobLaunch,
-  JobProgress,
-  JobRuntime,
-  JobStatus,
-  JobTerminal,
-  LaunchState,
-  WorkflowResultMeta,
-} from './views.js';
-export { parseSerializedWaitCursor, serializeWaitCursor } from './wait.js';
-export type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
-export type { AbortReason, TerminalOutcome } from './outcome.js';

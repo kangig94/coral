@@ -1,5 +1,5 @@
 import { decideSynthesis } from '../state-machine.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from './runtime-build.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';

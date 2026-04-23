@@ -10,17 +10,15 @@ import type {
 import type {
   JobForkRequest,
   JobLaunchRequest,
-  JobPhase,
-  JobProgress,
   JobResumeRequest,
-  JobStatus,
   LaunchDecision,
-  WaitStreamEvent,
-  WaitStreamRequest,
-} from '../jobs/api.js';
-import type { CallerContext } from '../shared/request-context.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ToolDomainResult } from '../shared/tool-domain-result.js';
+} from '../jobs/launch.js';
+import type { JobPhase } from '../jobs/phase.js';
+import type { JobProgress, JobStatus } from '../jobs/records.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { CallerContext } from '../infra/request-context.js';
+import type { AbortResult } from '../jobs/abort-result.js';
+import type { ToolDomainResult } from '../transport/tool-result.js';
 
 export type SessionStartInput = Pick<
   JobLaunchRequest,

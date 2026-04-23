@@ -12,8 +12,8 @@ import {
   transcriptResolveTypes,
 } from '../session-types.js';
 import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../../runtime/ports.js';
-import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../../shared/persistence-types.js';
-import { isNoEntryError } from '../../shared/utils.js';
+import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../../discuss/persistence-types.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 
 const finiteNumberSchema = z.number().finite();
 const integerSchema = z.number().int();

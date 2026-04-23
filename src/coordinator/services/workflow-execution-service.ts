@@ -1,6 +1,7 @@
-import { backendLog } from '../../shared/backend-log.js';
-import { errorMessage, nowIsoString } from '../../shared/utils.js';
-import type { CallerContext } from '../../shared/request-context.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
+import { nowIsoString } from '../../infra/time.js';
+import type { CallerContext } from '../../infra/request-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
@@ -17,12 +18,12 @@ import {
   type WorkflowSessionHandle,
 } from '../../workflow/api.js';
 import {
-  writeWorkflowResult,
-  type JobPhase,
   type JobTerminal,
-  type LaunchDecision,
-  type TerminalOutcome,
-} from '../../jobs/api.js';
+} from '../../jobs/records.js';
+import type { JobPhase } from '../../jobs/phase.js';
+import type { LaunchDecision } from '../../jobs/launch.js';
+import type { TerminalOutcome } from '../../jobs/outcome.js';
+import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
 import { SessionClaimError, rejectLaunch } from '../../jobs/shell/contracts.js';

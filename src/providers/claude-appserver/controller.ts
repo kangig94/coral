@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { buildChildEnv } from '../../shared/child-env.js';
-import { formatToolProgress } from '../../shared/format-progress.js';
-import { raceTimeout } from '../../shared/utils.js';
+import { buildChildEnv } from '../../infra/child-env.js';
+import { formatToolProgress } from '../../infra/format-progress.js';
+import { raceTimeout } from '../../infra/async.js';
 import {
   claudeControlRequestSubtypes,
   ndjsonSafeStringify,

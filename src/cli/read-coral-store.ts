@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 
 import { pluginRootNamespace } from '../infra/paths.js';
 import { createRealRuntime } from '../runtime/real.js';
-import { readBuildFlavor } from '../shared/utils.js';
+import { readBuildFlavor } from '../infra/bridge-manifest.js';
 import { CoralStore, openStoreDatabase } from '../store/index.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { storePaths } from '../store/paths.js';

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { isProcessAlive } from '../../../shared/node-process.js';
+import { isProcessAlive } from '../../../infra/node-process.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,

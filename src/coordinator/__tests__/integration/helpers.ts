@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../../../runtime/flavor.js';
-import type { LockRecord } from '../../../shared/lock-types.js';
-import { isNoEntryError } from '../../../shared/utils.js';
+import type { LockRecord } from '../../../infra/lock-record.js';
+import { isNoEntryError } from '../../../infra/fs-errors.js';
+import type { CoordinatorDiscoveryRecord } from '../../../infra/backend-discovery.js';
+import { coordinatorPaths } from '../../../infra/coordinator-paths.js';
 import { storePaths } from '../../../store/paths.js';
-import type { CoordinatorDiscoveryRecord } from '../../discovery.js';
-import { coordinatorPaths } from '../../paths.js';
 
 const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {

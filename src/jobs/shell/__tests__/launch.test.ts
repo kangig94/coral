@@ -7,7 +7,7 @@ import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
 import { createDeferred } from '../../../simulation/core/test-deferred.js';
 import type { JobPhase } from '../../phase.js';
-import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '../../views.js';
+import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '../../records.js';
 import type { WaitStreamEvent } from '../../wait.js';
 import {
   providerContinuityEvent,
@@ -41,7 +41,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../../../co
 import { createRealRuntime } from '../../../runtime/real.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import { SessionManager } from '../../../sessions/shell/store.js';
-import type { CallerContext } from '../../../shared/request-context.js';
+import type { CallerContext } from '../../../infra/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '../../../testing/scripted-provider.js';

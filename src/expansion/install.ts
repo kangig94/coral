@@ -1,9 +1,9 @@
 import { rmSync } from 'node:fs';
 
-import type { Runtime } from '../runtime/index.js';
+import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../shared/fs-lock.js';
+import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { InstallError, InstallResponse, InstallResult } from './contracts.js';
 import { installErrorSchema } from './contracts.js';
 import { CATALOG } from './catalog.js';

@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../../store/consumer-driver.js';
+import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../../coordinator/consumer-driver.js';
 import { readCorpusState, normalizeCorpusCursor } from '../../store/corpus-state.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import {
@@ -18,9 +18,9 @@ import {
   equipmentInstallLockPath,
   type EquipmentPathOptions,
 } from '../../expansion/paths.js';
+import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from '../../expansion/equipment-contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
-import { errorMessage } from '../../shared/utils.js';
-import type { EquipmentView, RegisterEquipmentResult, UnregisterResult } from './contract.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { activateNeedle } from './needle-activation.js';
 import { runtimeActivationFromHandle, type RuntimeActivationSnapshot } from './runtime-activation.js';
 import type { SlotRegistry } from './slots.js';

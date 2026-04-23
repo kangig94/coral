@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
-import type { JobLaunch } from '../../views.js';
+import type { JobLaunch } from '../../records.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { appendEvents } from '../../../store/append.js';
 import { composeReducers } from '../../../store/reducers.js';

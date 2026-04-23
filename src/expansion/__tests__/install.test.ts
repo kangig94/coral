@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Runtime } from '../../runtime/index.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { installResponseSchema } from '../contracts.js';
 import { equipmentDataDir, equipmentInstallLockPath } from '../paths.js';

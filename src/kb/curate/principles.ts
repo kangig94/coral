@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { isNoEntryError, nowIsoString, unlinkIfExists } from '../../shared/utils.js';
+import { isNoEntryError, unlinkIfExists } from '../../infra/fs-errors.js';
+import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contracts.js';
 import {
   capturePrincipleManifestDelta,

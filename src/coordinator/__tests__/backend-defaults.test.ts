@@ -4,8 +4,8 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '../../runtime/real.js';
+import { writeBackendInfo, type BackendInfo } from '../../infra/backend-discovery.js';
 import { resolveBackendDefaults } from '../composition/backend-defaults.js';
-import { writeBackendInfo, type BackendInfo } from '../discovery.js';
 import type { LockRecord } from '../lock.js';
 
 const mockState = vi.hoisted(() => ({

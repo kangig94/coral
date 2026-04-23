@@ -1,8 +1,8 @@
 import type { CoralStore } from '../store/index.js';
-import type { JobTerminal } from '../jobs/views.js';
+import type { JobTerminal } from '../jobs/records.js';
 import { describeTerminalOutcome } from '../jobs/outcome.js';
 import { describeCauseRef } from '../jobs/read/cause-ref-render.js';
-import { assertNever } from '../shared/utils.js';
+import { assertNever } from '../infra/error-format.js';
 
 export {
   WorkflowExecutionError,

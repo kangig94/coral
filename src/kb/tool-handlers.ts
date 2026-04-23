@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { z } from 'zod';
+
 import { deleteFn as kbDeleteFn } from './ops/delete.js';
 import {
   extractBody,
@@ -23,274 +23,43 @@ import { promote as kbPromote } from './ops/promote.js';
 import { reindex as kbReindex } from './ops/reindex.js';
 import { searchKb } from './ops/search.js';
 import { deleteSource, listSources, persistPreparedSource } from './ops/source-store.js';
-import type { KbDiagnoseResult } from './entry-types.js';
 import { isNoteEntry } from './entry-types.js';
 import { update as kbUpdate } from './ops/update.js';
 import { readCurateRetryQueue } from './curate/retry.js';
-import type { PendingRepair } from './curate/state.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
-import {
-  expandKbReadSelector,
-  parseKbSelector,
-  type KbReadKind,
-  type KbResolvedReadSelector,
-} from '../shared/kb-read-contract.js';
-import type { CallerContext } from '../shared/request-context.js';
+import { type KbReadKind } from './read-contract.js';
+import { readEntry, type KbReadPathResolver } from './read.js';
+import type { CallerContext } from '../infra/request-context.js';
 import {
   deriveErrorMessage,
   domainError,
   domainSuccess,
   toolValidationError,
   type ToolDomainResult,
-} from '../shared/tool-domain-result.js';
-import { assertOwnerId } from '../shared/utils.js';
+} from '../transport/tool-result.js';
+import { assertOwnerId } from '../infra/owner-id.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
-
-export { createKbSubsystem } from './subsystem.js';
-export type { CreateKbSubsystemOptions, KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
-export type { CurateHandle } from './curate/types.js';
-export type {
-  KbDeleteInput,
-  KbDiagnoseResult,
-  KbMemoDeleteInput,
-  KbMemoDeleteResult,
-  KbMemoInput,
-  KbMemoListInput,
-  KbMemoListResult,
-  KbMemoPurgeInput,
-  KbMemoPurgeResult,
-  KbPrinciplesInput,
-  KbPrinciplesResult,
-  KbPromoteInput,
-  KbReadInput,
-  KbReadResult,
-  KbReindexInput,
-  KbSearchInput,
-  KbSearchResponse,
-  KbSourceDeleteInput,
-  KbSourceListResult,
-  KbSourcePersistInput,
-  KbUpdateInput,
-  ReindexResult,
-} from './entry-types.js';
-export type {
-  CorpusConsumerApplyContext,
-  CorpusConsumerRegistration,
-  CorpusInterest,
-  CorpusLaneHint,
-  KbCorpusPublishCallbacks,
-  KbCorpusPublication,
-  KbCorpusPublishFailure,
-  KbCorpusSnapshot,
-} from './contracts.js';
-export type { ToolDomainResult } from '../shared/tool-domain-result.js';
-export {
-  closeNeedleBackend,
-  createNeedleBackend,
-  NEEDLE_CONSUMER_ID,
-} from './search/needle-backend.js';
-export { createOramaBaseProjection } from './search/orama-backend.js';
-export {
-  KB_BARE_READ_ORDER,
-  expandKbReadSelector,
-  isKbMemoCandidateSlug,
-  parseKbSelector,
-} from '../shared/kb-read-contract.js';
-export type { KbReadKind, KbReadSelector, KbResolvedReadSelector } from '../shared/kb-read-contract.js';
+import { buildKbDiagnoseResult } from './diagnose.js';
+import {
+  kbDeleteSchema,
+  kbDiagnoseSchema,
+  kbMemoDeleteConsolidatedSchema,
+  kbMemoDeleteSchema,
+  kbMemoListSchema,
+  kbMemoPurgeSchema,
+  kbMemoSchema,
+  kbPrinciplesSchema,
+  kbPromoteSchema,
+  kbReadSchema,
+  kbReindexSchema,
+  kbSearchSchema,
+  kbSourceDeleteSchema,
+  kbSourceImportSchema,
+  kbSourceListSchema,
+  kbUpdateSchema,
+} from './tool-contracts.js';
 
 type KbArgs = Record<string, unknown>;
-
-function parseBooleanQuery(value: unknown): boolean | undefined {
-  if (value === 'true' || value === '1') return true;
-  if (value === 'false' || value === '0') return false;
-  if (value === undefined || value === '') return undefined;
-  return undefined;
-}
-
-const projectRootSchema = z.string().min(1, 'Project root is required');
-const slugSchema = z.string().min(1);
-const transportContextFieldsShape = {
-  projectRoot: projectRootSchema,
-  owner: z.string().optional(),
-  effort: z.string().optional(),
-  claudeModelCap: z.string().optional(),
-} satisfies z.ZodRawShape;
-
-export const kbSearchSchema = z
-  .object({
-    query: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
-    top_k: z.number().int().positive().optional(),
-    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
-  })
-  .strict();
-
-export const kbSearchQuerySchema = z
-  .object({
-    q: z.string().min(1),
-    scope: z.enum(['notes', 'sources', 'communities', 'all']).optional(),
-    top_k: z.coerce.number().int().positive().optional(),
-    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
-  })
-  .strict();
-
-export const kbReadSchema = z
-  .object({
-    note: z.string().min(1),
-  })
-  .strict();
-
-export const kbPromoteSchema = z
-  .object({
-    memo: z.string().min(1),
-    title: z.string().min(1),
-    content: z.string(),
-    domain: z.string().min(1),
-    topic: z.string().min(1),
-  })
-  .strict();
-
-export const kbUpdateSchema = z
-  .object({
-    note: z.string().min(1),
-    title: z.string().optional(),
-    content: z.string().optional(),
-  })
-  .strict();
-
-export const kbDeleteSchema = z
-  .object({
-    note: z.string().min(1),
-  })
-  .strict();
-
-export const kbSourceImportSchema = z
-  .object({
-    slug: z.string().min(1),
-    stagedPath: z.string().min(1),
-    meta: z
-      .object({
-        title: z.string(),
-        type: z.string(),
-        tags: z.array(z.string()),
-        importedAt: z.string(),
-      })
-      .strict(),
-  })
-  .strict();
-
-export const kbSourceListSchema = z.object({}).strict();
-
-export const kbSourceDeleteSchema = z
-  .object({
-    slug: z.string().min(1),
-  })
-  .strict();
-
-export const kbReindexSchema = z.object({}).strict();
-
-export const kbMemoSchema = z
-  .object({
-    topic: z.string().min(1),
-    content: z.string(),
-    owner: z.string().min(1),
-  })
-  .strict();
-
-export const kbMemoListSchema = z
-  .object({
-    owner: z.string().optional(),
-  })
-  .strict();
-
-export const kbMemoListQuerySchema = z
-  .object({
-    projectRoot: projectRootSchema,
-    owner: z.string().optional(),
-  })
-  .strict();
-
-export const kbMemoDeleteSchema = z
-  .object({
-    pattern: z.string().min(1),
-    owner: z.string().optional(),
-  })
-  .strict();
-
-export const kbMemoPurgeSchema = z
-  .object({
-    owner: z.string().optional(),
-  })
-  .strict();
-
-export const kbMemoDeleteConsolidatedSchema = z
-  .object({
-    pattern: z.string().min(1).optional(),
-    owner: z.string().optional(),
-    all: z.boolean().optional(),
-  })
-  .strict();
-
-export const kbMemoDeleteQuerySchema = z
-  .object({
-    projectRoot: projectRootSchema,
-    pattern: z.string().optional(),
-    owner: z.string().optional(),
-    all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
-  })
-  .strict()
-  .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
-    message: 'Exactly one of pattern or all=true must be provided',
-  });
-
-export const kbPrinciplesSchema = z
-  .object({
-    query: z.string().optional(),
-    verbose: z.boolean().optional(),
-    top_k: z.number().int().positive().optional(),
-  })
-  .strict();
-
-export const kbPrinciplesQuerySchema = z
-  .object({
-    q: z.string().optional(),
-    top_k: z.coerce.number().int().positive().optional(),
-    verbose: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
-  })
-  .strict();
-
-export const kbEntriesRequestSchema = kbSearchQuerySchema;
-export const kbNoteReadRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbSourceListRequestSchema = z.object({}).strict();
-export const kbSourceReadRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbCommunityReadRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbMemoReadRequestSchema = z
-  .object({
-    slug: slugSchema,
-    projectRoot: projectRootSchema,
-  })
-  .strict();
-export const kbPrinciplesListRequestSchema = kbPrinciplesQuerySchema;
-export const kbPrincipleReadRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbNoteCreateRequestSchema = kbPromoteSchema.extend(transportContextFieldsShape).strict();
-export const kbSourceCreateRequestSchema = kbSourceImportSchema.extend(transportContextFieldsShape).strict();
-export const kbMemoCreateRequestSchema = kbMemoSchema
-  .omit({ owner: true })
-  .extend(transportContextFieldsShape)
-  .strict();
-export const kbReindexRequestSchema = z.object(transportContextFieldsShape).strict();
-export const kbNoteUpdateRequestSchema = kbUpdateSchema
-  .omit({ note: true })
-  .extend({
-    slug: slugSchema,
-    ...transportContextFieldsShape,
-  })
-  .strict();
-export const kbNoteDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbSourceDeleteRequestSchema = z.object({ slug: slugSchema }).strict();
-export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
-export const kbDiagnoseSchema = z.object({}).strict();
-export const kbDiagnoseRequestSchema = kbDiagnoseSchema;
 
 function kbErrorResult(error: unknown): ToolDomainResult {
   const detail = error instanceof Error ? { message: error.message } : error;
@@ -319,28 +88,6 @@ function invalidRequestResult(error: unknown): ToolDomainResult {
 
 function kbNotFoundResult(kind: KbReadKind, slug: string): ToolDomainResult {
   return domainError('not_found', `KB ${kind} not found: ${slug}`);
-}
-
-function parseDiagnoseSignals(entry: PendingRepair): unknown {
-  if (entry.signalsJson === undefined) {
-    return null;
-  }
-
-  return JSON.parse(entry.signalsJson);
-}
-
-export function buildKbDiagnoseResult(entries: ReadonlyArray<PendingRepair>): KbDiagnoseResult {
-  return {
-    incidents: entries.map((entry) => ({
-      entry_id: entry.entryId,
-      locus: entry.locus ?? null,
-      canonical_incident: entry.canonicalIncident ?? null,
-      repair_hint: entry.repairHint ?? null,
-      signals: parseDiagnoseSignals(entry),
-      retry_count: entry.retryCount ?? 0,
-      retry_not_before: entry.retryNotBefore ?? entry.detectedAt,
-    })),
-  };
 }
 
 function normalizeKbSlug(
@@ -392,24 +139,17 @@ function resolvePrinciplePath(slug: string, kbSubsystem?: KnowledgeBaseRuntime):
   return kbSubsystem?.kb.principlePath(slug) ?? principlePathFromName(slug);
 }
 
-function dispatchKbReadCandidate(
-  candidate: KbResolvedReadSelector,
-  ctx: CallerContext,
-  runtime: KbToolRuntime,
-  kbSubsystem?: KnowledgeBaseRuntime,
-): ToolDomainResult {
-  switch (candidate.kind) {
-    case 'memo':
-      return handleKbMemoRead(candidate.slug, ctx, runtime);
-    case 'note':
-      return handleKbNoteRead(candidate.slug, ctx, runtime, kbSubsystem);
-    case 'community':
-      return handleKbCommunityRead(candidate.slug, kbSubsystem, runtime);
-    case 'source':
-      return handleKbSourceRead(candidate.slug, kbSubsystem, runtime);
-    case 'principle':
-      return handleKbPrincipleRead(candidate.slug, kbSubsystem, runtime);
+function kbReadPaths(kbSubsystem?: KnowledgeBaseRuntime): Partial<KbReadPathResolver> | undefined {
+  if (kbSubsystem === undefined) {
+    return undefined;
   }
+
+  return {
+    notePath: (slug) => kbSubsystem.kb.notePath(slug),
+    sourcePath: (slug) => kbSubsystem.kb.sourcePath(slug),
+    communityPath: (slug) => kbSubsystem.kb.communityPath(slug),
+    principlePath: (slug) => kbSubsystem.kb.principlePath(slug),
+  };
 }
 
 export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
@@ -609,19 +349,18 @@ export function handleKbRead(
   }
 
   try {
-    const selector = parseKbSelector(parsed.data.note);
-
-    for (const candidate of expandKbReadSelector(selector)) {
-      const result = dispatchKbReadCandidate(candidate, ctx, runtime, kbSubsystem);
-      if (!result.ok && result.code === 'not_found') {
-        continue;
-      }
-
-      return result;
+    return domainSuccess(
+      readEntry(parsed.data, {
+        projectRoot: ctx.projectRoot,
+        storage: runtime.storage,
+        paths: kbReadPaths(kbSubsystem),
+      }),
+    );
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message === `KB entry not found: ${parsed.data.note}`) {
+      return domainError('not_found', error.message);
     }
 
-    return domainError('not_found', `KB entry not found: ${parsed.data.note}`);
-  } catch (error: unknown) {
     return invalidRequestResult(error);
   }
 }

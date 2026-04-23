@@ -10,8 +10,8 @@ import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '..
 import type { JobContinuitySnapshot } from './continuity.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
-import { formatElapsed } from '../shared/format-progress.js';
-import { nowIsoString } from '../shared/utils.js';
+import { formatElapsed } from '../infra/format-progress.js';
+import { nowIsoString } from '../infra/time.js';
 import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
@@ -24,7 +24,7 @@ import type {
   JobStatus,
   JobTerminal,
   LaunchState,
-} from './views.js';
+} from './records.js';
 
 export type ReplayCursor = {
   lastEventId: number;

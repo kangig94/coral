@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { composeCoralPaths } from '../paths.js';
-import { coordinatorPaths } from '../paths.js';
-import { corpusPaths } from '../../kb/corpus/paths.js';
+import { composeCoralPaths } from '../../infra/coral-paths.js';
+import { coordinatorPaths } from '../../infra/coordinator-paths.js';
+import { corpusPaths } from '../../infra/corpus-paths.js';
 import { equipmentPaths } from '../../expansion/paths.js';
-import { exportsPaths } from '../../jobs/exports/paths.js';
+import { exportsPaths } from '../../infra/exports-paths.js';
 import { storePaths } from '../../store/paths.js';
 
 describe('composeCoralPaths', () => {

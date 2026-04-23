@@ -1,9 +1,9 @@
 import type { LaunchDecision, LaunchPool } from '../launch.js';
 import type { JobPhase } from '../phase.js';
-import type { JobKind, JobLaunch } from '../views.js';
+import type { JobKind, JobLaunch } from '../records.js';
 import type { ProviderRequest } from '../../providers/contract.js';
-import { resolveEffort } from '../../shared/schemas.js';
-import type { JobRuntime } from '../views.js';
+import { resolveEffort } from '../../providers/request-policy.js';
+import type { JobRuntime } from '../records.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 export type { LaunchPool } from '../launch.js';

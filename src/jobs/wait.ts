@@ -1,4 +1,4 @@
-import type { JobTerminal } from './views.js';
+import type { JobTerminal } from './records.js';
 import type { JobContinuitySnapshot } from './continuity.js';
 
 export type WaitCursor = {
