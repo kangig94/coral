@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildBidPrompt, buildFirstTurnInstruction, buildSpeechPrompt } from '../../shell/prompts.js';
-import type { PromptContext } from '../../shell/prompts.js';
+import { buildBidPrompt, buildFirstTurnInstruction, buildSpeechPrompt } from '../prompts.js';
+import type { PromptContext } from '../prompts.js';
 
 function createPromptContext(overrides?: Partial<PromptContext>): PromptContext {
   return {

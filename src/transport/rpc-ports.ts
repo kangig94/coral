@@ -19,7 +19,7 @@ import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import type { KbToolResult } from '../kb/result.js';
-import type { ToolDomainResult } from '../transport/tool-result.js';
+import type { ToolDomainResult } from './tool-result.js';
 
 export type SessionStartInput = Pick<
   JobLaunchRequest,

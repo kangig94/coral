@@ -29,6 +29,9 @@ const COORDINATOR_ROOT = 'src/coordinator';
 const CLIENT_ROOT = ['src', 'client'].join('/');
 const SKILLS_ROOT = ['src', 'skills'].join('/');
 const SHARED_ROOT = ['src', 'shared'].join('/');
+const SIMULATION_ROOT = ['src', 'simulation'].join('/');
+const ROOT_SCENARIOS_ROOT = 'scenarios';
+const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
 const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
 const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
 const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
@@ -236,6 +239,15 @@ describe('architecture boundary guard', () => {
     const sharedFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, SHARED_ROOT));
     expect(sharedFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, SHARED_ROOT))).toBe(false);
+  });
+  it('the debug-only simulation tool must stay out of src', () => {
+    const simulationFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, SIMULATION_ROOT));
+    expect(simulationFiles).toEqual([]);
+    expect(existsSync(resolve(REPO_ROOT, SIMULATION_ROOT))).toBe(false);
+  });
+  it('the debug-only simulation scenario corpus must live with the simulation tool', () => {
+    expect(existsSync(resolve(REPO_ROOT, ROOT_SCENARIOS_ROOT))).toBe(false);
+    expect(existsSync(resolve(REPO_ROOT, DEBUG_SIMULATION_SCENARIOS_ROOT))).toBe(true);
   });
   it('the retired kb api shim must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_KB_API);

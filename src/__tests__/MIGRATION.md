@@ -85,7 +85,7 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 - `discuss-test-helpers.ts`
 - `discuss-tools.test.ts`
 
-### Simulation handoff (Phase 7, `nextHome = src/simulation/**`)
+### Simulation handoff (Phase 7, `nextHome = tools/simulation/**`, tests under `tests/simulation/**`)
 
 - `simulation-adversarial.test.ts`
 - `simulation-recording.test.ts`

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { ChildProcessLike } from '../../runtime/ports.js';
-import { SimulationRuntime, flushMicrotasks } from '../../simulation/core/backend.js';
+import { SimulationRuntime, flushMicrotasks } from '../../../tools/simulation/core/backend.js';
 import { loadRecording } from '../../infra/process/spawn-recording.js';
 import { EventEmitterObserver, attachRecordingObserver, observeRuntimeSpawns } from './observer.js';
 

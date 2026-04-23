@@ -1,8 +1,8 @@
 {
   "roots": [
-    "src/simulation/core/backend.ts",
-    "src/simulation/adversarial.ts",
-    "src/simulation/runner.ts"
+    "tools/simulation/core/backend.ts",
+    "tools/simulation/adversarial.ts",
+    "tools/simulation/runner.ts"
   ],
   "forbidden": [
     "src/coordinator/bootstrap.ts",

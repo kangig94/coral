@@ -318,7 +318,7 @@ describe('hooks.json', () => {
 });
 
 describe('pre-compact.mjs', () => {
-  it('exits 0, emits a stub log line, and does not write snapshots', () => {
+  it('exits 0, emits a no-op log line, and does not write snapshots', () => {
     const fixture = createFixture();
     const jobDir = join(fixture.jobsDir, 'test-job-live');
     mkdirSync(jobDir, { recursive: true });
@@ -348,7 +348,7 @@ describe('pre-compact.mjs', () => {
     expect(existsSync(fixture.snapshotDir)).toBe(false);
     expect(JSON.parse(result.stderr.trim())).toMatchObject({
       hook: 'pre-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no relevant jobs to snapshot',
     });
   });
 
@@ -369,7 +369,7 @@ describe('pre-compact.mjs', () => {
     expect(existsSync(fixture.snapshotDir)).toBe(false);
     expect(JSON.parse(result.stderr.trim())).toMatchObject({
       hook: 'pre-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no relevant jobs to snapshot',
     });
   });
 });

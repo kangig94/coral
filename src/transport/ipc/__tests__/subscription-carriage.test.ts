@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parseSseBlock } from '../../../transport/http/sse.js';
+import { parseSseBlock } from '../../http/sse.js';
 import { parseWaitStreamEvent } from '../../../jobs/wait-stream-event.js';
 import { serializeWaitCursor, type WaitStreamEvent } from '../../../jobs/wait.js';
 import { createHttpHandler } from '../../http/handler.js';

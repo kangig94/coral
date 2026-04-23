@@ -1,4 +1,3 @@
-/** Reusable test utility — exposes resolve/reject handles from a Promise. */
 export type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T | PromiseLike<T>) => void;

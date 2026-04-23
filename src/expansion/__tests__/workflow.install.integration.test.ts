@@ -12,7 +12,7 @@ import { equip, info, list, unequip, update } from '../workflow.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecResult, StoragePort } from '../../runtime/ports.js';
-import { SimulationRuntime } from '../../simulation/runtime.js';
+import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import type { IpcClient } from '../../transport/ipc/client.js';
 import type { EnsuredIpcClient } from '../../transport/ipc/ensure.js';
 

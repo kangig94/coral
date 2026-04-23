@@ -5,7 +5,8 @@ vi.mock('../backend-log.js', () => ({
   backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
 
-import { buildChildEnv, envBudgetBytes, measureEnv } from '../child-env.js';
+import { buildChildEnv } from '../child-env.js';
+import { measureEnv, resolveEnvBudgetBytes as envBudgetBytes } from '../env-sanitize.js';
 import { backendLog } from '../backend-log.js';
 
 /** Fill env with vars of given size until total exceeds budget. Track size incrementally. */

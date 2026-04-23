@@ -78,7 +78,6 @@ const CONTRACT_TARGETS = new Set([
   'src/kb/search/contract.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
-  'src/simulation/recording.ts',
 ]);
 const TRANSPORT_TARGETS = new Set([
   'src/transport/ipc/server.ts',

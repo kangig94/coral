@@ -7,8 +7,9 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = dirname(__filename);
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
+const SIMULATION_ROOT = resolve(REPO_ROOT, 'tools', 'simulation');
 const MANIFEST_PATH = resolve(REPO_ROOT, 'sealed-inventory.json');
-const SIMULATION_CORE_ROOT = 'src/simulation/core/backend.ts';
+const SIMULATION_CORE_ROOT = 'tools/simulation/core/backend.ts';
 const SERVER_ROOT = 'src/coordinator/bootstrap.ts';
 
 function toPosixPath(filePath) {
@@ -19,7 +20,7 @@ function toCanonicalRepoPath(filePath) {
   return toPosixPath(relative(REPO_ROOT, filePath));
 }
 
-function listProductionSourceFiles(dirPath) {
+function listSourceFiles(dirPath) {
   const files = [];
 
   for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
@@ -30,7 +31,7 @@ function listProductionSourceFiles(dirPath) {
         continue;
       }
 
-      files.push(...listProductionSourceFiles(entryPath));
+      files.push(...listSourceFiles(entryPath));
       continue;
     }
 
@@ -311,7 +312,10 @@ function findDirectEdge(source, target, edgeGraph) {
 
 function main() {
   const manifest = loadManifest();
-  const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
+  const productionFilePaths = [
+    ...listSourceFiles(SRC_ROOT),
+    ...listSourceFiles(SIMULATION_ROOT),
+  ].sort();
   const productionFiles = new Set(productionFilePaths.map((filePath) => toCanonicalRepoPath(filePath)));
 
   validateManifestPaths(manifest, productionFiles);

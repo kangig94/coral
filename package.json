@@ -17,6 +17,7 @@
     "build": "tsc && node scripts/build-server.mjs --flavor prod",
     "build:dev": "tsc && node scripts/build-server.mjs --flavor dev",
     "build:release": "tsc && node scripts/build-server.mjs --flavor prod --release",
+    "check:simulation": "node scripts/check-simulation.mjs",
     "dev": "CORAL_FLAVOR=dev tsc --watch",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
@@ -26,7 +27,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:e2e:lifecycle": "vitest run --config vitest.e2e-lifecycle.config.ts",
-    "test:simulation": "vitest run --config vitest.simulation.config.ts"
+    "test:simulation": "vitest run --config vitest.simulation.config.ts",
+    "simulate": "node scripts/run-simulation.mjs"
   },
   "dependencies": {
     "@orama/orama": "^3.1.18",

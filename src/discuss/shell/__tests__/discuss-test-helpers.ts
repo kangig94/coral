@@ -13,16 +13,16 @@ import {
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextConstructionOptions,
   type DiscussContextRegistry,
-} from '../../shell/live-registry.js';
-import type { DiscussContext } from '../../shell/context.js';
+} from '../live-registry.js';
+import type { DiscussContext } from '../context.js';
 import { buildWatchEvents } from '../../projections.js';
-import { DiscussSessionStore } from '../../shell/session-store.js';
-import { attachSession, detachSession, listSessions } from '../../shell/registry.js';
-import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
+import { DiscussSessionStore } from '../session-store.js';
+import { attachSession, detachSession, listSessions } from '../registry.js';
+import { isAbortEnded, readSessionEvents } from '../persistence.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { SimulationRuntime } from '../../../simulation/core/backend.js';
+import { SimulationRuntime } from '../../../../tools/simulation/core/backend.js';
 import { parseJobStatus } from '../../../jobs/records.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';

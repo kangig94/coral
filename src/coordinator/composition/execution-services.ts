@@ -1,8 +1,8 @@
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { noopAppendEvents } from '../../store/append.js';
-import type { ProjectRequestPort } from '../../coordinator/contracts.js';
+import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ExecutionServiceDeps, RecoveryCapableService } from '../../coordinator/contracts.js';
+import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
 import type { BackendWorld } from './backend-world.js';
 
 type CreateExecutionServicesDeps = {

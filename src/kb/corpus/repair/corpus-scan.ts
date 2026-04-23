@@ -6,7 +6,7 @@ import {
   parseCommunityFrontmatter,
   parseFrontmatter,
   parseSourceFrontmatter,
-} from '../../corpus/frontmatter.js';
+} from '../frontmatter.js';
 import {
   noteEntryId,
   sourceEntryId,

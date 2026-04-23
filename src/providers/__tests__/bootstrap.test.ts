@@ -98,19 +98,6 @@ describe('registerBuiltInProviders', () => {
     expect(() => registerBuiltInProviders(registry)).toThrow(/already registered/i);
   });
 
-  it('clear resets registered providers and allows re-bootstrap', () => {
-    const registry = new ProviderRegistry();
-
-    registerBuiltInProviders(registry);
-    registry.clear();
-
-    expect(registry.getAll()).toEqual([]);
-
-    registerBuiltInProviders(registry);
-
-    expect(providerNames(registry.getAll())).toEqual(['codex', 'claude']);
-  });
-
   it('replaces a built-in provider when CORAL_SCRIPTED_PROVIDER_SPEC targets the same name', async () => {
     const registry = createBuiltInProviderRegistry({
       [CORAL_SCRIPTED_PROVIDER_SPEC_ENV]: JSON.stringify({

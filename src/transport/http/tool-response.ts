@@ -6,7 +6,7 @@ import {
   domainSuccess,
   toolValidationError,
   type ToolDomainResult,
-} from '../../transport/tool-result.js';
+} from '../tool-result.js';
 
 export function formatZodError(error: ZodError): { message: string; detail: { issues: ZodIssue[] } } {
   const first = error.issues[0];

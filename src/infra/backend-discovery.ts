@@ -4,8 +4,8 @@ import { dirname } from 'node:path';
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { RuntimeEnvPort, RuntimeStoragePort } from '../runtime/ports.js';
 import { probeProcessStartedAtSeconds as sharedProbeProcessStartedAtSeconds } from './node-process.js';
-import { isNoEntryError } from '../infra/fs-errors.js';
-import { readBuildFlavor } from '../infra/bridge-manifest.js';
+import { isNoEntryError } from './fs-errors.js';
+import { readBuildFlavor } from './bridge-manifest.js';
 import { coordinatorPaths } from './coordinator-paths.js';
 
 export interface CoordinatorDiscoveryRecord {

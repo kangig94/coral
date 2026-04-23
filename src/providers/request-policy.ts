@@ -1,6 +1,6 @@
-import type { EffortLevel } from '../providers/contract.js';
+import type { EffortLevel } from './contract.js';
 
-export type { EffortLevel } from '../providers/contract.js';
+export type { EffortLevel } from './contract.js';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
 export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };

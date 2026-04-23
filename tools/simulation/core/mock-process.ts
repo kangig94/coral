@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { join, normalize } from 'node:path';
 import { PassThrough } from 'node:stream';
-import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
-import { attachSpawnRecordingMetadata } from '../../infra/process/spawn-recording.js';
-import { nowIsoString } from '../../infra/time.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../src/runtime/durable-runtime.js';
+import { attachSpawnRecordingMetadata } from '../../../src/infra/process/spawn-recording.js';
+import { nowIsoString } from '../../../src/infra/time.js';
 import type {
   ChildOutputChunk,
   MockDurableScript,
@@ -23,8 +23,8 @@ import type {
   RuntimeExecOptions,
   RuntimeSpawnOptions,
   RuntimeTimerHandle,
-} from '../../runtime/ports.js';
-import { createDeferred, type Deferred } from './test-deferred.js';
+} from '../../../src/runtime/ports.js';
+import { createDeferred, type Deferred } from '../../../src/infra/deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { type VirtualTime } from './virtual-time.js';

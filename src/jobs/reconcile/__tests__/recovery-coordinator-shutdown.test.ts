@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { createRealRuntime } from '../../../runtime/real.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { SimulationRuntime } from '../../../simulation/runtime.js';
+import { SimulationRuntime } from '../../../../tools/simulation/runtime.js';
 import type { JobLaunch } from '../../records.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 

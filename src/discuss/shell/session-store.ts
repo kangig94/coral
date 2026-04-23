@@ -7,7 +7,7 @@ import type {
   DiscussDiscoverySession,
   DiscussSummaryIndexData,
   DiscussSummaryIndexRow,
-} from '../../discuss/persistence-types.js';
+} from '../persistence-types.js';
 import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '../reducer.js';
 import { acquireDirectoryLock, acquireDirectoryLockSync, isAlreadyExistsError, type DirectoryLockDeps } from '../../infra/fs-lock.js';
 import type { DiscussPathResolver, StoragePort, TimePort, RuntimeTimerHandle } from '../../runtime/ports.js';

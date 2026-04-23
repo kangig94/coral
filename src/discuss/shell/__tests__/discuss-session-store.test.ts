@@ -28,7 +28,7 @@ import {
 import { replayDiscussEvents } from '../../reducer.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '../../state-machine.js';
 import type { DiscussCreateInput, Result } from '../../session-types.js';
-import { DiscussSessionStore, DiscussStaleWriteError } from '../../shell/session-store.js';
+import { DiscussSessionStore, DiscussStaleWriteError } from '../session-store.js';
 import { CoralSetupError } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 

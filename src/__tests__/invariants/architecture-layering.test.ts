@@ -20,7 +20,6 @@ const DOMAIN_ROOTS = [
   'src/discuss/',
   'src/workflow/',
   'src/kb/',
-  'src/simulation/',
   'src/providers/',
   'src/expansion/',
 ] as const;
@@ -81,7 +80,6 @@ const DOMAIN_ROOT_DIRS = [
   'src/discuss',
   'src/workflow',
   'src/kb',
-  'src/simulation',
   'src/providers',
   'src/expansion',
 ] as const;

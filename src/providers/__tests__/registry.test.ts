@@ -138,13 +138,4 @@ describe('ProviderRegistry', () => {
     expect(registry.getAll()).toEqual([]);
     expect(registry.get('codex')).toBeUndefined();
   });
-
-  it('clear resets registered providers', () => {
-    const registry = new ProviderRegistry();
-    registry.register(makeSpec('codex'));
-
-    registry.clear();
-
-    expect(registry.getAll()).toEqual([]);
-  });
 });

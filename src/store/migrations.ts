@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type BetterSqlite3 from 'better-sqlite3';
 import type { StoragePort } from '../runtime/ports.js';
@@ -27,9 +28,16 @@ function resolveModuleDir(): string {
   return join(process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd(), 'src', 'store');
 }
 
-const SOURCE_MIGRATIONS_DIR = join(resolveModuleDir(), 'migrations');
-const BUNDLED_MIGRATIONS_DIR =
-  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined;
+const MODULE_MIGRATIONS_DIR = join(resolveModuleDir(), 'migrations');
+const RUNTIME_ROOT = process.env.CLAUDE_PLUGIN_ROOT ?? process.env.INIT_CWD ?? process.cwd();
+const DEFAULT_MIGRATIONS_DIR_CANDIDATES = [
+  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'dist', 'store', 'migrations') : undefined,
+  typeof __PLUGIN_ROOT__ === 'string' ? join(__PLUGIN_ROOT__, 'build', 'store', 'migrations') : undefined,
+  MODULE_MIGRATIONS_DIR,
+  join(RUNTIME_ROOT, 'dist', 'store', 'migrations'),
+  join(RUNTIME_ROOT, 'build', 'store', 'migrations'),
+  join(RUNTIME_ROOT, 'src', 'store', 'migrations'),
+].filter((candidate): candidate is string => typeof candidate === 'string');
 const SEEDED_MIGRATIONS_DIR = '/tmp/sim/store/migrations';
 
 type MigrationStorage = Pick<StoragePort, 'readdirSync' | 'readFileSync'>;
@@ -75,7 +83,7 @@ function parseVersion(filename: string): number | null {
 }
 
 export function resolveDefaultMigrationsDir(): string {
-  return BUNDLED_MIGRATIONS_DIR ?? SOURCE_MIGRATIONS_DIR;
+  return DEFAULT_MIGRATIONS_DIR_CANDIDATES.find((candidate) => existsSync(candidate)) ?? MODULE_MIGRATIONS_DIR;
 }
 
 export function copyMigrationAssets(

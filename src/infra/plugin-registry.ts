@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { RuntimeEnvPort, RuntimeStoragePort } from '../runtime/ports.js';
-import { isNoEntryError } from '../infra/fs-errors.js';
+import { isNoEntryError } from './fs-errors.js';
 
 const installedPluginEntrySchema = z
   .object({

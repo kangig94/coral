@@ -3,7 +3,7 @@ import { isProcessAlive } from '../../infra/node-process.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
-} from '../../transport/http/sse.js';
+} from './sse.js';
 import { isRecord } from '../../infra/json.js';
 
 export type ShutdownResult =

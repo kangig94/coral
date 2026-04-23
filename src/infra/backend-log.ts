@@ -5,7 +5,7 @@
  * Output goes to stderr so backend logs stay separate from stdout responses.
  *
  * Usage:
- *   import { backendLog } from '../infra/backend-log.js';
+ *   import { backendLog } from './backend-log.js';
  *   backendLog.init({ version: '0.4.12', bundleHash: 'abc123' });
  *   backendLog.info('Server started');
  *   backendLog.warn('Session file corrupt, skipping');

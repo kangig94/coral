@@ -168,7 +168,6 @@ Options:
 Commands:
   codex [options] [agent]   codex provider operations
   claude [options] [agent]  claude provider operations
-  simulate <file>           Run a simulation scenario from a YAML document
   jobs [options]            List jobs for the current project
   wait [options]            Stream job progress (text output)
   abort [options]           Abort running jobs

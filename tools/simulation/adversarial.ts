@@ -1,8 +1,8 @@
 import { join } from 'node:path';
-import { createReplayCursor, type ReplayCursor } from '../jobs/job-store.js';
-import { SessionManager } from '../sessions/shell/store.js';
-import type { BackendServerInfo, LifecycleState } from '../coordinator/control.js';
-import { backendInfoPath } from '../infra/backend-discovery.js';
+import { createReplayCursor, type ReplayCursor } from '../../src/jobs/job-store.js';
+import { SessionManager } from '../../src/sessions/shell/store.js';
+import type { BackendServerInfo, LifecycleState } from '../../src/coordinator/control.js';
+import { backendInfoPath } from '../../src/infra/backend-discovery.js';
 import {
   createSimulationBackend,
   DEFAULT_EPOCH_MS,
@@ -18,12 +18,12 @@ import {
 import { normalizeWorldConfig } from './scenario-normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
 import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './scenario-schema.js';
-import { noopAppendEvents } from '../store/append.js';
-import type { LaunchDecision } from '../jobs/launch.js';
-import { isTerminalPhase } from '../jobs/phase.js';
-import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../jobs/records.js';
-import type { DurableCliRuntimeRecord, DurableProcessExit } from '../runtime/durable-runtime.js';
-import type { SessionEntry } from '../sessions/entry.js';
+import { noopAppendEvents } from '../../src/store/append.js';
+import type { LaunchDecision } from '../../src/jobs/launch.js';
+import { isTerminalPhase } from '../../src/jobs/phase.js';
+import type { JobProgress, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
+import type { SessionEntry } from '../../src/sessions/entry.js';
 
 const STATUS_FILE = 'status.json';
 const RUNTIME_FILE = 'runtime.json';

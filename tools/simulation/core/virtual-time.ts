@@ -1,4 +1,4 @@
-import type { RuntimeTimerHandle, TimePort } from '../../runtime/ports.js';
+import type { RuntimeTimerHandle, TimePort } from '../../../src/runtime/ports.js';
 
 export const DEFAULT_EPOCH_MS = 1_000_000;
 

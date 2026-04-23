@@ -10,8 +10,8 @@ export default defineConfig({
       'src/workflow/**/__tests__/integration/**/*.test.ts',
       'src/__tests__/integration/agent-wire-contract.test.ts',
       'src/**/__tests__/e2e/**/*.test.ts',
-      'src/simulation/__tests__/simulation*.test.ts',
-      'src/simulation/__tests__/simulation-runner.test.ts',
+      // `npm test` runs simulation in a single-fork batch via scripts/test.mjs.
+      'tests/simulation/**',
     ],
     setupFiles: ['vitest.setup.ts'],
   },

@@ -46,9 +46,4 @@ export class ProviderRegistry implements ProviderCatalog {
   getAll(): ProviderSpec[] {
     return [...this.providers.values()];
   }
-
-  /** Reset provider registry state. Intended for test isolation. */
-  clear(): void {
-    this.providers.clear();
-  }
 }

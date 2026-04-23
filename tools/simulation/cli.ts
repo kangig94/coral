@@ -1,14 +1,9 @@
 import { readFileSync } from 'node:fs';
-import type { Command } from 'commander';
 import yaml from 'yaml';
 import { ZodError } from 'zod';
-import { runScenario, type ScenarioResult, type StepResult } from '../simulation/runner.js';
-import { simulationDocumentSchema } from '../simulation/scenario-schema.js';
-import type { SimulationWorld } from '../simulation/adversarial.js';
-
-type SimulateHelpers = {
-  emitError: (error: unknown) => void;
-};
+import { runScenario, type ScenarioResult, type StepResult } from './runner.js';
+import { simulationDocumentSchema } from './scenario-schema.js';
+import type { SimulationWorld } from './adversarial.js';
 
 function summarizeStep(step: StepResult): string | null {
   if (step.type === 'launch' && step.detail && typeof step.detail === 'object') {
@@ -79,6 +74,10 @@ function normalizeSimulateError(error: unknown): unknown {
   return new Error(`Simulation document validation failed: ${message}`);
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function withMutedStderr<T>(fn: () => Promise<T>): Promise<T> {
   const originalWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((() => true) as unknown) as typeof process.stderr.write;
@@ -89,36 +88,38 @@ async function withMutedStderr<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function registerSimulateCommand(program: Command, helpers: SimulateHelpers): void {
-  const command = program.command('simulate');
-  command
-    .description('Run a simulation scenario from a YAML document')
-    .argument('<file>', 'Scenario YAML file')
-    .action(async (file: string) => {
-      let world: SimulationWorld | null = null;
+export async function runSimulationCli(argv = process.argv.slice(2)): Promise<void> {
+  const file = argv[0];
+  if (!file || argv.length !== 1 || file === '--help' || file === '-h') {
+    process.stdout.write('Usage: npm run simulate -- tools/simulation/scenarios/<scenario.yaml>\n');
+    process.exitCode = file === '--help' || file === '-h' ? 0 : 2;
+    return;
+  }
 
+  let world: SimulationWorld | null = null;
+
+  try {
+    const raw = readFileSync(file, 'utf8');
+    const doc = simulationDocumentSchema.parse(yaml.parse(raw));
+    const run = await runScenario(doc);
+    world = run.world;
+
+    process.stdout.write(formatScenarioResult(run.result) + '\n');
+    process.exitCode = run.result.passed ? 0 : 1;
+  } catch (error: unknown) {
+    process.stderr.write(`${errorMessage(normalizeSimulateError(error))}\n`);
+    process.exitCode = 1;
+  } finally {
+    if (world) {
+      const worldToCleanup = world;
       try {
-        const raw = readFileSync(file, 'utf8');
-        const doc = simulationDocumentSchema.parse(yaml.parse(raw));
-        const run = await runScenario(doc);
-        world = run.world;
-
-        process.stdout.write(formatScenarioResult(run.result) + '\n');
-        process.exitCode = run.result.passed ? 0 : 1;
-      } catch (error: unknown) {
-        helpers.emitError(normalizeSimulateError(error));
-      } finally {
-        if (world) {
-          const worldToCleanup = world;
-          try {
-            await withMutedStderr(() => worldToCleanup.teardown());
-          } catch (cleanupError: unknown) {
-            process.stderr.write(
-              `Simulation cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`,
-            );
-            process.exitCode = 1;
-          }
-        }
+        await withMutedStderr(() => worldToCleanup.teardown());
+      } catch (cleanupError: unknown) {
+        process.stderr.write(`Simulation cleanup failed: ${errorMessage(cleanupError)}\n`);
+        process.exitCode = 1;
       }
-    });
+    }
+  }
 }
+
+void runSimulationCli();

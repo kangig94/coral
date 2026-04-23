@@ -9,7 +9,7 @@ import { pluginRootNamespace } from '../../infra/paths.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { type LockRecord } from '../../infra/lock-record.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
-import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../../transport/http/sse.js';
+import { HEALTH_TIMEOUT_MS as SHARED_HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';

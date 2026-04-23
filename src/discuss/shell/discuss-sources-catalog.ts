@@ -12,7 +12,7 @@ import {
   transcriptResolveTypes,
 } from '../session-types.js';
 import type { DiscussPathResolver, RuntimeDirentLike, StoragePort } from '../../runtime/ports.js';
-import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../../discuss/persistence-types.js';
+import type { DiscussDiscoveryData, DiscussDiscoverySession, DiscussSummaryIndexData } from '../persistence-types.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 
 const finiteNumberSchema = z.number().finite();

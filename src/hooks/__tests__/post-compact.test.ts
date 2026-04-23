@@ -23,7 +23,7 @@ function writeSnapshot(snapshotDir: string, capturedAtMs: number): string {
 }
 
 describe('post-compact.mjs', () => {
-  it('exits 0, emits a single structured log line, and leaves snapshots untouched', () => {
+  it('exits 0, emits a single no-op log line, and leaves snapshots untouched', () => {
     const fixture = createFixture();
     const snapshotPath = writeSnapshot(fixture.snapshotDir, Date.now() - 15 * 60_000);
 
@@ -41,7 +41,7 @@ describe('post-compact.mjs', () => {
     expect(existsSync(snapshotPath)).toBe(true);
     expect(JSON.parse(result.stderr.trim())).toMatchObject({
       hook: 'post-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no compact snapshot found',
     });
   });
 
@@ -61,7 +61,7 @@ describe('post-compact.mjs', () => {
     expect(result.stdout).toBe('');
     expect(JSON.parse(result.stderr.trim())).toMatchObject({
       hook: 'post-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no compact snapshot found',
     });
   });
 });

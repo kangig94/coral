@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { resolveInjectMd } from '../inject.js';
 import type { ProviderRequest } from '../contract.js';
-import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../../providers/request-policy.js';
+import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort, type EffortLevel } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { PermissionMode } from './control-protocol.js';
 import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';

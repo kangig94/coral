@@ -1,4 +1,4 @@
-import type { EffortLevel } from '../../providers/request-policy.js';
+import type { EffortLevel } from '../request-policy.js';
 import type { Provider } from '../contract.js';
 import type { ProviderCliRunner } from '../cli-runner.js';
 import { providerRequestFailed } from '../fault.js';

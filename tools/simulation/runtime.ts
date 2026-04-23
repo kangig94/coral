@@ -1,14 +1,14 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-import { composeChildEnv } from '../infra/env-sanitize.js';
-import { MAX_BUFFER } from '../infra/process-constants.js';
-import type { Runtime, RuntimeExecOptions, ProcessPort } from '../runtime/ports.js';
-import { copyMigrationAssets, resolveDefaultMigrationsDir } from '../store/migrations.js';
+import { composeChildEnv } from '../../src/infra/env-sanitize.js';
+import { MAX_BUFFER } from '../../src/infra/process-constants.js';
+import type { Runtime, RuntimeExecOptions, ProcessPort } from '../../src/runtime/ports.js';
+import { copyMigrationAssets, resolveDefaultMigrationsDir } from '../../src/store/migrations.js';
 import { InMemoryStorage, type InMemoryRoots } from './core/memory-storage.js';
 import { MockProcessSpawner } from './core/mock-process.js';
 import { InMemoryObserver, InMemoryPaths, SealedEnv, SequentialIds } from './core/runtime-doubles.js';
 import { DEFAULT_EPOCH_MS, VirtualTime } from './core/virtual-time.js';
-import { buildExecPromise } from '../runtime/exec-builder.js';
+import { buildExecPromise } from '../../src/runtime/exec-builder.js';
 
 const SIMULATION_ENV_BUDGET_BYTES = 2 * 1024 * 1024;
 const nodeFsMigrationStorage = {

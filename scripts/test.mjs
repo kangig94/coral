@@ -6,8 +6,9 @@
  * To mark a test as flaky, add `// @flaky` anywhere in the file (typically
  * line 1 with a short reason).
  *
- * The main/flaky batches and the simulation batch run sequentially to avoid
- * cross-batch contention in CLI and backend integration tests.
+ * `npm test` includes both the production-unit batch and the simulation
+ * harness batch. Simulation keeps a dedicated Vitest config only for
+ * single-fork isolation, not because it is optional.
  */
 
 import { spawn } from 'child_process';
@@ -31,21 +32,21 @@ function runAsync(cmd) {
   });
 }
 
-const jobs = [];
+const commands = [];
 
 if (flaky.length) {
   const excludes = flaky.map((f) => `--exclude '${f}'`).join(' ');
-  jobs.push(runAsync(`npx vitest run ${excludes}`));
-  jobs.push(runAsync(`npx vitest run ${flaky.join(' ')}`));
+  commands.push(`npx vitest run ${excludes}`);
+  commands.push(`npx vitest run ${flaky.join(' ')}`);
 } else {
-  jobs.push(runAsync('npx vitest run'));
+  commands.push('npx vitest run');
 }
 
-jobs.push(runAsync('npx vitest run --config vitest.simulation.config.ts'));
+commands.push('npx vitest run --config vitest.simulation.config.ts');
 
 try {
-  for (const job of jobs) {
-    await job;
+  for (const command of commands) {
+    await runAsync(command);
   }
 } catch {
   process.exit(1);

@@ -3,7 +3,7 @@ import { isProcessAlive } from '../../infra/node-process.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
-} from '../../transport/http/sse.js';
+} from './sse.js';
 import { isBackendHealth } from './backend-health.js';
 import { TransientHttpError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';

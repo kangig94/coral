@@ -1,5 +1,5 @@
 import { dirname, normalize } from 'node:path';
-import type { RuntimeDirentLike, StorageData, StoragePort, TimePort } from '../../runtime/ports.js';
+import type { RuntimeDirentLike, StorageData, StoragePort, TimePort } from '../../../src/runtime/ports.js';
 import { DEFAULT_CORAL_ROOT, DEFAULT_INSTALLATIONS_DIR, DEFAULT_JOBS_DIR, DEFAULT_SESSION_BASE } from './constants.js';
 
 type FileNode = {

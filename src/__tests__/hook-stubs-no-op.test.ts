@@ -14,7 +14,7 @@ describe('hook stubs no-op (AC10)', () => {
     const logLine = JSON.parse(result.stderr.trim()) as { hook?: unknown; message?: unknown };
     expect(logLine).toMatchObject({
       hook: 'post-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no compact snapshot found',
     });
   });
 
@@ -30,7 +30,7 @@ describe('hook stubs no-op (AC10)', () => {
     const logLine = JSON.parse(result.stderr.trim()) as { hook?: unknown; message?: unknown };
     expect(logLine).toMatchObject({
       hook: 'pre-compact',
-      message: 'stub: no-op until Phase 7 rewrites to read projection_jobs',
+      message: 'no relevant jobs to snapshot',
     });
   });
 });

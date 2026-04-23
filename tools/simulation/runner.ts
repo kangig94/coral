@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { extractRuntimePid, SimulationWorld, type WaitDetail } from './adversarial.js';
 import type { ExpectStep, KillStep, SimulationDocument, Step } from './scenario-schema.js';
-import { errorMessage } from '../infra/error-format.js';
+import { errorMessage } from '../../src/infra/error-format.js';
 
 export type StepResult = {
   stepIndex: number;

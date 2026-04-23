@@ -48,7 +48,7 @@ import {
   parseJsonResponse,
   parseSseBlock,
   TOOL_TIMEOUT_MS,
-} from '../../transport/http/sse.js';
+} from './sse.js';
 import type { JobProgress, JobStatus } from '../../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent } from '../../jobs/wait.js';
 import { parseWaitStreamEvent } from '../../jobs/wait-stream-event.js';

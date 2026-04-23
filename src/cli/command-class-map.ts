@@ -66,7 +66,6 @@ export const commandClassMap = {
 export const commandContainerPaths = new Set<string>(['backend', 'discuss', 'expansion', 'kb', 'kb source', 'kb memo']);
 
 export const commandClassExemptions = {
-  simulate: 'local-only simulation runner',
   'backend status': 'local operational health probe',
   'backend shutdown': 'local operational drain request',
   'discuss watch': 'cursor-based unary snapshot kept unchanged until discuss-read redesign',

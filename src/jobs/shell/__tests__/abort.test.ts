@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
-import { createDeferred as _createDeferred } from '../../../simulation/core/test-deferred.js';
+import { createDeferred as _createDeferred } from '../../../infra/deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type {
   JobLaunch as _JobLaunch,

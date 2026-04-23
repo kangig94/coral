@@ -13,7 +13,6 @@ import { registerProviderCommands } from './commands/provider.js';
 import { registerSessionCommands } from './commands/session.js';
 import { registerWorkflowCommands } from './commands/workflow.js';
 import { emitError } from './command-output.js';
-import { registerSimulateCommand } from './simulate.js';
 
 export { emitAcceptedLaunchResponse, emitError, getOutputFormat, isAcceptedLaunchResponse } from './command-output.js';
 
@@ -27,7 +26,6 @@ export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInP
     .description('Coral CLI — invoke providers, monitor jobs, and manage discuss sessions');
 
   registerProviderCommands(program, providerRegistry);
-  registerSimulateCommand(program, { emitError });
   registerSessionCommands(program, providerRegistry);
   registerWorkflowCommands(program);
   registerBackendCommands(program);

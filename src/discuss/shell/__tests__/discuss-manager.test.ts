@@ -1,22 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
-import * as discussLoop from '../../shell/loop.js';
-import * as discussSpeechFlow from '../../shell/speech-flow.js';
+import * as discussLoop from '../loop.js';
+import * as discussSpeechFlow from '../speech-flow.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   getOrCreate as getOrCreateDiscussContext,
   hasRunningSessions,
-} from '../../shell/live-registry.js';
-import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../../shell/runtime-build.js';
+} from '../live-registry.js';
+import { PURPOSE_BID, PURPOSE_SPEECH, runPlainTurn } from '../runtime-build.js';
 import {
   abortDiscussSession,
   getWatchState,
   recoverPersistedSessionsFromStore,
   startDiscussSession,
-} from '../../shell/operations.js';
-import { detachSession, getSession } from '../../shell/registry.js';
+} from '../operations.js';
+import { detachSession, getSession } from '../registry.js';
 import {
   DEFAULT_TOPIC,
   advanceDiscussRuntime,

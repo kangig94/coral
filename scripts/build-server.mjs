@@ -40,8 +40,9 @@ function copyStoreSqlAssets(outRoot) {
 }
 
 const { flavor, release } = parseArgs(process.argv.slice(2));
-// Verify simulation sealing before bundling
-execFileSync('node', ['scripts/verify-simulation-sealing.mjs'], { stdio: 'inherit' });
+// Debug-only simulation must keep compiling against production source and must
+// stay sealed from concrete provider/bootstrap implementations.
+execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
 copyStoreSqlAssets('dist');
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));

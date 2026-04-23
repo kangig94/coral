@@ -8,7 +8,7 @@ import type { AcceptedLaunchResponse } from '../../transport/http/client.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
 import { createRealRuntime } from '../../runtime/real.js';
-import { createDeferred } from '../../simulation/core/test-deferred.js';
+import { createDeferred } from '../../infra/deferred.js';
 import { openStoreDatabase } from '../../store/index.js';
 import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';

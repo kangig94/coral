@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runScenario } from '../runner.js';
-import { simulationDocumentSchema } from '../scenario-schema.js';
-import type { SimulationWorld } from '../adversarial.js';
+import { runScenario } from '../../tools/simulation/runner.js';
+import { simulationDocumentSchema } from '../../tools/simulation/scenario-schema.js';
+import type { SimulationWorld } from '../../tools/simulation/adversarial.js';
 
 const FIRST_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000002';
 const FIRST_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000003';
@@ -342,7 +342,7 @@ describe('scenario runner', () => {
 
   it('round-trips example scenario YAML files through parse, validate, and re-serialize', () => {
     for (const fileName of EXAMPLE_SCENARIOS) {
-      const raw = readFileSync(join(process.cwd(), 'scenarios', fileName), 'utf8');
+      const raw = readFileSync(join(process.cwd(), 'tools/simulation/scenarios', fileName), 'utf8');
       const validated = simulationDocumentSchema.parse(yaml.parse(raw));
       const reparsed = simulationDocumentSchema.parse(yaml.parse(yaml.stringify(validated)));
       expect(reparsed).toEqual(validated);

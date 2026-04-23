@@ -1,4 +1,4 @@
-import type { ThreadStartResponse, TurnStartResponse } from '../../providers/codex/protocol.js';
+import type { ThreadStartResponse, TurnStartResponse } from '../../../src/providers/codex/protocol.js';
 import type { MockSpawnScript } from './mock-process.js';
 import { MockStdin } from './mock-process.js';
 

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '../agent-resolution.js';
-import { createDeferred } from '../../../simulation/core/test-deferred.js';
+import { createDeferred } from '../../../infra/deferred.js';
 import type { JobPhase } from '../../phase.js';
 import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '../../records.js';
 import type { WaitStreamEvent } from '../../wait.js';

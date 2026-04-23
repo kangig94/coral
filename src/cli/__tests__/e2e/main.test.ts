@@ -36,7 +36,6 @@ describe('cli main — help and structure', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('codex');
     expect(stdout).toContain('claude');
-    expect(stdout).toContain('simulate');
     expect(stdout).toContain('wait');
     expect(stdout).toContain('abort');
     expect(stdout).toContain('workflow');
@@ -68,13 +67,6 @@ describe('cli main — help and structure', () => {
     expect(stdout).toContain('--jobs');
     expect(stdout).toContain('--cursor');
     expect(stdout).toContain('--embed');
-  });
-
-  it('shows simulate subcommand help', () => {
-    const { stdout, status } = runCli(['simulate', '--help']);
-    expect(status).toBe(0);
-    expect(stdout).toContain('Usage: coral-cli simulate [options] <file>');
-    expect(stdout).toContain('Scenario YAML file');
   });
 
   it('shows discuss subcommand help', () => {
@@ -129,32 +121,6 @@ describe('cli main — wait --jobs validation', () => {
     const { stderr, status } = runCli(['wait', '--jobs', '']);
     expect(status).toBe(2);
     expect(stderr).toContain('job');
-  });
-});
-
-describe('cli main — simulate', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'coral-cli-simulate-'));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('runs a bundled simulation scenario and emits text output', () => {
-    const scenarioFile = join(tmpDir, 'scenario.yaml');
-    const contents = ['world: {}', 'steps:', '  - type: expect', '    jobCount: 0'].join('\n');
-
-    writeFileSync(scenarioFile, contents, 'utf8');
-
-    const { stdout, stderr, status } = runCli(['simulate', scenarioFile]);
-
-    expect(status).toBe(0);
-    expect(stderr).toBe('');
-    expect(stdout).toContain('PASS 0 expect');
-    expect(stdout).toContain('Scenario passed');
   });
 });
 

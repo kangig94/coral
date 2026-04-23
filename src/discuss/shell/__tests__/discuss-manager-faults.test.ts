@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
-import * as discussLoop from '../../shell/loop.js';
-import * as discussBidFlow from '../../shell/bid-flow.js';
-import { recoverPersistedSessionsFromStore } from '../../shell/operations.js';
-import { getSession } from '../../shell/registry.js';
-import * as discussSpeechFlow from '../../shell/speech-flow.js';
+import * as discussLoop from '../loop.js';
+import * as discussBidFlow from '../bid-flow.js';
+import { recoverPersistedSessionsFromStore } from '../operations.js';
+import { getSession } from '../registry.js';
+import * as discussSpeechFlow from '../speech-flow.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,

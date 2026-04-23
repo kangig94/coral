@@ -1,4 +1,4 @@
-import type { AbortResult } from '../../jobs/abort-result.js';
+import type { AbortResult } from '../abort-result.js';
 import type { RuntimeIdsPort } from '../../runtime/ports.js';
 
 export class AbortRegistry {

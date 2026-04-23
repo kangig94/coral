@@ -3,10 +3,14 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as esbuild from 'esbuild';
 
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = resolve(dirname(__filename), '..');
 const DIST_ROOT = resolve(ROOT, 'dist');
+const BUILD_ROOT = resolve(ROOT, 'build');
+const SIMULATION_BUNDLE = resolve(BUILD_ROOT, 'simulation-core.mjs');
+const DISCUSS_HELPERS_BUNDLE = resolve(BUILD_ROOT, 'discuss-golden-helpers.mjs');
 const FIXTURE_DIR = resolve(ROOT, 'src/discuss/__tests__/fixtures');
 const FIXTURE_JSON = resolve(FIXTURE_DIR, 'session-store-golden.json');
 const FIXTURE_EVENTS = resolve(FIXTURE_DIR, 'session-store-golden.events.jsonl');
@@ -76,10 +80,29 @@ function buildNormalizer(rootValues) {
 }
 
 async function main() {
-  assertBuilt(resolve(DIST_ROOT, 'discuss/shell/__tests__/discuss-test-helpers.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/operations.js'));
   assertBuilt(resolve(DIST_ROOT, 'discuss/shell/persistence.js'));
-  assertBuilt(resolve(DIST_ROOT, 'simulation/core/backend.js'));
+  mkdirSync(BUILD_ROOT, { recursive: true });
+  const debugBundleOptions = {
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'esm',
+    external: ['node:*', 'better-sqlite3'],
+  };
+  await Promise.all([
+    esbuild.build({
+      ...debugBundleOptions,
+      entryPoints: [resolve(ROOT, 'src/discuss/shell/__tests__/discuss-test-helpers.ts')],
+      outfile: DISCUSS_HELPERS_BUNDLE,
+      external: [...debugBundleOptions.external, 'vitest'],
+    }),
+    esbuild.build({
+      ...debugBundleOptions,
+      entryPoints: [resolve(ROOT, 'tools/simulation/core/backend.ts')],
+      outfile: SIMULATION_BUNDLE,
+    }),
+  ]);
 
   const [
     helpers,
@@ -87,10 +110,10 @@ async function main() {
     persistence,
     simulation,
   ] = await Promise.all([
-    import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/__tests__/discuss-test-helpers.js')).href),
+    import(pathToFileURL(DISCUSS_HELPERS_BUNDLE).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/operations.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/persistence.js')).href),
-    import(pathToFileURL(resolve(DIST_ROOT, 'simulation/core/backend.js')).href),
+    import(pathToFileURL(SIMULATION_BUNDLE).href),
   ]);
 
   const { createDiscussHarness, advanceDiscussRuntime, cleanupDiscussHarnesses } = helpers;

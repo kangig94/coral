@@ -15,18 +15,18 @@ import {
   createDiscussContextRegistry,
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
-} from '../../shell/live-registry.js';
-import type { AgentConfig, DiscussContext } from '../../shell/context.js';
-import { runPlainTurn } from '../../shell/runtime-build.js';
-import { getWatchState, startDiscussSession, submitManualBid } from '../../shell/operations.js';
-import { readSessionEvents } from '../../shell/persistence.js';
-import { detachSession } from '../../shell/registry.js';
-import { knownDiscussSources } from '../../shell/session-read-service.js';
-import { DiscussSessionStore } from '../../shell/session-store.js';
-import * as discussLoop from '../../shell/loop.js';
+} from '../live-registry.js';
+import type { AgentConfig, DiscussContext } from '../context.js';
+import { runPlainTurn } from '../runtime-build.js';
+import { getWatchState, startDiscussSession, submitManualBid } from '../operations.js';
+import { readSessionEvents } from '../persistence.js';
+import { detachSession } from '../registry.js';
+import { knownDiscussSources } from '../session-read-service.js';
+import { DiscussSessionStore } from '../session-store.js';
+import * as discussLoop from '../loop.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
-import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../../../simulation/core/backend.js';
-import { ScenarioHttpRequest, ScenarioHttpResponse } from '../../../simulation/scenario-http.js';
+import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../../../../tools/simulation/core/backend.js';
+import { ScenarioHttpRequest, ScenarioHttpResponse } from '../../../../tools/simulation/scenario-http.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';

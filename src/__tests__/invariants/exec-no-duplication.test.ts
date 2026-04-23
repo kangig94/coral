@@ -11,7 +11,7 @@ describe('exec factory no-duplication invariant (AC11a)', () => {
   it.each(EXEC_PATTERNS)('pattern "%s" appears only in src/runtime/exec-builder.ts', (pattern) => {
     const builder = readFileSync(join(ROOT, 'src/runtime/exec-builder.ts'), 'utf-8');
     const real = readFileSync(join(ROOT, 'src/runtime/real.ts'), 'utf-8');
-    const simulation = readFileSync(join(ROOT, 'src/simulation/runtime.ts'), 'utf-8');
+    const simulation = readFileSync(join(ROOT, 'tools/simulation/runtime.ts'), 'utf-8');
 
     expect(builder.includes(pattern)).toBe(true);
     const realDefines = new RegExp(`function\\s+${pattern}|const\\s+${pattern}\\s*=`).test(real);

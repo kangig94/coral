@@ -5,41 +5,41 @@ import {
   removeBackendInfoIfOwner,
   writeBackendInfo,
   type BackendInfo,
-} from '../../infra/backend-discovery.js';
-import { ProviderRegistry } from '../../providers/registry.js';
+} from '../../../src/infra/backend-discovery.js';
+import { ProviderRegistry } from '../../../src/providers/registry.js';
 import type {
   JobTerminal,
   PreflightRuntime,
   ProviderSpec,
-} from '../../providers/contract.js';
-import { readAppendedLines } from '../../infra/file-tail.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
+} from '../../../src/providers/contract.js';
+import { readAppendedLines } from '../../../src/infra/file-tail.js';
+import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import {
   providerProgressEvent,
   providerTerminalEvent,
   streamProviderEvents,
-} from '../../providers/stream.js';
-import { providerRequestFailed } from '../../providers/fault.js';
-import { formatError } from '../../infra/error-format.js';
-import { nowIsoString } from '../../infra/time.js';
+} from '../../../src/providers/stream.js';
+import { providerRequestFailed } from '../../../src/providers/fault.js';
+import { formatError } from '../../../src/infra/error-format.js';
+import { nowIsoString } from '../../../src/infra/time.js';
 import { SimulationRuntime } from '../runtime.js';
-import { sendJson } from '../../transport/http/handler.js';
-import { TypedEventBus } from '../../coordinator/event-bus.js';
-import { LaunchCoordinator } from '../../coordinator/live/admission.js';
-import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';
-import { ProgressStore } from '../../jobs/job-store.js';
-import type { Runtime, StoragePort } from '../../runtime/ports.js';
-import { createBackendCore } from '../../coordinator/composition/create-backend-core.js';
-import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../coordinator/composition/backend-core-types.js';
-import { coordinatorPaths } from '../../infra/coordinator-paths.js';
-import { discussReconcile } from '../../discuss/reconcile.js';
-import { ExecutionService } from '../../coordinator/execution-service.js';
-import { jobsReconcile } from '../../jobs/startup.js';
-import { openBackendStoreDb } from '../../store/db.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
-import { createProjectionSessionLookup } from '../../store/queries/sessions.js';
-import { createFilesystemSessionLookup, mergeSessionLookups } from '../../sessions/lookup.js';
-import { workflowRecover } from '../../workflow/startup.js';
+import { sendJson } from '../../../src/transport/http/handler.js';
+import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
+import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
+import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/pool.js';
+import { ProgressStore } from '../../../src/jobs/job-store.js';
+import type { Runtime, StoragePort } from '../../../src/runtime/ports.js';
+import { createBackendCore } from '../../../src/coordinator/composition/create-backend-core.js';
+import type { BackendCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/backend-core-types.js';
+import { coordinatorPaths } from '../../../src/infra/coordinator-paths.js';
+import { discussReconcile } from '../../../src/discuss/reconcile.js';
+import { ExecutionService } from '../../../src/coordinator/execution-service.js';
+import { jobsReconcile } from '../../../src/jobs/startup.js';
+import { openBackendStoreDb } from '../../../src/store/db.js';
+import { createDefaultUpcasterRegistry } from '../../../src/store/upcasters.js';
+import { createProjectionSessionLookup } from '../../../src/store/queries/sessions.js';
+import { createFilesystemSessionLookup, mergeSessionLookups } from '../../../src/sessions/lookup.js';
+import { workflowRecover } from '../../../src/workflow/startup.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-process.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';

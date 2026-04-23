@@ -1158,7 +1158,7 @@ src/
       sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
       tool-response.ts               — MCP-style response wrapper
 
-  runtime/                           ← 6-subport Runtime; simulation substrate
+  runtime/                           ← 6-subport Runtime abstraction
     invocation-context.ts            — transport-independent project/plugin/env invocation input
     ports.ts                         — time, storage, paths, process, ids, env
     real.ts                          — production implementations
@@ -1325,12 +1325,6 @@ src/
     wait.ts                          — await-step state + multi-atom wait + cascade
     recover.ts                       — stale-atom recovery paths
 
-  simulation/                        ← promoted top-level
-    runtime.ts                       — SimulationRuntime (Runtime impl)
-    runner.ts                        — deterministic run loop
-    recording.ts                     — event recording for replay tests
-    adversarial.ts                   — adversarial scenario helpers
-
   testing/                           ← test helpers; never imported by production
     deferred.ts                      — test-only async primitive
     hooks/                           — hook test helpers + hook tests
@@ -1342,9 +1336,23 @@ src/
   hooks/                             ← Node.js ESM hook scripts (preserved)
 ```
 
+```
+tools/
+  simulation/                        ← debug-only executable harness; never user-facing, never bundled into coral-cli
+    cli.ts                           — `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` entrypoint
+    scenarios/*.yaml                 — executable debug scenario corpus
+    runtime.ts                       — SimulationRuntime (Runtime impl)
+    runner.ts                        — deterministic run loop
+    recording.ts                     — event recording for replay diagnostics
+    adversarial.ts                   — adversarial lifecycle/recovery scenario helpers
+    core/
+      backend.ts, memory-storage.ts, mock-app-server.ts, mock-process.ts,
+      runtime-doubles.ts, virtual-time.ts
+```
+
 ### 10.1 What is deleted
 
-- `src/execution/` — dissolves into `coordinator/`, `jobs/`, `sessions/`, `transport/`, `simulation/`
+- `src/execution/` — dissolves into `coordinator/`, `jobs/`, `sessions/`, `transport/`, and debug-only `tools/simulation/`
 - `src/shared/` — every file relocates to a domain or `infra/` or `testing/`
 - `src/client/` — replaced by `store/queries/` + `transport/ipc/client.ts` + `transport/http/client.ts`
 - `src/bridge/` transport — replaced by `transport/`
@@ -1367,7 +1375,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 | `src/kb/curate/community-detection.ts` | 37K | Same file; algorithm cohesion > arbitrary split. Sub-routines stay here. |
 | `src/kb/curate/classification.ts` | 34K | Same file. Domain algorithm. |
 | `src/kb/curate/state.ts` | 31K | REDUCED — curate state moves to `kb_curate_scheduler` + `kb_curate_retry_queue` SQLite tables (§3.1). Remaining in-memory state logic collapses to ~5K. |
-| `src/execution/simulation/world.ts` + `core/*` | ~80K | `simulation/runtime.ts`, `simulation/runner.ts`, `simulation/recording.ts`, `simulation/adversarial.ts`, `simulation/core/memory-storage.ts`, `simulation/core/mock-app-server.ts`, `simulation/core/mock-process.ts`, `simulation/core/virtual-time.ts`. Simulation substrate intact; internal decomposition matches current `core/` structure. |
+| `src/execution/simulation/world.ts` + `core/*` | ~80K | `tools/simulation/runtime.ts`, `tools/simulation/runner.ts`, `tools/simulation/recording.ts`, `tools/simulation/adversarial.ts`, `tools/simulation/core/memory-storage.ts`, `tools/simulation/core/mock-app-server.ts`, `tools/simulation/core/mock-process.ts`, `tools/simulation/core/virtual-time.ts`. Simulation is a debug-only executable harness outside `src`; production code never imports it. |
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
@@ -1547,7 +1555,7 @@ Middleware composition wraps it unchanged, exercising the full stack without rea
 
 #### 12.4.3 Recording and cross-authority scenarios
 
-`simulation/recording.ts` captures Journal event traces and Corpus snapshot states. A recorded run replays byte-identical across both authorities. Cross-authority scenarios — a discuss synthesis that references a KB entry, a workflow that promotes a memo, abort-during-app-server-turn that interrupts a KB operation — all expressible as a combination of injected Journal events and injected Corpus state snapshots.
+`tools/simulation/recording.ts` captures Journal event traces and Corpus snapshot states. A recorded run replays byte-identical across both authorities. Cross-authority scenarios — a discuss synthesis that references a KB entry, a workflow that promotes a memo, abort-during-app-server-turn that interrupts a KB operation — all expressible as a combination of injected Journal events and injected Corpus state snapshots. Executable scenario YAML belongs with the debug harness under `tools/simulation/scenarios/`, not under `tests/` and not at the repository root. `npm run build` runs `check:simulation` (typecheck + sealing), so a production change that blocks simulation fails before bundling.
 
 ---
 
@@ -1688,7 +1696,7 @@ This section documents the **design delta** between today's codebase and the end
 
 | Today | Endpoint form |
 |---|---|
-| `src/execution/` | `coordinator/` + `jobs/` + `sessions/` + `transport/` + `simulation/` |
+| `src/execution/` | `coordinator/` + `jobs/` + `sessions/` + `transport/` + `tools/simulation/` |
 | `src/shared/` | Every file relocates to a domain or `infra/` or `testing/` |
 | `src/client/` | `store/queries/` + `transport/ipc/client.ts` + `transport/http/client.ts` |
 | `src/bridge/` transport | `transport/` |
@@ -1749,7 +1757,7 @@ Tag for future reference: resolves during step 5 of derivation order (see §15) 
 
 ### 14.3 What survives unchanged (in concept; location may move)
 
-- The 6-subport `Runtime` abstraction (simulation substrate).
+- The 6-subport `Runtime` abstraction (production port boundary; debug simulation supplies an alternate implementation from `tools/simulation`).
 - `TerminalOutcome` **reshapes** (not a rename). The old 4-variant shape (`completed | aborted | provider_exit | coral_fault{fault: CoralFault}`) becomes a 5-variant shape (`completed | aborted | provider_exit | failed{causeRef} | job_fault{JobLifecycleFault}`). The `coral_fault` variant disappears; its 12-member payload union is replaced by `causeRef` pointers into the Journal and a 3-variant `JobLifecycleFault` for wrapper-local failures. Location moves from `src/shared/` to `src/jobs/outcome.ts`. All existing call sites must cut over; this is a breaking change under the clean-slate rewrite.
 - `JobLifecycleFault` (3 variants: `ghost_launch`, `wrapper_lost`, `wrapper_crashed`) — lives at `src/jobs/outcome.ts`.
 - Discuss reducer + projections — location unchanged; envelope now global.

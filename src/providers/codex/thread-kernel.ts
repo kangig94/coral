@@ -1,5 +1,5 @@
 import { errorMessage } from '../../infra/error-format.js';
-import { resolveModelTier } from '../../providers/request-policy.js';
+import { resolveModelTier } from '../request-policy.js';
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server/driver.js';

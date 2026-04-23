@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeEvent } from '../../events.js';
 import type { BidResult, SpeechResult } from '../../session-types.js';
-import * as discussLoop from '../../shell/loop.js';
+import * as discussLoop from '../loop.js';
 import {
   createDiscussContextRegistry,
   get as getDiscussContext,
   getOrCreate as getOrCreateDiscussContext,
   type DiscussContextRegistry,
-} from '../../shell/live-registry.js';
-import type { DiscussContext } from '../../shell/context.js';
+} from '../live-registry.js';
+import type { DiscussContext } from '../context.js';
 import {
   handleDiscussAbort,
   handleDiscussBid,
@@ -17,8 +17,8 @@ import {
   handleDiscussSpeech,
   handleDiscussStart,
   handleDiscussWatch,
-} from '../../shell/tools.js';
-import { getSession } from '../../shell/registry.js';
+} from '../tools.js';
+import { getSession } from '../registry.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { ToolDomainResult } from '../../../transport/http/tool-response.js';
@@ -819,7 +819,7 @@ describe('execution discuss tools', () => {
       await persistSession({ ...harness, context }, { sessionId: 'sess-err' });
 
       // Make getSession throw a plain Error (simulates unexpected failure inside the operation)
-      vi.spyOn(await import('../../shell/registry.js'), 'getSession').mockImplementationOnce(() => {
+      vi.spyOn(await import('../registry.js'), 'getSession').mockImplementationOnce(() => {
         throw new Error('disk full');
       });
 

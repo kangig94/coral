@@ -6,9 +6,11 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 | Command | Description |
 | --- | --- |
-| `npm run build` | TypeScript compile plus esbuild bundle to `build/` (prod flavor) |
-| `npm run build:dev` | TypeScript compile plus esbuild bundle to `build/` (dev flavor) |
-| `npm run build:release` | TypeScript compile plus esbuild bundle (prod), then copy `build/` to `bridge/` |
+| `npm run build` | TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (prod flavor) |
+| `npm run build:dev` | TypeScript compile, simulation compatibility check, plus esbuild bundle to `build/` (dev flavor) |
+| `npm run build:release` | TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `build/` to `bridge/` |
+| `npm run check:simulation` | Typecheck `tools/simulation` against `src` and verify sealing |
+| `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` | Run the debug-only simulation harness |
 | `npm run dev` | TypeScript watch mode |
 | `npm test` | Run the test suite |
 
@@ -37,7 +39,7 @@ src/**/*.ts
   ▼  tsc
 dist/**/*.js + dist/**/*.d.ts
   │
-  ▼  verify-simulation-sealing
+  ▼  check:simulation (`tsc -p tsconfig.simulation.json` + sealing)
   │
   ▼  esbuild (`scripts/build-server.mjs`)
 build/coral-backend.cjs
@@ -62,7 +64,7 @@ The build script also emits `build/coral-claude-appserver.cjs` from `src/provide
 
 `scripts/build-server.mjs` does five things:
 
-1. Runs simulation sealing verification (`verify-simulation-sealing.mjs`).
+1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 4. Bundles the backend, CLI, and Claude appserver helper to `build/`.
@@ -110,7 +112,7 @@ Tests run with:
 npm test
 ```
 
-The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts.
+The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
 
 ## Claude Code Integration
 

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createDeferred } from '../../simulation/core/test-deferred.js';
+import { createDeferred } from '../../infra/deferred.js';
 import { decode, encode, type JsonRpcRequest } from '../json-rpc.js';
 import { subscribeIpcMethod } from '../ipc/client.js';
 

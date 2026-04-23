@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { TypedEventBus } from '../../coordinator/event-bus.js';
 import { type StoragePort } from '../../runtime/ports.js';
-import { SimulationRuntime } from '../../simulation/runtime.js';
+import { SimulationRuntime } from '../../../tools/simulation/runtime.js';
 import { applyMigrations } from '../../store/migrations.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
 import { isLivePhase } from '../phase.js';

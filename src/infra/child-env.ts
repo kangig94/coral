@@ -13,9 +13,6 @@ import {
   stripInternalCoralKeys,
 } from './env-sanitize.js';
 
-/** Re-export for test access. */
-export { measureEnv, resolveEnvBudgetBytes as envBudgetBytes } from './env-sanitize.js';
-
 /**
  * Build a sanitized environment for a child CLI process.
  *

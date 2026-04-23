@@ -1,10 +1,10 @@
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
-import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
-import { runScenario, type StepResult } from '../runner.js';
-import type { SimulationDocument } from '../scenario-schema.js';
-import { SimulationWorld } from '../adversarial.js';
+import { isDurableCliRuntime } from '../../src/runtime/durable-runtime.js';
+import { runScenario, type StepResult } from '../../tools/simulation/runner.js';
+import type { SimulationDocument } from '../../tools/simulation/scenario-schema.js';
+import { SimulationWorld } from '../../tools/simulation/adversarial.js';
 
 type LaunchReceipt = {
   decision: { status: 'running' | 'queued' };

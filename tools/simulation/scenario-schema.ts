@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { terminalOutcomeSchema } from '../providers/contract.js';
+import { terminalOutcomeSchema } from '../../src/providers/contract.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),

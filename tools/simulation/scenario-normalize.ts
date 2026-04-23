@@ -6,7 +6,7 @@ import type {
   MockSpawnScript,
   SimulationScenario,
 } from './core/backend.js';
-import type { TerminalOutcome } from '../providers/contract.js';
+import type { TerminalOutcome } from '../../src/providers/contract.js';
 import { toError } from './core/constants.js';
 import type { ScenarioError, WorldConfig } from './scenario-schema.js';
 
