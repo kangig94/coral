@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import type { CurateDiscoveryBacklogNoteRow, CurateDiscoveryBacklogRow } from '../../store/schema.js';
+import type { KbCurateDiscoveryBacklogNoteRow, KbCurateDiscoveryBacklogRow } from '../state/schema.js';
 import type { PendingDiscovery } from './state-model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
@@ -37,7 +37,7 @@ function canonicalPendingDiscovery(entry: PendingDiscovery): PendingDiscovery {
 }
 
 function rowToPendingDiscovery(
-  row: CurateDiscoveryBacklogRow,
+  row: KbCurateDiscoveryBacklogRow,
   notes: readonly string[],
 ): PendingDiscovery {
   const parsed = backlogRowSchema.parse(row);
@@ -51,7 +51,7 @@ function rowToPendingDiscovery(
 }
 
 export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscovery[] {
-  const rows = prepareCached<[], CurateDiscoveryBacklogRow>(
+  const rows = prepareCached<[], KbCurateDiscoveryBacklogRow>(
     target,
     `SELECT
        entry_id,
@@ -59,13 +59,13 @@ export function readCurateDiscoveryBacklog(target: SqliteTarget): PendingDiscove
        statement,
        queued_at,
        reason
-     FROM curate_discovery_backlog
+     FROM kb_curate_discovery_backlog
      ORDER BY queued_at ASC, principle_slug ASC, statement ASC`,
   ).all();
-  const noteRows = prepareCached<[], CurateDiscoveryBacklogNoteRow>(
+  const noteRows = prepareCached<[], KbCurateDiscoveryBacklogNoteRow>(
     target,
     `SELECT backlog_entry_id, note_id
-       FROM curate_discovery_backlog_notes
+       FROM kb_curate_discovery_backlog_notes
       ORDER BY backlog_entry_id ASC, note_id ASC`,
   ).all();
 
@@ -85,7 +85,7 @@ export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: Pend
   const entryId = backlogEntryId(canonicalEntry);
   const inserted = prepareCached<[string, string, string, string, string | null]>(
     target,
-    `INSERT OR IGNORE INTO curate_discovery_backlog (
+    `INSERT OR IGNORE INTO kb_curate_discovery_backlog (
        entry_id,
        principle_slug,
        statement,
@@ -107,7 +107,7 @@ export function addCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: Pend
   for (const noteId of canonicalEntry.notes) {
     prepareCached<[string, string]>(
       target,
-      `INSERT OR IGNORE INTO curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
+      `INSERT OR IGNORE INTO kb_curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
     ).run(entryId, noteId);
   }
 }
@@ -118,7 +118,7 @@ export function removeCurateDiscoveryBacklogEntry(
 ): void {
   prepareCached<[string, string]>(
     target,
-    `DELETE FROM curate_discovery_backlog
+    `DELETE FROM kb_curate_discovery_backlog
       WHERE principle_slug = ? AND statement = ?`,
   ).run(entry.principle, entry.statement);
 }
@@ -127,7 +127,7 @@ export function replaceCurateDiscoveryBacklog(
   target: SqliteTarget,
   entries: ReadonlyArray<PendingDiscovery>,
 ): void {
-  prepareCached<[]>(target, `DELETE FROM curate_discovery_backlog`).run();
+  prepareCached<[]>(target, `DELETE FROM kb_curate_discovery_backlog`).run();
   for (const entry of entries) {
     addCurateDiscoveryBacklogEntry(target, entry);
   }
@@ -137,7 +137,7 @@ function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingD
   const canonicalEntry = canonicalPendingDiscovery(entry);
   prepareCached<[string, string | null, string]>(
     target,
-    `UPDATE curate_discovery_backlog
+    `UPDATE kb_curate_discovery_backlog
         SET queued_at = ?,
             reason = ?
       WHERE entry_id = ?`,
@@ -147,14 +147,14 @@ function updateCurateDiscoveryBacklogEntry(target: SqliteTarget, entry: PendingD
 function addCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
   prepareCached<[string, string]>(
     target,
-    `INSERT OR IGNORE INTO curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
+    `INSERT OR IGNORE INTO kb_curate_discovery_backlog_notes (backlog_entry_id, note_id) VALUES (?, ?)`,
   ).run(backlogId, noteId);
 }
 
 function removeCurateDiscoveryBacklogNote(target: SqliteTarget, backlogId: string, noteId: string): void {
   prepareCached<[string, string]>(
     target,
-    `DELETE FROM curate_discovery_backlog_notes
+    `DELETE FROM kb_curate_discovery_backlog_notes
       WHERE backlog_entry_id = ? AND note_id = ?`,
   ).run(backlogId, noteId);
 }

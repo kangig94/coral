@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { CurateSchedulerRow } from '../../store/schema.js';
+import type { KbCurateSchedulerRow } from '../state/schema.js';
 import type { CurateCursor } from './state-model.js';
 import { cursorEntryKind, kbEntryIdSchema } from './state-model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
@@ -68,10 +68,10 @@ function parseStoredCursor(
   }
 
   if ((entrySeq === null) !== (entryId === null) || (entrySeq === null) !== (entryKind === null)) {
-    throw new Error(`curate_scheduler ${label} columns must be all null or all populated`);
+    throw new Error(`kb_curate_scheduler ${label} columns must be all null or all populated`);
   }
   if (entrySeq === null || entryId === null || entryKind === null) {
-    throw new Error(`curate_scheduler ${label} columns must be all null or all populated`);
+    throw new Error(`kb_curate_scheduler ${label} columns must be all null or all populated`);
   }
 
   const cursor = {
@@ -79,12 +79,12 @@ function parseStoredCursor(
     entryId,
   };
   if (cursorEntryKind(cursor, 'curate scheduler') !== entryKind) {
-    throw new Error(`curate_scheduler ${label} entry kind must match the stored entry ID`);
+    throw new Error(`kb_curate_scheduler ${label} entry kind must match the stored entry ID`);
   }
   return cursor;
 }
 
-function rowToCurateSchedulerState(row: CurateSchedulerRow | undefined): CurateSchedulerState {
+function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): CurateSchedulerState {
   if (row === undefined) {
     return defaultCurateSchedulerState();
   }
@@ -118,7 +118,7 @@ function rowToCurateSchedulerState(row: CurateSchedulerRow | undefined): CurateS
 }
 
 export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerState {
-  const row = prepareCached<[], CurateSchedulerRow | undefined>(
+  const row = prepareCached<[], KbCurateSchedulerRow | undefined>(
     target,
     `SELECT
        id,
@@ -138,7 +138,7 @@ export function readCurateSchedulerState(target: SqliteTarget): CurateSchedulerS
        community_summary_topology_hash,
        initialized,
        migration_version
-     FROM curate_scheduler
+     FROM kb_curate_scheduler
      WHERE id = 1`,
   ).get();
   return rowToCurateSchedulerState(row);
@@ -171,7 +171,7 @@ export function writeCurateSchedulerState(target: SqliteTarget, state: CurateSch
     ]
   >(
     target,
-    `UPDATE curate_scheduler
+    `UPDATE kb_curate_scheduler
         SET processed_through_seq = ?,
             processed_through_entry_id = ?,
             processed_through_entry_kind = ?,

@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../../coordinator/consumer-driver.js';
-import { readCorpusState, normalizeCorpusCursor } from '../../store/corpus-state.js';
+import { readCorpusState, normalizeCorpusCursor } from '../../kb/state/corpus-state.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import {
   closeNeedleBackend,

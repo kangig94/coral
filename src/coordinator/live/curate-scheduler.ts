@@ -66,7 +66,7 @@ export function createCoordinatorCurateScheduler(options: {
   let started = false;
   let stopped = false;
 
-  const recordRun = options.db.prepare('UPDATE curate_scheduler SET last_run_day = ? WHERE id = 1');
+  const recordRun = options.db.prepare('UPDATE kb_curate_scheduler SET last_run_day = ? WHERE id = 1');
 
   const tick = (): void => {
     try {

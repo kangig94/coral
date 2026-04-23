@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
 import type { CorpusSnapshot } from './corpus/snapshot.js';
-import { readCorpusState } from '../store/corpus-state.js';
+import { readCorpusState } from './state/corpus-state.js';
 
 type Database = BetterSqlite3.Database;
 

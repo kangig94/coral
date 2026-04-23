@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { CurateRetryQueueRow } from '../../store/schema.js';
+import type { KbCurateRetryQueueRow } from '../state/schema.js';
 import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema, type PendingRepair } from './state-model.js';
 import {
@@ -43,11 +43,11 @@ const pendingRepairRowSchema = z.object({
   observed_at: z.string().datetime({ offset: true }),
 });
 
-type PendingRepairRow = Pick<CurateRetryQueueRow, 'entry_id' | 'observed_at'>;
+type PendingRepairRow = Pick<KbCurateRetryQueueRow, 'entry_id' | 'observed_at'>;
 
 export type PendingRepairRetryCandidate = Pick<PendingRepair, 'entryId' | 'detectedAt'>;
 
-function rowToPendingRepair(row: CurateRetryQueueRow): PendingRepair {
+function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
   return {
     entryId: parsed.entry_id,
@@ -71,7 +71,7 @@ function rowToPendingRepairRetryCandidate(row: PendingRepairRow): PendingRepairR
   };
 }
 
-function pendingRepairToRow(entry: PendingRepair): CurateRetryQueueRow {
+function pendingRepairToRow(entry: PendingRepair): KbCurateRetryQueueRow {
   return retryRowSchema.parse({
     entry_id: entry.entryId,
     entry_seq: entry.entrySeq,
@@ -86,7 +86,7 @@ function pendingRepairToRow(entry: PendingRepair): CurateRetryQueueRow {
   });
 }
 
-function samePendingRepairRow(left: CurateRetryQueueRow, right: CurateRetryQueueRow): boolean {
+function samePendingRepairRow(left: KbCurateRetryQueueRow, right: KbCurateRetryQueueRow): boolean {
   return (
     left.entry_id === right.entry_id &&
     left.entry_seq === right.entry_seq &&
@@ -102,7 +102,7 @@ function samePendingRepairRow(left: CurateRetryQueueRow, right: CurateRetryQueue
 }
 
 export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
-  const rows = prepareCached<[], CurateRetryQueueRow>(
+  const rows = prepareCached<[], KbCurateRetryQueueRow>(
     target,
     `SELECT
        entry_id,
@@ -115,7 +115,7 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
        repair_hint,
        retry_not_before,
        retry_count
-     FROM curate_retry_queue
+     FROM kb_curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
   return rows.map((row) => rowToPendingRepair(row));
@@ -127,7 +127,7 @@ export function readPendingRepairRows(target: SqliteTarget): PendingRepairRetryC
     `SELECT
        entry_id,
        observed_at
-     FROM curate_retry_queue
+     FROM kb_curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
   return rows.map((row) => rowToPendingRepairRetryCandidate(row));
@@ -138,7 +138,7 @@ export function scanDueCurateRetryQueue(
   retryNotBefore: string,
   limit = 1,
 ): PendingRepair[] {
-  const rows = prepareCached<[string, number], CurateRetryQueueRow>(
+  const rows = prepareCached<[string, number], KbCurateRetryQueueRow>(
     target,
     `SELECT
        entry_id,
@@ -151,7 +151,7 @@ export function scanDueCurateRetryQueue(
        repair_hint,
        retry_not_before,
        retry_count
-     FROM curate_retry_queue
+     FROM kb_curate_retry_queue
      WHERE retry_not_before <= ?
      ORDER BY retry_not_before ASC, entry_id ASC
      LIMIT ?`,
@@ -165,7 +165,7 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
     [string, number | null, string, string, string | null, string | null, string | null, string | null, string, number]
   >(
     target,
-    `INSERT INTO curate_retry_queue (
+    `INSERT INTO kb_curate_retry_queue (
        entry_id,
        entry_seq,
        reason,
@@ -202,11 +202,11 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
 }
 
 export function deleteCurateRetryEntry(target: SqliteTarget, entryId: string): void {
-  prepareCached<[string]>(target, `DELETE FROM curate_retry_queue WHERE entry_id = ?`).run(entryId);
+  prepareCached<[string]>(target, `DELETE FROM kb_curate_retry_queue WHERE entry_id = ?`).run(entryId);
 }
 
 export function replaceCurateRetryQueue(target: SqliteTarget, entries: ReadonlyArray<PendingRepair>): void {
-  prepareCached<[]>(target, `DELETE FROM curate_retry_queue`).run();
+  prepareCached<[]>(target, `DELETE FROM kb_curate_retry_queue`).run();
 
   for (const entry of entries) {
     upsertCurateRetryEntry(target, entry);

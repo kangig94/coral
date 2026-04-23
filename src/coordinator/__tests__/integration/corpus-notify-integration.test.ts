@@ -14,7 +14,7 @@ import { reindex } from '../../../kb/ops/reindex.js';
 import { createKbRuntime } from '../../../kb/runtime.js';
 import { noteEntryId } from '../../../kb/entry-types.js';
 import { applyMigrations } from '../../../store/migrations.js';
-import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../../store/corpus-state.js';
+import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../../kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '../../consumer-driver.js';
 import { createNotifyCorpusMutation } from '../../corpus-notify.js';
 
@@ -271,7 +271,7 @@ async function seedIndexedNote(harness: Harness): Promise<void> {
 }
 
 describe('Corpus notify E2E', () => {
-  it('flushes a lock-bound content mutation through corpus_state and the content consumer exactly once', async () => {
+  it('flushes a lock-bound content mutation through kb_corpus_state and the content consumer exactly once', async () => {
     const harness = await createHarness();
 
     try {
@@ -486,7 +486,7 @@ describe('Corpus notify E2E', () => {
     }
   });
 
-  it('keeps persisted corpus_state authoritative when notify fails after persist', async () => {
+  it('keeps persisted kb_corpus_state authoritative when notify fails after persist', async () => {
     const harness = await createHarness({
       failNotify(snapshot, attempt) {
         return snapshot.contentSeq === 1 && snapshot.metadataSeq === 0 && attempt === 1;

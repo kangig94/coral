@@ -17,7 +17,7 @@ import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './execution-service.js';
 import { appendEvents as appendJournalEvents, type AppendEventsFn } from '../store/append.js';
-import { persistCorpusState as persistCorpusStateInDb } from '../store/corpus-state.js';
+import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { openBackendStoreDb } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcasters.js';
 import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.js';

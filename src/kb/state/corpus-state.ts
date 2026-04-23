@@ -1,7 +1,7 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../kb/contracts.js';
-import type { CorpusStateRow } from './schema.js';
+import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../contracts.js';
+import type { KbCorpusStateRow } from './schema.js';
 
 type Database = BetterSqlite3.Database;
 export type CorpusStateSnapshot = KbCorpusSnapshot;
@@ -28,7 +28,7 @@ export interface PersistCorpusStateOptions {
 function ensureCorpusStateRow(db: Database): void {
   db.prepare(
     `
-      INSERT OR IGNORE INTO corpus_state (
+      INSERT OR IGNORE INTO kb_corpus_state (
         id,
         snapshot_id,
         content_seq,
@@ -41,17 +41,17 @@ function ensureCorpusStateRow(db: Database): void {
   ).run();
 }
 
-export function readCorpusStateRow(db: Database): CorpusStateRow {
+export function readCorpusStateRow(db: Database): KbCorpusStateRow {
   ensureCorpusStateRow(db);
   return db
     .prepare(
       `
         SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash, last_mutation
-          FROM corpus_state
+          FROM kb_corpus_state
          WHERE id = 1
       `,
     )
-    .get() as CorpusStateRow;
+    .get() as KbCorpusStateRow;
 }
 
 function toSnapshot(row: CorpusSnapshotCursorRow): CorpusStateSnapshot {
@@ -147,7 +147,7 @@ export function persistCorpusState(
     const changedLanes = deriveChangedLanes(current, nextSnapshot);
     const update = db.prepare(
       `
-        UPDATE corpus_state
+        UPDATE kb_corpus_state
            SET snapshot_id = ?,
                content_seq = ?,
                metadata_seq = ?,

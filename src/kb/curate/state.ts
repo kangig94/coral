@@ -1,7 +1,7 @@
 import type {
-  CurateActiveClaimRow,
-  CurateCommunitySummaryInputFingerprintRow,
-} from '../../store/schema.js';
+  KbCurateActiveClaimRow,
+  KbCurateCommunitySummaryInputFingerprintRow,
+} from '../state/schema.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import {
@@ -110,10 +110,10 @@ export type CurateMigrationAssignment = {
 };
 
 function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] {
-  const row = prepareCached<[], CurateActiveClaimRow | undefined>(
+  const row = prepareCached<[], KbCurateActiveClaimRow | undefined>(
     target,
     `SELECT id, through_seq, through_entry_id, through_entry_kind, started_at
-       FROM curate_active_claim
+       FROM kb_curate_active_claim
       WHERE id = 1`,
   ).get();
   if (row === undefined) {
@@ -122,10 +122,10 @@ function readActiveClaim(target: CurateStateTarget): CurateState['activeClaim'] 
 
   const through = {
     entryId: kbEntryIdSchema.parse(row.through_entry_id),
-    entrySeq: parsePositiveInteger(row.through_seq, 'curate_active_claim.through_seq'),
+    entrySeq: parsePositiveInteger(row.through_seq, 'kb_curate_active_claim.through_seq'),
   };
   if (cursorEntryKind(through) !== row.through_entry_kind) {
-    throw new Error('curate_active_claim through_entry_kind must match the stored entry ID');
+    throw new Error('kb_curate_active_claim through_entry_kind must match the stored entry ID');
   }
 
   return {
@@ -152,7 +152,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
   }
 
   if (activeClaim === null) {
-    prepareCached<[]>(target, `DELETE FROM curate_active_claim WHERE id = 1`).run();
+    prepareCached<[]>(target, `DELETE FROM kb_curate_active_claim WHERE id = 1`).run();
     return;
   }
 
@@ -160,7 +160,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
   if (existing === null) {
     prepareCached<[number, string, 'note' | 'source', string]>(
       target,
-      `INSERT INTO curate_active_claim (
+      `INSERT INTO kb_curate_active_claim (
          id,
          through_seq,
          through_entry_id,
@@ -178,7 +178,7 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
 
   prepareCached<[number, string, 'note' | 'source', string]>(
     target,
-    `UPDATE curate_active_claim
+    `UPDATE kb_curate_active_claim
         SET through_seq = ?,
             through_entry_id = ?,
             through_entry_kind = ?,
@@ -193,10 +193,10 @@ function writeActiveClaim(target: CurateStateTarget, activeClaim: CurateState['a
 }
 
 function readCommunitySummaryInputFingerprints(target: CurateStateTarget): Record<string, string> | undefined {
-  const rows = prepareCached<[], CurateCommunitySummaryInputFingerprintRow>(
+  const rows = prepareCached<[], KbCurateCommunitySummaryInputFingerprintRow>(
     target,
     `SELECT community_slug, fingerprint
-       FROM curate_community_summary_input_fingerprints
+       FROM kb_curate_community_summary_input_fingerprints
       ORDER BY community_slug ASC`,
   ).all();
   if (rows.length === 0) {
@@ -217,7 +217,7 @@ function writeCommunitySummaryInputFingerprints(
     if (!(communitySlug in next)) {
       prepareCached<[string]>(
         target,
-        `DELETE FROM curate_community_summary_input_fingerprints
+        `DELETE FROM kb_curate_community_summary_input_fingerprints
           WHERE community_slug = ?`,
       ).run(communitySlug);
     }
@@ -227,7 +227,7 @@ function writeCommunitySummaryInputFingerprints(
     if (!(communitySlug in existing)) {
       prepareCached<[string, string]>(
         target,
-        `INSERT INTO curate_community_summary_input_fingerprints (
+        `INSERT INTO kb_curate_community_summary_input_fingerprints (
            community_slug,
            fingerprint
          ) VALUES (?, ?)`,
@@ -238,7 +238,7 @@ function writeCommunitySummaryInputFingerprints(
     if (existing[communitySlug] !== fingerprint) {
       prepareCached<[string, string]>(
         target,
-        `UPDATE curate_community_summary_input_fingerprints
+        `UPDATE kb_curate_community_summary_input_fingerprints
             SET fingerprint = ?
           WHERE community_slug = ?`,
       ).run(fingerprint, communitySlug);

@@ -10,7 +10,7 @@ import { update } from '../../kb/ops/update.js';
 import { NEEDLE_CONSUMER_ID } from '../../kb/search/needle-backend.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { applyMigrations } from '../../store/migrations.js';
-import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../store/corpus-state.js';
+import { persistCorpusState, readCorpusState, type CorpusStateSnapshot } from '../../kb/state/corpus-state.js';
 import { ConsumerDriver, type CorpusConsumerRegistration } from '../consumer-driver.js';
 import { createNotifyCorpusMutation } from '../corpus-notify.js';
 

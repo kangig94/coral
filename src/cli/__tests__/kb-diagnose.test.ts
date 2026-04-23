@@ -44,7 +44,7 @@ function seedRetryQueue(entries: Array<{
 
   try {
     const statement = db.prepare(
-      `INSERT INTO curate_retry_queue (
+      `INSERT INTO kb_curate_retry_queue (
          entry_id,
          entry_seq,
          reason,

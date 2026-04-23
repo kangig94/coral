@@ -1,6 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
-
-import { createKbRuntime } from '../../kb/runtime.js';
+import { createKbRuntime } from './runtime.js';
 import type {
   KbDiagnoseResult,
   KbMemoListInput,
@@ -13,21 +11,21 @@ import type {
   KbSearchInput,
   KbSearchResponse,
   KbSourceListResult,
-} from '../../kb/entry-types.js';
-import { isNoteEntry } from '../../kb/entry-types.js';
-import { buildKbDiagnoseResult } from '../../kb/diagnose.js';
-import { readEntry } from '../../kb/read.js';
-import { readCurateRetryQueue } from '../../kb/curate/retry.js';
-import { listMemos } from '../../kb/ops/memo.js';
-import { searchKb } from '../../kb/ops/search.js';
-import { listSources } from '../../kb/ops/source-store.js';
-import { closeNeedleBackend } from '../../kb/search/needle-backend.js';
-import { compareLocale } from '../../kb/validation.js';
-import { kbRuntimeDir } from '../../kb/paths.js';
-import { kbRoot } from '../../infra/paths.js';
-import { createRealRuntime } from '../../runtime/real.js';
-import { openBackendStoreDb } from '../db.js';
-import { readBuildFlavor } from '../../infra/bridge-manifest.js';
+} from './entry-types.js';
+import { isNoteEntry } from './entry-types.js';
+import { buildKbDiagnoseResult } from './diagnose.js';
+import { readEntry } from './read.js';
+import { readCurateRetryQueue } from './curate/retry.js';
+import { listMemos } from './ops/memo.js';
+import { searchKb } from './ops/search.js';
+import { listSources } from './ops/source-store.js';
+import { closeNeedleBackend } from './search/needle-backend.js';
+import { compareLocale } from './validation.js';
+import { kbRuntimeDir } from './paths.js';
+import { kbRoot } from '../infra/paths.js';
+import { createRealRuntime } from '../runtime/real.js';
+import { openBackendStoreDb } from '../store/db.js';
+import { readBuildFlavor } from '../infra/bridge-manifest.js';
 
 type KbQueryContext = {
   projectRoot?: string;

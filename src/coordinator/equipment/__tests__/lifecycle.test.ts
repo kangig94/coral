@@ -8,7 +8,7 @@ import type * as EmbeddingModule from '../../../kb/search/embedding.js';
 import { ConsumerDriver } from '../../consumer-driver.js';
 import { EquipmentLifecycleService, type EquipmentLifecycleServiceOptions } from '../lifecycle.js';
 import { applyMigrations } from '../../../store/migrations.js';
-import { persistCorpusState } from '../../../store/corpus-state.js';
+import { persistCorpusState } from '../../../kb/state/corpus-state.js';
 import { equipmentAddonPath, equipmentDataDir, equipmentInstallLockPath } from '../../../expansion/paths.js';
 import { createKbRuntime } from '../../../kb/runtime.js';
 import { reindex } from '../../../kb/ops/reindex.js';

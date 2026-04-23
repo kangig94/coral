@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../runtime/flavor.js';
 import type { Runtime, StoragePort } from '../runtime/ports.js';
-import { applyMigrations, ensureStoreMigrationsDir } from './migrations.js';
+import { applyMigrations, assertSupportedStoreSchema, ensureStoreMigrationsDir } from './migrations.js';
 import { storePaths } from './paths.js';
 
 type ReadonlyStoreOptions = {
@@ -47,6 +47,21 @@ export function openStoreDatabase(options: OpenStoreOptions): BetterSqlite3.Data
       storage: options.storage,
       migrationsDir: options.migrationsDir,
     });
+  }
+
+  try {
+    assertSupportedStoreSchema(db);
+  } catch (error) {
+    if (options.path === ':memory:') {
+      db.close();
+      throw error;
+    }
+
+    db.close();
+    throw new Error(
+      `Store schema at ${options.path} is incompatible with this rewrite build. Reset local Coral store data and rebuild.`,
+      { cause: error },
+    );
   }
 
   return db;

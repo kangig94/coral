@@ -71,10 +71,10 @@ describe('migrations idempotency', () => {
       ).map(({ key, value }) => ({ key, value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value }));
       expect(metaA).toEqual(metaB);
       expect(metaA.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version', 'schema_version']);
-      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '1' });
+      expect(metaA.find((row) => row.key === 'schema_version')).toEqual({ key: 'schema_version', value: '2' });
 
       const corpusStateA = dbFromSchema.prepare(
-        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
+        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM kb_corpus_state',
       ).get() as {
         id: number;
         snapshot_id: string | null;
@@ -84,7 +84,7 @@ describe('migrations idempotency', () => {
         metadata_manifest_hash: string | null;
       };
       const corpusStateB = dbFromMigration.prepare(
-        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM corpus_state',
+        'SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM kb_corpus_state',
       ).get() as {
         id: number;
         snapshot_id: string | null;
@@ -141,10 +141,10 @@ describe('migrations idempotency', () => {
       expect(equipmentStateColumnsB).toEqual(equipmentStateColumnsA);
 
       const curateSchedulerColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_scheduler')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const curateSchedulerColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_scheduler')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_scheduler')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(curateSchedulerColumnsA).toEqual([
         'id',
@@ -169,7 +169,7 @@ describe('migrations idempotency', () => {
 
       const curateSchedulerA = dbFromSchema
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM kb_curate_scheduler',
         )
         .get() as {
           id: number;
@@ -192,7 +192,7 @@ describe('migrations idempotency', () => {
         };
       const curateSchedulerB = dbFromMigration
         .prepare(
-          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM curate_scheduler',
+          'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized, migration_version FROM kb_curate_scheduler',
         )
         .get() as {
           id: number;
@@ -235,36 +235,36 @@ describe('migrations idempotency', () => {
       expect(curateSchedulerB).toEqual(curateSchedulerA);
 
       const activeClaimColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_active_claim')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_active_claim')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const activeClaimColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_active_claim')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_active_claim')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(activeClaimColumnsA).toEqual(['id', 'through_seq', 'through_entry_id', 'through_entry_kind', 'started_at']);
       expect(activeClaimColumnsB).toEqual(activeClaimColumnsA);
-      expect(dbFromSchema.prepare('SELECT COUNT(*) AS count FROM curate_active_claim').get()).toEqual({ count: 0 });
-      expect(dbFromMigration.prepare('SELECT COUNT(*) AS count FROM curate_active_claim').get()).toEqual({ count: 0 });
+      expect(dbFromSchema.prepare('SELECT COUNT(*) AS count FROM kb_curate_active_claim').get()).toEqual({ count: 0 });
+      expect(dbFromMigration.prepare('SELECT COUNT(*) AS count FROM kb_curate_active_claim').get()).toEqual({ count: 0 });
 
       const fingerprintColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const fingerprintColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_community_summary_input_fingerprints')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(fingerprintColumnsA).toEqual(['community_slug', 'fingerprint']);
       expect(fingerprintColumnsB).toEqual(fingerprintColumnsA);
       expect(
-        dbFromSchema.prepare('SELECT COUNT(*) AS count FROM curate_community_summary_input_fingerprints').get(),
+        dbFromSchema.prepare('SELECT COUNT(*) AS count FROM kb_curate_community_summary_input_fingerprints').get(),
       ).toEqual({ count: 0 });
       expect(
-        dbFromMigration.prepare('SELECT COUNT(*) AS count FROM curate_community_summary_input_fingerprints').get(),
+        dbFromMigration.prepare('SELECT COUNT(*) AS count FROM kb_curate_community_summary_input_fingerprints').get(),
       ).toEqual({ count: 0 });
 
       const retryQueueColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_retry_queue')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_retry_queue')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const retryQueueColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_retry_queue')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_retry_queue')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(retryQueueColumnsA).toEqual([
         'entry_id',
@@ -283,40 +283,40 @@ describe('migrations idempotency', () => {
       const retryPlanA = (
         dbFromSchema
           .prepare(
-            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
+            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM kb_curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
           )
           .all('9999-12-31T23:59:59.999Z') as Array<{ detail: string }>
       ).map((row) => row.detail);
       const retryPlanB = (
         dbFromMigration
           .prepare(
-            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
+            'EXPLAIN QUERY PLAN SELECT entry_id, reason FROM kb_curate_retry_queue WHERE retry_not_before <= ? ORDER BY retry_not_before LIMIT 1',
           )
           .all('9999-12-31T23:59:59.999Z') as Array<{ detail: string }>
       ).map((row) => row.detail);
-      expect(retryPlanA.some((detail) => detail.includes('USING INDEX curate_retry_by_time'))).toBe(true);
-      expect(retryPlanB.some((detail) => detail.includes('USING INDEX curate_retry_by_time'))).toBe(true);
+      expect(retryPlanA.some((detail) => detail.includes('USING INDEX kb_curate_retry_by_time'))).toBe(true);
+      expect(retryPlanB.some((detail) => detail.includes('USING INDEX kb_curate_retry_by_time'))).toBe(true);
 
       const discoveryBacklogColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_discovery_backlog')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_discovery_backlog')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const discoveryBacklogColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_discovery_backlog')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_discovery_backlog')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(discoveryBacklogColumnsA).toEqual(['entry_id', 'principle_slug', 'statement', 'queued_at', 'reason']);
       expect(discoveryBacklogColumnsB).toEqual(discoveryBacklogColumnsA);
 
       const discoveryBacklogNotesColumnsA = (
-        dbFromSchema.prepare("PRAGMA table_info('curate_discovery_backlog_notes')").all() as Array<{ name: string }>
+        dbFromSchema.prepare("PRAGMA table_info('kb_curate_discovery_backlog_notes')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       const discoveryBacklogNotesColumnsB = (
-        dbFromMigration.prepare("PRAGMA table_info('curate_discovery_backlog_notes')").all() as Array<{ name: string }>
+        dbFromMigration.prepare("PRAGMA table_info('kb_curate_discovery_backlog_notes')").all() as Array<{ name: string }>
       ).map((row) => row.name);
       expect(discoveryBacklogNotesColumnsA).toEqual(['backlog_entry_id', 'note_id']);
       expect(discoveryBacklogNotesColumnsB).toEqual(discoveryBacklogNotesColumnsA);
 
       const discoveryBacklogFksA = (
-        dbFromSchema.prepare("PRAGMA foreign_key_list('curate_discovery_backlog_notes')").all() as Array<{
+        dbFromSchema.prepare("PRAGMA foreign_key_list('kb_curate_discovery_backlog_notes')").all() as Array<{
           table: string;
           from: string;
           to: string;
@@ -324,7 +324,7 @@ describe('migrations idempotency', () => {
         }>
       ).map(({ table, from, to, on_delete }) => ({ table, from, to, on_delete }));
       const discoveryBacklogFksB = (
-        dbFromMigration.prepare("PRAGMA foreign_key_list('curate_discovery_backlog_notes')").all() as Array<{
+        dbFromMigration.prepare("PRAGMA foreign_key_list('kb_curate_discovery_backlog_notes')").all() as Array<{
           table: string;
           from: string;
           to: string;
@@ -333,7 +333,7 @@ describe('migrations idempotency', () => {
       ).map(({ table, from, to, on_delete }) => ({ table, from, to, on_delete }));
       expect(discoveryBacklogFksA).toEqual([
         {
-          table: 'curate_discovery_backlog',
+          table: 'kb_curate_discovery_backlog',
           from: 'backlog_entry_id',
           to: 'entry_id',
           on_delete: 'CASCADE',

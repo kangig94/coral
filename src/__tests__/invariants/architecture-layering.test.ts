@@ -68,6 +68,7 @@ const COORDINATOR_ALLOWED = new Set([
   'src/sessions/api.ts',
   'src/workflow/api.ts',
   'src/kb/contracts.ts',
+  'src/kb/state/corpus-state.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);

@@ -43,6 +43,8 @@ export interface ApplyMigrationsOptions {
   readonly migrationsDir?: string;
 }
 
+export const CURRENT_STORE_SCHEMA_VERSION = 2;
+
 function readCurrentVersion(db: BetterSqlite3.Database): number {
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | undefined;
@@ -50,6 +52,21 @@ function readCurrentVersion(db: BetterSqlite3.Database): number {
   } catch {
     return 0;
   }
+}
+
+export function readStoreSchemaVersion(db: BetterSqlite3.Database): number {
+  return readCurrentVersion(db);
+}
+
+export function assertSupportedStoreSchema(db: BetterSqlite3.Database): void {
+  const currentVersion = readCurrentVersion(db);
+  if (currentVersion === CURRENT_STORE_SCHEMA_VERSION) {
+    return;
+  }
+
+  throw new Error(
+    `Store schema version ${currentVersion} is unsupported; expected ${CURRENT_STORE_SCHEMA_VERSION}. Reset local Coral store data and rebuild.`,
+  );
 }
 
 function parseVersion(filename: string): number | null {

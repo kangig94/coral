@@ -25,7 +25,7 @@ The current Coral architecture has six well-documented pain points: `src/executi
 - **CoralCoordinator** = single writer across both authorities. Sole owner of live state (admission, host pool, subscriptions).
 - **Read authorities**:
   - Journal: `CoralStore` thin SQL query layer.
-  - Corpus: direct filesystem reads + `projection_kb` for metadata lookup.
+  - Corpus: direct filesystem reads + KB runtime/query helpers for search, list, and diagnose.
 - **Providers** emit canonical event bodies; the coordinator wraps them in envelopes and appends to the Journal in transactions.
 - **Workflow** = durable plan declared once on `workflow/<id>` stream; child jobs reference slots by `slotId`.
 - **Failures (Journal)** = domain events on their originating stream; job terminals carry `causeRef: {stream, seq}` pointers. No wrapped fault union. The only fault ADT is `JobLifecycleFault` (3 variants).
@@ -244,17 +244,6 @@ CREATE TABLE projection_discuss (
   last_seq   INTEGER NOT NULL
 );
 
--- KB metadata projection (derived from Corpus, not Journal).
--- Refreshed by CorpusConsumer sync from markdown files; `content_seq` tracks
--- the Corpus version (see §6.4), not the Journal's events.seq.
-CREATE TABLE projection_kb (
-  entry_id    TEXT PRIMARY KEY,
-  title       TEXT,
-  content     TEXT,                -- cached for rebuild; Corpus markdown is authoritative
-  frontmatter TEXT,                -- JSON
-  content_seq INTEGER NOT NULL     -- Corpus version at last refresh
-);
-
 CREATE TABLE projection_workflows (
   workflow_id TEXT PRIMARY KEY,
   plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, label, provider, instruction, ...}] }
@@ -270,7 +259,7 @@ CREATE TABLE meta (
 
 -- Corpus version state (KB authority — see §6.4)
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
-CREATE TABLE corpus_state (
+CREATE TABLE kb_corpus_state (
   id            INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
   content_seq   INTEGER NOT NULL,
   metadata_seq  INTEGER NOT NULL,
@@ -291,7 +280,7 @@ CREATE TABLE equipment_cursors (
 -- Curate scheduler bookkeeping (replaces today's curate-state.json).
 -- Single row. Worker claim is omitted (coordinator single-writer covers it);
 -- migration_version is omitted (meta.schema_version handles schema evolution).
-CREATE TABLE curate_scheduler (
+CREATE TABLE kb_curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through          TEXT,                        -- JSON: CurateCursor
   discovery_high_seq         INTEGER,
@@ -304,14 +293,14 @@ CREATE TABLE curate_scheduler (
 -- Curate retry queue (pendingRepair[] in today's JSON state).
 -- Each entry has its own retry schedule; indexed by retry_not_before for
 -- O(log n) "who is due now" scans.
-CREATE TABLE curate_retry_queue (
+CREATE TABLE kb_curate_retry_queue (
   entry_id                   TEXT PRIMARY KEY,
   reason                     TEXT NOT NULL,
   observed_at                TEXT NOT NULL,
   retry_not_before           TEXT NOT NULL,
   retry_count                INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX curate_retry_by_time ON curate_retry_queue(retry_not_before);
+CREATE INDEX kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
 ```
 
 ### 3.2 Storage tiers collapse into one
@@ -590,11 +579,11 @@ External edits (Obsidian, manual filesystem ops, `git pull`) bypass the coordina
 
 | Backend | Role | Tier | Substrate |
 |---|---|---|---|
-| `projection_kb` (SQLite) | metadata lookup (slug, title, content for rebuild) | base, always | Journal substrate (shares `store.db`) |
+| KB runtime/query layer | direct markdown read + list/diagnose helpers | base, always | `~/.coral/kb/` + `~/.coral/data/kb/` |
 | **Orama** (JS-native) | FTS (BM25) + vector (cosine) | base, always | `~/.coral/data/kb/orama/orama-index.json` |
 | **coral-needle** (C++ DuckDB ScanANN) | ANN vector at scale; replaces Orama's vector path | equipment (`/equip needle`) | `~/.coral/data/kb/needle/` |
 
-`projection_kb` lives in SQLite alongside Journal projections for convenience (unified query surface), but its authoritative source is the Corpus, not the Journal. Its rebuild reads markdown, not events.
+KB has no SQLite content projection in the steady state. Markdown remains authoritative; Orama/needle are rebuildable retrieval artifacts; SQLite stores only control state (`kb_corpus_state`, curate scheduler/retry tables, and equipment cursors).
 
 **Equipment principle applied**:
 - Command surface is identical in both tiers: `kb search "query"`, `kb search --vector <emb>`, `kb search --hybrid "query"` all exist.
@@ -608,7 +597,7 @@ Orama's value is NOT just FTS quality — it is the combination of (1) pure JS, 
 
 **Operational facts are not Corpus mutations.** Events like "Orama index rebuilt", "needle index snapshot rotated", "WAL checkpointed" are coordinator-local operational telemetry — they belong in structured logs, not on any authority.
 
-**Curate state location**: the curation pipeline (discovery, classification, community detection, entity consolidation, retry scheduling) maintains operational state in `curate_scheduler` + `curate_retry_queue` SQLite tables (§3.1), not in `curate-state.json`. The curate scheduler runs as a coordinator-live component (§10 `coordinator/live/curate-scheduler.ts`), not as a Corpus domain leaf — single-writer discipline requires it inside the coordinator process. Its cursors are device-local operational state, not authoritative content.
+**Curate state location**: the curation pipeline (discovery, classification, community detection, entity consolidation, retry scheduling) maintains operational state in `kb_curate_scheduler` + `kb_curate_retry_queue` SQLite tables (§3.1), not in `curate-state.json`. The curate scheduler runs as a coordinator-live component (§10 `coordinator/live/curate-scheduler.ts`), not as a Corpus domain leaf — single-writer discipline requires it inside the coordinator process. Its cursors are device-local operational state, not authoritative content.
 
 #### 6.4.1 Corpus repair pipeline
 
@@ -624,7 +613,7 @@ The repair pipeline runs during rescan + curate passes. It classifies each detec
 | Classification | Action |
 |---|---|
 | **Auto-fixable** | Apply fix under Corpus mutation lock (e.g., re-assign `entrySeq`, regenerate minimal valid frontmatter from filename + defaults). Commit via git-sync. Log the auto-repair. |
-| **Needs manual** | Queue the entry in `curate_retry_queue` with a repair hint. User sees a diagnostic (`coral-cli kb diagnose` or dashboard). |
+| **Needs manual** | Queue the entry in `kb_curate_retry_queue` with a repair hint. User sees a diagnostic (`coral-cli kb diagnose` or dashboard). |
 | **Unrecoverable** | Log + skip. Entry absent from projections until user fixes the source file. |
 
 **Status note**: the current codebase has a partial, ad-hoc repair mechanism (`kb/curate/text-artifacts.ts`: `rebuildTextArtifactsAndPersistRepairState`, `detectTextArtifactRebuildInfo`, `pendingRepair[]`) that handles specific cases encountered during initial development. The refactor **redesigns** this from scratch — not porting the existing ad-hoc code but building a proper classification-driven repair pipeline. Coverage of the detected-issue taxonomy is a deliverable of the refactor, not a best-effort outcome.
@@ -752,7 +741,7 @@ discuss/<id>              discuss.synthesis.failed         { cause }
 workflow/<id>             workflow.completed               { outcome: 'failed' | 'aborted', causeRef? }
 ```
 
-KB failures have no dedicated Journal stream. Coordinator-mediated KB operations run AS jobs; their failures are recorded on the job's own stream as rich progress events (`stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event. Background curate failures are operational logs, not events — retry is scheduled via `curate_retry_queue` (§3.1). External edits themselves are the **normal** path (Obsidian + git + rescan auto-handle them, see §12.3); only **malformed** content (git conflict markers left in a file, invalid frontmatter) is treated as a skip + log case during rescan, not as an event.
+KB failures have no dedicated Journal stream. Coordinator-mediated KB operations run AS jobs; their failures are recorded on the job's own stream as rich progress events (`stage: 'kb_operation_failed' | 'kb_curation_failed' | ...`), and the job terminal's `causeRef` points to that progress event. Background curate failures are operational logs, not events — retry is scheduled via `kb_curate_retry_queue` (§3.1). External edits themselves are the **normal** path (Obsidian + git + rescan auto-handle them, see §12.3); only **malformed** content (git conflict markers left in a file, invalid frontmatter) is treated as a skip + log case during rescan, not as an event.
 
 These are NOT declared in a central `CoralFault` union. They are regular domain events with well-known type strings. A renderer that wants to describe a `causeRef` reads the referenced event's type and dispatches to the domain's describer function:
 
@@ -788,7 +777,7 @@ Each fault-bearing event type has one producer:
 | `workflow.completed { outcome: 'failed' | 'aborted' }` | `workflow/<id>` | `workflow/executor.ts` |
 | `job.terminal.recorded { outcome: { kind: 'job_fault', ... } }` | `job/<id>` | `jobs/reconcile/` (for ghost/lost) or job wrapper (for crashed) |
 
-KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, projections reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — auto-fix where safe, queue manual cases, log unrecoverable.
+KB curation background failures and malformed-content detection during rescan are NOT on the Journal — they are operational logs + entries in `kb_curate_retry_queue` + corpus repair pipeline. Successful external edits (the common case) are transparent: rescan picks up the change, retrieval artifacts reindex, git-sync auto-commits. No events, no errors. Malformed markdown (conflict markers, invalid frontmatter, missing required fields, entrySeq collisions) enters the **corpus repair pipeline** (§6.4.1) — auto-fix where safe, queue manual cases, log unrecoverable.
 
 No layer rewrites another layer's event.
 
@@ -1038,7 +1027,6 @@ interface CorpusConsumer {
 
 Projection types:
 
-- `projection_kb` (SQLite) — metadata lookup (slug, title, cached content, frontmatter, `content_seq` at last refresh).
 - Orama serialized index (base-tier FTS + future vector).
 - needle DuckDB ANN index (equipment-tier vector).
 
@@ -1242,8 +1230,8 @@ src/
       mutation-lock.ts               — single-writer lock around the Corpus
       mutation-helpers.ts            — writeFileAtomic + commitIndexUpdate + contentSeq bumps
       entry-seq-guard.ts             — entrySeq upgrade guard
-    runtime-state.ts                 — in-memory Corpus state (contentSeq, metadataSeq, index handles)
-    projections.ts                   — projection_kb reducer (Corpus snapshot → projection_kb)
+    runtime-state.ts                 — in-memory Corpus state mirror (`kb_corpus_state`, index handles)
+    queries.ts                       — Corpus read/search/list/diagnose facade for read paths
     search/                          — search backend abstraction (equipment-aware)
       contract.ts                    — SearchBackend interface (fts, vector, hybrid)
       router.ts                      — picks active backend per query type; detects equipment
@@ -1363,7 +1351,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 | `src/providers/claude-appserver/session.ts` | 35K | `SingleSessionController` is a coherent unit — turn lifecycle, interrupt handling, and child binding share mutable state (`activeTurn`, `childBinding`, `bootstrapSignature`). Forcing a 4-way split would recouple through exported state. Natural split is 2-way: `providers/claude-appserver/controller.ts` (the controller class — turn + interrupt + child lifecycle as one unit) and `providers/claude-appserver/protocol.ts` (wire/control protocol handling). Continuity snapshot logic is a method on the controller, not a separate file. |
 | `src/kb/curate/community-detection.ts` | 37K | Same file; algorithm cohesion > arbitrary split. Sub-routines stay here. |
 | `src/kb/curate/classification.ts` | 34K | Same file. Domain algorithm. |
-| `src/kb/curate/state.ts` | 31K | REDUCED — curate state moves to `curate_scheduler` + `curate_retry_queue` SQLite tables (§3.1). Remaining in-memory state logic collapses to ~5K. |
+| `src/kb/curate/state.ts` | 31K | REDUCED — curate state moves to `kb_curate_scheduler` + `kb_curate_retry_queue` SQLite tables (§3.1). Remaining in-memory state logic collapses to ~5K. |
 | `src/execution/simulation/world.ts` + `core/*` | ~80K | `simulation/runtime.ts`, `simulation/runner.ts`, `simulation/recording.ts`, `simulation/adversarial.ts`, `simulation/core/memory-storage.ts`, `simulation/core/mock-app-server.ts`, `simulation/core/mock-process.ts`, `simulation/core/virtual-time.ts`. Simulation substrate intact; internal decomposition matches current `core/` structure. |
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
@@ -1481,7 +1469,7 @@ Reconciliation never rewrites history. Divergence is resolved by appending, pres
 
 The Corpus authority (markdown filesystem) has no event history. Recovery depends on **both** substrates:
 - Filesystem (`~/.coral/kb/`) holds the authoritative content.
-- Journal substrate (`store.db`) holds the `corpus_state` row (current `contentSeq` / `metadataSeq`) and `equipment_cursors` for Corpus consumers.
+- Journal substrate (`store.db`) holds the `kb_corpus_state` row (current `contentSeq` / `metadataSeq`) and `equipment_cursors` for Corpus consumers.
 
 Neither alone is sufficient: the filesystem cannot tell us what version consumers have processed, and the SQLite tables cannot reconstitute Corpus content. Coral's full recovery requires both present. This is an honest consequence of SQLite being the substrate for Corpus-related metadata even though the Corpus authority itself is the filesystem.
 
@@ -1490,8 +1478,8 @@ Neither alone is sufficient: the filesystem cannot tell us what version consumer
 On coordinator startup (or explicit `kb reindex`):
 1. Enumerate all entries under `~/.coral/kb/{notes,sources,principles,communities}/`.
 2. For each entry, compute current `content_hash` and capture frontmatter.
-3. Compare to `projection_kb.content_seq` state in SQLite.
-4. If drift detected, bump `corpus_state.content_seq` / `metadata_seq`.
+3. Compare to `kb_corpus_state.content_seq` / `metadata_seq`.
+4. If drift detected, bump `kb_corpus_state.content_seq` / `metadata_seq`.
 
 **Step 2: Projection rebuild (per-Corpus-consumer)**
 
@@ -1504,13 +1492,13 @@ Each Corpus consumer (Orama, needle) maintains a cursor in `equipment_cursors` (
   - Re-embed / re-index only changed entries.
   - Atomic snapshot swap.
 
-The Corpus recovery model is **intrinsically idempotent**: rescanning a clean Corpus produces no changes; rescanning after external edits produces exactly the drift set. If SQLite's `corpus_state` or `equipment_cursors` are missing/reset, recovery treats the Corpus as fully new (full rebuild). Never wrong, occasionally expensive.
+The Corpus recovery model is **intrinsically idempotent**: rescanning a clean Corpus produces no changes; rescanning after external edits produces exactly the drift set. If SQLite's `kb_corpus_state` or `equipment_cursors` are missing/reset, recovery treats the Corpus as fully new (full rebuild). Never wrong, occasionally expensive.
 
 ### 12.3 External mutation absorption
 
 Obsidian edits, `git pull`, or direct filesystem changes are the **normal** path for knowledge editing. The coordinator does NOT own them; the filesystem + git own them. Coral observes and re-indexes:
 
-- **Startup scan**: coordinator boot compares filesystem to `projection_kb` and bumps `contentSeq` for any drift; CorpusConsumers (Orama, needle) catch up via manifest diff.
+- **Startup scan**: coordinator boot compares filesystem to the current corpus snapshot and bumps `contentSeq` / `metadataSeq` for any drift; CorpusConsumers (Orama, needle) catch up via manifest diff.
 - **Periodic rescan**: ongoing scheduled task absorbs changes between boots.
 - **git-sync auto-commit**: after coordinator-mediated mutations (e.g., `kb promote`), git-sync debounces and commits the markdown changes. External edits made via Obsidian remain visible in the git working tree; the user's normal git workflow (or `kb` commands that trigger auto-commit) brings them into history.
 
@@ -1527,7 +1515,7 @@ External edits never synthesize backfilled Journal events. They are first-class 
 | Jobs | `job.launch.requested` + scripted provider bodies | `JobView` at each `seq` |
 | Sessions | `session.opened` + `session.continuity.checkpointed` | `SessionView` resumability + ref |
 | Discuss | Discuss event sequence | `DiscussView` round/turn/outcome |
-| KB (Corpus) | Simulated markdown filesystem + scripted rescan drift | `projection_kb` + Orama index consistency via CorpusConsumer drain |
+| KB (Corpus) | Simulated markdown filesystem + scripted rescan drift | `kb_corpus_state` + Orama/needle retrieval artifact consistency via CorpusConsumer drain |
 | Workflow | `workflow.plan.declared` + child launches (with `refs.workflowSlotId`) + child terminals | `WorkflowView.slotOutcomes`, causeRef chains |
 | Provider middleware | `ScriptedProvider` replacing kernel | Middleware stack produces expected journal events |
 | Coordinator live | Virtual process table + host-pool events | Admission, lease, idle determinism |
@@ -1706,7 +1694,7 @@ This section documents the **design delta** between today's codebase and the end
 | `event-bus.ts` + durable progress log + wait replay cursor | SQLite `events` table + `afterSeq` SELECT |
 | `execution/kb-tools.ts`, `execution/discuss-tools.ts` (HTTP-layer handlers) | `transport/http/kb-routes.ts`, `transport/http/discuss-routes.ts` thin routers + calls into `kb/ops/` and `discuss/shell/` |
 | `execution/discuss/persistence.ts` + `session-store.ts` | `discuss/shell/persistence.ts` + `discuss/shell/session-store.ts` + `discuss/shell/live-registry.ts` (decomposed per §10.1a) |
-| `curate-state.json` | `curate_scheduler` + `curate_retry_queue` SQLite tables (§3.1) |
+| `curate-state.json` | `kb_curate_scheduler` + `kb_curate_retry_queue` SQLite tables (§3.1) |
 | `ensureBackend()` HTTP-first | Command-class routing (library-direct for reads, IPC for live) |
 | `WorkflowCheckpoint` file | `workflow.plan.declared` event on `workflow/<id>` stream |
 | `--local` flag | Semantic command-class routing |
@@ -1861,7 +1849,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 **Corpus invariants**:
 17. KB markdown corpus is authoritative. No synthetic events reconstruct KB content.
 18. `contentSeq` and `metadataSeq` are freshness/version counters only, never event history.
-19. Base KB read models (`projection_kb`, Orama) update synchronously under the Corpus mutation lock for coordinator-owned mutations.
+19. Base KB retrieval artifacts (index state + Orama) update synchronously under the Corpus mutation lock for coordinator-owned mutations.
 20. External Corpus edits (Obsidian, git pull, direct filesystem) are first-class; scans/rebuilds absorb them without backfilling synthetic events.
 21. Corpus recovery = rescan + index rebuild (no history to replay).
 22. Cross-authority references use `KbRef = { entryId, contentHash? }`. `contentHash` is optional, captured at write time when point-in-time semantics matter.
@@ -1909,7 +1897,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 - **Store**: the single SQLite database at `~/.coral/data/store/store.db`. Holds events + projections for Journal domains. KB indexes are projections too but live at `~/.coral/data/kb/` (device-local) since they derive from Corpus, not Journal.
 - **Events table**: append-only SQL table keyed by `seq` (auto-increment). The only durable truth.
 - **Projection tables**: SQL read models (`projection_jobs`, `projection_sessions`, `projection_workflows`, etc.) maintained incrementally by event reducers in the same transaction that appends events.
-- **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) with `projection_kb` providing metadata lookup. Consumers call `store.jobs.get(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflow,kb}.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
+- **CoralStore**: unified read API covering **both authorities**. Journal reads go to SQLite (`events` + `projection_*` tables); Corpus reads go to the filesystem (`~/.coral/kb/`) plus KB-owned query helpers. Consumers call `store.jobs.get(id)` or `store.kb.read(slug)` without knowing which authority backs the query. Internally decomposed into `store/queries/{jobs,sessions,discuss,workflow}.ts` plus `kb/queries.ts`. Multiple read handles can coexist; single writer (coordinator) owns mutations.
 - **CoralCoordinator**: the single-writer daemon. Owns live state (admission, host pool, subscriptions) and is the only layer that opens a writable DB handle.
 - **Stream**: a logical sub-sequence of the events table identified by `(stream_kind, stream_id)` — e.g., `job/wf-1`, `session/s-42`, `workflow/wf-1`. Ordering is global via `seq`.
 - **Envelope**: the event header — `seq`, `ts`, `type`, `stream`, `namespace`, `refs`, `correlationId`, `causationSeq`, `bodyVersion`. Wraps a `body`.

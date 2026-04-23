@@ -58,17 +58,6 @@ CREATE TABLE IF NOT EXISTS projection_discuss (
   last_seq   INTEGER NOT NULL
 );
 
--- KB metadata projection (derived from Corpus, not Journal).
--- Refreshed by CorpusConsumer sync from markdown files; `content_seq` tracks
--- the Corpus version (see §6.4), not the Journal's events.seq.
-CREATE TABLE IF NOT EXISTS projection_kb (
-  entry_id    TEXT PRIMARY KEY,
-  title       TEXT,
-  content     TEXT,                -- cached for rebuild; Corpus markdown is authoritative
-  frontmatter TEXT,                -- JSON
-  content_seq INTEGER NOT NULL     -- Corpus version at last refresh
-);
-
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
   plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, label, provider, instruction, ...}] }
@@ -84,7 +73,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Corpus version state (KB authority - see §6.4)
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
-CREATE TABLE IF NOT EXISTS corpus_state (
+CREATE TABLE IF NOT EXISTS kb_corpus_state (
   id                     INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
   snapshot_id            TEXT,
   content_seq            INTEGER NOT NULL,
@@ -122,8 +111,8 @@ CREATE TABLE IF NOT EXISTS equipment_state (
 );
 
 -- Curate scheduler bookkeeping (replaces the legacy file-backed curate state).
--- Single row for scalar scheduler state; the active claim lives in curate_active_claim.
-CREATE TABLE IF NOT EXISTS curate_scheduler (
+-- Single row for scalar scheduler state; the active claim lives in kb_curate_active_claim.
+CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   processed_through_seq      INTEGER,
   processed_through_entry_id TEXT,
@@ -143,7 +132,7 @@ CREATE TABLE IF NOT EXISTS curate_scheduler (
   migration_version          INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS curate_active_claim (
+CREATE TABLE IF NOT EXISTS kb_curate_active_claim (
   id                         INTEGER PRIMARY KEY CHECK (id = 1),
   through_seq                INTEGER NOT NULL CHECK (through_seq > 0),
   through_entry_id           TEXT NOT NULL,
@@ -151,7 +140,7 @@ CREATE TABLE IF NOT EXISTS curate_active_claim (
   started_at                 TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS curate_community_summary_input_fingerprints (
+CREATE TABLE IF NOT EXISTS kb_curate_community_summary_input_fingerprints (
   community_slug             TEXT PRIMARY KEY,
   fingerprint                TEXT NOT NULL
 );
@@ -159,7 +148,7 @@ CREATE TABLE IF NOT EXISTS curate_community_summary_input_fingerprints (
 -- Curate retry queue (pendingRepair[] in the legacy file-backed state).
 -- Each entry has its own retry schedule; indexed by retry_not_before for
 -- O(log n) "who is due now" scans.
-CREATE TABLE IF NOT EXISTS curate_retry_queue (
+CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
   entry_id                   TEXT PRIMARY KEY,
   entry_seq                  INTEGER,
   reason                     TEXT NOT NULL,
@@ -171,9 +160,9 @@ CREATE TABLE IF NOT EXISTS curate_retry_queue (
   retry_not_before           TEXT NOT NULL,
   retry_count                INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS curate_retry_by_time ON curate_retry_queue(retry_not_before);
+CREATE INDEX IF NOT EXISTS kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
 
-CREATE TABLE IF NOT EXISTS curate_discovery_backlog (
+CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog (
   entry_id                   TEXT PRIMARY KEY,
   principle_slug            TEXT NOT NULL,
   statement                 TEXT NOT NULL,
@@ -182,19 +171,19 @@ CREATE TABLE IF NOT EXISTS curate_discovery_backlog (
   UNIQUE(principle_slug, statement)
 );
 
-CREATE TABLE IF NOT EXISTS curate_discovery_backlog_notes (
-  backlog_entry_id          TEXT NOT NULL REFERENCES curate_discovery_backlog(entry_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
+  backlog_entry_id          TEXT NOT NULL REFERENCES kb_curate_discovery_backlog(entry_id) ON DELETE CASCADE,
   note_id                   TEXT NOT NULL,
   PRIMARY KEY(backlog_entry_id, note_id)
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('schema_version', '1'),
+  ('schema_version', '2'),
   ('journal_version', '1'),
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
-INSERT OR IGNORE INTO corpus_state (
+INSERT OR IGNORE INTO kb_corpus_state (
   id,
   snapshot_id,
   content_seq,
@@ -205,7 +194,7 @@ INSERT OR IGNORE INTO corpus_state (
 ) VALUES
   (1, NULL, 0, 0, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
-INSERT OR IGNORE INTO curate_scheduler (
+INSERT OR IGNORE INTO kb_curate_scheduler (
   id,
   processed_through_seq,
   processed_through_entry_id,

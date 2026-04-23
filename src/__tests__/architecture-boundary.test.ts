@@ -7,7 +7,7 @@ Known non-goals: computed import(variableName) and relative require('...') are i
 
 // Phase 1 decision: extracted shared scanning helpers to src/__tests__/__helpers__/ts-import-scanner.ts because the reused resolver and AST import scanner exceed the inline duplication threshold.
 import { dirname, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -63,6 +63,8 @@ const RETIRED_DISCUSS_STATE_HELPERS = ['src', 'discuss', 'state-helpers.ts'].joi
 const RETIRED_HTTP_BACKEND_HELPERS = ['src', 'transport', 'http', 'backend-helpers.ts'].join('/');
 const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts'].join('/');
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
+const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
+const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
 const RETIRED_COORDINATOR_SHIMS = [
   ['src', 'coordinator', 'discovery.ts'].join('/'),
   ['src', 'coordinator', 'paths.ts'].join('/'),
@@ -316,10 +318,19 @@ describe('architecture boundary guard', () => {
       RETIRED_HTTP_BACKEND_HELPERS,
       RETIRED_KB_MUTATION_HELPERS,
       RETIRED_COMMAND_HELPERS,
+      RETIRED_STORE_KB_QUERIES,
+      RETIRED_STORE_CORPUS_STATE,
     ]) {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
       expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
     }
+  });
+  it('store schema no longer contains projection_kb residue', () => {
+    const schemaSql = readFileSync(resolve(REPO_ROOT, 'src/store/schema.sql'), 'utf8');
+    const initialMigration = readFileSync(resolve(REPO_ROOT, 'src/store/migrations/001_initial.sql'), 'utf8');
+
+    expect(schemaSql).not.toContain('projection_kb');
+    expect(initialMigration).not.toContain('projection_kb');
   });
   it('production keeps store/index.ts as the only remaining index barrel', () => {
     const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));

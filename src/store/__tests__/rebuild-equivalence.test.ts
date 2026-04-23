@@ -64,7 +64,7 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
     }
   });
 
-  it('does NOT touch projection_kb (Corpus authority)', () => {
+  it('does NOT touch kb_corpus_state (Corpus control state)', () => {
     const db = new Database(':memory:');
     try {
       applyMigrations({ db, storage: storageAdapter as never, migrationsDir: MIGRATIONS_DIR });
@@ -72,13 +72,32 @@ describe('rebuildProjections equivalence (§3.5 replay identity)', () => {
       const upcasters = createEmptyRegistry();
 
       db.prepare(
-        `INSERT INTO projection_kb (entry_id, title, content, frontmatter, content_seq) VALUES (?, ?, ?, ?, ?)`,
-      ).run('kb-1', 'Title', 'Content', '{}', 1);
+        `UPDATE kb_corpus_state
+            SET snapshot_id = ?,
+                content_seq = ?,
+                metadata_seq = ?,
+                content_manifest_hash = ?,
+                metadata_manifest_hash = ?`,
+      ).run('snapshot-before-rebuild', 5, 6, 'content-hash-before', 'metadata-hash-before');
 
       rebuildProjections({ db, cutoffSeq: 0, reducers, upcasters });
 
-      const kbCount = db.prepare('SELECT COUNT(*) AS n FROM projection_kb').get() as { n: number };
-      expect(kbCount.n).toBe(1);
+      const corpusState = db.prepare(
+        'SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash FROM kb_corpus_state',
+      ).get() as {
+        snapshot_id: string;
+        content_seq: number;
+        metadata_seq: number;
+        content_manifest_hash: string;
+        metadata_manifest_hash: string;
+      };
+      expect(corpusState).toEqual({
+        snapshot_id: 'snapshot-before-rebuild',
+        content_seq: 5,
+        metadata_seq: 6,
+        content_manifest_hash: 'content-hash-before',
+        metadata_manifest_hash: 'metadata-hash-before',
+      });
     } finally {
       db.close();
     }

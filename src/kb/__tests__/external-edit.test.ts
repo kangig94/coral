@@ -20,7 +20,7 @@ vi.mock('../search/embedding.js', () => ({
 import type { KbRuntime } from '../contracts.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '../entry-types.js';
 import { captureKbCorpusSnapshot, createKbRuntime } from '../runtime.js';
-import { persistCorpusState, readCorpusState } from '../../store/corpus-state.js';
+import { persistCorpusState, readCorpusState } from '../state/corpus-state.js';
 
 type StoredOramaDocument = {
   title: string;

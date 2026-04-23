@@ -10,7 +10,7 @@ import type {
 } from '../store/corpus-consumer.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import { backendLog } from '../infra/backend-log.js';
-import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../store/corpus-state.js';
+import { isSnapshotFresherForInterest, normalizeCorpusCursor } from '../kb/state/corpus-state.js';
 
 export type {
   ConsumerApplyError,

@@ -89,7 +89,7 @@ function seedNeedleRouteState(
   kb.db
     .prepare(
       `
-        INSERT INTO corpus_state (
+        INSERT INTO kb_corpus_state (
           id,
           snapshot_id,
           content_seq,

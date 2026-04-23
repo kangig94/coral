@@ -11,7 +11,7 @@ import { createNotifyCorpusMutation } from '../../../coordinator/corpus-notify.j
 import { createEquipmentSlot, createSlotRegistry } from '../../../coordinator/equipment/slots.js';
 import { runtimeActivationFromHandle } from '../../../coordinator/equipment/runtime-activation.js';
 import { applyMigrations } from '../../../store/migrations.js';
-import { persistCorpusState, readCorpusState } from '../../../store/corpus-state.js';
+import { persistCorpusState, readCorpusState } from '../../state/corpus-state.js';
 import type { KbRuntime } from '../../contracts.js';
 import { reindex } from '../../ops/reindex.js';
 import { createKbRuntime, captureKbCorpusSnapshot } from '../../runtime.js';

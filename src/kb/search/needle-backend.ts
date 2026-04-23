@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { readCorpusState } from '../../store/corpus-state.js';
+import { readCorpusState } from '../state/corpus-state.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';

@@ -19,7 +19,7 @@ import {
   listKnowledgeBaseSources,
   readKnowledgeBaseEntry,
   searchKnowledgeBase,
-} from './queries/kb.js';
+} from '../kb/queries.js';
 import {
   readDiscussDiscovery,
   readDiscussEventLog,

@@ -227,7 +227,7 @@ describe('cli coral-store read parity', () => {
     const [{ kbRuntimeDir }] = await Promise.all([import('../../kb/paths.js')]);
     rmSync(kbRuntimeDir(), { recursive: true, force: true });
 
-    const { searchKnowledgeBase } = await import('../../store/queries/kb.js');
+    const { searchKnowledgeBase } = await import('../../kb/queries.js');
     const result = await searchKnowledgeBase({ query: 'authoritative', mode: 'vector' });
 
     expect(result).toEqual({

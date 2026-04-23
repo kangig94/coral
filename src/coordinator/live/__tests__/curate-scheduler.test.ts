@@ -46,7 +46,7 @@ describe('coordinator curate scheduler', () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(inner.schedule).toHaveBeenCalledTimes(1);
-    expect(db.prepare('SELECT last_run_day FROM curate_scheduler WHERE id = 1').get()).toEqual({
+    expect(db.prepare('SELECT last_run_day FROM kb_curate_scheduler WHERE id = 1').get()).toEqual({
       last_run_day: '2026-04-19',
     });
 

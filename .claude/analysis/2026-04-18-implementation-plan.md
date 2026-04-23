@@ -94,13 +94,13 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - **Skeleton directories**: `src/store/`, `src/coordinator/`, `src/jobs/`, `src/sessions/`, `src/providers/middleware/`, `src/transport/{ipc,http}/`, `src/runtime/`, `src/infra/`, `src/simulation/`, `src/testing/`, `src/workflow/` with `index.ts` barrels.
 
 - **Canonical SQLite schema reference** at `src/store/schema.sql` plus the first applied migration at `src/store/migrations/001_initial.sql`:
-  - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `projection_kb`, `meta`, `corpus_state`, `equipment_cursors`, `curate_scheduler`, `curate_retry_queue`.
+  - Tables per architecture §3.1: `events`, `projection_jobs`, `projection_sessions`, `projection_discuss`, `projection_workflows`, `meta`, `kb_corpus_state`, `equipment_cursors`, `kb_curate_scheduler`, `kb_curate_retry_queue`.
   - Indexes: `events_stream`, `events_type`, `events_refs_parent`, `curate_retry_by_time`.
   - All `CREATE TABLE IF NOT EXISTS` for crash-resume idempotency.
   - **Explicit seed rows** (singleton tables):
-    - `INSERT OR IGNORE INTO corpus_state (id, content_seq, metadata_seq, last_mutation) VALUES (1, 0, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
-    - `INSERT OR IGNORE INTO curate_scheduler (id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash) VALUES (1, NULL, NULL, NULL, NULL, 0, NULL);`
-    - `INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1'), ('journal_version', '1'), ('coordinator_id', lower(hex(randomblob(16)))), ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
+    - `INSERT OR IGNORE INTO kb_corpus_state (id, content_seq, metadata_seq, last_mutation) VALUES (1, 0, 0, strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
+    - `INSERT OR IGNORE INTO kb_curate_scheduler (id, processed_through, discovery_high_seq, discovery_offset, last_run_day, consecutive_failures, community_topology_hash) VALUES (1, NULL, NULL, NULL, NULL, 0, NULL);`
+    - `INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2'), ('journal_version', '1'), ('coordinator_id', lower(hex(randomblob(16)))), ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));`
   - Migration runner at `src/store/migrations.ts` is idempotent: applies only `NNN_*.sql` files whose numbered version is above `meta.schema_version`.
 
 - **Runtime ports**: `src/runtime/ports.ts` with all 6 subports (`time`, `storage`, `paths`, `process`, `ids`, `env`). `src/runtime/real.ts` stubbed.
@@ -275,8 +275,8 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 - Coordinator cold-starts: creates `coordinator.json`, acquires `coordinator.lock`, applies migrations, sits idle.
 - **Two-coordinator handoff test**: spawn first coordinator, then spawn second with newer bundleHash; verify first detects handoff request, second takes over within CONTENDER_BUDGET.
 - Flavor-gated lock: dev and prod coordinators coexist on same machine without interference (existing `flavor-coexistence.test.ts` passes).
-- Curate scheduler fires at expected cadence (every 60s by default; `CORAL_CURATE_INTERVAL_MS` overrides); updates `curate_scheduler.last_run_day`.
-- **CorpusConsumer notify API works end-to-end**: mock KB write → `corpus_state.content_seq` increments → `corpus-notify.ts` fires → registered mock consumer's `apply()` runs → cursor advances. Phase 5 depends on this being verified here.
+- Curate scheduler fires at expected cadence (every 60s by default; `CORAL_CURATE_INTERVAL_MS` overrides); updates `kb_curate_scheduler.last_run_day`.
+- **CorpusConsumer notify API works end-to-end**: mock KB write → `kb_corpus_state.content_seq` increments → `corpus-notify.ts` fires → registered mock consumer's `apply()` runs → cursor advances. Phase 5 depends on this being verified here.
 - Reconciliation: inject orphaned projected-running job with no live process → reconciliation appends `job_fault{wrapper_lost}` terminal in one SQL transaction.
 - `src/execution/` directory removed; `grep -r "from ['\"].*execution/" src/` returns zero.
 - `host-manager.ts` property tests green (invariant-level assertions).
@@ -338,7 +338,7 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
 **Deliverables**:
 
 - `src/kb/corpus/` — `mutation-lock.ts`, `mutation-helpers.ts` (writeFileAtomic + `content_seq`/`metadata_seq` bumps + **calls `coordinator/corpus-notify.ts` after lock release**), `paths.ts`, `frontmatter.ts`, `markdown-entries.ts`, `entry-seq-guard.ts`.
-- `src/kb/runtime-state.ts` — in-memory state mirroring `corpus_state` row.
+- `src/kb/runtime-state.ts` — in-memory state mirroring `kb_corpus_state` row.
 - `src/kb/search/`:
   - `contract.ts` — `SearchBackend` interface.
   - `router.ts` — equipment-aware selection.
@@ -349,14 +349,14 @@ Users continue running pre-refactor plugin until all 8 phases + cleanup land. No
   - `hybrid.ts` — RRF fusion.
 - `src/kb/ops/` — mutation ops (`memo.ts`, `promote.ts`, `update.ts`, `delete.ts`, `source-import.ts`, `source-store.ts`, `reindex.ts`, `search.ts`) using new Corpus mutation lock.
 - `src/kb/curate/` — ported with `state.ts` reduced (SQLite-backed):
-  - State read/write via `curate_scheduler` + `curate_retry_queue` tables.
+  - State read/write via `kb_curate_scheduler` + `kb_curate_retry_queue` tables.
   - All other curate files ported (`scheduler`, `runner`, `discovery`, `classification`, `community-detection`, `entity-consolidation`, `principles`, `tags`, `text-artifacts`, `metadata-commit`, `git-sync`, `claim-io`, `shared`, `types`, `operations`, `usage-budget`).
 - `src/kb/vector/` DELETED (merged into `kb/search/`).
 - **Corpus repair pipeline** (designed from the taxonomy doc, not ported from current code):
   - Detector covers: conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`), invalid frontmatter (unclosed YAML, YAML syntax errors), missing required fields (`entrySeq`, `slug`, `title`), `entrySeq` collisions, orphan entity-graph refs.
   - Classifier returns `auto-fixable | needs-manual | unrecoverable` with structured reason.
   - Auto-fix runs under Corpus mutation lock, commits via git-sync, logs the repair.
-  - `needs-manual` enters `curate_retry_queue` with a repair hint; surfaced via `coral-cli kb diagnose`.
+  - `needs-manual` enters `kb_curate_retry_queue` with a repair hint; surfaced via `coral-cli kb diagnose`.
   - `unrecoverable` is logged + the entry is skipped in projections.
 - **Ensure-vector-index inversion — honest about the change**:
   - Diff algorithm ported from `src/kb/vector/sync.ts` intact (content-hash manifest + staging-swap atomicity).
@@ -608,7 +608,7 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 |---|---|
 | Two `/equip needle` races | `src/expansion/install.ts#installExpansion` acquires `~/.coral/data/equipment/needle/install.lock`; the losing caller receives a structured `equipment_install_lock_contended` error. |
 | Obsidian edits mid-promote | Coordinator's write path computes pre-write `content_hash`; if differs from projection's last-seen, abort with `CorpusRaceDetected` (`CoralSetupError` shape); caller retries. |
-| Journal write concurrent with Corpus rescan | Independent authorities; `projection_kb` updates inside Corpus mutation lock; Journal writes never touch it. |
+| Journal write concurrent with Corpus rescan | Independent authorities; KB retrieval artifacts update inside the Corpus mutation lock; Journal writes never touch them. |
 | Two CLI processes race for coordinator launch | Warm-start handoff (§Phase 3); `ensure.ts` detects in-flight launch and waits. |
 
 ### 3.5 Missing invariants (added to architecture §16 alongside this plan)
@@ -617,9 +617,9 @@ Raw test-count deltas are not a guardrail — rewriting a phase may legitimately
 - Upcaster composition produces output that re-validates against current Zod schema.
 - Read-side event bodies route through upcast-aware decode helpers; raw `schema.parse(decodeEventBody(...))` and one-arg `rowToCoralEvent(row)` are forbidden outside `store/body-codec`, `store/append`, and `store/rebuild`.
 - `coordinator/api.ts` stays a thin public seam: at most 10 exported symbols, and no re-export of domain shell implementation modules.
-- Singleton rows seeded in `001_initial.sql` (corpus_state.id=1, curate_scheduler.id=1).
+- Singleton rows seeded in `001_initial.sql` (`kb_corpus_state.id=1`, `kb_curate_scheduler.id=1`).
 - `meta.coordinator_id` stable per install, regenerated only on explicit `/reset`.
-- `projection_kb.content` capped at 1 MB; oversize stored with `content IS NULL` + size metadata.
+- KB content stays authoritative in markdown; SQLite holds control state only, not a SQL content cache.
 
 ### 3.6 Branch and commit discipline
 
