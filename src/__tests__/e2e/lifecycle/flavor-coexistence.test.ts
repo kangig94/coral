@@ -3,7 +3,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BackendHealth } from '../../../client/backend-health.js';
+import type { BackendHealth } from '../../../transport/http/backend-health.js';
 import { readBackendInfo, type BackendInfo } from '../../../coordinator/discovery.js';
 import { jobsDir, pluginRootNamespace } from '../../../infra/paths.js';
 import { isProcessAlive } from '../../../shared/node-process.js';

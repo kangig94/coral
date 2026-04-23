@@ -6,6 +6,7 @@ import type {
 } from '../jobs/launch.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
+import type { JobContinuitySnapshot } from '../jobs/continuity.js';
 import type {
   AppServerRuntime,
   JobLaunch,
@@ -14,9 +15,8 @@ import type {
   JobTerminal,
   LaunchState,
 } from '../jobs/views.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type {
-  ProviderContinuityBlob,
   ProviderServerLease,
   ProviderServerSpec,
   ProviderSpec,
@@ -24,7 +24,7 @@ import type {
 import type { CallerContext } from '../shared/request-context.js';
 import type { EffortLevel } from '../shared/schemas.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProgressStore } from '../jobs/api.js';
+import type { ProgressStore } from '../jobs/job-store.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';
@@ -40,20 +40,6 @@ type ExecIntent = JobLaunchRequest;
 type ResumeIntent = JobResumeRequest;
 type ForkIntent = JobForkRequest;
 
-/**
- * Stream-owned continuity snapshot projected alongside job output.
- *
- * When a read API exposes `JobContinuitySnapshot | null`, `null` means the
- * provider emitted no `continuity` body at all. Downstream callers treat that
- * as resumable (`resumable: true`) to preserve the legacy
- * `nonResumable ?? false` silence default.
- */
-export type JobContinuitySnapshot = {
-  conversationRef: string | null;
-  resumable: boolean;
-  providerContinuity?: ProviderContinuityBlob;
-};
-
 interface CoordinatorSessionOps {
   start(providerName: string, input: ExecIntent, ctx: CallerContext): Promise<LaunchDecision>;
   resumeBySessionId(input: ResumeIntent, ctx: CallerContext): Promise<LaunchDecision>;
@@ -63,15 +49,7 @@ interface CoordinatorSessionOps {
 interface CoordinatorJobOps {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
-  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{
-    content: string;
-    /**
-     * `null` means the provider emitted no `continuity` body. Downstream
-     * consumers treat that as resumable (`resumable: true`) to preserve the
-     * existing `nonResumable ?? false` default.
-     */
-    continuity: JobContinuitySnapshot | null;
-  }>;
+  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
   list(providerName: string): ListResult;
 }

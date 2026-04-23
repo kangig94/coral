@@ -1,5 +1,5 @@
 import type { JobTerminal } from './views.js';
-import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
+import type { JobContinuitySnapshot } from './continuity.js';
 
 export type WaitCursor = {
   jobs: Record<string, number>;
@@ -45,6 +45,11 @@ export interface WaitStreamRequest extends WaitRequest {
   cursor?: WaitCursor;
   abortSignal?: AbortSignal;
 }
+
+export type WaitStreamOnceResult = {
+  content: string;
+  continuity: JobContinuitySnapshot | null;
+};
 
 export type WaitStreamEvent =
   | { type: 'progress'; jobId: string; eventId: number; message: string }

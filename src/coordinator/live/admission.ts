@@ -1,6 +1,5 @@
 import type { Runtime } from '../../runtime/ports.js';
 import {
-  CliBusyError,
   type CliExecResult,
   type ProviderServerHandle,
   type SpawnCliFn,
@@ -13,6 +12,7 @@ import {
   spawnDurableJobTransport,
   spawnProviderServerTransport,
 } from './durable-transport.js';
+import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit } from './worker-limits.js';
 
 export type LaunchPool = 'default' | 'discuss' | 'curate';
@@ -302,6 +302,5 @@ export class LaunchCoordinator {
   }
 }
 
-export { CliBusyError };
 export { getDiscussMaxWorkers, getMaxWorkers, parsePositiveInt } from './worker-limits.js';
 export type { CliExecResult, ProviderServerHandle, SpawnCliFn, SpawnDurableJobFn, SpawnProviderServerFn };

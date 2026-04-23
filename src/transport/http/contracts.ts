@@ -1,6 +1,5 @@
 import type { ServerResponse } from 'node:http';
 import type { CallerContext } from '../../shared/request-context.js';
-import type { TypedEventBus } from '../../coordinator/event-bus.js';
 import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
@@ -121,8 +120,21 @@ export interface EventStreamHandlers {
   onDiscussUpdated: (payload: { projectRoot: string; sessionId: string; lastSeq: number; status: string }) => void;
 }
 
+export type EventStreamEventMap = {
+  'job:created': Parameters<EventStreamHandlers['onJobCreated']>[0];
+  'job:phase_changed': Parameters<EventStreamHandlers['onPhaseChanged']>[0];
+  'job:progress': Parameters<EventStreamHandlers['onProgress']>[0];
+  'job:completed': Parameters<EventStreamHandlers['onCompleted']>[0];
+  'discuss:updated': Parameters<EventStreamHandlers['onDiscussUpdated']>[0];
+};
+
+export interface EventStreamBus {
+  on<K extends keyof EventStreamEventMap>(event: K, listener: (payload: EventStreamEventMap[K]) => void): this;
+  off<K extends keyof EventStreamEventMap>(event: K, listener: (payload: EventStreamEventMap[K]) => void): this;
+}
+
 export interface EventStreamPort {
-  readonly bus: TypedEventBus;
+  readonly bus: EventStreamBus;
   addResponse(res: ServerResponse): void;
   removeResponse(res: ServerResponse): void;
   createStreamId(): string;

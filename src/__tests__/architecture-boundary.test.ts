@@ -23,6 +23,10 @@ const SRC_ROOT = resolve(dirname(__filename), '..');
 const REPO_ROOT = resolve(SRC_ROOT, '..');
 
 const WORKFLOW_ROOT = 'src/workflow';
+const JOBS_ROOT = 'src/jobs';
+const KB_ROOT = 'src/kb';
+const COORDINATOR_ROOT = 'src/coordinator';
+const CLIENT_ROOT = ['src', 'client'].join('/');
 const PROVIDERS_ROOT = 'src/providers';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 
@@ -186,6 +190,30 @@ describe('architecture boundary guard', () => {
     );
 
     assertNoViolations(violations);
+  });
+  it('jobs/ may not import coordinator/ implementation modules', () => {
+    const violations = collectViolations(
+      JOBS_ROOT,
+      'jobs/ must stay coordinator-free',
+      'move the shared contract into jobs/, store/, runtime/, or another lower-level owner instead.',
+      (target) => isWithinPath(target, COORDINATOR_ROOT),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('kb/ may not import coordinator/ implementation modules', () => {
+    const violations = collectViolations(
+      KB_ROOT,
+      'kb/ must stay coordinator-free',
+      'move the shared contract into kb/, store/, runtime/, or another lower-level owner instead.',
+      (target) => isWithinPath(target, COORDINATOR_ROOT),
+    );
+
+    assertNoViolations(violations);
+  });
+  it('the removed src client tree must remain deleted', () => {
+    const clientFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, CLIENT_ROOT));
+    expect(clientFiles).toEqual([]);
   });
   it('src/shared/ must be internally acyclic', () => {
     const sharedNodes = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, 'src/shared'));

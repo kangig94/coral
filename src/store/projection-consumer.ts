@@ -1,12 +1,14 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerHandle, JournalConsumerRegistration } from '../coordinator/consumer-driver.js';
+import type { ConsumerHandle, JournalConsumerRegistration } from './consumer-driver.js';
 import type { StoreReadContext } from './body-codec.js';
 import { getEventsSince } from './queries/events.js';
 import { applyReducer, composeReducers, type ComposedReducers, type DomainEventRegistry } from './reducers.js';
 import { createDefaultUpcasterRegistry } from './upcasters.js';
 
-type JournalConsumerRegistrar = {
+export type ProjectionConsumerHandle = ConsumerHandle;
+
+export type JournalConsumerRegistrar = {
   register(reg: JournalConsumerRegistration): ConsumerHandle;
 };
 

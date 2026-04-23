@@ -1,8 +1,8 @@
 import { MAX_INLINE } from '../shared/schemas.js';
 import { describeTerminalOutcome, type CauseRef } from '../jobs/outcome.js';
-import type { JobsListResponse } from '../client/http-client.js';
+import type { JobsListResponse } from '../transport/http/http-client.js';
 import { assertNever, isRecord } from '../shared/utils.js';
-import type { BackendStatusFull, ShutdownResult } from '../client/backend-helpers.js';
+import type { BackendStatusFull, ShutdownResult } from '../transport/http/backend-helpers.js';
 import type {
   AcceptedLaunchResponse,
   BackendToolHttpError,
@@ -13,7 +13,7 @@ import type {
   KbSourceDeleteResponse,
   KbSourceImportResponse,
   KbUpdateResponse,
-} from '../client/http-client.js';
+} from '../transport/http/http-client.js';
 import type { BidResult, PersonaAssignment, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type {

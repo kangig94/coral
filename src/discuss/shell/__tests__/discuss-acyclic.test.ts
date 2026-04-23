@@ -256,7 +256,7 @@ describe('discuss architecture guard', () => {
     if (discussRuntimeImports.length > 0) {
       failures.push(
         [
-          'src/discuss must not runtime-import src/client/* or src/execution/*:',
+          'src/discuss must not runtime-import the removed client tree or src/execution/*:',
           ...discussRuntimeImports.map((edge) => `- ${formatEdge(edge)}`),
         ].join('\n'),
       );
@@ -274,7 +274,7 @@ describe('discuss architecture guard', () => {
     if (deferredDiscussDebt.length > 0) {
       failures.push(
         [
-          'src/discuss must not type-only-import src/client/* or src/execution/discuss/* (deferred debt must be zero):',
+          'src/discuss must not type-only-import the removed client tree or src/execution/discuss/* (deferred debt must be zero):',
           ...deferredDiscussDebt.map((edge) => `- ${formatEdge(edge)}`),
         ].join('\n'),
       );

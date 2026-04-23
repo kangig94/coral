@@ -2,11 +2,18 @@ import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, typ
 import type { BackendHealth } from './backend-health.js';
 import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-helpers.js';
-import type { AbortResult } from '../shared/execution-contracts.js';
-import type { CallerContext } from '../shared/request-context.js';
-import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
-import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/views.js';
-import type { WatchState } from '../discuss/watch.js';
+import { BackendToolHttpError } from './client-errors.js';
+import type { AbortResult } from '../../shared/execution-contracts.js';
+import type { CallerContext } from '../../shared/request-context.js';
+import type {
+  BidResult,
+  DiscussDetailResponse,
+  DiscussSummaryDto,
+  DiscussView,
+  PersonaSeedOutput,
+  SpeechResult,
+  WatchState,
+} from '../../discuss/api.js';
 import type {
   KbDeleteInput,
   KbMemoDeleteInput,
@@ -29,14 +36,14 @@ import type {
   KbSourcePersistInput,
   KbUpdateInput,
   ReindexResult,
-} from '../kb/entry-types.js';
-import type { EffortLevel } from '../shared/schemas.js';
+} from '../../kb/api.js';
+import type { EffortLevel } from '../../shared/schemas.js';
 import {
   KB_BARE_READ_ORDER,
   isKbMemoCandidateSlug,
   parseKbSelector,
   type KbReadKind,
-} from '../shared/kb-read-contract.js';
+} from '../../shared/kb-read-contract.js';
 import {
   describeHttpError,
   HEALTH_TIMEOUT_MS,
@@ -44,10 +51,9 @@ import {
   parseSseBlock,
   parseWaitStreamEvent,
   TOOL_TIMEOUT_MS,
-} from '../shared/sse-parser.js';
-import type { JobProgress, JobStatus } from '../jobs/views.js';
-import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
-import { isRecord } from '../shared/utils.js';
+} from '../../shared/sse-parser.js';
+import type { JobProgress, JobStatus, WaitCursor, WaitStreamEvent } from '../../jobs/api.js';
+import { isRecord } from '../../shared/utils.js';
 
 export type AcceptedLaunchResponse = {
   session: string;
@@ -148,19 +154,8 @@ type WorkflowOptions = {
 
 export { isBackendHealth };
 export type { BackendHealth };
-export type { CallerContext } from '../shared/request-context.js';
-
-export class BackendToolHttpError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-    public readonly body: unknown,
-  ) {
-    super(message);
-    this.name = 'BackendToolHttpError';
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-}
+export { BackendToolHttpError } from './client-errors.js';
+export type { CallerContext } from '../../shared/request-context.js';
 
 export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;

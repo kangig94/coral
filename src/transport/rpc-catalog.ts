@@ -3,7 +3,7 @@ import {
   listEquipmentRequestSchema,
   registerEquipmentRequestSchema,
   unregisterEquipmentRequestSchema,
-} from '../coordinator/equipment/contract.js';
+} from '../expansion/equipment-contract.js';
 import {
   discussSeedSchema,
   discussSessionBidRequestSchema,

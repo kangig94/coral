@@ -19,7 +19,7 @@ import type * as WorkflowApiMod from '../../../workflow/api.js';
 import type { ProviderServerHandle } from '../../../coordinator/__tests__/server-test-deps.js';
 import { createDeferred } from '../../../simulation/core/test-deferred.js';
 
-import { readDiscussEventLog } from '../../../client/readers.js';
+import { readDiscussEventLog } from '../../../testing/persistence-readers.js';
 import { makeEvent } from '../../../discuss/events.js';
 import { decideSessionCreate } from '../../../discuss/state-machine.js';
 import { createDiscussContextRegistry } from '../../../discuss/shell/live-registry.js';

@@ -6,7 +6,7 @@ import type {
   RegisterEquipmentResult,
   UnregisterEquipmentRequest,
   UnregisterResult,
-} from '../coordinator/equipment/contract.js';
+} from '../expansion/equipment-contract.js';
 import type {
   JobForkRequest,
   JobLaunchRequest,

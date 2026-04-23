@@ -50,6 +50,30 @@ export { createKbSubsystem } from './subsystem.js';
 export type { CreateKbSubsystemOptions, KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 export type { CurateHandle } from './curate/types.js';
 export type {
+  KbDeleteInput,
+  KbDiagnoseResult,
+  KbMemoDeleteInput,
+  KbMemoDeleteResult,
+  KbMemoInput,
+  KbMemoListInput,
+  KbMemoListResult,
+  KbMemoPurgeInput,
+  KbMemoPurgeResult,
+  KbPrinciplesInput,
+  KbPrinciplesResult,
+  KbPromoteInput,
+  KbReadInput,
+  KbReadResult,
+  KbReindexInput,
+  KbSearchInput,
+  KbSearchResponse,
+  KbSourceDeleteInput,
+  KbSourceListResult,
+  KbSourcePersistInput,
+  KbUpdateInput,
+  ReindexResult,
+} from './entry-types.js';
+export type {
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
   CorpusInterest,

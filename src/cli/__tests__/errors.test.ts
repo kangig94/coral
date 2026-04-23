@@ -1,7 +1,7 @@
 import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vitest';
 
-import { BackendToolHttpError } from '../../client/http-client.js';
+import { BackendToolHttpError } from '../../transport/http/client-errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../../shared/utils.js';
 import { UsageError, buildErrorEnvelope, errorCodeToExit } from '../errors.js';
 

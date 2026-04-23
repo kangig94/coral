@@ -1,18 +1,14 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../views.js';
-import type { WaitRequest, WaitStreamEvent, WaitStreamRequest } from '../wait.js';
-import type { TypedEventBus } from '../../coordinator/event-bus.js';
-import type {
-  ExecutionLaunchCoordinator as LaunchCoordinator,
-  ExecutionLaunchPool as LaunchPool,
-} from '../../coordinator/contracts.js';
+import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
 import { createReplayCursor, type ProgressStore } from '../job-store.js';
-import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS } from './contracts.js';
+import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';
+import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import { resultPathFor } from './result-artifact.js';
-import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
+import type { JobContinuitySnapshot } from '../continuity.js';
 
 const ABORTED = Symbol('wait-aborted');
 
@@ -55,7 +51,7 @@ export interface WaitCoordinatorDeps {
   progressStore: ProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
-  eventBus: TypedEventBus;
+  eventBus: JobEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;
   loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
@@ -445,7 +441,7 @@ export class WaitCoordinator {
     }
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
     const request: WaitRequest = { jobIds: [jobId] };
     if (timeoutMs !== undefined) {
       request.timeoutSeconds = timeoutMs / 1000;

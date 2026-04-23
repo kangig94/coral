@@ -49,13 +49,20 @@ Provider-launched Codex and Claude sessions also receive `INJECT.md`, but that h
 Two hooks run after compaction:
 
 - `kb-promote-gate.mjs` restores memo-review and KB-promotion guidance
-- `post-compact.mjs` reads the pre-compaction job snapshot and tells the user how to recover work
+- `pre-compact.mjs` snapshots recent jobs for the current project from `projection_jobs`
+- `post-compact.mjs` reads that snapshot and tells the user how to recover work
 
 `post-compact.mjs` now describes recovery in CLI terms:
 
 - pending jobs: `coral-cli wait --jobs "<job-id list>"`
 - terminal jobs without inline artifacts: `coral-cli wait --jobs "<job>" --embed`
 - missing or unreadable job state: do not rerun `wait` unless a verified artifact path exists
+
+Implementation notes:
+
+- snapshots are written under the project temp directory (`/tmp/coral/<project-slug>/hooks/active-jobs-*.json`)
+- terminal recovery uses the durable artifact path under `/tmp/coral-jobs/<jobId>/result.md`
+- the removed `status.json` files are no longer part of hook recovery
 
 The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
 

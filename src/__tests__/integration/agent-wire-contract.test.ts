@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { BackendClient, BackendToolHttpError } from '../../client/http-client.js';
+import { BackendClient, BackendToolHttpError } from '../../transport/http/http-client.js';
 import * as AgentResolution from '../../jobs/shell/agent-resolution.js';
 import type { MutableRuntimeState } from '../../coordinator/control.js';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';

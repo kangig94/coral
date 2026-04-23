@@ -3,15 +3,15 @@ import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../views.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { MutableRuntimeState, TypedEventBus } from '../../coordinator/control.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
-import { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
+import { RecoveryRegistry } from './registry.js';
 import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
-import type { RecoveryCapableService } from '../../coordinator/contracts.js';
+import type { RecoveryCapableService, LaunchFenceState } from './contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
 import { markJobAsError } from './job-helpers.js';
+import type { JobEventBus } from '../event-bus.js';
 import {
   applyRecoveryAction,
   finalizeDeadAdoptedJob,
@@ -42,8 +42,8 @@ export interface RecoveryCoordinator {
 type RecoveryCoordinatorContext = {
   progressStore: ProgressStore;
   runtime: Runtime;
-  runtimeState: MutableRuntimeState;
-  eventBus: TypedEventBus;
+  runtimeState: LaunchFenceState;
+  eventBus: JobEventBus;
   providerRegistry: ProviderRegistry;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;

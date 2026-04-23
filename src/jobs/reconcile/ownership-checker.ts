@@ -1,6 +1,3 @@
-import { readBackendInfo } from '../../coordinator/discovery.js';
-import type { MutableRuntimeState } from '../../coordinator/control.js';
-import type { IdleTimer } from '../../coordinator/live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 
 type ReplacementBackendOwnershipCheckerInstaller = {
@@ -8,14 +5,16 @@ type ReplacementBackendOwnershipCheckerInstaller = {
 };
 
 type CreateReplacementBackendOwnershipCheckerContext = {
+  readBackendInfo: (pluginRoot: string, runtime: Runtime) => { instanceId: string } | null;
   runtime: Runtime;
-  runtimeState: MutableRuntimeState;
-  idleTimer: IdleTimer;
+  runtimeState: { getLifecycle(): string };
+  idleTimer: { isDraining: boolean; requestDrain(reason: string): void };
   pluginRoot: string;
   instanceId: string;
 };
 
 export function createReplacementBackendOwnershipChecker({
+  readBackendInfo,
   runtime,
   runtimeState,
   idleTimer,

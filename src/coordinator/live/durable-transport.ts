@@ -3,6 +3,7 @@ import { backendLog } from '../../shared/backend-log.js';
 import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../shared/process-constants.js';
 import { buildJsonRpcError, errorMessage } from '../../shared/utils.js';
 import type { JobRuntime } from '../../jobs/api.js';
+import { CliBusyError, type CliBusyErrorDetail } from '../../runtime/cli-busy.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';
 import type { LaunchPool } from './admission.js';
@@ -61,23 +62,6 @@ type ProviderServerEntry = {
   resolveClose: (outcome: Error | void) => void;
   closeOutcome: Error | void;
 };
-
-export type CliBusyErrorDetail = {
-  error: 'busy';
-  provider: string;
-  globalActive: number;
-  globalLimit: number;
-};
-
-export class CliBusyError extends Error {
-  readonly detail: CliBusyErrorDetail;
-
-  constructor(detail: CliBusyErrorDetail) {
-    super(`Runner is busy (${detail.globalActive}/${detail.globalLimit} for ${detail.provider})`);
-    this.name = 'CliBusyError';
-    this.detail = detail;
-  }
-}
 
 export type SpawnCliOptions = {
   provider: string;

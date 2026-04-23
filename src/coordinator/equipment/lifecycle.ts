@@ -1,7 +1,7 @@
 import { statSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../consumer-driver.js';
+import type { ConsumerApplyError, ConsumerDriver, ConsumerHandle } from '../../store/consumer-driver.js';
 import { readCorpusState, normalizeCorpusCursor } from '../../store/corpus-state.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import {

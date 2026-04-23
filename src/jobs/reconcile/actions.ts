@@ -10,11 +10,11 @@ import type {
 import { phaseForOutcome, type TerminalOutcome } from '../outcome.js';
 import type { ProgressStore } from '../job-store.js';
 import type { RecoveryAction } from './plan.js';
-import type { RecoveryRegistry } from '../../coordinator/composition/recovery-registry.js';
+import type { RecoveryRegistry } from './registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
-import type { RecoveryCapableService } from '../../coordinator/contracts.js';
+import type { RecoveryCapableService } from './contracts.js';
 import { markJobAsError, materializeProviderTerminal } from './job-helpers.js';
 import { noopAppendEvents } from '../../store/append.js';
 import { materializeJobRecoveryFault } from '../shell/legacy-ingest.js';

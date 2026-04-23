@@ -114,6 +114,8 @@ export type {
   DiscussStartInput,
 } from './command-schemas.js';
 export type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from './views.js';
+export type { BidResult, PersonaSeedOutput, SpeechResult } from './session-types.js';
+export type { WatchState } from './watch.js';
 export type { DiscussContext } from './shell/context.js';
 export type { RecoveredDiscussResume } from './shell/operations.js';
 export { DiscussSessionStore } from './shell/session-store.js';

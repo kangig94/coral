@@ -1,14 +1,14 @@
-import { withCallerContext } from './caller-context.js';
+import { currentEventMetadata, withCallerContext } from './caller-context.js';
 import type { CallerContext } from '../shared/request-context.js';
 import type {
   ExecutionLaunchPool as LaunchPool,
   ExecutionServiceDeps,
-  JobContinuitySnapshot,
   ListResult,
   ProjectRequestPort,
   RecoveryCapableService,
 } from './contracts.js';
-import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, JobTerminal, LaunchDecision, LaunchState, WaitStreamEvent, WaitStreamRequest } from '../jobs/api.js';
+import type { AppServerRuntime, AbortReason, JobLaunch, JobPhase, JobRuntime, JobTerminal, LaunchDecision, LaunchState } from '../jobs/api.js';
+import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST, WorkflowCommand, WorkflowSessionHandle } from '../workflow/api.js';
 import type { AbortResult } from '../shared/execution-contracts.js';
 import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
@@ -71,6 +71,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
       appendEvents,
+      getEventMetadata: () => {
+        try {
+          return currentEventMetadata();
+        } catch {
+          return null;
+        }
+      },
       acquireServer: (spec, options) => this.recoveryService.acquireServer(spec, options),
     });
     const waitCoordinator = new WaitCoordinator({
@@ -291,7 +298,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     yield* this.waitService.waitStream(req);
   }
 
-  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
+  async waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult> {
     return this.waitService.waitStreamOnce(jobId, timeoutMs);
   }
 }

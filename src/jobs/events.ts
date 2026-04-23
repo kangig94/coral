@@ -19,7 +19,8 @@ import {
 } from './outcome.js';
 import { usageSummarySchema } from '../providers/contract.js';
 import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
-import { jobContinuitySnapshotSchema, workflowResultMetaSchema } from './views.js';
+import { jobContinuitySnapshotSchema } from './continuity.js';
+import { workflowResultMetaSchema } from './result.js';
 
 export const jobQueueQueuedBodySchema = z
   .object({
@@ -308,8 +309,13 @@ function reducerForProgress(): Reducer<JobProgressBody> {
 function reducerForTerminal(): Reducer<JobTerminaledBody> {
   return (db, event) => {
     const terminal: JobTerminal = {
+      content: event.body.content ?? '',
       outcome: event.body.outcome,
       durationMs: event.body.durationMs,
+      ...(event.body.exitCode === undefined ? {} : { exitCode: event.body.exitCode }),
+      ...(event.body.warnings === undefined ? {} : { warnings: event.body.warnings }),
+      ...(event.body.usage === undefined ? {} : { usage: event.body.usage }),
+      ...(event.body.workflow === undefined ? {} : { workflow: event.body.workflow }),
     };
     upsertProjectionJob(db, event, {
       phase: phaseForOutcome(event.body.outcome),

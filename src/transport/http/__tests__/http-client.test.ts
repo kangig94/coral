@@ -50,7 +50,7 @@ function sseResponse(text: string): Response {
   });
 }
 
-describe('client http-client', () => {
+describe('transport/http http-client', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {

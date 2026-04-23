@@ -1,6 +1,6 @@
 import { CommanderError } from 'commander';
 
-import { BackendToolHttpError } from '../client/http-client.js';
+import { BackendToolHttpError } from '../transport/http/client-errors.js';
 import {
   BackendUnreachableError,
   TransientHttpError,

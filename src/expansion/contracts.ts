@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { equipmentViewSchema } from '../coordinator/equipment/contract.js';
+import { equipmentViewSchema } from './equipment-contract.js';
 
 const equipmentCatalogStatusLiterals = [
   'inactive',

@@ -36,6 +36,8 @@ export type {
   DiscussSummaryIndexRow,
 } from '../shared/persistence-types.js';
 
+/** Test-only persisted state readers for assertions against on-disk discuss and store artifacts. */
+
 function readJsonFile(filePath: string): unknown | null {
   return readJsonFileWithStorage(nodeDiscussReaderStorage, filePath);
 }

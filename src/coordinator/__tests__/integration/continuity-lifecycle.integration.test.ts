@@ -30,7 +30,7 @@ import { startDiscussSession } from '../../../discuss/shell/operations.js';
 import * as discussLoop from '../../../discuss/shell/loop.js';
 import type { AgentConfig } from '../../../discuss/shell/context.js';
 import { parseJobStatus } from '../../../jobs/views.js';
-import type { JobContinuitySnapshot } from '../../contracts.js';
+import type { JobContinuitySnapshot } from '../../../jobs/continuity.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',

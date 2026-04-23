@@ -5,7 +5,7 @@ import {
   registerEquipmentResultSchema,
   type EquipmentView,
   unregisterResultSchema,
-} from '../coordinator/equipment/contract.js';
+} from './equipment-contract.js';
 import { readPassiveDiscovery } from '../coordinator/discovery-api.js';
 import { getSettledBuildFlavor } from '../infra/paths.js';
 import { resolveBuildFlavor } from '../runtime/flavor.js';

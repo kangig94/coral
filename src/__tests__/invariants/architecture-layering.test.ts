@@ -30,8 +30,6 @@ const TRANSPORT_ALLOWED = new Set([
   'src/workflow/api.ts',
   'src/kb/api.ts',
   'src/store/index.ts',
-  'src/coordinator/equipment/contract.ts',
-  'src/coordinator/event-bus.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/coordinator.ts',
@@ -79,7 +77,7 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
     expect(violations).toEqual([]);
   });
 
-  it('#28: transport imports only transport-local helpers, named domain public contracts, and the event-bus leaf carveout', () => {
+  it('#28: transport imports only transport-local helpers and named domain public contracts', () => {
     const violations = collectViolations((source, target) => {
       if (!source.startsWith('src/transport/')) {
         return false;

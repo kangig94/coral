@@ -1,4 +1,4 @@
-import type { ExecutionLaunchCoordinator as LaunchCoordinator, ExecutionLaunchPool as LaunchPool } from '../coordinator/contracts.js';
+import type { LaunchCoordinator, LaunchPool } from '../jobs/shell/contracts.js';
 import type { JobRuntime } from '../jobs/views.js';
 import { isDurableCliRuntime, type DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 

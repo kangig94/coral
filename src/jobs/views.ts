@@ -1,15 +1,18 @@
 import { z } from 'zod';
 
-import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
+import { jobContinuitySnapshotSchema, type JobContinuitySnapshot } from './continuity.js';
+import {
+  jobTerminalSchema,
+  type JobTerminal,
+  type WorkflowResultMeta,
+  type WorkflowStepMeta,
+} from './result.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import {
   type ProviderAction,
   type ProviderInstruction,
-  type UsageSummary,
-  usageSummarySchema,
 } from '../providers/contract.js';
-import { type TerminalOutcome, terminalOutcomeSchema } from './outcome.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
 
 export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
@@ -24,67 +27,7 @@ export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
 
 export const launchStateSchema = z.enum(['pending', 'queued', 'ready', 'busy', 'error']);
 
-export interface WorkflowStepMeta {
-  agent: string;
-  step: number;
-  atom: number;
-  provider: string;
-  start: number;
-  end: number;
-}
-
-export interface WorkflowResultMeta {
-  steps: WorkflowStepMeta[];
-}
-
-const workflowStepMetaSchema = z
-  .object({
-    agent: z.string(),
-    step: z.number(),
-    atom: z.number(),
-    provider: z.string(),
-    start: z.number(),
-    end: z.number(),
-  })
-  .strict();
-
-export const workflowResultMetaSchema = z
-  .object({
-    steps: z.array(workflowStepMetaSchema),
-  })
-  .strict();
-
 export type JobKind = 'provider' | 'workflow';
-
-export interface JobTerminal {
-  content: string;
-  durationMs?: number;
-  exitCode?: number | null;
-  warnings?: string[];
-  usage?: UsageSummary;
-  workflow?: WorkflowResultMeta;
-  outcome: TerminalOutcome;
-}
-
-export const jobTerminalSchema = z
-  .object({
-    content: z.string(),
-    durationMs: z.number().optional(),
-    exitCode: z.number().nullable().optional(),
-    warnings: z.array(z.string()).optional(),
-    usage: usageSummarySchema.optional(),
-    workflow: workflowResultMetaSchema.optional(),
-    outcome: terminalOutcomeSchema,
-  })
-  .strict();
-
-export const jobContinuitySnapshotSchema = z
-  .object({
-    conversationRef: z.string().nullable(),
-    resumable: z.boolean(),
-    providerContinuity: z.record(z.unknown()).optional(),
-  })
-  .strict();
 
 export interface JobExit extends JobTerminal {
   continuity?: JobContinuitySnapshot | null;
@@ -199,3 +142,6 @@ export interface JobProgress {
   result?: JobTerminal;
   continuity?: JobContinuitySnapshot | null;
 }
+
+export type { JobTerminal, WorkflowResultMeta, WorkflowStepMeta } from './result.js';
+export { jobTerminalSchema, workflowResultMetaSchema } from './result.js';

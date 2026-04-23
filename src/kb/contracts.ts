@@ -1,19 +1,24 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerApplyError, ConsumerRegistrationKind } from '../coordinator/consumer-driver.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import type { EntityGraph, KbIndex, NoteEntry, SourceEntry } from './entry-types.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
+export type {
+  ConsumerApplyError,
+  ConsumerRegistrationKind,
+  CorpusConsumerApplyContext,
+  CorpusConsumerRegistration,
+  CorpusInterest,
+  CorpusLaneHint,
+} from '../store/corpus-consumer.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
 export type KbCorpusSnapshot = CorpusSnapshot;
 
 export type KbCorpusLane = 'content' | 'metadata';
-export type CorpusLaneHint = KbCorpusLane;
-export type CorpusInterest = CorpusLaneHint | 'both';
 
 export interface KbCorpusPublication {
   snapshot: KbCorpusSnapshot;
@@ -38,20 +43,6 @@ export interface KbCorpusPublishCallbacks {
   notifyCorpusMutation(publication: KbCorpusPublication): Promise<void> | void;
   onPublishFailure?(failure: KbCorpusPublishFailure): void;
   onPublishSuccess?(): void;
-}
-
-export interface CorpusConsumerApplyContext {
-  readonly snapshot: KbCorpusSnapshot;
-  readonly db: BetterSqlite3.Database;
-}
-
-export interface CorpusConsumerRegistration {
-  readonly id: string;
-  readonly authority: 'corpus';
-  readonly corpusInterest: CorpusInterest;
-  readonly registrationKind?: ConsumerRegistrationKind;
-  readonly onApplyFailure?: (err: ConsumerApplyError) => void;
-  apply(ctx: CorpusConsumerApplyContext): Promise<void>;
 }
 
 export interface KbTextArtifactsSnapshot {

@@ -2,7 +2,6 @@
  * Discuss-owned view, summary, detail, and authority types.
  *
  * These are discuss domain contracts — the canonical definitions live here.
- * `client/discuss.ts` re-exports them for the public `./client` surface.
  */
 
 import { buildAuditView, buildControlView } from './projections.js';

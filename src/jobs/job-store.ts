@@ -1,18 +1,18 @@
 import type { Database } from 'better-sqlite3';
 import { join } from 'node:path';
 
-import { TypedEventBus } from '../coordinator/event-bus.js';
 import { appendEvents as appendJournalEvents, type AppendedEvent, type AppendEventsFn } from '../store/append.js';
 import { openStoreDatabase } from '../store/db.js';
 import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
-import type { JobContinuitySnapshot } from '../coordinator/contracts.js';
+import type { JobContinuitySnapshot } from './continuity.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../shared/format-progress.js';
 import { nowIsoString } from '../shared/utils.js';
+import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
@@ -31,7 +31,7 @@ export type ReplayCursor = {
 };
 
 export type ProgressStoreOptions = {
-  eventBus?: TypedEventBus;
+  eventBus?: JobEventBus;
   db?: Database;
   appendEvents?: AppendEventsFn;
   reducers?: ComposedReducers;
@@ -81,7 +81,7 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
 }
 
 export class JobStore {
-  private readonly eventBus: TypedEventBus;
+  private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly appendEvents: AppendEventsFn;
   private readonly drafts = new Map<string, JobStatus>();
@@ -102,7 +102,7 @@ export class JobStore {
     options: ProgressStoreOptions = {},
   ) {
     const {
-      eventBus = new TypedEventBus(),
+      eventBus = createNoopJobEventBus(),
       db,
       appendEvents,
       reducers = composeReducers(jobsRegistry),
@@ -150,7 +150,7 @@ export class JobStore {
     return this.namespace;
   }
 
-  getEventBus(): TypedEventBus {
+  getEventBus(): JobEventBus {
     return this.eventBus;
   }
 

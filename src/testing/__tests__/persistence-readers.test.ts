@@ -19,7 +19,7 @@ import {
   readDiscussSummaryIndexForSource,
   readProgressLog,
   readStatusRecord,
-} from '../readers.js';
+} from '../persistence-readers.js';
 import { openStoreDatabase } from '../../store/db.js';
 import { ensureStoreMigrationsDir } from '../../store/migrations.js';
 import { storePaths } from '../../store/paths.js';

@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import { getBackendStatusFull, shutdownBackend } from '../../client/backend-helpers.js';
+import { getBackendStatusFull, shutdownBackend } from '../../transport/http/backend-helpers.js';
 import {
   emitError,
   getPluginRoot,

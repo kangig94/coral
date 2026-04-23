@@ -2,23 +2,23 @@ declare const __PLUGIN_ROOT__: string;
 
 import { withAbortTimeout } from './backend-handle.js';
 import { isBackendHealth } from './backend-health.js';
-import { BackendToolHttpError } from './http-client.js';
-import { readBackendInfo } from '../coordinator/discovery.js';
+import { BackendToolHttpError } from './client-errors.js';
+import { readBackendInfo } from '../../infra/backend-discovery.js';
 import {
   BackendUnreachableError,
   TransientHttpError,
   errorMessage,
   isRecord,
   readBuildFlavor,
-} from '../shared/utils.js';
-import { isProcessAlive } from '../shared/node-process.js';
+} from '../../shared/utils.js';
+import { isProcessAlive } from '../../shared/node-process.js';
 import {
   HEALTH_TIMEOUT_MS,
   parseJsonResponse,
-} from '../shared/sse-parser.js';
-import type { WaitStreamEvent } from '../jobs/wait.js';
-import { parseSerializedWaitCursor, serializeWaitCursor } from '../jobs/wait.js';
-import { createIpcClient } from '../transport/ipc/client.js';
+} from '../../shared/sse-parser.js';
+import type { WaitStreamEvent } from '../../jobs/api.js';
+import { parseSerializedWaitCursor, serializeWaitCursor } from '../../jobs/api.js';
+import { createIpcClient } from '../ipc/client.js';
 
 export type BackendStatus = {
   status: 'ok';

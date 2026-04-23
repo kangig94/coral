@@ -1,8 +1,8 @@
-import type { EventBusEvents, TypedEventBus } from '../../coordinator/event-bus.js';
+import type { EventStreamBus, EventStreamEventMap } from './contracts.js';
 
-export function subscribeAll<K extends keyof EventBusEvents>(
-  bus: TypedEventBus,
-  handlers: Partial<{ [E in K]: (data: EventBusEvents[E]) => void }>,
+export function subscribeAll<K extends keyof EventStreamEventMap>(
+  bus: EventStreamBus,
+  handlers: Partial<{ [E in K]: (data: EventStreamEventMap[E]) => void }>,
 ): () => void {
   const keys = Object.keys(handlers) as K[];
   for (const key of keys) {

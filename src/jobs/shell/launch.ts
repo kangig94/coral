@@ -11,7 +11,6 @@ import type {
 } from '../../providers/contract.js';
 import { errorMessage, nowIsoString } from '../../shared/utils.js';
 import { backendLog } from '../../shared/backend-log.js';
-import { getCallerContext } from '../../coordinator/caller-context.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
@@ -20,27 +19,23 @@ import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeWorkflowResult } from './result-artifact.js';
-import { CliBusyError } from '../../coordinator/live/admission.js';
+import { CliBusyError } from '../../runtime/cli-busy.js';
 import type {
-  JobContinuitySnapshot,
-  ExecutionLaunchCoordinator as LaunchCoordinator,
-  ExecutionLaunchPool as LaunchPool,
-  ExecutionQueuedHandle as QueuedHandle,
-} from '../../coordinator/contracts.js';
+  AcceptedAdmission,
+  ClaimJobOptions,
+  LaunchCoordinator,
+  LaunchPool,
+  QueuedHandle,
+} from './contracts.js';
 import { type ProgressStore } from '../job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
-import { consumeJobStream } from '../../coordinator/services/continuity-consumer.js';
+import type { JobContinuitySnapshot } from '../continuity.js';
+import { consumeJobStream } from './continuity-consumer.js';
 import { materializeProviderTerminal } from '../reconcile/job-helpers.js';
-import {
-  SessionClaimError,
-  rejectLaunch,
-  toProviderRequest,
-  type AcceptedAdmission,
-  type ClaimJobOptions,
-} from './contracts.js';
+import { SessionClaimError, rejectLaunch, toProviderRequest } from './contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 
@@ -79,6 +74,7 @@ export interface LaunchOrchestratorDeps {
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
   appendEvents: AppendEventsFn;
+  getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
   acquireServer: (
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
@@ -92,13 +88,9 @@ export class LaunchOrchestrator {
     jobId: string,
     projectRoot?: string,
   ): Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> {
-    const caller = getCallerContext();
+    const caller = this.deps.getEventMetadata?.() ?? null;
     if (caller) {
-      return {
-        namespace: caller.namespace,
-        project: caller.project,
-        correlationId: caller.correlationId,
-      };
+      return caller;
     }
 
     const launch = this.deps.progressStore.readLaunchRecord(jobId);

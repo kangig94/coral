@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readStatusRecord } from '../../../client/readers.js';
+import { readStatusRecord } from '../../../testing/persistence-readers.js';
 import { readDiscussSourcesWithStorage } from '../discuss-sources-catalog.js';
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
 import { renderEntries } from '../../transcript.js';

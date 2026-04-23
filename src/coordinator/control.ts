@@ -2,7 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { errorMessage } from '../shared/utils.js';
 import { backendLog } from '../shared/backend-log.js';
 import { type LaunchCoordinator } from './live/admission.js';
-import { type writeBackendInfo, type removeBackendInfoIfOwner } from './discovery.js';
+import { readBackendInfo, type writeBackendInfo, type removeBackendInfoIfOwner } from './discovery.js';
 import type { RecoveryRegistry } from './composition/recovery-registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { CallerContext } from '../shared/request-context.js';
@@ -517,6 +517,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     ownershipCheckerTeardown: null,
   };
   const ownershipChecker = createReplacementBackendOwnershipChecker({
+    readBackendInfo,
     runtime,
     runtimeState,
     idleTimer,

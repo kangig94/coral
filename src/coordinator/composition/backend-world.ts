@@ -79,7 +79,11 @@ export function createBackendWorld(
   // All identity resolution above (setBuildFlavor, backendLog.init) must complete before constructing singletons; do not move backendLog.init or setBuildFlavor below this point.
   const idleTimer = defaultsPlan.eager.createIdleTimer();
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
-  const eventBus = options.eventBus ?? options.progressStore?.getEventBus() ?? new TypedEventBus();
+  const progressStoreEventBus = options.progressStore?.getEventBus();
+  const eventBus =
+    options.eventBus
+    ?? (progressStoreEventBus instanceof TypedEventBus ? progressStoreEventBus : undefined)
+    ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,

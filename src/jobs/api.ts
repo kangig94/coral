@@ -2,16 +2,16 @@ import type { Database } from 'better-sqlite3';
 import { z } from 'zod';
 
 import type { AbortResult } from '../shared/execution-contracts.js';
-import type { ProjectRequestPort, RecoveryCapableService } from '../coordinator/contracts.js';
 import type { ProgressStore } from './job-store.js';
-import type { RecoveryRegistry } from '../coordinator/composition/recovery-registry.js';
+import type { RecoveryRegistry } from './reconcile/registry.js';
+import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { CallerContext } from '../shared/request-context.js';
 import { providerIdentPattern } from '../shared/identifiers.js';
 import type { JobProgress, JobStatus } from './views.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from './wait.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { JobLaunchRequest, JobResumeRequest, JobForkRequest } from './launch.js';
+import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from './launch.js';
 import { jobPhaseSchema } from './phase.js';
 import type { RecoveryCoordinator } from './reconcile/coordinator.js';
 import type { JobProjectionDetail } from './read-contracts.js';
@@ -23,6 +23,14 @@ import {
   readJobProgress as readJobProgressQuery,
 } from '../store/queries/jobs.js';
 import { createDefaultStoreReadContext } from '../store/read-context.js';
+
+type ProjectRequestPort = {
+  start(providerName: string, input: JobLaunchRequest, ctx: CallerContext): Promise<LaunchDecision>;
+  resumeBySessionId(input: JobResumeRequest, ctx: CallerContext): Promise<LaunchDecision>;
+  forkBySessionId(input: JobForkRequest, ctx: CallerContext): Promise<LaunchDecision>;
+  abort(jobIds: string[]): AbortResult;
+  waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
+};
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');

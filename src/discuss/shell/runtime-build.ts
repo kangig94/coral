@@ -12,7 +12,7 @@ import type { JobStatus } from '../../jobs/views.js';
 import { errorMessage, formatError } from '../../shared/utils.js';
 import type { CallerContext } from '../../shared/request-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import type { JobContinuitySnapshot } from '../../coordinator/contracts.js';
+import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type {
   AgentConfig,
   DiscussContext,

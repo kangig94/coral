@@ -19,7 +19,7 @@ import {
   type SessionCreateResponse,
   type SessionMessageResponse,
   type WorkflowLaunchResponse,
-} from '../client/http-client.js';
+} from '../transport/http/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type { JobStatus } from '../jobs/views.js';

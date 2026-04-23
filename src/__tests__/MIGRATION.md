@@ -16,7 +16,7 @@ Baseline at tag `phase-1-complete`: 41 files under `src/execution/__tests__/` (3
 ## Sessions slice (commit `02301ae2` — `phase-2/sessions`)
 
 - `src/execution/__tests__/session-manager.test.ts` → **SPLIT** between `src/sessions/shell/__tests__/store.test.ts` and `src/sessions/shell/__tests__/resolve.test.ts`.
-- `src/client/__tests__/readers.test.ts` → **KEPT** in place; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`.
+- `src/testing/__tests__/persistence-readers.test.ts` → **MOVED** out of the removed client tree; still covers the shared session-entry reader bridge onto `src/sessions/entry.ts`.
 - New AC2 proof coverage: `src/sessions/__tests__/reducer-equivalence.test.ts`.
 
 ## Discuss slice (commit `e1a53b3c` — `phase-2/discuss`)

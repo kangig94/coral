@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { z, ZodError } from 'zod';
 
-import { BackendToolHttpError } from '../../client/http-client.js';
+import { BackendToolHttpError } from '../../transport/http/client-errors.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/views.js';

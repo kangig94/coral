@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { jobContinuitySnapshotSchema, jobTerminalSchema } from '../jobs/views.js';
+import { jobContinuitySnapshotSchema } from '../jobs/continuity.js';
+import { jobTerminalSchema } from '../jobs/result.js';
 import type { WaitStreamEvent } from '../jobs/wait.js';
 
 export const HEALTH_TIMEOUT_MS = 3_000;

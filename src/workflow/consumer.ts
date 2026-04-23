@@ -1,12 +1,15 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { ConsumerDriver, ConsumerHandle } from '../coordinator/consumer-driver.js';
-import { registerJournalProjectionConsumer } from '../store/projection-consumer.js';
+import {
+  registerJournalProjectionConsumer,
+  type JournalConsumerRegistrar,
+  type ProjectionConsumerHandle,
+} from '../store/projection-consumer.js';
 import { workflowRegistry } from './events.js';
 
 export function registerWorkflowConsumer(
-  driver: ConsumerDriver,
+  driver: JournalConsumerRegistrar,
   db: BetterSqlite3.Database,
-): ConsumerHandle {
+): ProjectionConsumerHandle {
   return registerJournalProjectionConsumer(driver, db, 'workflow', workflowRegistry);
 }

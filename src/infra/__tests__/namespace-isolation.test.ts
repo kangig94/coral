@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../../infra/paths.js';
+import { backendInfoPath, backendLockPath, installationDir, pluginRootNamespace } from '../paths.js';
 import { readBuildFlavor, readBundleHash } from '../../shared/utils.js';
 
 const tempRoots: string[] = [];
@@ -24,7 +24,7 @@ afterEach(() => {
   }
 });
 
-describe('client namespace isolation', () => {
+describe('infra namespace isolation', () => {
   it('isolates backend discovery files by plugin root', () => {
     const rootA = createPluginRoot('coral-plugin-a');
     const rootB = createPluginRoot('coral-plugin-b');

@@ -1,7 +1,7 @@
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/index.js';
 import { createRealRuntime } from '../runtime/real.js';
-import type { EquipmentView } from '../coordinator/equipment/contract.js';
+import type { EquipmentView } from './equipment-contract.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import {
   readEquipmentStatus,

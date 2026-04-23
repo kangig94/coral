@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { BackendToolHttpError } from '../../client/http-client.js';
-import type { BackendStatusFull, ShutdownResult } from '../../client/backend-helpers.js';
-import type { AcceptedLaunchResponse } from '../../client/http-client.js';
+import { BackendToolHttpError } from '../../transport/http/client-errors.js';
+import type { BackendStatusFull, ShutdownResult } from '../../transport/http/backend-helpers.js';
+import type { AcceptedLaunchResponse } from '../../transport/http/http-client.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/session-types.js';
 import type { WatchState } from '../../discuss/watch.js';
 import type { KbReadResult } from '../../kb/entry-types.js';

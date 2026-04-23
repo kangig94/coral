@@ -61,7 +61,7 @@ const mockState = vi.hoisted(() => ({
   kbReindex: vi.fn(),
 }));
 
-vi.mock('../../client/http-client.js', () => {
+vi.mock('../../transport/http/http-client.js', () => {
   class BackendToolHttpError extends Error {
     statusCode: number;
     body: unknown;
@@ -76,7 +76,7 @@ vi.mock('../../client/http-client.js', () => {
   return { BackendToolHttpError };
 });
 
-vi.mock('../../client/backend-helpers.js', () => ({
+vi.mock('../../transport/http/backend-helpers.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
   shutdownBackend: mockState.shutdownBackend,
 }));
@@ -1116,7 +1116,7 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    const { BackendToolHttpError } = await import('../../client/http-client.js');
+    const { BackendToolHttpError } = await import('../../transport/http/http-client.js');
     mockState.createSession.mockRejectedValueOnce(
       new BackendToolHttpError('HTTP 400', 400, {
         code: 'bad_request',
@@ -1384,7 +1384,7 @@ describe('cli main routing', () => {
       message: 'recovering — retry after 500ms',
     };
 
-    const { BackendToolHttpError } = await import('../../client/http-client.js');
+    const { BackendToolHttpError } = await import('../../transport/http/http-client.js');
     mockState.discussStart.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync([
@@ -1550,7 +1550,7 @@ describe('cli main routing', () => {
       message: 'recovering — retry after 500ms',
     };
 
-    const { BackendToolHttpError } = await import('../../client/http-client.js');
+    const { BackendToolHttpError } = await import('../../transport/http/http-client.js');
     mockState.kbSearch.mockRejectedValueOnce(new BackendToolHttpError('HTTP 503', 503, errorBody));
 
     await program.parseAsync(['node', 'coral-cli', 'kb', 'search', 'accel', '--output-format', 'json']);

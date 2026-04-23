@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AcceptedLaunchResponse } from '../../client/http-client.js';
+import type { AcceptedLaunchResponse } from '../../transport/http/http-client.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { serializeWaitCursor } from '../../jobs/wait.js';
 import { createRealRuntime } from '../../runtime/real.js';

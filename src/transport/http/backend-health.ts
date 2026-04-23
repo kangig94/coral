@@ -1,7 +1,7 @@
-import { isRecord } from '../shared/utils.js';
+import { isRecord } from '../../shared/utils.js';
 
 /**
- * Health metadata exposed by the Coral backend.
+ * Health metadata exposed by the Coral backend over HTTP.
  */
 export interface BackendHealth {
   status: 'ok';

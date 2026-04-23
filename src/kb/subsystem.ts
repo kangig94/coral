@@ -8,7 +8,7 @@ import {
   kbRuntimeDir,
 } from './paths.js';
 import { createKbRuntime } from './runtime.js';
-import type { SpawnCliFn } from '../coordinator/live/admission.js';
+import type { SpawnCliFn } from './curate/types.js';
 import type { Runtime } from '../runtime/ports.js';
 
 export type KnowledgeBaseRuntime = {
