@@ -14,7 +14,7 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 
-const terminalResult: JobTerminal = { content: '', durationMs: 100, exitCode: 0, outcome: { kind: 'completed' } };
+const terminalResult: JobTerminal = { content: '', durationMs: 100, outcome: { kind: 'completed' } };
 
 describe('backend isolation', () => {
   it('two coordinators track children independently', () => {

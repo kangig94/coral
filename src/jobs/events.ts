@@ -18,7 +18,14 @@ import {
   type JobProgressFault,
 } from './outcome.js';
 import { usageSummarySchema } from '../providers/contract.js';
-import { jobDiagnosticsSchema, jobTerminalSchema, type JobDiagnostics, type JobTerminal } from './result.js';
+import {
+  jobDiagnosticsSchema,
+  jobTerminalSchema,
+  normalizeJobTerminal,
+  type JobDiagnostics,
+  type JobTerminal,
+  type JobTerminalDiagnostics,
+} from './result.js';
 import { jobContinuitySnapshotSchema } from './continuity.js';
 import { workflowResultMetaSchema } from './result.js';
 
@@ -109,6 +116,38 @@ type ProjectedJobState = {
 
 function emptyDiagnostics(): JobDiagnostics {
   return { progressFaults: [] };
+}
+
+function terminalDiagnosticsFromBody(body: JobTerminaledBody): JobTerminalDiagnostics {
+  return {
+    ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
+    ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
+    ...(body.workflow === undefined
+      ? {}
+      : {
+          workflow: {
+            steps: body.workflow.steps.map((step) => ({ ...step })),
+          },
+        }),
+  };
+}
+
+function mergeDiagnostics(
+  current: JobDiagnostics | undefined,
+  patch: JobTerminalDiagnostics,
+): JobDiagnostics {
+  return {
+    progressFaults: [...(current?.progressFaults ?? [])],
+    ...(patch.warnings === undefined ? {} : { warnings: [...patch.warnings] }),
+    ...(patch.usage === undefined ? {} : { usage: { ...patch.usage } }),
+    ...(patch.workflow === undefined
+      ? {}
+      : {
+          workflow: {
+            steps: patch.workflow.steps.map((step) => ({ ...step })),
+          },
+        }),
+  };
 }
 
 function prematureProjectionJobEvent(event: CoralEvent): CoralSetupError {
@@ -300,6 +339,15 @@ function reducerForProgress(): Reducer<JobProgressBody> {
 
     const diagnostics: JobDiagnostics = {
       progressFaults: [...(previous?.diagnostics.progressFaults ?? []), event.body as JobProgressFault],
+      ...(previous?.diagnostics.warnings === undefined ? {} : { warnings: [...previous.diagnostics.warnings] }),
+      ...(previous?.diagnostics.usage === undefined ? {} : { usage: { ...previous.diagnostics.usage } }),
+      ...(previous?.diagnostics.workflow === undefined
+        ? {}
+        : {
+            workflow: {
+              steps: previous.diagnostics.workflow.steps.map((step) => ({ ...step })),
+            },
+          }),
     };
 
     upsertProjectionJob(db, event, { diagnostics });
@@ -308,18 +356,17 @@ function reducerForProgress(): Reducer<JobProgressBody> {
 
 function reducerForTerminal(): Reducer<JobTerminaledBody> {
   return (db, event) => {
-    const terminal: JobTerminal = {
+    const previous = readProjectionJob(db, event.stream.id);
+    const terminal = normalizeJobTerminal({
       content: event.body.content ?? '',
       outcome: event.body.outcome,
       durationMs: event.body.durationMs,
-      ...(event.body.exitCode === undefined ? {} : { exitCode: event.body.exitCode }),
-      ...(event.body.warnings === undefined ? {} : { warnings: event.body.warnings }),
-      ...(event.body.usage === undefined ? {} : { usage: event.body.usage }),
-      ...(event.body.workflow === undefined ? {} : { workflow: event.body.workflow }),
-    };
+    });
+    const diagnostics = mergeDiagnostics(previous?.diagnostics, terminalDiagnosticsFromBody(event.body));
     upsertProjectionJob(db, event, {
       phase: phaseForOutcome(event.body.outcome),
       terminal,
+      diagnostics,
     });
   };
 }

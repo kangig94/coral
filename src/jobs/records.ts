@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { jobContinuitySnapshotSchema, type JobContinuitySnapshot } from './continuity.js';
-import { jobTerminalSchema, type JobTerminal } from './result.js';
+import {
+  jobDiagnosticsSchema,
+  jobTerminalSchema,
+  type JobDiagnostics,
+  type JobTerminal,
+} from './result.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
@@ -22,6 +27,8 @@ export const launchStateSchema = z.enum(['pending', 'queued', 'ready', 'busy', '
 export type JobKind = 'provider' | 'workflow';
 
 export interface JobExit extends JobTerminal {
+  diagnostics: JobDiagnostics;
+  exitCode?: number | null;
   continuity?: JobContinuitySnapshot | null;
   signal?: string | null;
   endTime: string;
@@ -63,6 +70,7 @@ export const jobStatusSchema = z
       })
       .passthrough(),
     result: jobTerminalSchema.optional(),
+    diagnostics: jobDiagnosticsSchema.optional(),
     continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .passthrough();
@@ -133,5 +141,18 @@ export interface JobProgress {
   continuity?: JobContinuitySnapshot | null;
 }
 
-export type { JobTerminal, WorkflowResultMeta, WorkflowStepMeta } from './result.js';
-export { jobTerminalSchema, workflowResultMetaSchema } from './result.js';
+export type {
+  JobDiagnostics,
+  JobTerminal,
+  JobTerminalDiagnostics,
+  JobTerminalInput,
+  WorkflowResultMeta,
+  WorkflowStepMeta,
+} from './result.js';
+export {
+  cloneJobTerminal,
+  jobDiagnosticsSchema,
+  jobTerminalSchema,
+  normalizeJobTerminal,
+  workflowResultMetaSchema,
+} from './result.js';

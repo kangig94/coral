@@ -7,7 +7,6 @@ import type { CoralEventInput, UpcasterRegistry } from '../store/envelope.js';
 import { ensureStoreMigrationsDir } from '../store/migrations.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
-import type { JobContinuitySnapshot } from './continuity.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
@@ -16,8 +15,18 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
-import type { InitJobOptions, JobProgressStore, ReplayCursor } from './progress-store-contract.js';
-import type { JobLaunch, JobProgress, JobRuntime, JobStatus, JobTerminal, LaunchState } from './records.js';
+import type { InitJobOptions, JobProgressStore, ReplayCursor, TerminalWriteOptions } from './progress-store-contract.js';
+import {
+  cloneJobTerminal,
+  normalizeJobTerminal,
+  type JobLaunch,
+  type JobProgress,
+  type JobRuntime,
+  type JobStatus,
+  type JobTerminal,
+  type JobTerminalInput,
+  type LaunchState,
+} from './records.js';
 
 export type ProgressStoreOptions = {
   eventBus?: JobEventBus;
@@ -46,17 +55,7 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
   return {
     content: exit.content,
     outcome: exit.outcome,
-    ...(exit.durationMs === undefined ? {} : { durationMs: exit.durationMs }),
-    ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
-    ...(exit.warnings === undefined ? {} : { warnings: [...exit.warnings] }),
-    ...(exit.usage === undefined ? {} : { usage: { ...exit.usage } }),
-    ...(exit.workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: exit.workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
+    durationMs: exit.durationMs,
   };
 }
 
@@ -200,18 +199,7 @@ export class JobStore implements JobProgressStore {
       ...(status.result === undefined
         ? {}
         : {
-            result: {
-              ...status.result,
-              ...(status.result.warnings === undefined ? {} : { warnings: [...status.result.warnings] }),
-              ...(status.result.usage === undefined ? {} : { usage: { ...status.result.usage } }),
-              ...(status.result.workflow === undefined
-                ? {}
-                : {
-                    workflow: {
-                      steps: status.result.workflow.steps.map((step) => ({ ...step })),
-                    },
-                  }),
-            },
+            result: cloneJobTerminal(status.result),
           }),
     };
   }
@@ -646,14 +634,16 @@ export class JobStore implements JobProgressStore {
   appendTerminal(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options: { continuity?: JobContinuitySnapshot | null } = {},
+    options: TerminalWriteOptions = {},
   ): number {
     const detail = this.detail(jobId);
     const hasLaunchProjection = detail.launch !== null;
     const status = detail.status ?? this.drafts.get(jobId);
     const continuity = options.continuity ?? null;
+    const terminal = normalizeJobTerminal(result);
+    const diagnostics = options.diagnostics;
     this.appendEvent({
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: jobId },
@@ -665,18 +655,19 @@ export class JobStore implements JobProgressStore {
       },
       bodyVersion: 1,
       body: {
-        outcome: result.outcome,
-        durationMs: result.durationMs ?? 0,
-        content: result.content,
-        exitCode: result.exitCode,
-        warnings: result.warnings,
-        usage: result.usage,
-        workflow: result.workflow,
+        outcome: terminal.outcome,
+        durationMs: terminal.durationMs,
+        content: terminal.content,
+        exitCode: options.exitCode,
+        signal: options.signal,
+        warnings: diagnostics?.warnings,
+        usage: diagnostics?.usage,
+        workflow: diagnostics?.workflow,
         continuity,
-        ...(result.outcome.kind === 'provider_exit'
+        ...(terminal.outcome.kind === 'provider_exit'
           ? {
-              code: result.outcome.code,
-              note: result.outcome.note,
+              code: terminal.outcome.code,
+              note: terminal.outcome.note,
             }
           : {}),
       },
@@ -686,16 +677,7 @@ export class JobStore implements JobProgressStore {
       if (draft) {
         const previousPhase = draft.phase;
         draft.phase = phase;
-        draft.result = {
-          ...result,
-          ...(result.workflow === undefined
-            ? {}
-            : {
-                workflow: {
-                  steps: result.workflow.steps.map((step) => ({ ...step })),
-                },
-              }),
-        };
+        draft.result = cloneJobTerminal(terminal);
         draft.continuity =
           continuity === null
             ? null
@@ -724,9 +706,9 @@ export class JobStore implements JobProgressStore {
 
   markTerminalStatus(
     jobId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options: { continuity?: JobContinuitySnapshot | null } = {},
+    options: TerminalWriteOptions = {},
   ): void {
     this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase, options);
   }

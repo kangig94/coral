@@ -85,7 +85,7 @@ function toExitCode(result: JobTerminal): number {
     case 'provider_exit':
       return normalizeExitCode(result.outcome.code);
     case 'completed':
-      return normalizeExitCode(result.exitCode);
+      return 0;
     default:
       return assertNever(result.outcome);
   }

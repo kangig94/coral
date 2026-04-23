@@ -20,7 +20,8 @@ import {
 } from '../../workflow/internal/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
 import {
-  type JobTerminal,
+  type JobTerminalDiagnostics,
+  type JobTerminalInput,
 } from '../../jobs/records.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
@@ -152,12 +153,13 @@ export class WorkflowExecutionService {
     sessionId: string,
     jobId: string,
     phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminal,
+    result: JobTerminalInput,
     markdown: string,
+    diagnostics: JobTerminalDiagnostics = {},
   ): void {
     this.deps.progressStore.writeWorkflowResultMdOrThrow(jobId, markdown);
     writeWorkflowResult(this.deps.runtime.storage, jobId, markdown);
-    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase);
+    this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, { diagnostics });
     this.deps.sessionManager.setNonResumable(sessionId);
     this.deps.abortRegistry.remove(jobId);
     this.deps.sessionManager.releaseJob(sessionId, jobId);
@@ -193,10 +195,10 @@ export class WorkflowExecutionService {
           'completed',
           {
             content: result.finalOutput,
-            workflow: serialized.workflow,
             outcome: { kind: 'completed' },
           },
           serialized.markdown,
+          { workflow: serialized.workflow },
         );
       })
       .catch((err: unknown) => {
@@ -217,19 +219,19 @@ export class WorkflowExecutionService {
 
     try {
       const serialized = serializeWorkflowResult(stepDetails);
-      const terminalResult: JobTerminal = {
+      const terminalResult: JobTerminalInput = {
         content: '',
         outcome,
+      };
+      this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown, {
         workflow: serialized.workflow,
-      };
-      this.finishWorkflowJob(sessionId, jobId, 'error', terminalResult, serialized.markdown);
+      });
     } catch {
-      const emptyResult: JobTerminal = {
+      const emptyResult: JobTerminalInput = {
         content: '',
         outcome,
-        workflow: { steps: [] },
       };
-      this.finishWorkflowJob(sessionId, jobId, 'error', emptyResult, '');
+      this.finishWorkflowJob(sessionId, jobId, 'error', emptyResult, '', { workflow: { steps: [] } });
     }
   }
 }

@@ -251,7 +251,7 @@ export class WaitCoordinator {
             jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
-            result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+            result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
             continuity: event.continuity ?? this.readQueryContinuity(jobId),
           };
           return;
@@ -274,7 +274,7 @@ export class WaitCoordinator {
             jobId,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
-            result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' } },
+            result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
             continuity: currentStatus.continuity ?? null,
           };
           return;
@@ -375,7 +375,7 @@ export class WaitCoordinator {
             jobId,
             remainingJobIds: [...pending].filter((id) => id !== jobId),
             resultPath: resultPathFor(jobId),
-            result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+            result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
             continuity: event.continuity ?? this.readQueryContinuity(jobId),
           };
           return;
@@ -387,7 +387,7 @@ export class WaitCoordinator {
             jobId,
             remainingJobIds: [...pending].filter((id) => id !== jobId),
             resultPath: resultPathFor(jobId),
-            result: status.result ?? { content: '', outcome: { kind: 'completed' } },
+            result: status.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
             continuity: status.continuity ?? null,
           };
           return;
@@ -425,7 +425,7 @@ export class WaitCoordinator {
               jobId,
               remainingJobIds: [...pending].filter((id) => id !== jobId),
               resultPath: resultPathFor(jobId),
-              result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+              result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
               continuity: event.continuity ?? readContinuity(jobId),
             };
             return 'terminal';
@@ -496,7 +496,7 @@ export class WaitCoordinator {
           jobId: event.jobId,
           remainingJobIds: [...pending].filter((id) => id !== event.jobId),
           resultPath: resultPathFor(event.jobId),
-          result: event.result ?? { content: '', outcome: { kind: 'completed' } },
+          result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
           continuity: event.continuity ?? this.readQueryContinuity(event.jobId),
         };
         return;

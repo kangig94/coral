@@ -1,8 +1,7 @@
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type {
-  JobDiagnostics,
-  JobTerminal,
   ProviderEventBody,
+  ProviderTerminalEventBody,
 } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -26,10 +25,10 @@ export async function consumeJobStream(options: {
   stream: AsyncIterable<ProviderEventBody>;
   sessionApi: SessionContinuityApi;
   appendProgress(message: string): void;
-  appendTerminal(terminal: JobTerminal, diagnostics: JobDiagnostics): void;
+  appendTerminal(event: ProviderTerminalEventBody): void;
 }): Promise<{
-  terminal: JobTerminal;
-  diagnostics: JobDiagnostics;
+  terminal: ProviderTerminalEventBody['terminal'];
+  diagnostics: ProviderTerminalEventBody['diagnostics'];
   finalContinuity: JobContinuitySnapshot | null;
 }> {
   const { sessionId, stream, sessionApi } = options;
@@ -65,7 +64,7 @@ export async function consumeJobStream(options: {
       continue;
     }
 
-    options.appendTerminal(event.terminal, event.diagnostics);
+    options.appendTerminal(event);
     return {
       terminal: event.terminal,
       diagnostics: event.diagnostics,

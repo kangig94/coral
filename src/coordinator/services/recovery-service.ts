@@ -14,7 +14,7 @@ import {
   type AppServerRuntime,
   type JobLaunch,
   type JobRuntime,
-  type JobTerminal,
+  type JobTerminalInput,
 } from '../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
 import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
@@ -28,7 +28,7 @@ import type {
   ExecutionProviderServerAttachment,
   ExecutionProviderHostManager,
 } from '../contracts.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../../jobs/progress-store-contract.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
@@ -332,17 +332,12 @@ export class RecoveryService {
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options?: {
-      continuity?: {
-        conversationRef: string | null;
-        resumable: boolean;
-        providerContinuity?: ProviderContinuityBlob;
-      };
-    },
+    options?: TerminalWriteOptions,
   ): void {
     this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
+      ...options,
       continuity: options?.continuity ?? null,
     });
     this.deps.progressStore.writeResultMd(jobId, result.content);
@@ -352,7 +347,7 @@ export class RecoveryService {
     this.deps.launchCoordinator.releaseLaunch(jobId, pool);
     this.deps.jobPools.delete(jobId);
 
-    const continuity = options?.continuity;
+    const continuity = options?.continuity ?? null;
     if (continuity?.providerContinuity) {
       this.deps.sessionManager.checkpointProviderContinuity(sessionId, {
         providerContinuity: continuity.providerContinuity,

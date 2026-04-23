@@ -1,7 +1,7 @@
 import { formatError } from '../../infra/error-format.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
-import type { JobLaunch, JobRuntime, JobTerminal } from '../records.js';
+import type { JobLaunch, JobRuntime } from '../records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
@@ -186,16 +186,20 @@ export function finalizeDeadAdoptedJob({
           fallbackConversationRef: launchRecord.request.conversationRef,
         })
         .then((result) => {
-          const terminal = materializeProviderTerminal(progressStore, result.terminal, {
+          const materialized = materializeProviderTerminal(progressStore, result.terminal, {
             jobId,
             sessionId: launchRecord.sessionId,
           });
           service.completeRecoveredJob(
             jobId,
             launchRecord.sessionId,
-            terminal,
-            phaseForOutcome(terminal.outcome),
-            result.continuity ? { continuity: result.continuity } : undefined,
+            materialized.terminal,
+            phaseForOutcome(materialized.terminal.outcome),
+            {
+              ...(result.continuity ? { continuity: result.continuity } : {}),
+              diagnostics: materialized.diagnostics,
+              ...(materialized.exitCode === undefined ? {} : { exitCode: materialized.exitCode }),
+            },
           );
         })
         .catch((recoverErr: unknown) => {
@@ -224,8 +228,9 @@ export function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalPayload(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      const payload: JobTerminal = persistedPayload.exitCode === undefined ? { ...persistedPayload, exitCode: exitRecord.exitCode } : persistedPayload;
-      service.completeRecoveredJob(jobId, launchRecord.sessionId, payload, phase);
+      service.completeRecoveredJob(jobId, launchRecord.sessionId, persistedPayload, phase, {
+        exitCode: exitRecord.exitCode,
+      });
       return;
     }
 
@@ -247,8 +252,9 @@ export function finalizeDeadAdoptedJob({
     service.completeRecoveredJob(
       jobId,
       launchRecord.sessionId,
-      { content: '', exitCode: exitRecord.exitCode, outcome },
+      { content: '', outcome },
       phaseForOutcome(outcome),
+      { exitCode: exitRecord.exitCode },
     );
     return;
   }

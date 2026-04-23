@@ -6,7 +6,15 @@ import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
 import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import { type JobPhase } from '../../jobs/phase.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
-import type { JobProgress, JobStatus, JobTerminal } from '../../jobs/records.js';
+import {
+  jobDiagnosticsSchema,
+  normalizeJobTerminal,
+  type JobDiagnostics,
+  type JobProgress,
+  type JobStatus,
+  type JobTerminal,
+  type JobTerminalDiagnostics,
+} from '../../jobs/records.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { decodeBody, type StoreReadContext } from '../body-codec.js';
 import { readLatestEvent } from './events.js';
@@ -69,14 +77,12 @@ type JobRuntimeProjection = JobCliRuntimeProjection | JobAppServerRuntimeProject
 type JobExitProjection = {
   outcome: JobTerminal['outcome'];
   content: string;
-  durationMs?: number;
+  durationMs: number;
+  diagnostics: JobDiagnostics;
   exitCode?: number | null;
   signal?: string | null;
   endTime: string;
   continuity?: JobContinuitySnapshot | null;
-  warnings?: string[];
-  usage?: JobTerminal['usage'];
-  workflow?: JobTerminal['workflow'];
 };
 
 type JobProgressProjection = {
@@ -118,7 +124,9 @@ type JobStatusEventsByType = {
 };
 type DecodedTerminalRow = {
   record: JobTerminal;
+  diagnostics: JobTerminalDiagnostics;
   continuity: JobContinuitySnapshot | null;
+  exitCode?: number | null;
   signal?: string | null;
 };
 
@@ -423,6 +431,52 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
   };
 }
 
+function emptyDiagnostics(): JobDiagnostics {
+  return { progressFaults: [] };
+}
+
+function diagnosticsFromTerminalBody(body: ReturnType<typeof jobTerminalRecordedBodySchema.parse>): JobTerminalDiagnostics {
+  return {
+    ...(body.warnings === undefined ? {} : { warnings: [...body.warnings] }),
+    ...(body.usage === undefined ? {} : { usage: { ...body.usage } }),
+    ...(body.workflow === undefined
+      ? {}
+      : {
+          workflow: {
+            steps: body.workflow.steps.map((step) => ({ ...step })),
+          },
+        }),
+  };
+}
+
+function mergeDiagnostics(
+  base: JobDiagnostics,
+  patch: JobTerminalDiagnostics,
+): JobDiagnostics {
+  const warnings = patch.warnings ?? base.warnings;
+  const usage = patch.usage ?? base.usage;
+  const workflow = patch.workflow ?? base.workflow;
+  return {
+    progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
+    ...(warnings === undefined ? {} : { warnings: [...warnings] }),
+    ...(usage === undefined ? {} : { usage: { ...usage } }),
+    ...(workflow === undefined
+      ? {}
+      : {
+          workflow: {
+            steps: workflow.steps.map((step) => ({ ...step })),
+          },
+        }),
+  };
+}
+
+function decodeProjectionDiagnostics(projection: ProjectionRow | null): JobDiagnostics {
+  if (projection?.diagnostics === null || projection?.diagnostics === undefined) {
+    return emptyDiagnostics();
+  }
+  return jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics));
+}
+
 function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): DecodedTerminalRow | null {
   if (!row) {
     return null;
@@ -430,23 +484,28 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
 
   const body = decodeBody(row, jobTerminalRecordedBodySchema, ctx);
   return {
-    record: {
+    record: normalizeJobTerminal({
       content: body.content ?? '',
       durationMs: body.durationMs,
       outcome: body.outcome,
-      ...(body.exitCode === undefined ? {} : { exitCode: body.exitCode }),
-      ...(body.warnings === undefined ? {} : { warnings: body.warnings }),
-      ...(body.usage === undefined ? {} : { usage: body.usage }),
-      ...(body.workflow === undefined ? {} : { workflow: body.workflow }),
-    },
+    }),
+    diagnostics: diagnosticsFromTerminalBody(body),
     continuity: body.continuity ?? null,
+    ...(body.exitCode === undefined ? {} : { exitCode: body.exitCode }),
     ...(body.signal === undefined ? {} : { signal: body.signal }),
   };
 }
 
-function toJobExitProjection(row: EventRow, terminal: DecodedTerminalRow): JobExitProjection {
+function toJobExitProjection(
+  row: EventRow,
+  terminal: DecodedTerminalRow,
+  diagnostics: JobDiagnostics,
+): JobExitProjection {
   return {
     ...terminal.record,
+    durationMs: terminal.record.durationMs ?? 0,
+    diagnostics,
+    ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
     continuity: terminal.continuity,
     signal: terminal.signal,
     endTime: row.ts,
@@ -493,7 +552,11 @@ function hydrateJobProjectionDetail(
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord) : null;
+  const diagnostics =
+    terminalRecord === null
+      ? decodeProjectionDiagnostics(projection)
+      : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
+  const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
 
   const status = projection
     ? projectionRowToStatus(jobId, projection, rejected, runtime, terminal, requested, ctx)
@@ -669,38 +732,41 @@ export function readJobProgress(
         return [];
       }
 
-      return [{
+      return [
+        {
+          jobId,
+          sessionId,
+          seq: row.seq,
+          eventId: row.per_job_index,
+          type: 'progress' as const,
+          ts: row.ts,
+          message: body.message,
+        },
+      ];
+    }
+
+    const terminal = decodeTerminalRecord(
+      {
+        seq: row.seq,
+        ts: row.ts,
+        type: row.type,
+        body_version: row.body_version,
+        body: row.body,
+      },
+      ctx,
+    );
+
+    return [
+      {
         jobId,
         sessionId,
         seq: row.seq,
         eventId: row.per_job_index,
-        type: 'progress' as const,
-        ts: row.ts,
-        message: body.message,
-      }];
-    }
-
-    return [{
-      jobId,
-      sessionId,
-      seq: row.seq,
-      eventId: row.per_job_index,
         type: 'terminal' as const,
         ts: row.ts,
-        result: decodeTerminalRecord({
-          seq: row.seq,
-          ts: row.ts,
-          type: row.type,
-          body_version: row.body_version,
-          body: row.body,
-        }, ctx)?.record ?? { content: '', outcome: { kind: 'completed' } },
-        continuity: decodeTerminalRecord({
-          seq: row.seq,
-          ts: row.ts,
-          type: row.type,
-          body_version: row.body_version,
-          body: row.body,
-        }, ctx)?.continuity ?? null,
-    }];
+        result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
+        continuity: terminal?.continuity ?? null,
+      },
+    ];
   });
 }

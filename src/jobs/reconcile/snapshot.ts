@@ -33,17 +33,7 @@ function toTerminalPayload(detail: JobProjectionDetail): JobTerminal | null {
   return {
     content: exit.content,
     outcome: exit.outcome,
-    ...(exit.durationMs === undefined ? {} : { durationMs: exit.durationMs }),
-    ...(exit.exitCode === undefined ? {} : { exitCode: exit.exitCode }),
-    ...(exit.warnings === undefined ? {} : { warnings: [...exit.warnings] }),
-    ...(exit.usage === undefined ? {} : { usage: { ...exit.usage } }),
-    ...(exit.workflow === undefined
-      ? {}
-      : {
-          workflow: {
-            steps: exit.workflow.steps.map((step) => ({ ...step })),
-          },
-        }),
+    durationMs: exit.durationMs,
   };
 }
 

@@ -7,11 +7,12 @@ import type { JobPhase } from './phase.js';
 import type { JobProjectionDetail } from './read-contracts.js';
 import type { JobEventBus } from './event-bus.js';
 import type {
+  JobTerminalDiagnostics,
+  JobTerminalInput,
   JobLaunch,
   JobProgress,
   JobRuntime,
   JobStatus,
-  JobTerminal,
   LaunchState,
 } from './records.js';
 
@@ -28,6 +29,13 @@ export type InitJobOptions = {
 
 export type ReplayCursor = {
   lastEventId: number;
+};
+
+export type TerminalWriteOptions = {
+  continuity?: JobContinuitySnapshot | null;
+  diagnostics?: JobTerminalDiagnostics;
+  exitCode?: number | null;
+  signal?: string | null;
 };
 
 export interface JobProgressStore {
@@ -63,15 +71,15 @@ export interface JobProgressStore {
   appendTerminal(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options?: { continuity?: JobContinuitySnapshot | null },
+    options?: TerminalWriteOptions,
   ): number;
   markTerminalStatus(
     jobId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options?: { continuity?: JobContinuitySnapshot | null },
+    options?: TerminalWriteOptions,
   ): void;
   replayFrom(jobId: string, fromEventId: number, cursor: ReplayCursor): JobProgress[];
 }

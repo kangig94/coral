@@ -139,7 +139,6 @@ describe('jobs projection rebuild (live ConsumerDriver)', () => {
           content: 'partial output',
           outcome: { kind: 'provider_exit', code: 17, note: 'forced timeout' },
           durationMs: 3210,
-          exitCode: 17,
         }),
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],

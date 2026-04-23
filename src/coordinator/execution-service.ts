@@ -10,13 +10,21 @@ import type {
 import type { LaunchDecision } from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, LaunchState } from '../jobs/records.js';
+import type {
+  AppServerRuntime,
+  JobLaunch,
+  JobRuntime,
+  JobTerminalDiagnostics,
+  JobTerminalInput,
+  LaunchState,
+} from '../jobs/records.js';
+import type { TerminalWriteOptions } from '../jobs/progress-store-contract.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { WorkflowSessionHandle } from '../workflow/internal/execution-contract.js';
 import type { AbortResult } from '../jobs/abort-result.js';
-import type { ProviderContinuityBlob, ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell/store.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
@@ -245,15 +253,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options?: {
-      continuity?: {
-        conversationRef: string | null;
-        resumable: boolean;
-        providerContinuity?: ProviderContinuityBlob;
-      };
-    },
+    options?: TerminalWriteOptions,
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
@@ -281,10 +283,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     sessionId: string,
     jobId: string,
     phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminal,
+    result: JobTerminalInput,
     markdown: string,
+    diagnostics?: JobTerminalDiagnostics,
   ): void {
-    this.workflowService.finishWorkflowJob(sessionId, jobId, phase, result, markdown);
+    this.workflowService.finishWorkflowJob(sessionId, jobId, phase, result, markdown, diagnostics);
   }
 
   async finalizeInterruptedAppServerJob(

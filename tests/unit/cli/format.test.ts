@@ -706,7 +706,6 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
-          exitCode: 0,
           outcome: { kind: 'provider_exit' as const, code: 0 },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
@@ -757,7 +756,6 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
-          exitCode: 7,
           outcome: { kind: 'provider_exit' as const, code: 7, note: 'forced timeout at 600s' },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;

@@ -15,6 +15,7 @@ import {
   streamProviderTerminal,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
+import { providerRequestFailed, providerSessionUnavailable } from '#src/providers/fault.js';
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
@@ -822,12 +823,11 @@ describe('ExecutionService', () => {
           },
           outcome: {
             kind: 'failed',
-            fault: {
-              kind: 'provider_session_unavailable',
-              provider: 'codex',
-              reason: 'Conversation thread-stale is no longer resumable.',
-            },
           },
+          failureCause: providerSessionUnavailable({
+            provider: 'codex',
+            reason: 'Conversation thread-stale is no longer resumable.',
+          }),
         }),
       });
       mockState.getNewProvider.mockReturnValue(provider);
@@ -1135,6 +1135,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
+    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
 
     expect(existsSync(terminal.resultPath)).toBe(true);
     expect(markdownAtTerminal).toBe(
@@ -1144,26 +1145,26 @@ describe('ExecutionService', () => {
       content: 'FINAL',
       durationMs: 0,
       outcome: { kind: 'completed' },
-      workflow: {
-        steps: [
-          {
-            agent: 'architect',
-            step: 0,
-            atom: 0,
-            provider: 'codex',
-            start: 3,
-            end: 3,
-          },
-          {
-            agent: 'resolver',
-            step: 1,
-            atom: 0,
-            provider: 'codex',
-            start: 7,
-            end: 7,
-          },
-        ],
-      },
+    });
+    expect(workflow).toEqual({
+      steps: [
+        {
+          agent: 'architect',
+          step: 0,
+          atom: 0,
+          provider: 'codex',
+          start: 3,
+          end: 3,
+        },
+        {
+          agent: 'resolver',
+          step: 1,
+          atom: 0,
+          provider: 'codex',
+          start: 7,
+          end: 7,
+        },
+      ],
     });
     expect(status).toMatchObject({
       phase: 'completed',
@@ -1272,12 +1273,8 @@ describe('ExecutionService', () => {
             content: '',
             outcome: {
               kind: 'failed',
-              fault: {
-                kind: 'provider_request_failed',
-                provider: 'codex',
-                message: 'resolver failed',
-              },
             },
+            failureCause: providerRequestFailed({ provider: 'codex', message: 'resolver failed' }),
           };
         }
         return { content: 'unexpected', outcome: { kind: 'completed' as const } };
@@ -1311,6 +1308,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
+    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toMatchObject({
@@ -1318,25 +1316,24 @@ describe('ExecutionService', () => {
       outcome: {
         kind: 'job_fault',
       },
-      workflow: {
-        steps: [
-          {
-            agent: 'architect',
-            step: 0,
-            atom: 0,
-            provider: 'codex',
-            start: 3,
-            end: 3,
-          },
-        ],
-      },
+    });
+    expect(workflow).toMatchObject({
+      steps: [
+        {
+          agent: 'architect',
+          step: 0,
+          atom: 0,
+          provider: 'codex',
+          start: 3,
+          end: 3,
+        },
+      ],
     });
     expect(status).toMatchObject({
       phase: 'error',
       result: {
         content: '',
         outcome: { kind: 'job_fault' },
-        workflow: terminal.result.workflow,
       },
     });
     expect(session?.state).toBe('non_resumable');
@@ -1382,6 +1379,7 @@ describe('ExecutionService', () => {
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const status = progressStore.readStatus(decision.job);
+    const workflow = progressStore.loadJobProjectionDetail(decision.job).exit?.diagnostics.workflow;
 
     expect(markdownAtTerminal).toBe('# Step 0.0: architect\n\nARCH\n');
     expect(terminal.result).toMatchObject({
@@ -1389,25 +1387,24 @@ describe('ExecutionService', () => {
       outcome: {
         kind: 'job_fault',
       },
-      workflow: {
-        steps: [
-          {
-            agent: 'architect',
-            step: 0,
-            atom: 0,
-            provider: 'codex',
-            start: 3,
-            end: 3,
-          },
-        ],
-      },
+    });
+    expect(workflow).toMatchObject({
+      steps: [
+        {
+          agent: 'architect',
+          step: 0,
+          atom: 0,
+          provider: 'codex',
+          start: 3,
+          end: 3,
+        },
+      ],
     });
     expect(status).toMatchObject({
       phase: 'error',
       result: {
         content: '',
         outcome: { kind: 'job_fault' },
-        workflow: terminal.result.workflow,
       },
     });
     expect(session?.state).toBe('non_resumable');
@@ -1443,7 +1440,7 @@ describe('ExecutionService', () => {
       decision.job,
       expect.objectContaining({ content: 'ok', outcome: { kind: 'completed' } }),
       'completed',
-      { continuity: null },
+      { continuity: null, diagnostics: {} },
     );
     expect(status).toMatchObject({
       phase: 'launching',
@@ -1583,7 +1580,7 @@ describe('ExecutionService', () => {
       throw new Error('disk full');
     });
     const markTerminalStatus = vi.spyOn(progressStore, 'markTerminalStatus');
-    const result = { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } };
+    const result = { content: 'done', outcome: { kind: 'completed' as const } };
 
     (
       service as unknown as {
@@ -1591,13 +1588,13 @@ describe('ExecutionService', () => {
           sessionId: string,
           jobId: string,
           phase: 'completed' | 'error' | 'aborted',
-          result: { content: string; workflow: { steps: unknown[] } },
+          result: { content: string },
           markdown: string,
         ): void;
       }
     ).finishWorkflowJob('session-1', jobId, 'completed', result, '# workflow\n');
 
-    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed', {});
+    expect(markTerminalStatus).toHaveBeenCalledWith(jobId, result, 'completed', { diagnostics: {} });
     expect(progressStore.readStatus(jobId)).toMatchObject({
       phase: 'launching',
     });
@@ -1608,14 +1605,14 @@ describe('ExecutionService', () => {
   it.each([
     {
       phase: 'completed' as const,
-      result: { content: 'done', workflow: { steps: [] }, outcome: { kind: 'completed' as const } },
+      result: { content: 'done', outcome: { kind: 'completed' as const } },
+      diagnostics: { workflow: { steps: [] } },
       markdown: '# completed\n',
     },
     {
       phase: 'error' as const,
       result: {
         content: '',
-        workflow: { steps: [] },
         outcome: {
           kind: 'failed',
           causeRef: {
@@ -1627,20 +1624,21 @@ describe('ExecutionService', () => {
           },
         },
       },
+      diagnostics: { workflow: { steps: [] } },
       markdown: '# failed\n',
     },
     {
       phase: 'error' as const,
       result: {
         content: '',
-        workflow: { steps: [] },
         outcome: { kind: 'aborted', reason: 'signal_abort' as const },
       },
+      diagnostics: { workflow: { steps: [] } },
       markdown: '# aborted\n',
     },
   ])(
     'finishWorkflowJob writes result.md before %s terminal persistence and marks the session non_resumable afterward',
-    ({ phase, result, markdown }) => {
+    ({ phase, result, diagnostics, markdown }) => {
       const service = createService(ctx);
       const { progressStore, sessionManager } =
         /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -1672,12 +1670,12 @@ describe('ExecutionService', () => {
         return originalWriteWorkflowResult(targetJobId, persistedMarkdown);
       });
       vi.spyOn(progressStore, 'appendTerminal').mockImplementation(
-        (targetJobId, targetSessionId, terminalResult, terminalPhase) => {
+        (targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions) => {
           order.push('terminal');
           expect(existsSync(jobResultPath(targetJobId))).toBe(true);
           expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
           expect(new SessionManager(ctx.projectRoot, runtime).get('codex', targetSessionId)?.state).toBe('pending');
-          return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase);
+          return originalAppendTerminal(targetJobId, targetSessionId, terminalResult, terminalPhase, terminalOptions);
         },
       );
       vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
@@ -1698,9 +1696,10 @@ describe('ExecutionService', () => {
             terminalPhase: 'completed' | 'error' | 'aborted',
             terminalResult: typeof result,
             persistedMarkdown: string,
+            terminalDiagnostics: typeof diagnostics,
           ): void;
         }
-      ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+      ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics);
 
       expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
       expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);
@@ -1718,9 +1717,9 @@ describe('ExecutionService', () => {
     const phase = 'error' as const;
     const result = {
       content: '',
-      workflow: { steps: [] },
       outcome: { kind: 'aborted', reason: 'signal_abort' as const },
     };
+    const diagnostics = { workflow: { steps: [] } };
     const markdown = '# fallback\n';
     trackJob(jobId);
     progressStore.initJob({
@@ -1749,12 +1748,12 @@ describe('ExecutionService', () => {
     vi.spyOn(progressStore, 'appendTerminal').mockImplementation(() => {
       throw new Error('disk full');
     });
-    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase) => {
+    vi.spyOn(progressStore, 'markTerminalStatus').mockImplementation((targetJobId, terminalResult, terminalPhase, terminalOptions) => {
       order.push('terminal');
       expect(existsSync(jobResultPath(targetJobId))).toBe(true);
       expect(readFileSync(jobResultPath(targetJobId), 'utf-8')).toBe(markdown);
       expect(new SessionManager(ctx.projectRoot, runtime).get('codex', session.sessionId)?.state).toBe('pending');
-      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase);
+      return originalMarkTerminalStatus(targetJobId, terminalResult, terminalPhase, terminalOptions);
     });
     vi.spyOn(sessionManager, 'setNonResumable').mockImplementation((targetSessionId) => {
       order.push('non_resumable');
@@ -1773,9 +1772,10 @@ describe('ExecutionService', () => {
           terminalPhase: 'completed' | 'error' | 'aborted',
           terminalResult: typeof result,
           persistedMarkdown: string,
+          terminalDiagnostics: typeof diagnostics,
         ): void;
       }
-    ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown);
+    ).finishWorkflowJob(session.sessionId, jobId, phase, result, markdown, diagnostics);
 
     expect(order).toEqual(['artifact', 'terminal', 'non_resumable']);
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(markdown);

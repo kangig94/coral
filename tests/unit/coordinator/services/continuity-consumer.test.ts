@@ -73,13 +73,14 @@ describe('consumeJobStream', () => {
     });
     expect(appendProgress.mock.calls).toEqual([['starting'], ['streaming']]);
     expect(appendTerminal).toHaveBeenCalledTimes(1);
-    expect(appendTerminal).toHaveBeenCalledWith(
-      {
+    expect(appendTerminal).toHaveBeenCalledWith({
+      kind: 'terminal',
+      terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
       },
-      { warnings: ['kept'] },
-    );
+      diagnostics: { warnings: ['kept'] },
+    });
     expect(result).toEqual({
       terminal: {
         content: 'done',
@@ -201,13 +202,14 @@ describe('consumeJobStream', () => {
       'Continuity checkpoint went stale for claimed job job-3 on session session-3; draining terminal.',
     );
     expect(appendProgress).not.toHaveBeenCalled();
-    expect(appendTerminal).toHaveBeenCalledWith(
-      {
+    expect(appendTerminal).toHaveBeenCalledWith({
+      kind: 'terminal',
+      terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
       },
-      { warnings: ['terminal-kept'] },
-    );
+      diagnostics: { warnings: ['terminal-kept'] },
+    });
     expect(result).toEqual({
       terminal: {
         content: 'done',

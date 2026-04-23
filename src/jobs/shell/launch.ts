@@ -1,7 +1,5 @@
 import { bindProviderRunner } from '../../providers/cli-runner.js';
 import type {
-  JobDiagnostics as ProviderJobDiagnostics,
-  JobTerminal as ProviderJobTerminal,
   ProviderEventBody,
   ProviderRequest,
   ProviderRuntime,
@@ -15,7 +13,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
+import type { JobLaunch, JobStatus, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
@@ -28,7 +26,7 @@ import type {
   LaunchPool,
   QueuedHandle,
 } from './contracts.js';
-import type { JobProgressStore } from '../progress-store-contract.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
@@ -386,7 +384,7 @@ export class LaunchOrchestrator {
     this.finishAbortedJob(jobId, sessionId, reason);
   }
 
-  failJob(jobId: string, sessionId: string, terminal: JobTerminal): void {
+  failJob(jobId: string, sessionId: string, terminal: JobTerminalInput): void {
     const { abortRegistry, jobPools, sessionManager } = this.deps;
     this.writeJobTerminal(jobId, sessionId, terminal, 'error');
     abortRegistry.remove(jobId);
@@ -405,9 +403,9 @@ export class LaunchOrchestrator {
   writeJobTerminal(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options: { continuity?: JobContinuitySnapshot | null } = {},
+    options: TerminalWriteOptions = {},
   ): void {
     const { progressStore } = this.deps;
     try {
@@ -460,8 +458,8 @@ export class LaunchOrchestrator {
           }
           this.appendProgressEvent(jobId, sessionId, message);
         },
-        appendTerminal: (terminal, diagnostics) => {
-          this.appendProviderTerminal(jobId, sessionId, request.cwd, terminal, diagnostics, latestContinuity);
+        appendTerminal: (event) => {
+          this.appendProviderTerminal(jobId, sessionId, request.cwd, event, latestContinuity);
         },
       });
       await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
@@ -570,8 +568,7 @@ export class LaunchOrchestrator {
     jobId: string,
     sessionId: string,
     projectRoot: string | undefined,
-    terminal: ProviderJobTerminal,
-    diagnostics: ProviderJobDiagnostics,
+    event: Extract<ProviderEventBody, { kind: 'terminal' }>,
     continuity: JobContinuitySnapshot | null,
   ): void {
     const { progressStore } = this.deps;
@@ -580,13 +577,9 @@ export class LaunchOrchestrator {
     }
 
     const metadata = this.resolveEventMetadata(jobId, projectRoot);
-    const terminalResult = materializeProviderTerminal(
+    const materialized = materializeProviderTerminal(
       progressStore,
-      {
-        kind: 'terminal',
-        terminal,
-        diagnostics,
-      },
+      event,
       {
         jobId,
         sessionId,
@@ -595,13 +588,17 @@ export class LaunchOrchestrator {
         correlationId: metadata.correlationId,
       },
     );
-    const phase = phaseForOutcome(terminalResult.outcome);
+    const phase = phaseForOutcome(materialized.terminal.outcome);
     const currentStatus = progressStore.readStatus(jobId);
     if (currentStatus && isTerminalPhase(currentStatus.phase)) {
       return;
     }
 
-    this.writeJobTerminal(jobId, sessionId, terminalResult, phase, { continuity });
+    this.writeJobTerminal(jobId, sessionId, materialized.terminal, phase, {
+      continuity,
+      diagnostics: materialized.diagnostics,
+      ...(materialized.exitCode === undefined ? {} : { exitCode: materialized.exitCode }),
+    });
   }
 
   private readClaimVersion(providerName: string, sessionId: string, jobId: string): number {

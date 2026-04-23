@@ -7,7 +7,7 @@ import {
   type TerminalOutcome,
 } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '../records.js';
+import type { JobLaunch, JobStatus, JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 import type { ProgressStore } from '../job-store.js';
 import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import {
@@ -83,10 +83,9 @@ export function markJobAsError(
     sessionId: status.sessionId,
   });
   const message = describeJobRecoveryError(fault);
-  const terminalResult: JobTerminal =
-    status.jobKind === 'workflow'
-      ? { content: '', workflow: { steps: [] }, outcome }
-      : { content: '', outcome };
+  const terminalResult: JobTerminalInput = { content: '', outcome };
+  const diagnostics: JobTerminalDiagnostics | undefined =
+    status.jobKind === 'workflow' ? { workflow: { steps: [] } } : undefined;
   progressStore.updateLaunchState(status.jobId, 'error', message);
   if (status.jobKind === 'workflow') {
     try {
@@ -101,14 +100,14 @@ export function markJobAsError(
     progressStore.writeStatus(status.jobId, {
       ...current,
       phase: 'error',
-      result: terminalResult,
+      result: { ...terminalResult, durationMs: terminalResult.durationMs ?? 0 },
     });
     return;
   }
   try {
-    progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error');
+    progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error', { diagnostics });
   } catch {
-    progressStore.markTerminalStatus(status.jobId, terminalResult, 'error');
+    progressStore.markTerminalStatus(status.jobId, terminalResult, 'error', { diagnostics });
   }
 }
 
@@ -134,18 +133,32 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
   };
 }
 
+export type MaterializedProviderTerminal = {
+  terminal: JobTerminalInput;
+  diagnostics: JobTerminalDiagnostics;
+  exitCode?: number | null;
+};
+
 export function materializeProviderTerminal(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
-): JobTerminal {
+): MaterializedProviderTerminal {
+  const warnings = [
+    ...(terminal.terminal.warnings ?? []),
+    ...(terminal.diagnostics.warnings ?? []),
+  ];
   return {
-    content: terminal.terminal.content,
-    ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+    terminal: {
+      content: terminal.terminal.content,
+      ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+      outcome: materializeProviderOutcome(progressStore, terminal, options),
+    },
+    diagnostics: {
+      ...(warnings.length === 0 ? {} : { warnings }),
+      ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
+    },
     ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
-    ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
-    ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
-    outcome: materializeProviderOutcome(progressStore, terminal, options),
   };
 }
 

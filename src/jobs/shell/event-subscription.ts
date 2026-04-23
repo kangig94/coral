@@ -73,11 +73,7 @@ function toJobEvent(
   const body = event.body as {
     content?: string;
     durationMs?: number;
-    exitCode?: number | null;
     continuity?: JobContinuitySnapshot | null;
-    warnings?: string[];
-    usage?: Record<string, unknown>;
-    workflow?: { steps: Array<Record<string, unknown>> };
     outcome: JobTerminal['outcome'];
   };
 
@@ -88,18 +84,14 @@ function toJobEvent(
     eventId,
     type: 'terminal',
     ts: event.ts,
-      result: {
-        content: body.content ?? '',
-        durationMs: body.durationMs,
-        exitCode: body.exitCode,
-        warnings: body.warnings,
-        usage: body.usage as JobTerminal['usage'],
-        workflow: body.workflow as JobTerminal['workflow'],
-        outcome: body.outcome,
-      },
-      continuity: body.continuity ?? null,
-    };
-  }
+    result: {
+      content: body.content ?? '',
+      durationMs: body.durationMs ?? 0,
+      outcome: body.outcome,
+    },
+    continuity: body.continuity ?? null,
+  };
+}
 
 export function publishJobEvents(
   db: BetterSqlite3.Database,

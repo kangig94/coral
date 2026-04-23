@@ -23,7 +23,7 @@ export {
 
 export function describeTerminalFailure(
   result: JobTerminal,
-  options: { store?: CoralStore } = {},
+  options: { store?: CoralStore; exitCode?: number | null } = {},
 ): string {
   switch (result.outcome.kind) {
     case 'failed':
@@ -39,7 +39,7 @@ export function describeTerminalFailure(
       if (content.length > 0) {
         return content;
       }
-      const exitCode = result.exitCode ?? (result.outcome.kind === 'provider_exit' ? result.outcome.code : undefined);
+      const exitCode = options.exitCode ?? (result.outcome.kind === 'provider_exit' ? result.outcome.code : undefined);
       return exitCode === undefined || exitCode === null ? 'unknown error' : `exited with code ${exitCode}`;
     }
     default:

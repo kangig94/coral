@@ -4,16 +4,15 @@ import type {
   JobResumeRequest,
   LaunchDecision,
 } from '../jobs/launch.js';
-import type { JobProgressStore } from '../jobs/progress-store-contract.js';
+import type { JobProgressStore, TerminalWriteOptions } from '../jobs/progress-store-contract.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
-import type { JobContinuitySnapshot } from '../jobs/continuity.js';
 import type {
   AppServerRuntime,
   JobLaunch,
   JobProgress,
   JobRuntime,
-  JobTerminal,
+  JobTerminalInput,
   LaunchState,
 } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
@@ -170,11 +169,9 @@ export interface RecoveryCapableService {
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
-    result: JobTerminal,
+    result: JobTerminalInput,
     phase: JobPhase,
-    options?: {
-      continuity?: JobContinuitySnapshot;
-    },
+    options?: TerminalWriteOptions,
   ): void;
 }
 

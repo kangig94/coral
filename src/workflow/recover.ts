@@ -160,14 +160,12 @@ function firstTerminalFailure(
   const result: JobTerminal = {
     content: terminal.content,
     outcome: terminal.outcome,
-    ...(terminal.durationMs === undefined ? {} : { durationMs: terminal.durationMs }),
-    ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
-    ...(terminal.signal === undefined ? {} : { signal: terminal.signal }),
+    durationMs: terminal.durationMs,
   };
 
   return {
     aborted: terminal.outcome.kind === 'aborted',
-    message: `Step ${targetSlot.stepIndex}, atom '${targetSlot.label}' failed: ${describeTerminalFailure(result)}`,
+    message: `Step ${targetSlot.stepIndex}, atom '${targetSlot.label}' failed: ${describeTerminalFailure(result, { exitCode: terminal.exitCode })}`,
     failedStep: targetSlot.stepIndex,
     failedAtom: targetSlot.label,
     failedJobId: targetSlot.jobId,
