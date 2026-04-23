@@ -1,5 +1,9 @@
 # Unified Architecture Implementation Plan — 2026-04-18
 
+> Historical execution record only. This file is not normative anymore.
+> Source of truth: `2026-04-18-final-unified-architecture.md`.
+> Keep only as cleanup-era implementation history, then delete or archive it after cleanup converges.
+
 **Source of truth**: `2026-04-18-final-unified-architecture.md` (endpoint spec). This doc covers HOW to get there.
 
 **Deployment model**: solo development, no user deploy until the entire refactor lands. No transition-window behavior, no feature flags, no dual-write, no compatibility shims. When the work completes, a single deploy swaps the user's installed plugin to the new shape wholesale.

@@ -155,7 +155,7 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 - Hybrid RRF uses whichever vector backend is active.
 - Onboarding: embedding provider setup (local ONNX model or manual config) — see `skills/equip/SKILL.md`.
 
-The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/shared/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
+The `/equip` skill now lives at `skills/equip/SKILL.md` only. The deleted helper files `skills/equip/install.mjs`, `skills/equip/coordinator-client.mjs`, `skills/equip/equipment-paths.mjs`, and `skills/equip/fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts`, `src/coordinator/discovery-api.ts`, `src/expansion/paths.ts`, and `src/infra/fs-lock.ts`. The post-refactor catalog uses tool-named entries (`needle`, and future tools by tool name) rather than capability-named entries, matching the Zelda equipment metaphor.
 
 Equipment activation is tracked in an explicit durable slot registry, not by implicit boot-time registration. Migration 002 adds `equipment_state`; slot `kb.vector` defaults to owner `orama` and may be reassigned to equipped owner `needle`. The KB router reads slot ownership through `KbRuntime.getEquipmentView()` (no coordinator import), and boot-time needle auto-registration is removed: the addon enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`. Orama's base-tier vector implementation lands alongside the refactor, so first deploy already has a working default owner for `kb.vector`.
 
@@ -164,7 +164,7 @@ Equipment consumers subscribe to an **authority** (Journal or Corpus, §2). Each
 - Journal authority → version is `events.seq`; consumers use range-based replay.
 - Corpus authority → version is `contentSeq` (or `metadataSeq` for metadata-only changes); consumers use snapshot-based content-hash diff.
 
-Both use the same `ConsumerDriver` mechanics: receive `notify(authority, version)` signals after an authoritative write, drain in a single-in-flight microtask (backpressure-safe), persist the cursor only after successful `apply()` completes. Journal strict-freshness reads use `waitFreshUntil(version, consumerId)`, implemented as a condition-variable wake (not polling); corpus equipment observation remains `listEquipment` polling (A7). Consumer `apply()` must be **idempotent** — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`).
+Both use the same `ConsumerDriver` mechanics: receive `notify(authority, version)` signals after an authoritative write, drain in a single-in-flight microtask (backpressure-safe), persist the cursor only after successful `apply()` completes. Journal strict-freshness reads use `waitFreshUntil(version, consumerId)`, implemented as a condition-variable wake (not polling); corpus equipment observation remains `listEquipment` polling. Consumer `apply()` must be **idempotent** — a crash between apply and cursor persistence causes the same range to be re-applied on startup; consumer implementations must tolerate this (`upsert` semantics, not `insert`).
 
 For coordinator-mediated KB writes: the Corpus mutation lock wraps markdown write + base index update (Orama) synchronously; equipment consumers (needle) are notified after the lock releases and drain asynchronously.
 
@@ -930,15 +930,13 @@ const codexThreadProvider = compose(
 
 Adding a new provider is declaring its middleware stack.
 
-**Phase 6 amendment (2026-04-21)**: for app-server providers, `sessionContinuity`
-is outermost (not `appServerSession`). This preserves §8.3 invariants #1/#3/#5:
-a single continuity authority observes the full downstream stream including
+For app-server providers, `sessionContinuity` is the outermost middleware
+(not `appServerSession`). This preserves §8.3 invariants #1/#3/#5: a single
+continuity authority observes the full downstream stream including
 transport-close from `appServerSession` via `runtime.continuityBridge`, so
 `continuity` bodies have one emitter. `appServerSession` surfaces typed
 close-state through the bridge but never emits `continuity` itself and never
-rewrites downstream terminal outcome. See
-`/home/ing/.coral/projects/kangig94-coral/plans/phase6-provider-middleware.md`
-§ Amendments for rationale.
+rewrites downstream terminal outcome.
 
 ### 8.2 Envelope vs body split
 
@@ -1106,15 +1104,20 @@ src/
                                        CLI stays usable without manual intervention. This is process-identity
                                        locking (one coordinator per flavor), separate from SQLite's BEGIN
                                        IMMEDIATE (which serializes writes within one coordinator).
-    discovery.ts                     — coordinator discovery record I/O (renamed from info.ts in Phase 3 — name now matches §10.3 intent-revealing rule; see Amendments)
-    log.ts                           — coordinator-local structured logging
+    discovery-api.ts                 — passive reads of the coordinator discovery record for non-owner callers
     caller-context.ts                — per-request caller identity scope
     consumer-driver.ts               — projection consumer driver: push-triggered,
                                        single-in-flight drain, condition-var waitFreshUntil
     composition/                     — coordinator assembly helpers split out of the former execution root
       backend-control.ts, backend-core-types.ts, backend-defaults.ts,
       backend-world.ts, create-backend-core.ts, execution-services.ts,
-      recovery-registry.ts, runtime-state.ts
+      runtime-state.ts
+    services/                        — request/repair services factored out of coordinator.ts
+      job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
+      workflow-execution-service.ts, recovery-service.ts,
+      continuity-consumer.ts, execution-shared.ts
+    equipment/                       — active equipment slot lifecycle + RPC surface
+      slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts, needle-activation.ts
     corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver
     shutdown/
       mode.ts                        — graceful / drain / immediate
@@ -1148,15 +1151,17 @@ src/
       events.ts                      — raw event lookup by (stream, seq) for causeRef deref
 
   transport/                         ← carriage only; imports only contracts
-    json-rpc.ts                      — shared RPC encoding
+    json-rpc.ts                      — unary + subscription envelope codec; `subscriptionId` reserved for future multiplexing
+    rpc-catalog.ts                   — single coordinator RPC catalog shared by HTTP + IPC carriage
+    rpc-ports.ts                     — typed request-port surface projected from coordinator composition
     ipc/
       server.ts                      — Unix socket server
       client.ts                      — Unix socket client
       ensure.ts                      — "start coordinator if needed" bootstrap helper (CLI-side)
     http/
+      client.ts                      — HTTP client for CLI/tooling call-sites that speak HTTP directly
       contracts.ts                   — HTTP wire schemas
       handler.ts                     — HTTP gateway handler; table-driven route array, auth gate, SSE endpoints
-      index.ts                       — public barrel
       query-coerce.ts                — query-param coercion
       sse-subscribe.ts               — shared `subscribeAll` helper for SSE subscriptions
       tool-response.ts               — MCP-style response wrapper
@@ -1166,6 +1171,8 @@ src/
     real.ts                          — production implementations
 
   infra/                             ← fs/process/time/ids; no domain knowledge
+    backend-discovery.ts             — coordinator discovery record read/write
+    backend-log.ts                   — backend-local structured logging
     project-source.ts                — project root + scoping
     plugin-registry.ts               — installed plugin discovery
     ids/                             — id generation + patterns
@@ -1197,7 +1204,7 @@ src/
       coordinator.ts                 — orchestrate reconciliation phases
       cross-namespace-adoption.ts    — cross-ns orphan adoption
       ownership-checker.ts           — ownership verification
-      job-helpers.ts                 — shared helpers
+      recovery-effects.ts            — recovery-only job transitions + terminal materialization
       errors.ts                      — reconciliation-local error types
     shell/                           — imperative I/O over jobs domain
       abort-registry.ts              — in-memory abort signal registry
@@ -1224,7 +1231,7 @@ src/
 
   kb/                                ← Corpus-authority domain (markdown is truth)
     contracts.ts                     — public KB types
-    types.ts                         — KB entity types (Note, Source, Principle, Community, EntityGraph)
+    entry-types.ts                   — KB entity types (Note, Source, Principle, Community, EntityGraph)
     validation.ts                    — entry validation
     read.ts                          — load entry from markdown
     read-contract.ts                 — read interface
@@ -1263,7 +1270,7 @@ src/
       metadata-commit.ts             — metadata-only lane commits
       git-sync.ts                    — git integration (auto-commit, push, pull)
       state.ts                       — curate-frontier + cursors (Corpus-side scheduler state)
-      claim-io.ts, shared.ts, types.ts, operations.ts, usage-budget.ts
+      claim-io.ts, content-normalize.ts, types.ts, operations.ts, usage-budget.ts
 
   providers/                         ← plugin boundary
     contract.ts                      — Provider + ProviderEventBody + middleware types
@@ -1289,7 +1296,7 @@ src/
       output-parser.ts               — claude JSON parsing
       progress.ts                    — claude progress extraction
       request-mapping.ts             — request → claude args
-      shared-utils.ts
+      request-prep.ts
       types.ts
     claude-appserver/
       server.ts                        — appserver daemon entry
@@ -1361,7 +1368,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 | `src/execution/discuss/subflows.ts` | 26K | `discuss/shell/bid-flow.ts`, `discuss/shell/speech-flow.ts`, `discuss/shell/followup-flow.ts`, `discuss/shell/synthesis-flow.ts`. One file per sub-workflow. |
 | `src/execution/discuss/session-store.ts` | 18K | `discuss/shell/session-store.ts` (persistence glue) + `discuss/shell/live-registry.ts` (attached-session + watch buffers). |
 
-**Principle**: any §10 file name that would exceed 500 lines in reality decomposes to sub-files named by the responsibility it carries. No "utils.ts" or "helpers.ts" fallbacks — every split must be a named responsibility.
+**Principle**: any §10 file name that would exceed 500 lines in reality decomposes to sub-files named by the responsibility it carries. No fallback names such as `utils.ts`, `shared.ts`, or `helpers.ts` — every split must be a named responsibility. A leaf-scoped `types.ts` is acceptable only when the parent directory already names the responsibility; a domain-root `types.ts` is not.
 
 ### 10.2 Layering invariants
 
@@ -1371,7 +1378,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 4. `src/transport/*` imports domain contracts only, never domain shells or coordinator.
 5. `src/coordinator/*` is the only layer allowed to import broadly across domains.
 6. `src/testing/*` is never imported by production files.
-7. No generic filenames (`utils.ts`, `types.ts`, `schemas.ts`) at the top of any domain — force ownership.
+7. No generic filenames (`utils.ts`, `shared.ts`, `types.ts`, `schemas.ts`) at the top of any domain — force ownership.
 
 ### 10.3 Type ownership principles
 
@@ -1384,7 +1391,7 @@ These principles prevent `shared/` re-emergence without introducing a central re
 5. `runtime/*` owns only port interfaces. Concrete implementations do not add to this layer.
 6. The only cross-cutting union type is `CauseRef` (`{stream, seq}`), declared in `src/jobs/outcome.ts` alongside `TerminalOutcome`. All other fault information lives on domain events — there is no central fault union.
 
-The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold. That is the whole enforcement surface — no normative registry, no CI gate on a map.
+The architecture-boundary test verifies: (a) no type declared in two places, (b) no `utils.ts`/`shared.ts`/`types.ts`/`schemas.ts` at domain roots, (c) layer import rules (§10.2) hold. That is the whole enforcement surface — no normative registry, no CI gate on a map.
 
 ---
 
@@ -1416,7 +1423,9 @@ Direct readers observe projections at `seq N`. Coordinated calls acknowledge aft
 
 `http://127.0.0.1:<port>` is not the architectural boundary — it is a *carriage* for coordinator RPC. IPC and HTTP share identical command semantics; only wire format differs. Local security is filesystem ownership on the socket; HTTP auth applies to network gateways.
 
-Route dispatch is table-driven (array at `src/transport/http/handler.ts`). SSE subscription fan-out uses the shared `subscribeAll` helper at `src/transport/http/sse-subscribe.ts`. CORS is conditional: only auth-success HTTP paths emit the headers; local IPC has no CORS surface.
+Route dispatch is table-driven (array at `src/transport/http/handler.ts`), but the route table is projected from a single catalog at `src/transport/rpc-catalog.ts`. IPC server dispatch and HTTP handler dispatch both derive from that catalog through `rpcPorts` injected by coordinator composition, so semantic parity is structural rather than aspirational. Operational `/health`, `/admin/shutdown`, and `/events/stream` remain explicit transport-local carveouts rather than catalog entries.
+
+Interactive/live subscriptions use the same transport primitive in both carriages. `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` field; HTTP projects notifications to SSE and IPC carries notifications directly. The steady state is one active subscription per connection; multiplexing is a transparent future optimization, not a second protocol.
 
 ---
 
@@ -1868,7 +1877,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 28. `src/transport/*` imports domain contracts only, never domain shells or coordinator.
 29. `src/coordinator/*` is the only layer allowed broad cross-domain imports.
 30. `src/testing/*` is never imported by production files.
-31. No generic filenames (`utils.ts`, `types.ts`, `schemas.ts`) at any domain root — ownership must be explicit.
+31. No generic filenames (`utils.ts`, `shared.ts`, `types.ts`, `schemas.ts`) at any domain root — ownership must be explicit.
 
 **Equipment**:
 32. Equipment never writes to any authority. Equipment adds or replaces projection backends only.
@@ -1970,27 +1979,9 @@ This document is the sole design reference for any `/coral:plan` session impleme
 
 ## Amendments
 
-Tracked deviations from the original design adopted during implementation. Each entry names the change, the phase that adopted it, and the binding rationale.
+Tracked deviations from the original design adopted during implementation. Amendments are historical notes, not standing exceptions: if an amendment conflicts with §10 steady-state topology, deleted-tree rules, or layering invariants, §10 wins and the amendment must be folded back into the body or removed.
 
-- **`coordinator/info.ts` → `coordinator/discovery.ts`** (Phase 3, tag `phase-3-complete`). The original §10 topology named this module `info.ts` with the comment "coordinator discovery record I/O". Phase 3 implementation renamed it to `discovery.ts` so the filename matches the responsibility, satisfying invariant #31 (no generic filenames at any domain root) and the §10.3 type-ownership / intent-revealing principle. Same reasoning that drove the Phase 2 `src/sessions/entry.ts` decision over the implementation-plan's `types.ts`. Responsibility is unchanged: read/write `~/.coral/run{,-dev}/coordinator.json` plus the process-identity probe.
-- **`coordinator/bootstrap.ts` introduced as the main-process entry sibling of `coordinator.ts`** (Phase 3). The original §10 topology folded main-process startup, argv parsing, and `--smoke-open-store` into `coordinator.ts`. Phase 3 split these into a separate `bootstrap.ts` so `coordinator.ts` stays a pure composition root invokable from tests without argv plumbing. `bootstrap.ts` is the bundle entrypoint targeted by `scripts/build-server.mjs` and `scripts/verify-native-binding.sh`.
-- **`coordinator/smoke-open-store.ts` absorbed into `coordinator/bootstrap.ts`** (Phase 3 follow-up review fixes). The original Phase 3 implementation kept the smoke path in a separate helper file. The follow-up collapsed it into `bootstrap.ts` because the behavior is strictly entrypoint-local and does not belong in the durable coordinator module set.
-- **`coordinator/api.ts` narrowed back to a thin export seam** (AC11 topology sync). Phase 3 temporarily used `api.ts` as request-scoped coordinator glue; the landed split moved that orchestration into `execution-service.ts` / `workflow-cleanup.ts` and left `api.ts` as a 7-line public seam. §10 and invariant #46 now capture the intended steady state directly, so no standing broad-import exception remains on `api.ts`.
-- **Dev data path layout** (Phase 0 implementation correction). Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
-- **Amendment #5**: Phase 0 schema deliverable split into `src/store/schema.sql` (canonical DDL reference only) + `src/store/migrations/001_initial.sql` (first applied migration). Applied via `applyMigrations` through Runtime.storage. Pre-merge schema changes edit `001_initial.sql` in place; `002+` versioning begins only after the first main merge.
-- **Amendment #6**: `sessions/types.ts` → `sessions/entry.ts` (Phase 2). Same intent-revealing rule as `coordinator/discovery.ts` — generic `types.ts` at a domain root is banned by invariant #31.
-- **Amendment #7**: `discuss/schemas.ts` → `discuss/command-schemas.ts` (Phase 2). Same rule as Amendment #6: generic `schemas.ts` at a domain root is banned by invariant #31.
-- **`result.md` stays in the job directory contract** (Phase 3 follow-up review fixes). The durable wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. The `~/.coral/exports/jobs/<jobId>/` path remains present for future tooling, but it is not the authoritative durable artifact path today.
-- **Phase 4 (tag `phase-4-complete`) — HTTP route decomposition stays table-driven in `src/transport/http/handler.ts`.** The per-resource file split proposed in the plan (`jobs-routes.ts`, `discuss-routes.ts`, etc.) is not adopted; §11.3 already names the single table-driven form.
-- **Phase 4 (tag `phase-4-complete`) — new invariant: single coordinator RPC catalog is the sole source of truth.** `src/transport/rpc-catalog.ts` holds pure metadata; HTTP handler table and IPC server dispatch both project from it via `rpcPorts` injected by coordinator composition. Invariant #25 (IPC/HTTP shape parity) is satisfied by construction. Operational `/health`, `/admin/shutdown`, `/events/stream` endpoints are an explicit transport-local carveout, not catalog entries.
-- **Phase 4 (tag `phase-4-complete`) — new §11 clause: interactive/live subscriptions use one generic subscription primitive.** `src/transport/json-rpc.ts` defines unary + subscription envelopes with a reserved `subscriptionId` slot; HTTP projects subscriptions to SSE, IPC carries notifications directly. At Phase 4 gate, subscriptions are one-per-connection; multiplexing is a transparent future optimization.
-- **Phase 4 (tag `phase-4-complete`) — CLI read commands migrate from `BackendClient` (HTTP) to `CoralStore` read facade in Phase 4.** `src/client/readers.ts` file retirement remains Phase 6/Cleanup (non-CLI importers), but CLI importers migrate now so invariant #23 actually closes at the Phase 4 gate.
-- **Phase 4 (tag `phase-4-complete`) — `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling.** The singleton lock remains the launch gate but is not the detection mechanism. Current `ensureBackend` semantics (observation lattice, compatibility on `bundleHash + flavor + namespace`, verified sick ownership, unsafe-replacement refusal, corrupt-lock quarantine) preserved literally.
-- **A1 — `/equip uninstall` replaces `/unequip` as the user skill grammar; internal route is `coral-cli expansion unequip`** (Phase 7, tag `phase-7`). Rationale: `/equip` is already the catalog + lifecycle entry; a separate slash command duplicates surface area for no UX gain. Coordinator RPC name `unregisterEquipment` is preserved; only the CLI/skill surface collapses.
-- **A2 — Needle identity unification** (Phase 7, tag `phase-7`). Rationale: Skill catalog id (`kb`), runtime consumer id (`kb-needle`), on-disk directory naming, and user messaging all collapse to the single name `needle`. User-facing grammar stays `/equip needle` and `/equip uninstall needle`; internal routes are `coral-cli expansion equip needle` and `coral-cli expansion unequip needle`; on-disk directory is `~/.coral/data/equipment/needle/`; consumer id is `needle`.
-- **A3 — Explicit equipment slot registry + durable state** (Phase 7, tag `phase-7`). Rationale: Prior implicit-boot registration replaced by durable `equipment_state` persisted via migration 002; `kb.vector` slot has default Orama owner and optional equipped owner. Router reads slot ownership via `KbRuntime.getEquipmentView()` port without coordinator import. Boot-time needle auto-registration removed from `coordinator.ts:190`. Needle enters the process only via `/equip needle` activation routed through `coral-cli expansion equip needle`.
-- **A4 — `ConsumerDriver.register()` returns per-consumer `ConsumerHandle`** (Phase 7, tag `phase-7`). Rationale: Signature changes from `void` to `ConsumerHandle { id, stop(), unregister(), status(), lastApplyError }`. `onApplyFailure` callback plumbs async apply errors. `registrationKind` metadata distinguishes equipment vs base consumers for cursor-deletion semantics. Existing base-tier consumers migrate to the same handle shape via `projection-consumer.ts` helper.
-- **A5 — Legacy types retire to upcaster boundary only** (Phase 7, tag `phase-7`). Rationale: `src/shared/legacy-terminal-outcome-compat.ts` deleted; read-time body transforms moved to per-domain upcaster registrars (`jobs/upcasters.ts`, `sessions/upcasters.ts`, `workflow/upcasters.ts`). `src/store/upcasters.ts` remains assembler only. Runtime multi-event canonicalization stays in `legacy-ingest` (consumes upcaster output). Active runtime code uses canonical `SessionContinuityState` / `SessionProviderFailureReason` / `SessionFault` directly.
-- **A6 — Codex pre-turn notification mailbox** (Phase 7, tag `phase-7`). Rationale: `src/providers/codex/thread-kernel.ts` `applyNotification` replaces unconditional buffering with an admission-filtering mailbox. Notifications are admitted only if they can still belong to the active thread's lifecycle (matching `state.threadId` candidate, or lifecycle messages without thread id). `PRE_TURN_MAILBOX_CAP=64` FIFO eviction with `dropped` counter. `status()` exposed for observability. Provisional candidates seeded from persisted continuity / resume `conversationRef` (robustness against `thread/resume` id mismatch).
-- **A7 — Corpus equipment freshness observed via polling** (Phase 7, tag `phase-7`). Invariant 41 split: journal consumers keep `waitFreshUntil` condition-variable wake; corpus equipment consumers are observed via `listEquipment` polling. Rationale: adding a corpus-side waiter primitive was out of scope; `catching_up` → `equipped` transition surfaces through the existing status-read RPC.
-- **A8 — Expansion domain consolidation owns equip internals** (Phase 7, tag `phase-7`). Rationale: `skills/equip/` now retains only `SKILL.md`; the deleted helper files `install.mjs`, `coordinator-client.mjs`, `equipment-paths.mjs`, and `fs-lock.mjs` are replaced by the `coral-cli expansion list|equip|unequip|update|info` surface plus `src/expansion/install.ts`, `src/expansion/activate.ts` for RPC activation, `src/coordinator/discovery-api.ts` for passive coordinator reads, `src/expansion/paths.ts`, and `src/shared/fs-lock.ts`. The old `scripts/equip-driver.mjs` race harness is deleted; subprocess install-lock coverage now uses the invocation-adapter pattern at `src/testing/invocation/install-invocation.ts`.
+- **Dev data path layout**. Flavor-gated data families use a `data-dev/<family>/` prefix, not `data/<family>-dev/`. This applies to the store, corpus indexes, and equipment paths per `src/store/paths.ts`, `src/infra/corpus-paths.ts`, and `src/infra/equipment-paths.ts`.
+- **Schema delivery split**. The canonical DDL reference lives in `src/store/schema.sql`, while `src/store/migrations/001_initial.sql` is the first applied migration. Pre-merge schema changes edit `001_initial.sql` in place; `002+` versioning begins only after the first main merge.
+- **Durable result artifact path**. The authoritative wait/follow artifact remains `<os-tmpdir>/coral-jobs/<jobId>/result.md` per `src/jobs/shell/result-artifact.ts`. `~/.coral/exports/jobs/<jobId>/` remains a future tooling path, not today's authoritative artifact location.
+- **IPC bootstrap detection**. `src/transport/ipc/ensure.ts` uses discover-or-launch via `coordinator.json` + socket readiness, not lock-file polling. The singleton lock remains the launch gate but is not the detection mechanism.
