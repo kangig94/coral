@@ -70,7 +70,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
 const DOMAIN_API_TARGETS = new Set([
   'src/jobs/api.ts',
   'src/sessions/api.ts',
-  'src/discuss/api.ts',
   'src/workflow/api.ts',
 ]);
 const CONTRACT_TARGETS = new Set([

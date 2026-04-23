@@ -2,12 +2,13 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { CallerContext } from '../../transport/request-context.js';
-import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../control.js';
+import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState } from '../control.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';
 import type { DiscussContext } from '../../discuss/shell/context.js';
 import type { DiscussContextRegistry } from '../../discuss/shell/live-registry.js';
 import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
+import type { TypedEventBus } from '../event-bus.js';
 
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/pool.js';

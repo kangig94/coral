@@ -2,7 +2,7 @@ import { formatError } from '../../infra/error-format.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
 import type { CallerContext } from '../../transport/request-context.js';
-import type { ProviderRegistry } from '../../providers/registry.js';
+import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
 import { RecoveryRegistry } from './registry.js';
@@ -44,7 +44,7 @@ type RecoveryCoordinatorContext = {
   runtime: Runtime;
   runtimeState: LaunchFenceState;
   eventBus: JobEventBus;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;
   log: (message: string) => void;
@@ -55,7 +55,7 @@ type StartupRecoveryContext = {
   bundleHash: string;
   runtime: Runtime;
   progressStore: ProgressStore;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   getRecoveryService: (ctx: CallerContext) => RecoveryCapableService;
   createCallerContext: (projectRoot: string) => CallerContext;
   assertStartupStillActive: () => void;

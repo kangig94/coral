@@ -16,7 +16,7 @@ import type {
   SpeechTimedOutEvent,
 } from './events.js';
 import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
-import { appendEntry, resetBids } from './state-helpers.js';
+import { appendEntry, resetBids } from './state-transitions.js';
 import { parseDisplayName } from './util/string.js';
 
 function makeEmptyState(sessionId: string): DiscussState {

@@ -1,5 +1,5 @@
 import type { WaitCoordinator } from '../../jobs/shell/wait.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgress, LaunchState } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
@@ -7,7 +7,7 @@ import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '.
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   waitCoordinator: WaitCoordinator;
   loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
   subscribeJobEvents?: (options: {

@@ -5,12 +5,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '../../runtime/real.js';
-import { jobsReconcile } from '../../jobs/api.js';
+import { jobsReconcile } from '../../jobs/startup.js';
 import { ConsumerDriver } from '../consumer-driver.js';
 import { createCoordinatorServer } from '../coordinator.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '../../kb/contracts.js';
 import type { VectorRetrieval } from '../../kb/search/contract.js';
-import { workflowRecover } from '../../workflow/api.js';
+import { workflowRecover } from '../../workflow/startup.js';
 
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {

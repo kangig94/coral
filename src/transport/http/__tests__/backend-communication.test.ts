@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BackendToolHttpError } from '../client-errors.js';
-import { streamWait, throwBackendCommunicationError } from '../backend-helpers.js';
+import { throwBackendCommunicationError } from '../backend-communication.js';
+import { streamWait } from '../wait-stream.js';
 import { BackendUnreachableError } from '../../../infra/http-errors.js';
 
 const mockState = vi.hoisted(() => ({
@@ -13,7 +14,7 @@ vi.mock('../../ipc/client.js', () => ({
   createIpcClient: mockState.createIpcClient,
 }));
 
-describe('transport/http backend helpers', () => {
+describe('transport/http backend communication', () => {
   beforeEach(() => {
     mockState.createIpcClient.mockReset();
     mockState.subscribe.mockReset();

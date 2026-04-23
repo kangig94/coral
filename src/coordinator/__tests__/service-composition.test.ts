@@ -28,7 +28,7 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerFn,
 } from '../live/admission.js';
-import { TypedEventBus } from '../control.js';
+import { TypedEventBus } from '../event-bus.js';
 import { ProgressStore } from '../../jobs/job-store.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/pool.js';
 import { createRealRuntime } from '../../runtime/real.js';

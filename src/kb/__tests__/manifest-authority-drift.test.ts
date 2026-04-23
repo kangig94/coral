@@ -16,7 +16,7 @@ import { runPrincipleDiscovery } from '../curate/principles.js';
 import { runCommunitySubphase } from '../curate/community.js';
 import { generateCommunityFiles, renderCommunityDocument } from '../curate/community-detection.js';
 import { readCurateState, writeCurateState } from '../curate/state.js';
-import { recordMetadataMutation } from '../corpus/mutation-helpers.js';
+import { recordMetadataMutation } from '../corpus/index-mutations.js';
 import { computeFullCollectorManifestHash } from '../corpus/manifest-authority.js';
 import { applyDetectedIncidentFixes } from '../corpus/repair/fix.js';
 import { REPAIR_INCIDENT_ID, repairIncidentLocus } from '../corpus/repair/incident-ids.js';

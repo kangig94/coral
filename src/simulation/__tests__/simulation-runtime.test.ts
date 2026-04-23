@@ -12,7 +12,7 @@ import {
   VirtualTime,
   createSimulationBackend,
   flushMicrotasks,
-} from '../core/index.js';
+} from '../core/backend.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {

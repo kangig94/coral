@@ -4,10 +4,12 @@ import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
   discussEventsQuerySchema,
-  type DiscussDetailResponse,
-  type DiscussSummaryDto,
-  type DiscussView,
-} from '../../discuss/api.js';
+} from '../rpc-discuss.js';
+import type {
+  DiscussDetailResponse,
+  DiscussSummaryDto,
+  DiscussView,
+} from '../../discuss/read-contract.js';
 import {
   belongsToNamespace,
   type JobProgress,

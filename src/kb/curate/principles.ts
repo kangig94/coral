@@ -7,12 +7,9 @@ import {
   captureRemovedPrincipleManifestDelta,
 } from '../corpus/manifest-authority.js';
 import { extractPrincipleStatement } from '../corpus/frontmatter.js';
-import {
-  cloneKbIndex,
-  markTextIndexStale,
-  recordMetadataMutation,
-  writeFileAtomic,
-} from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { markTextIndexStale, recordMetadataMutation } from '../corpus/index-mutations.js';
+import { cloneKbIndex } from '../corpus/index-records.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';

@@ -29,9 +29,9 @@ import {
 } from '../../sessions/fault.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { StepDetail } from '../../workflow/api.js';
+import type { StepDetail } from '../../workflow/internal/execution-contract.js';
 import { rejectLaunch, SessionClaimError } from '../../jobs/shell/contracts.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import type { ClaimJobOptions } from '../../jobs/shell/contracts.js';
 import { materializeSessionInterrupted } from '../../jobs/shell/legacy-ingest.js';
@@ -175,7 +175,7 @@ export function buildInterruptedAppServerReport(
 }
 
 export function materializeInterruptedSessionOutcome(
-  progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
+  progressStore: Pick<JobProgressStore, 'appendEventsWithResult'>,
   jobId: string,
   sessionId: string,
   fault: SessionInterruptedFault,
@@ -242,7 +242,7 @@ export async function runProviderPreflight(
 
 export async function claimJobAtomic(
   deps: {
-    progressStore: Pick<ProgressStore, 'initJob' | 'rollbackJob'>;
+    progressStore: Pick<JobProgressStore, 'initJob' | 'rollbackJob'>;
     sessionManager: Pick<SessionManager, 'claimForJobAtomic'>;
     backendNamespace: string;
     bundleHash: string;

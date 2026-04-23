@@ -7,7 +7,7 @@ import { BackendClient, BackendToolHttpError } from '../../transport/http/client
 import * as AgentResolution from '../../jobs/shell/agent-resolution.js';
 import type { MutableRuntimeState } from '../../coordinator/control.js';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
-import { TypedEventBus } from '../../coordinator/control.js';
+import { TypedEventBus } from '../../coordinator/event-bus.js';
 import type { HttpHandlerPorts } from '../../transport/http/contracts.js';
 import { createHttpHandler } from '../../transport/http/handler.js';
 import { createProviderHostManager } from '../../coordinator/live/provider-hosts/pool.js';

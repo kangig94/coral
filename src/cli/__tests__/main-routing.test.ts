@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type * as CommandHelpersMod from '../command-helpers.js';
+import type * as CommandClientMod from '../command-client.js';
+import type * as CommandOutputMod from '../command-output.js';
 import type * as ErrorsMod from '../errors.js';
 import type * as MainMod from '../main.js';
 import { installErrorSchema, installResultSchema } from '../../expansion/contracts.js';
@@ -61,7 +62,7 @@ const mockState = vi.hoisted(() => ({
   kbReindex: vi.fn(),
 }));
 
-vi.mock('../../transport/http/client.js', () => {
+const mockHttpErrors = vi.hoisted(() => {
   class BackendToolHttpError extends Error {
     statusCode: number;
     body: unknown;
@@ -70,14 +71,25 @@ vi.mock('../../transport/http/client.js', () => {
       super(message);
       this.statusCode = statusCode;
       this.body = body;
+      this.name = 'BackendToolHttpError';
+      Object.setPrototypeOf(this, new.target.prototype);
     }
   }
 
   return { BackendToolHttpError };
 });
 
-vi.mock('../../transport/http/backend-helpers.js', () => ({
+vi.mock('../../transport/http/client-errors.js', () => mockHttpErrors);
+
+vi.mock('../../transport/http/client.js', () => ({
+  BackendToolHttpError: mockHttpErrors.BackendToolHttpError,
+}));
+
+vi.mock('../../transport/http/backend-status.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
+}));
+
+vi.mock('../../transport/http/backend-shutdown.js', () => ({
   shutdownBackend: mockState.shutdownBackend,
 }));
 
@@ -93,28 +105,12 @@ vi.mock('../../expansion/workflow.js', () => ({
   update: mockState.expansionUpdate,
 }));
 
-vi.mock('../command-helpers.js', async () => {
-  const actual = await vi.importActual<typeof CommandHelpersMod>('../command-helpers.js');
-  const errors = await vi.importActual<typeof ErrorsMod>('../errors.js');
+vi.mock('../command-client.js', async () => {
+  const actual = await vi.importActual<typeof CommandClientMod>('../command-client.js');
 
   return {
     ...actual,
     exemptIpcRequest: mockState.exemptIpcRequest,
-    emitError: (error: unknown) => {
-      const normalized =
-        error instanceof Error && error.name === 'UsageError' && !(error instanceof errors.UsageError)
-          ? new errors.UsageError(error.message)
-          : error;
-      const { envelope, exitCode } = errors.buildErrorEnvelope(normalized);
-      const statusCode =
-        normalized instanceof Error &&
-        'statusCode' in normalized &&
-        typeof (normalized as { statusCode?: unknown }).statusCode === 'number'
-          ? (normalized as { statusCode: number }).statusCode
-          : undefined;
-      process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
-      process.exitCode = exitCode;
-    },
     makeClient: () => ({
       createSession: mockState.createSession,
       sendMessage: mockState.sendMessage,
@@ -150,6 +146,30 @@ vi.mock('../command-helpers.js', async () => {
         };
       },
     }),
+  };
+});
+
+vi.mock('../command-output.js', async () => {
+  const actual = await vi.importActual<typeof CommandOutputMod>('../command-output.js');
+  const errors = await vi.importActual<typeof ErrorsMod>('../errors.js');
+
+  return {
+    ...actual,
+    emitError: (error: unknown) => {
+      const normalized =
+        error instanceof Error && error.name === 'UsageError' && !(error instanceof errors.UsageError)
+          ? new errors.UsageError(error.message)
+          : error;
+      const { envelope, exitCode } = errors.buildErrorEnvelope(normalized);
+      const statusCode =
+        normalized instanceof Error &&
+        'statusCode' in normalized &&
+        typeof (normalized as { statusCode?: unknown }).statusCode === 'number'
+          ? (normalized as { statusCode: number }).statusCode
+          : undefined;
+      process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
+      process.exitCode = exitCode;
+    },
   };
 });
 

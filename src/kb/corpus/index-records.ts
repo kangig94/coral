@@ -1,19 +1,16 @@
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { errorMessage } from '../../infra/error-format.js';
-import { backendLog } from '../../infra/backend-log.js';
-import type { KbIndexState, KbRuntime } from '../contracts.js';
+import type {
+  EntityMeta,
+  EntityRelationship,
+  CommunityEntry,
+  EntryRecord,
+  KbIndex,
+  NoteEntry,
+  SourceEntry,
+} from '../entry-types.js';
 import {
-  type EntityMeta,
-  type EntityRelationship,
   isCommunityEntry,
   isNoteEntry,
   isSourceEntry,
-  type CommunityEntry,
-  type EntryRecord,
-  type KbIndex,
-  type NoteEntry,
-  type SourceEntry,
 } from '../entry-types.js';
 
 type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
@@ -62,20 +59,6 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     ...(meta.children === undefined ? {} : { children: [...meta.children] }),
     ...(meta.summary === undefined ? {} : { summary: meta.summary }),
   };
-}
-
-export function writeFileAtomic(filePath: string, payload: string): void {
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-
-  try {
-    writeFileSync(tmpPath, payload, 'utf-8');
-    renameSync(tmpPath, filePath);
-  } catch (error: unknown) {
-    rmSync(tmpPath, { force: true });
-    throw error;
-  }
 }
 
 export function cloneKbIndex(index: KbIndex | null): KbIndex {
@@ -135,41 +118,4 @@ function cloneEntryRecord(entry: EntryRecord): EntryRecord {
   }
 
   throw new Error(`Unsupported KB entry kind: ${(entry as EntryRecord).kind}`);
-}
-
-/**
- * Clone the current index, apply the updater, and write it back.
- * If no index exists on disk, updater receives an empty index.
- * @precondition Caller already holds `rt.withMutationLock()`.
- */
-export function commitIndexUpdate(
-  rt: Pick<KbRuntime, 'readIndex' | 'writeIndex'>,
-  updater: (index: KbIndex) => void,
-): void {
-  const nextIndex = cloneKbIndex(rt.readIndex());
-  updater(nextIndex);
-  rt.writeIndex(nextIndex);
-}
-
-export function recordContentMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
-  return rt.recordMutationCommitted('content', reason);
-}
-
-export function recordMetadataMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
-  return rt.recordMutationCommitted('metadata', reason);
-}
-
-export function recordContentAndMetadataMutation(
-  rt: Pick<KbRuntime, 'recordMutationCommitted'>,
-  reason: string,
-): KbIndexState {
-  return rt.recordMutationCommitted('both', reason);
-}
-
-export function markTextIndexStale(invalidate: (reason: string) => KbIndexState, reason: string): void {
-  try {
-    invalidate(reason);
-  } catch (error: unknown) {
-    backendLog.warn(`markTextIndexStale: ${errorMessage(error)}`);
-  }
 }

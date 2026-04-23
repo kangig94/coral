@@ -22,7 +22,7 @@ import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
 import type { CallerContext } from '../../../transport/request-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { SimulationRuntime } from '../../../simulation/core/index.js';
+import { SimulationRuntime } from '../../../simulation/core/backend.js';
 import { parseJobStatus } from '../../../jobs/records.js';
 
 export const DEFAULT_TOPIC = 'Should the city pedestrianize the downtown core?';

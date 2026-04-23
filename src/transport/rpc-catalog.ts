@@ -13,7 +13,7 @@ import {
   discussSessionEventsRequestSchema,
   discussSessionListRequestSchema,
   discussSessionSpeechRequestSchema,
-} from '../discuss/api.js';
+} from './rpc-discuss.js';
 import {
   jobAbortSchema,
   jobDetailRequestSchema,
@@ -46,7 +46,7 @@ import {
   sessionMessageRequestSchema,
 } from '../sessions/api.js';
 import type { RpcPorts } from './rpc-ports.js';
-import { workflowRequestSchema } from '../workflow/api.js';
+import { workflowRequestSchema } from './rpc-workflow.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;

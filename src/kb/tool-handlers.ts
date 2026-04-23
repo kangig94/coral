@@ -29,14 +29,14 @@ import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
 import { type KbReadKind } from './read-contract.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
-import type { CallerContext } from '../transport/request-context.js';
 import {
-  deriveErrorMessage,
-  domainError,
-  domainSuccess,
-  toolValidationError,
-  type ToolDomainResult,
-} from '../transport/tool-result.js';
+  deriveKbErrorMessage,
+  kbError,
+  kbSuccess,
+  kbValidationError,
+  type KbToolResult,
+} from './result.js';
+import type { CallerContext } from '../transport/request-context.js';
 import { assertOwnerId } from '../infra/owner-id.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
@@ -61,39 +61,39 @@ import {
 
 type KbArgs = Record<string, unknown>;
 
-function kbErrorResult(error: unknown): ToolDomainResult {
+function kbErrorResult(error: unknown): KbToolResult {
   const detail = error instanceof Error ? { message: error.message } : error;
-  return domainError('kb_error', deriveErrorMessage('kb_error', detail), detail);
+  return kbError('kb_error', deriveKbErrorMessage('kb_error', detail), detail);
 }
 
-async function runKbAction(action: () => Promise<unknown> | unknown): Promise<ToolDomainResult> {
+async function runKbAction(action: () => Promise<unknown> | unknown): Promise<KbToolResult> {
   try {
-    return domainSuccess(await action());
+    return kbSuccess(await action());
   } catch (error: unknown) {
     return kbErrorResult(error);
   }
 }
 
-function runKbSyncAction(action: () => unknown): ToolDomainResult {
+function runKbSyncAction(action: () => unknown): KbToolResult {
   try {
-    return domainSuccess(action());
+    return kbSuccess(action());
   } catch (error: unknown) {
     return kbErrorResult(error);
   }
 }
 
-function invalidRequestResult(error: unknown): ToolDomainResult {
-  return domainError('invalid_request', deriveErrorMessage('invalid_request', error));
+function invalidRequestResult(error: unknown): KbToolResult {
+  return kbError('invalid_request', deriveKbErrorMessage('invalid_request', error));
 }
 
-function kbNotFoundResult(kind: KbReadKind, slug: string): ToolDomainResult {
-  return domainError('not_found', `KB ${kind} not found: ${slug}`);
+function kbNotFoundResult(kind: KbReadKind, slug: string): KbToolResult {
+  return kbError('not_found', `KB ${kind} not found: ${slug}`);
 }
 
 function normalizeKbSlug(
   slug: string,
   kind: KbReadKind,
-): { ok: true; slug: string } | { ok: false; result: ToolDomainResult } {
+): { ok: true; slug: string } | { ok: false; result: KbToolResult } {
   try {
     if (kind === 'community') {
       return { ok: true, slug: assertCommunitySlug(slug, kind) };
@@ -111,7 +111,7 @@ function normalizeKbSlug(
 
 function validateOwner(
   owner: string | undefined,
-): { ok: true; owner: string | undefined } | { ok: false; result: ToolDomainResult } {
+): { ok: true; owner: string | undefined } | { ok: false; result: KbToolResult } {
   if (owner === undefined) {
     return { ok: true, owner: undefined };
   }
@@ -152,10 +152,10 @@ function kbReadPaths(kbSubsystem?: KnowledgeBaseRuntime): Partial<KbReadPathReso
   };
 }
 
-export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSearchSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(() =>
@@ -174,7 +174,7 @@ export function handleKbNoteRead(
   _ctx: CallerContext,
   runtime: KbToolRuntime,
   kbSubsystem?: KnowledgeBaseRuntime,
-): ToolDomainResult {
+): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'note');
   if (!normalized.ok) {
     return normalized.result;
@@ -190,7 +190,7 @@ export function handleKbNoteRead(
     const frontmatter = parseFrontmatter(raw);
     const title = extractTitle(raw);
     const body = extractBody(raw);
-    return domainSuccess({
+    return kbSuccess({
       kind: 'note',
       note: normalized.slug,
       title,
@@ -208,7 +208,7 @@ export function handleKbSourceRead(
   slug: string,
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
-): ToolDomainResult {
+): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'source');
   if (!normalized.ok) {
     return normalized.result;
@@ -224,7 +224,7 @@ export function handleKbSourceRead(
     const frontmatter = parseSourceFrontmatter(raw);
     const title = frontmatter.title;
     const body = extractBody(raw);
-    return domainSuccess({
+    return kbSuccess({
       kind: 'source',
       note: normalized.slug,
       title,
@@ -241,7 +241,7 @@ export function handleKbCommunityRead(
   slug: string,
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
-): ToolDomainResult {
+): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'community');
   if (!normalized.ok) {
     return normalized.result;
@@ -259,7 +259,7 @@ export function handleKbCommunityRead(
     const body = extractBody(raw);
     const { level, parent, children, updatedAt } = frontmatter;
     const summary = parseSummaryFromBody(body);
-    return domainSuccess({
+    return kbSuccess({
       kind: 'community',
       note: normalized.slug,
       title,
@@ -278,7 +278,7 @@ export function handleKbCommunityRead(
   }
 }
 
-export function handleKbMemoRead(slug: string, ctx: CallerContext, runtime: KbToolRuntime): ToolDomainResult {
+export function handleKbMemoRead(slug: string, ctx: CallerContext, runtime: KbToolRuntime): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'memo');
   if (!normalized.ok) {
     return normalized.result;
@@ -291,7 +291,7 @@ export function handleKbMemoRead(slug: string, ctx: CallerContext, runtime: KbTo
     }
 
     const raw = runtime.storage.readFileSync(memoPath, 'utf-8');
-    return domainSuccess({
+    return kbSuccess({
       kind: 'memo',
       note: normalized.slug,
       title: normalized.slug,
@@ -308,7 +308,7 @@ export function handleKbPrincipleRead(
   slug: string,
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
-): ToolDomainResult {
+): KbToolResult {
   const normalized = normalizeKbSlug(slug, 'principle');
   if (!normalized.ok) {
     return normalized.result;
@@ -322,7 +322,7 @@ export function handleKbPrincipleRead(
 
     const raw = runtime.storage.readFileSync(principlePath, 'utf-8');
     const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
-    return domainSuccess({
+    return kbSuccess({
       kind: 'principle',
       note: normalized.slug,
       title: normalized.slug,
@@ -342,14 +342,14 @@ export function handleKbRead(
   ctx: CallerContext,
   runtime: KbToolRuntime,
   kbSubsystem?: KnowledgeBaseRuntime,
-): ToolDomainResult {
+): KbToolResult {
   const parsed = kbReadSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   try {
-    return domainSuccess(
+    return kbSuccess(
       readEntry(parsed.data, {
         projectRoot: ctx.projectRoot,
         storage: runtime.storage,
@@ -358,7 +358,7 @@ export function handleKbRead(
     );
   } catch (error: unknown) {
     if (error instanceof Error && error.message === `KB entry not found: ${parsed.data.note}`) {
-      return domainError('not_found', error.message);
+      return kbError('not_found', error.message);
     }
 
     return invalidRequestResult(error);
@@ -369,10 +369,10 @@ export async function handleKbPromote(
   args: KbArgs,
   kbSubsystem: KnowledgeBaseRuntime,
   ctx: CallerContext,
-): Promise<ToolDomainResult> {
+): Promise<KbToolResult> {
   const parsed = kbPromoteSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -384,10 +384,10 @@ export async function handleKbPromote(
   });
 }
 
-export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbUpdateSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -401,10 +401,10 @@ export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   });
 }
 
-export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbDeleteSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -414,10 +414,10 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   });
 }
 
-export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceImportSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -427,28 +427,28 @@ export async function handleKbSourceImport(args: KbArgs, kbSubsystem: KnowledgeB
   });
 }
 
-export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): ToolDomainResult {
+export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
   const parsed = kbDiagnoseSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbSyncAction(() => buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.kb.db)));
 }
 
-export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceListSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(() => listSources(kbSubsystem.kb));
 }
 
-export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceDeleteSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -458,19 +458,19 @@ export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeB
   });
 }
 
-export async function handleKbReindex(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbReindex(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbReindexSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(() => kbReindex(kbSubsystem.kb));
 }
 
-export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<ToolDomainResult> {
+export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbPrinciplesSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
@@ -524,10 +524,10 @@ export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBas
   });
 }
 
-export function handleKbMemo(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+export function handleKbMemo(args: KbArgs, ctx: CallerContext): KbToolResult {
   const parsed = kbMemoSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   const owner = validateOwner(parsed.data.owner);
@@ -544,10 +544,10 @@ export function handleKbMemo(args: KbArgs, ctx: CallerContext): ToolDomainResult
   );
 }
 
-export function handleKbMemoList(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+export function handleKbMemoList(args: KbArgs, ctx: CallerContext): KbToolResult {
   const parsed = kbMemoListSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   const owner = validateOwner(parsed.data.owner);
@@ -558,19 +558,19 @@ export function handleKbMemoList(args: KbArgs, ctx: CallerContext): ToolDomainRe
   return runKbSyncAction(() => listMemos(ctx.projectRoot, owner.owner));
 }
 
-export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+export function handleKbMemoDelete(args: KbArgs, ctx: CallerContext): KbToolResult {
   const parsed = kbMemoDeleteSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return handleKbMemoDeleteConsolidated(parsed.data, ctx);
 }
 
-export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): ToolDomainResult {
+export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): KbToolResult {
   const parsed = kbMemoPurgeSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   return handleKbMemoDeleteConsolidated({ owner: parsed.data.owner, all: true }, ctx);
@@ -579,10 +579,10 @@ export function handleKbMemoPurge(args: KbArgs, ctx: CallerContext): ToolDomainR
 export function handleKbMemoDeleteConsolidated(
   args: { pattern?: string; owner?: string; all?: boolean },
   ctx: CallerContext,
-): ToolDomainResult {
+): KbToolResult {
   const parsed = kbMemoDeleteConsolidatedSchema.safeParse(args);
   if (!parsed.success) {
-    return toolValidationError(parsed.error);
+    return kbValidationError(parsed.error);
   }
 
   const owner = validateOwner(parsed.data.owner);
@@ -593,7 +593,7 @@ export function handleKbMemoDeleteConsolidated(
   const hasPattern = parsed.data.pattern !== undefined;
   const purgeAll = parsed.data.all === true;
   if (hasPattern === purgeAll) {
-    return domainError('invalid_request', 'Exactly one of pattern or all=true must be provided');
+    return kbError('invalid_request', 'Exactly one of pattern or all=true must be provided');
   }
 
   const { pattern } = parsed.data;

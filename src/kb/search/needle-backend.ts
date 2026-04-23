@@ -5,7 +5,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import type { ConsumerApplyError, CorpusConsumerApplyContext, CorpusConsumerRegistration, KbRuntime } from '../contracts.js';
-import { writeFileAtomic } from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { getEntry, isNoteEntry, isSourceEntry, parseKbEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
 import { needleIndexDir, needleStagingDir } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';

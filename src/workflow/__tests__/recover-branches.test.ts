@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ProgressStore } from '../../jobs/job-store.js';
-import { SimulationRuntime } from '../../simulation/core/index.js';
+import { SimulationRuntime } from '../../simulation/core/backend.js';
 import type { CallerContext } from '../../transport/request-context.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';

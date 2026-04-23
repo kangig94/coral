@@ -1,7 +1,8 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
-import { createReplayCursor, type ProgressStore } from '../job-store.js';
+import { createReplayCursor } from '../job-store.js';
+import type { JobProgressStore } from '../progress-store-contract.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
@@ -48,7 +49,7 @@ function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<
 }
 
 export interface WaitCoordinatorDeps {
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
   eventBus: JobEventBus;

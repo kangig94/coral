@@ -3,7 +3,7 @@ declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 import { dirname, join, resolve } from 'node:path';
 
 import { BackendAlreadyRunningError } from './lock.js';
-import { StartupInterruptedError } from './control.js';
+import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import { createCoordinatorServer } from './coordinator.js';
 import { backendLog } from '../infra/backend-log.js';
 import { createRealRuntime } from '../runtime/real.js';

@@ -7,7 +7,7 @@ import type * as NodeOs from 'node:os';
 
 import { createRealRuntime } from '../../../runtime/real.js';
 import { LaunchCoordinator, type SpawnProviderServerFn } from '../../live/admission.js';
-import { TypedEventBus } from '../../control.js';
+import { TypedEventBus } from '../../event-bus.js';
 import { ProgressStore } from '../../../jobs/job-store.js';
 import { ExecutionService } from '../../execution-service.js';
 import { createProviderHostManager } from '../../live/provider-hosts/pool.js';

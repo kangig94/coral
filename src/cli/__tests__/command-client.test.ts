@@ -13,7 +13,7 @@ vi.mock('../../transport/ipc/ensure.js', () => ({
   })),
 }));
 
-import { makeClient } from '../command-helpers.js';
+import { makeClient } from '../command-client.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;
@@ -36,7 +36,7 @@ function buildProgram(): Command {
   return program;
 }
 
-describe('command helpers client routing', () => {
+describe('command client routing', () => {
   afterEach(() => {
     vi.clearAllMocks();
   });

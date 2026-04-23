@@ -21,11 +21,11 @@ import { runPlainTurn } from '../../shell/runtime-build.js';
 import { getWatchState, startDiscussSession, submitManualBid } from '../../shell/operations.js';
 import { readSessionEvents } from '../../shell/persistence.js';
 import { detachSession } from '../../shell/registry.js';
-import { knownDiscussSources } from '../../shell/read-helpers.js';
+import { knownDiscussSources } from '../../shell/session-read-service.js';
 import { DiscussSessionStore } from '../../shell/session-store.js';
 import * as discussLoop from '../../shell/loop.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
-import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../../../simulation/core/index.js';
+import { SimulationRuntime, createSimulationBackend, type SimulationBackend } from '../../../simulation/core/backend.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '../../../simulation/scenario-http.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
@@ -513,8 +513,8 @@ describe('AC7 import audits', () => {
     expectNoNativeTimers(source);
   });
 
-  it('keeps read-helpers.ts free of direct client source-registry readers', () => {
-    const source = readSource('read-helpers.ts');
+  it('keeps session-read-service.ts free of direct client source-registry readers', () => {
+    const source = readSource('session-read-service.ts');
     expect(source).not.toMatch(/client\/readers/u);
     expect(source).not.toMatch(/(?<!\.)\breadDiscussSources(?:WithStorage)?\s*\(/u);
   });

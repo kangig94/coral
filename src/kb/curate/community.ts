@@ -1,6 +1,7 @@
 import { nowIsoString } from '../../infra/time.js';
 import type { KbRuntime } from '../contracts.js';
-import { buildCommunityIndexEntry, cloneKbIndex, recordMetadataMutation } from '../corpus/mutation-helpers.js';
+import { recordMetadataMutation } from '../corpus/index-mutations.js';
+import { buildCommunityIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
 import { captureKbCorpusSnapshot } from '../runtime.js';
 import { createOramaBaseProjection, type PreparedOramaProjection } from '../search/orama-backend.js';
 import { compareLocale } from '../validation.js';

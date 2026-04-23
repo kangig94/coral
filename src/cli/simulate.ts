@@ -3,8 +3,8 @@ import type { Command } from 'commander';
 import yaml from 'yaml';
 import { ZodError } from 'zod';
 import { runScenario, type ScenarioResult, type StepResult } from '../simulation/runner.js';
-import { simulationDocumentSchema } from '../simulation/schema.js';
-import type { SimulationWorld } from '../simulation/world.js';
+import { simulationDocumentSchema } from '../simulation/scenario-schema.js';
+import type { SimulationWorld } from '../simulation/adversarial.js';
 
 type SimulateHelpers = {
   emitError: (error: unknown) => void;

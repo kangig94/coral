@@ -28,7 +28,7 @@ import type {
   LaunchPool,
   QueuedHandle,
 } from './contracts.js';
-import { type ProgressStore } from '../job-store.js';
+import type { JobProgressStore } from '../progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { type SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
@@ -67,7 +67,7 @@ function runProviderExecution(
 
 export interface LaunchOrchestratorDeps {
   abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env'>;

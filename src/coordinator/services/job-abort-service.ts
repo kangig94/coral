@@ -7,14 +7,14 @@ import {
 } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { ExecutionLaunchCoordinator, ExecutionLaunchPool as LaunchPool } from '../contracts.js';
 import type { LaunchOrchestrator } from '../../jobs/shell/launch.js';
 import type { AbortResult } from '../../jobs/abort-result.js';
 
 export interface JobAbortServiceDeps {
   abortRegistry: AbortRegistry;
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   launchCoordinator: ExecutionLaunchCoordinator;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: LaunchOrchestrator;

@@ -10,7 +10,7 @@ import type {
   KbMemoListResult,
   KbMemoPurgeResult,
 } from '../entry-types.js';
-import { writeFileAtomic } from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { memoDir } from '../paths.js';
 import { compareLocale } from '../validation.js';
 

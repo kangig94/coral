@@ -11,9 +11,8 @@ import {
 } from './recording/observer.js';
 import {
   createBackendCore,
-  type BackendCoreOptions,
-  type BackendCoreResult,
 } from './composition/create-backend-core.js';
+import type { BackendCoreOptions, BackendCoreResult } from './composition/backend-core-types.js';
 import { createKbSubsystem } from '../kb/subsystem.js';
 import type { BackendServerInfo, LifecycleState } from './control.js';
 import { ExecutionService } from './execution-service.js';
@@ -25,7 +24,7 @@ import { readJobProgress, loadJobProjectionDetail } from '../store/queries/jobs.
 import { createProjectionSessionLookup } from '../store/queries/sessions.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
-import { jobsReconcile } from '../jobs/api.js';
+import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { registerJobsConsumer } from '../jobs/consumer.js';
 import { registerDiscussConsumer } from '../discuss/consumer.js';
@@ -34,7 +33,7 @@ import { registerSessionsConsumer } from '../sessions/consumer.js';
 import { discussRegistry } from '../discuss/store-registry.js';
 import { workflowRegistry } from '../workflow/events.js';
 import { registerWorkflowConsumer } from '../workflow/consumer.js';
-import { workflowRecover } from '../workflow/api.js';
+import { workflowRecover } from '../workflow/startup.js';
 import { createNotifyCorpusMutation } from './corpus-notify.js';
 import { ConsumerDriver } from './consumer-driver.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
@@ -45,15 +44,6 @@ import { removeInstallArtifacts } from '../expansion/install.js';
 import { EquipmentLifecycleService } from './equipment/lifecycle.js';
 import { createEquipmentSlot, createSlotRegistry } from './equipment/slots.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
-export { createBackendCore } from './composition/create-backend-core.js';
-export { listInstantiatedExecutionServices } from './composition/execution-services.js';
-export type {
-  BackendBootSnapshot,
-  BackendCoreOptions,
-  BackendCoreResult,
-  CreateServerFn,
-  FetchFn,
-} from './composition/backend-core-types.js';
 
 export type CoordinatorServerOptions = Omit<BackendCoreOptions, 'runtime' | 'runStartupRecoveryFn'> & {
   runtime?: Runtime;

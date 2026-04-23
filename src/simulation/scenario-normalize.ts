@@ -5,10 +5,10 @@ import type {
   MockKillAction,
   MockSpawnScript,
   SimulationScenario,
-} from './core/index.js';
+} from './core/backend.js';
 import type { TerminalOutcome } from '../providers/contract.js';
 import { toError } from './core/constants.js';
-import type { ScenarioError, WorldConfig } from './schema.js';
+import type { ScenarioError, WorldConfig } from './scenario-schema.js';
 
 function toRuntimeError(value: ScenarioError | Error | string): Error {
   if (value instanceof Error || typeof value === 'string') {

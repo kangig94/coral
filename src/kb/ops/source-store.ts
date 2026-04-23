@@ -5,12 +5,9 @@ import {
   captureSourceManifestDeltas,
 } from '../corpus/manifest-authority.js';
 import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
-import {
-  buildSourceIndexEntry,
-  commitIndexUpdate,
-  recordContentAndMetadataMutation,
-  writeFileAtomic,
-} from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
+import { buildSourceIndexEntry } from '../corpus/index-records.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';

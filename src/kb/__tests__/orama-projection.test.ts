@@ -30,7 +30,7 @@ import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
   cloneKbIndex,
-} from '../corpus/mutation-helpers.js';
+} from '../corpus/index-records.js';
 import { createKbRuntime, captureKbCorpusSnapshot } from '../runtime.js';
 import { createOramaBaseProjection } from '../search/orama-backend.js';
 

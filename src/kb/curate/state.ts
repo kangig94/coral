@@ -9,12 +9,8 @@ import {
   replaceSourceFrontmatter,
 } from '../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import {
-  buildNoteIndexEntry,
-  buildSourceIndexEntry,
-  cloneKbIndex,
-  writeFileAtomic,
-} from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../corpus/index-records.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbIndexState, KbRuntime } from '../contracts.js';

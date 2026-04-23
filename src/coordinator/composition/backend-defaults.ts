@@ -16,7 +16,7 @@ import {
 } from '../control.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { discussReconcile } from '../../discuss/api.js';
+import { discussReconcile } from '../../discuss/reconcile.js';
 import { ExecutionService as DefaultExecutionService } from '../execution-service.js';
 import type { BackendCoreOptions, CreateServerFn, FetchFn } from './backend-core-types.js';
 

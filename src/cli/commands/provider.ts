@@ -3,14 +3,11 @@ import type { Command } from 'commander';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { markProviderCommand } from '../command-class-map.js';
 import { UsageError } from '../errors.js';
+import { getProviderNames, makeClient, type ProviderRunOptions } from '../command-client.js';
+import { emitError, handleLaunchResult } from '../command-output.js';
 import {
-  emitError,
-  getProviderNames,
-  handleLaunchResult,
-  makeClient,
   resolveInput,
-  type ProviderRunOptions,
-} from '../command-helpers.js';
+} from '../command-input.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {

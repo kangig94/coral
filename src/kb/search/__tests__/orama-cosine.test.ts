@@ -26,7 +26,7 @@ vi.mock('../../corpus/frontmatter.js', () => ({
   }),
 }));
 
-vi.mock('../../corpus/mutation-helpers.js', () => ({
+vi.mock('../../corpus/index-records.js', () => ({
   cloneKbIndex: <T>(value: T): T => structuredClone(value),
 }));
 

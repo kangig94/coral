@@ -1,19 +1,17 @@
 import { resolveDiscoveredBackend as defaultEnsureBackend, withAbortTimeout, type BackendHandle } from './backend-handle.js';
 import type { BackendHealth } from './backend-health.js';
 import { isBackendHealth } from './backend-health.js';
-import { throwBackendCommunicationError } from './backend-helpers.js';
+import { throwBackendCommunicationError } from './backend-communication.js';
 import { BackendToolHttpError } from './client-errors.js';
 import type { AbortResult } from '../../jobs/abort-result.js';
 import type { CallerContext } from '../../transport/request-context.js';
 import type {
-  BidResult,
   DiscussDetailResponse,
   DiscussSummaryDto,
   DiscussView,
-  PersonaSeedOutput,
-  SpeechResult,
-  WatchState,
-} from '../../discuss/api.js';
+} from '../../discuss/read-contract.js';
+import type { BidResult, PersonaSeedOutput, SpeechResult } from '../../discuss/session-types.js';
+import type { WatchState } from '../../discuss/watch.js';
 import type {
   KbDeleteInput,
   KbMemoDeleteInput,

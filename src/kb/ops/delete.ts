@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.js';
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/mutation-helpers.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import type { KbRuntime } from '../contracts.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { assertNoteSlug } from '../validation.js';

@@ -8,7 +8,7 @@ import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSe
 import * as discussLoop from './loop.js';
 import * as discussOperations from './operations.js';
 import type { RecoveredDiscussResume } from './operations.js';
-import { knownDiscussSources, type DiscussReadHelpersDeps } from './read-helpers.js';
+import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore } from './session-store.js';
 import { readDiscussSourcesWithStorage } from './discuss-sources-catalog.js';
 

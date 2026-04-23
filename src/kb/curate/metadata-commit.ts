@@ -12,15 +12,15 @@ import {
   replaceFrontmatter,
   replaceSourceFrontmatter,
 } from '../corpus/frontmatter.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { recordMetadataMutation } from '../corpus/index-mutations.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
   cloneEntityMetaRecord,
   cloneEntityRelationship,
   cloneKbIndex,
-  recordMetadataMutation,
-  writeFileAtomic,
-} from '../corpus/mutation-helpers.js';
+} from '../corpus/index-records.js';
 import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../runtime-effects.js';
 import {
   isNoteEntry,

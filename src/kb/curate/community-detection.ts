@@ -19,7 +19,7 @@ import {
   serializeCommunityFrontmatter,
 } from '../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { writeFileAtomic } from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbRuntime } from '../contracts.js';

@@ -16,6 +16,7 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
+import type { InitJobOptions, JobProgressStore, ReplayCursor } from './progress-store-contract.js';
 import type {
   JobKind,
   JobLaunch,
@@ -26,10 +27,6 @@ import type {
   LaunchState,
 } from './records.js';
 
-export type ReplayCursor = {
-  lastEventId: number;
-};
-
 export type ProgressStoreOptions = {
   eventBus?: JobEventBus;
   db?: Database;
@@ -37,20 +34,11 @@ export type ProgressStoreOptions = {
   reducers?: ComposedReducers;
 };
 
-export type InitJobOptions = {
-  jobId: string;
-  sessionId: string;
-  provider: string;
-  projectRoot: string;
-  backendNamespace: string;
-  bundleHash?: string;
-  jobKind?: JobKind;
-  initialPhase?: JobPhase;
-};
-
 export function createReplayCursor(): ReplayCursor {
   return { lastEventId: 0 };
 }
+
+export type { ReplayCursor } from './progress-store-contract.js';
 
 function formatProgressMessage(startedAt: number | undefined, nowMs: number, message: string): string {
   const elapsed = startedAt === undefined ? 0 : nowMs - startedAt;
@@ -80,7 +68,7 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
   };
 }
 
-export class JobStore {
+export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly appendEvents: AppendEventsFn;

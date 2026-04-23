@@ -3,20 +3,22 @@ import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { CallerContext } from '../../transport/request-context.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ProviderRegistry } from '../../providers/registry.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { ProviderCatalog } from '../../providers/catalog.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { AppendEventsFn } from '../../store/append.js';
 import {
-  createWorkflowJournal,
-  executePipeline,
+  type WorkflowCommand,
+} from '../../workflow/input.js';
+import type { PipelineAST } from '../../workflow/ast.js';
+import { executePipeline } from '../../workflow/executor.js';
+import {
   WorkflowExecutionError,
-  type PipelineAST,
   type PipelineResult,
   type StepDetail,
-  type WorkflowCommand,
   type WorkflowSessionHandle,
-} from '../../workflow/api.js';
+} from '../../workflow/internal/execution-contract.js';
+import { createWorkflowJournal } from '../../workflow/projections.js';
 import {
   type JobTerminal,
 } from '../../jobs/records.js';
@@ -41,8 +43,8 @@ export interface WorkflowExecutionServiceDeps {
   abortRegistry: AbortRegistry;
   backendNamespace: string;
   bundleHash: string;
-  progressStore: ProgressStore;
-  providerRegistry: ProviderRegistry;
+  progressStore: JobProgressStore;
+  providerRegistry: ProviderCatalog;
   appendEvents: AppendEventsFn;
   launchOrchestrator: LaunchOrchestrator;
   executionPort: WorkflowExecutionPort;

@@ -126,7 +126,7 @@ All 37 files surviving under `src/execution/__tests__/` after Phase 2 are **DEFE
 ### Production-file disposition ledger (`src/execution/**`)
 
 - `src/execution/backend-lock.ts` → **REWRITTEN** into `src/coordinator/lock.ts`.
-- `src/execution/backend-core.ts` → **DELETED**; the exported backend-core surface now re-exports from `src/coordinator/coordinator.ts`.
+- `src/execution/backend-core.ts` → **DELETED**; its implementation moved to `src/coordinator/composition/create-backend-core.ts`, with public coordinator entrypoints remaining in `src/coordinator/coordinator.ts`.
 - `src/execution/backend-core-types.ts` → **MOVED** to `src/coordinator/composition/backend-core-types.ts`.
 - `src/execution/job-lifecycle-contracts.ts` → **MOVED** to `src/jobs/shell/contracts.ts`.
 - `src/execution/job-lifecycle.ts` → **DELETED**; importers now target `src/jobs/shell/{launch,wait}.ts` directly.

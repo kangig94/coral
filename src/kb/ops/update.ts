@@ -4,7 +4,9 @@ import { serializeNote } from '../corpus/frontmatter.js';
 import { loadKbNote } from '../read.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
-import { buildNoteIndexEntry, commitIndexUpdate, recordContentMutation, writeFileAtomic } from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { commitIndexUpdate, recordContentMutation } from '../corpus/index-mutations.js';
+import { buildNoteIndexEntry } from '../corpus/index-records.js';
 import type { KbRuntime } from '../contracts.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 

@@ -4,16 +4,16 @@ import type { BackendClient } from '../../transport/http/client.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 import type { WatchState } from '../../discuss/watch.js';
 import {
-  emitError,
   exemptIpcRequest,
   makeClient,
-  parseIntegerFlag,
   type DiscussAbortOptions,
   type DiscussParticipateOptions,
   type DiscussSeedOptions,
   type DiscussStartOptions,
   type DiscussWatchOptions,
-} from '../command-helpers.js';
+} from '../command-client.js';
+import { emitError } from '../command-output.js';
+import { parseIntegerFlag } from '../command-input.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,

@@ -20,6 +20,7 @@ const DOMAIN_ROOTS = [
   'src/discuss/',
   'src/workflow/',
   'src/kb/',
+  'src/simulation/',
   'src/providers/',
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
@@ -32,9 +33,14 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/wait.ts',
   'src/jobs/wait-stream-event.ts',
   'src/sessions/api.ts',
-  'src/discuss/api.ts',
+  'src/discuss/command-schemas.ts',
+  'src/discuss/read-contract.ts',
+  'src/discuss/session-types.ts',
+  'src/discuss/watch.ts',
   'src/workflow/api.ts',
+  'src/workflow/input.ts',
   'src/kb/entry-types.ts',
+  'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
   'src/kb/read-contract.ts',
   'src/providers/request-policy.ts',
@@ -60,14 +66,21 @@ const COORDINATOR_EXEMPT_PREFIXES = [
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/api.ts',
   'src/sessions/api.ts',
-  'src/discuss/api.ts',
   'src/workflow/api.ts',
   'src/kb/contracts.ts',
   'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
-const DOMAIN_ROOT_DIRS = ['src/jobs', 'src/sessions', 'src/discuss', 'src/workflow', 'src/kb', 'src/providers'] as const;
+const DOMAIN_ROOT_DIRS = [
+  'src/jobs',
+  'src/sessions',
+  'src/discuss',
+  'src/workflow',
+  'src/kb',
+  'src/simulation',
+  'src/providers',
+] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -155,6 +168,14 @@ describe('architecture layering invariants (architecture §16, #27-#31)', () => 
         target === 'src/kb/tool-contracts.ts' &&
         !source.startsWith('src/transport/') &&
         source !== 'src/kb/tool-handlers.ts',
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('kb domain does not import transport-owned result wrappers', () => {
+    const violations = collectViolations(
+      (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
     );
 
     expect(violations).toEqual([]);

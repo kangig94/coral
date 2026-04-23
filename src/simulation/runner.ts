@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
-import { extractRuntimePid, SimulationWorld, type WaitDetail } from './world.js';
-import type { ExpectStep, KillStep, SimulationDocument, Step } from './schema.js';
+import { extractRuntimePid, SimulationWorld, type WaitDetail } from './adversarial.js';
+import type { ExpectStep, KillStep, SimulationDocument, Step } from './scenario-schema.js';
 import { errorMessage } from '../infra/error-format.js';
 
 export type StepResult = {

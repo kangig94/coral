@@ -190,7 +190,7 @@ Keep the body stable.
   });
 
   it('markTextIndexStale logs to stderr on double failure instead of silently swallowing', async () => {
-    const { markTextIndexStale } = await import('../corpus/mutation-helpers.js');
+    const { markTextIndexStale } = await import('../corpus/index-mutations.js');
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     const alwaysThrows = () => {
@@ -209,7 +209,7 @@ Keep the body stable.
     const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] =
       await Promise.all([
         import('../corpus/frontmatter.js'),
-        import('../corpus/mutation-helpers.js'),
+        import('../corpus/index-records.js'),
         import('../validation.js'),
       ]);
 

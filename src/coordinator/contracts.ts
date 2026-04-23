@@ -4,7 +4,7 @@ import type {
   JobResumeRequest,
   LaunchDecision,
 } from '../jobs/launch.js';
-import type { ProgressStore } from '../jobs/api.js';
+import type { JobProgressStore } from '../jobs/progress-store-contract.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import type { JobContinuitySnapshot } from '../jobs/continuity.js';
@@ -29,9 +29,9 @@ import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { SessionLookup } from '../sessions/lookup.js';
 import type { AppendEventsFn } from '../store/append.js';
-import type { ProviderRegistry } from '../providers/registry.js';
+import type { ProviderCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
-import type { WorkflowCommand } from '../workflow/api.js';
+import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 
 export type ExecutionLaunchPool = 'default' | 'discuss' | 'curate';
@@ -136,13 +136,13 @@ export interface ExecutionProviderHostManager {
 
 export type ExecutionServiceDeps = {
   runtime: Runtime;
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   bundleHash?: string;
   backendNamespace: string;
   providerHostManager: ExecutionProviderHostManager;
   launchCoordinator: ExecutionLaunchCoordinator;
   eventBus: TypedEventBus;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };

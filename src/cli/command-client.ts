@@ -1,11 +1,8 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { existsSync, readFileSync } from 'node:fs';
 import type { Command } from 'commander';
 
 import {
-  BackendToolHttpError,
-  type AcceptedLaunchResponse,
   type CallerContext,
   type DiscussAbortResponse,
   type DiscussStartResponse,
@@ -49,27 +46,15 @@ import type {
   ReindexResult,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
-import {
-  clearPendingReadStoreNote,
-  flushPendingReadStoreNote,
-  getSharedReadCoralStore,
-} from './read-coral-store.js';
+import { getSharedReadCoralStore } from './read-coral-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { collectCoralEnv } from '../infra/coral-env.js';
-import { buildErrorEnvelope, UsageError } from './errors.js';
-import {
-  formatErrorEnvelope,
-  formatLaunch,
-} from './format.js';
-import { launchAndFollow } from './follow.js';
-import { isJsonObject } from './parse.js';
+import { UsageError } from './errors.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { classifyCommand, commandPath } from './command-class-map.js';
-type CliOutputFormat = 'text' | 'json';
-export { flushPendingReadStoreNote, openReadCoralStore, withReadCoralStore, type ReadCoralStoreHandle } from './read-coral-store.js';
 
 type SessionRequestOptions = {
   provider?: string;
@@ -295,25 +280,6 @@ export async function exemptIpcRequest<TResult>(
 
 export function getProviderNames(providerRegistry: ProviderRegistry): string[] {
   return providerRegistry.getAll().map((provider) => provider.name);
-}
-
-export function resolveFilePath(filePath: string): string {
-  if (existsSync(filePath)) return filePath;
-  if (!filePath.endsWith('.md')) {
-    const withMd = `${filePath}.md`;
-    if (existsSync(withMd)) return withMd;
-  }
-  return filePath;
-}
-
-export function resolveInput(values: string[]): string {
-  // Each token is resolved independently: existing files are read, other tokens stay literal.
-  // Multi-value inputs are joined with spaces, which recovers prompts that a shell split into
-  // multiple argv entries (e.g. unquoted `-i hello world`) and prompts that the cli-resolve
-  // hook partially materialized into a temp file alongside adjacent literal tokens.
-  return values
-    .map((token) => (existsSync(token) ? readFileSync(token, 'utf8') : token))
-    .join(' ');
 }
 
 function createDefaultCallerContext(projectRoot: string): CallerContext {
@@ -586,100 +552,6 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       await request<ReindexResult>('kb.reindex', buildTransportContextBody({}, defaultContext)),
     subscribe,
   };
-}
-
-export function getOutputFormat(command: Command): CliOutputFormat {
-  return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json' ? 'json' : 'text';
-}
-
-export function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
-  return argv[0]?.match(/node(\.exe)?$/) ? `node "${argv[1]}"` : (argv[0] ?? 'coral-cli');
-}
-
-export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?: (data: T) => string): void {
-  const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
-  process.stdout.write(text + '\n');
-  flushPendingReadStoreNote(outputFormat);
-}
-
-export function emitError(error: unknown): void {
-  clearPendingReadStoreNote();
-  const { envelope, exitCode } = buildErrorEnvelope(error);
-  const statusCode = error instanceof BackendToolHttpError ? error.statusCode : undefined;
-  process.stderr.write(formatErrorEnvelope(envelope, statusCode) + '\n');
-  process.exitCode = exitCode;
-}
-
-export function parseIntegerFlag(flagName: string, value: string): number {
-  if (!/^-?\d+$/.test(value)) {
-    throw new UsageError(`${flagName} must be an integer`);
-  }
-
-  return Number.parseInt(value, 10);
-}
-
-export function parseJobIds(raw: string): string[] {
-  const jobIds = raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  if (jobIds.length === 0) {
-    throw new UsageError('--jobs must include at least one job ID');
-  }
-
-  return jobIds;
-}
-
-export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunchResponse {
-  if (!isJsonObject(value) || typeof value.launchState !== 'string') {
-    return false;
-  }
-
-  return (
-    (value.launchState === 'running' || value.launchState === 'queued') &&
-    typeof value.job === 'string' &&
-    typeof value.session === 'string'
-  );
-}
-
-export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
-  process.stdout.write(formatLaunch(decision) + '\n');
-}
-
-export function getTerminalContext(): { isTTY: boolean; columns: number } {
-  return {
-    isTTY: process.stdout.isTTY === true,
-    columns: process.stdout.columns ?? 80,
-  };
-}
-
-export async function handleLaunchResult(
-  result: unknown,
-  detach: boolean | undefined,
-  client: AbortCapableClient,
-): Promise<void> {
-  if (!isAcceptedLaunchResponse(result)) {
-    emitError(new Error(`Expected accepted launch response, received: ${JSON.stringify(result)}`));
-    return;
-  }
-
-  if (detach) {
-    emitAcceptedLaunchResponse(result);
-    return;
-  }
-
-  // Successful follow returns the terminal job exit code (0-255).
-  // Follow-level failures route through emitError and return the envelope exit code instead.
-  process.exitCode = await launchAndFollow({
-    launchResult: result,
-    abortJob: async (jobId) => {
-      await client.abortJobs([jobId]);
-    },
-    pluginRoot,
-    projectRoot: process.cwd(),
-    emitError,
-    ...getTerminalContext(),
-  });
 }
 
 export function getPluginRoot(): string {

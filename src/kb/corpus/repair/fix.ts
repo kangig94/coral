@@ -24,15 +24,17 @@ import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/ret
 import type { SpawnCliFn } from '../../curate/types.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../../runtime-effects.js';
+import { writeFileAtomic } from '../file-atomic.js';
 import {
   commitIndexUpdate,
+  recordContentAndMetadataMutation,
+  recordMetadataMutation,
+} from '../index-mutations.js';
+import {
   buildCommunityIndexEntry,
   buildNoteIndexEntry,
   buildSourceIndexEntry,
-  recordContentAndMetadataMutation,
-  recordMetadataMutation,
-  writeFileAtomic,
-} from '../mutation-helpers.js';
+} from '../index-records.js';
 import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   extractBody,

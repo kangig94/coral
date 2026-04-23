@@ -10,7 +10,7 @@ import {
 import { areCommunityDocumentsFresh } from '../curate/text-artifacts.js';
 import type { CommunityDocument } from '../curate/community-detection.js';
 import { extractBody, parseCommunityFrontmatter } from '../corpus/frontmatter.js';
-import { cloneKbIndex } from '../corpus/mutation-helpers.js';
+import { cloneKbIndex } from '../corpus/index-records.js';
 import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';
 import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '../orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from '../orama-schema.js';

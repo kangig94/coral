@@ -5,12 +5,9 @@ import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
-import {
-  buildNoteIndexEntry,
-  commitIndexUpdate,
-  recordContentAndMetadataMutation,
-  writeFileAtomic,
-} from '../corpus/mutation-helpers.js';
+import { writeFileAtomic } from '../corpus/file-atomic.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
+import { buildNoteIndexEntry } from '../corpus/index-records.js';
 import type { KbRuntime } from '../contracts.js';
 import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 

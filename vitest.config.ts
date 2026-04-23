@@ -12,7 +12,6 @@ export default defineConfig({
       'src/**/__tests__/e2e/**/*.test.ts',
       'src/simulation/__tests__/simulation*.test.ts',
       'src/simulation/__tests__/simulation-runner.test.ts',
-      'src/cli/__tests__/main-routing.test.ts',
     ],
     setupFiles: ['vitest.setup.ts'],
   },

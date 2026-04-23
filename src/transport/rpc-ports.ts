@@ -1,4 +1,4 @@
-import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/api.js';
+import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../discuss/read-contract.js';
 import type {
   ListEquipmentRequest,
   ListEquipmentResult,
@@ -18,6 +18,7 @@ import type { JobProgress, JobStatus } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { CallerContext } from '../transport/request-context.js';
 import type { AbortResult } from '../jobs/abort-result.js';
+import type { KbToolResult } from '../kb/result.js';
 import type { ToolDomainResult } from '../transport/tool-result.js';
 
 export type SessionStartInput = Pick<
@@ -85,24 +86,24 @@ export interface WorkflowRequestPort {
 }
 
 export interface KbRequestPort {
-  readSearch(args: Record<string, unknown>): Promise<ToolDomainResult>;
-  diagnose(): ToolDomainResult;
-  readNote(slug: string): ToolDomainResult;
-  readSource(slug: string): ToolDomainResult;
-  readCommunity(slug: string): ToolDomainResult;
-  readMemo(slug: string, ctx: CallerContext): ToolDomainResult;
-  readPrinciple(slug: string): ToolDomainResult;
-  listSources(): Promise<ToolDomainResult>;
-  listMemos(args: Record<string, unknown>, ctx: CallerContext): ToolDomainResult;
-  listPrinciples(args: Record<string, unknown>): Promise<ToolDomainResult>;
-  createNote(args: Record<string, unknown>, ctx: CallerContext): Promise<ToolDomainResult>;
-  updateNote(args: Record<string, unknown>): Promise<ToolDomainResult>;
-  deleteNote(slug: string): Promise<ToolDomainResult>;
-  createSource(args: Record<string, unknown>): Promise<ToolDomainResult>;
-  deleteSource(slug: string): Promise<ToolDomainResult>;
-  createMemo(args: Record<string, unknown>, ctx: CallerContext): ToolDomainResult;
-  deleteMemos(args: Record<string, unknown>, ctx: CallerContext): ToolDomainResult;
-  reindex(): Promise<ToolDomainResult>;
+  readSearch(args: Record<string, unknown>): Promise<KbToolResult>;
+  diagnose(): KbToolResult;
+  readNote(slug: string): KbToolResult;
+  readSource(slug: string): KbToolResult;
+  readCommunity(slug: string): KbToolResult;
+  readMemo(slug: string, ctx: CallerContext): KbToolResult;
+  readPrinciple(slug: string): KbToolResult;
+  listSources(): Promise<KbToolResult>;
+  listMemos(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
+  listPrinciples(args: Record<string, unknown>): Promise<KbToolResult>;
+  createNote(args: Record<string, unknown>, ctx: CallerContext): Promise<KbToolResult>;
+  updateNote(args: Record<string, unknown>): Promise<KbToolResult>;
+  deleteNote(slug: string): Promise<KbToolResult>;
+  createSource(args: Record<string, unknown>): Promise<KbToolResult>;
+  deleteSource(slug: string): Promise<KbToolResult>;
+  createMemo(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
+  deleteMemos(args: Record<string, unknown>, ctx: CallerContext): KbToolResult;
+  reindex(): Promise<KbToolResult>;
 }
 
 export interface DiscussRequestPort {

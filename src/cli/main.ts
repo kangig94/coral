@@ -12,10 +12,10 @@ import { registerKbCommands } from './commands/kb.js';
 import { registerProviderCommands } from './commands/provider.js';
 import { registerSessionCommands } from './commands/session.js';
 import { registerWorkflowCommands } from './commands/workflow.js';
-import { emitError } from './command-helpers.js';
+import { emitError } from './command-output.js';
 import { registerSimulateCommand } from './simulate.js';
 
-export { emitAcceptedLaunchResponse, emitError, getOutputFormat, isAcceptedLaunchResponse } from './command-helpers.js';
+export { emitAcceptedLaunchResponse, emitError, getOutputFormat, isAcceptedLaunchResponse } from './command-output.js';
 
 export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();

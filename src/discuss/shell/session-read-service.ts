@@ -1,8 +1,8 @@
 /**
- * Discuss session read helpers extracted from `createBackendServer()`.
+ * Discuss session read service extracted from `createBackendServer()`.
  *
  * The server composition root owns the mutable discuss registry and store
- * lookup, while this module owns the read-side helper behavior.
+ * lookup, while this module owns the read-side query behavior.
  */
 
 import {

@@ -1,7 +1,7 @@
 {
   "roots": [
-    "src/simulation/core/index.ts",
-    "src/simulation/world.ts",
+    "src/simulation/core/backend.ts",
+    "src/simulation/adversarial.ts",
     "src/simulation/runner.ts"
   ],
   "forbidden": [

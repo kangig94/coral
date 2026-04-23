@@ -21,14 +21,14 @@ import { writeWorkflowResult } from '../../jobs/shell/result-artifact.js';
 import { isDurableCliRuntime } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { ProviderRegistry } from '../../providers/registry.js';
+import type { ProviderCatalog } from '../../providers/catalog.js';
 import type {
   ExecutionLaunchCoordinator,
   ExecutionLaunchPool as LaunchPool,
   ExecutionProviderServerAttachment,
   ExecutionProviderHostManager,
 } from '../contracts.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { AbortRegistry } from '../../jobs/shell/abort-registry.js';
@@ -50,10 +50,10 @@ export interface RecoveryServiceDeps {
   abortRegistry: AbortRegistry;
   backendNamespace: string;
   bundleHash: string;
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   providerHostManager: ExecutionProviderHostManager;
   launchCoordinator: ExecutionLaunchCoordinator;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: LaunchOrchestrator;
   acquireServer?: (

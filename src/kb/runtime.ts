@@ -57,7 +57,8 @@ import {
   parseFrontmatter,
   parseSourceFrontmatter,
 } from './corpus/frontmatter.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex, writeFileAtomic } from './corpus/mutation-helpers.js';
+import { writeFileAtomic } from './corpus/file-atomic.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from './corpus/index-records.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
 import { sortedMarkdownEntries } from './corpus/markdown-entries.js';

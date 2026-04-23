@@ -6,8 +6,8 @@ import { setBuildFlavor } from '../../infra/paths.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bridge-manifest.js';
-import { TypedEventBus } from '../control.js';
 import type { BackendIdentity } from '../control.js';
+import { TypedEventBus } from '../event-bus.js';
 import type { BackendCoreOptions } from './backend-core-types.js';
 import {
   createDiscussContextRegistry,

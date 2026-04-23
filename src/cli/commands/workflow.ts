@@ -1,13 +1,9 @@
 import type { Command } from 'commander';
 
 import { UsageError } from '../errors.js';
-import {
-  emitError,
-  handleLaunchResult,
-  makeClient,
-  resolveInput,
-  type WorkflowOptions,
-} from '../command-helpers.js';
+import { makeClient, type WorkflowOptions } from '../command-client.js';
+import { emitError, handleLaunchResult } from '../command-output.js';
+import { resolveInput } from '../command-input.js';
 
 export function registerWorkflowCommands(program: Command): void {
   const workflowCommand = program.command('workflow');

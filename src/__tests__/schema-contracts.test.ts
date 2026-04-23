@@ -6,7 +6,8 @@ import {
   sessionForkSchema,
   sessionMessageSchema,
 } from '../sessions/api.js';
-import { workflowCommandSchema, workflowRequestSchema } from '../workflow/api.js';
+import { workflowCommandSchema } from '../workflow/api.js';
+import { workflowRequestSchema } from '../transport/rpc-workflow.js';
 import {
   abortInputSchema,
   waitInputSchema,

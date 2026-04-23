@@ -8,16 +8,16 @@ import {
   DEFAULT_EPOCH_MS,
   type SimulationBackend,
   type SimulationHookLog,
-} from './core/index.js';
+} from './core/backend.js';
 import {
   acquireNoRealIoMonitor,
   cloneNoRealIoReport,
   type NoRealIoRegistration,
   type NoRealIoReport,
 } from './no-real-io.js';
-import { normalizeWorldConfig } from './normalize.js';
+import { normalizeWorldConfig } from './scenario-normalize.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from './scenario-http.js';
-import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './schema.js';
+import type { CorruptTarget, LaunchStep, WaitUntil, WorldConfig } from './scenario-schema.js';
 import { noopAppendEvents } from '../store/append.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import { isTerminalPhase } from '../jobs/phase.js';

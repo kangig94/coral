@@ -39,6 +39,7 @@ const RETIRED_TRANSPORT_HTTP_INDEX = ['src', 'transport', 'http', 'index.ts'].jo
 const RETIRED_COORDINATOR_INDEX = ['src', 'coordinator', 'index.ts'].join('/');
 const RETIRED_WORKFLOW_INDEX = ['src', 'workflow', 'index.ts'].join('/');
 const RETIRED_RUNTIME_INDEX = ['src', 'runtime', 'index.ts'].join('/');
+const RETIRED_DISCUSS_API = ['src', 'discuss', 'api.ts'].join('/');
 const RETIRED_DISCUSS_VIEWS = ['src', 'discuss', 'views.ts'].join('/');
 const RETIRED_DISCUSS_TIME_UTIL = ['src', 'discuss', 'util', 'time.ts'].join('/');
 const RETIRED_COORDINATOR_LOG = ['src', 'coordinator', 'log.ts'].join('/');
@@ -46,13 +47,22 @@ const RETIRED_EXPORTS_PATHS = ['src', 'jobs', 'exports', 'paths.ts'].join('/');
 const RETIRED_CORPUS_PATHS = ['src', 'kb', 'corpus', 'paths.ts'].join('/');
 const RETIRED_INFRA_INDEX = ['src', 'infra', 'index.ts'].join('/');
 const RETIRED_SIMULATION_INDEX = ['src', 'simulation', 'index.ts'].join('/');
+const RETIRED_SIMULATION_CORE_INDEX = ['src', 'simulation', 'core', 'index.ts'].join('/');
 const RETIRED_REQUEST_CONTEXT = ['src', 'infra', 'request-context.ts'].join('/');
+const RETIRED_SIMULATION_WORLD = ['src', 'simulation', 'world.ts'].join('/');
+const RETIRED_SIMULATION_SCHEMA = ['src', 'simulation', 'schema.ts'].join('/');
+const RETIRED_SIMULATION_NORMALIZE = ['src', 'simulation', 'normalize.ts'].join('/');
 const RETIRED_JOB_HELPERS = ['src', 'jobs', 'reconcile', 'job-helpers.ts'].join('/');
 const RETIRED_CURATE_SHARED = ['src', 'kb', 'curate', 'shared.ts'].join('/');
 const RETIRED_CURATE_STATE_SHARED = ['src', 'kb', 'curate', 'state-shared.ts'].join('/');
 const RETIRED_CLAUDE_SHARED_UTILS = ['src', 'providers', 'claude', 'shared-utils.ts'].join('/');
 const RETIRED_STRATEGY_SHARED = ['src', 'expansion', 'strategies', 'shared.ts'].join('/');
 const RETIRED_WORKFLOW_INTERNAL_SHARED = ['src', 'workflow', 'internal', 'shared.ts'].join('/');
+const RETIRED_DISCUSS_READ_HELPERS = ['src', 'discuss', 'shell', 'read-helpers.ts'].join('/');
+const RETIRED_DISCUSS_STATE_HELPERS = ['src', 'discuss', 'state-helpers.ts'].join('/');
+const RETIRED_HTTP_BACKEND_HELPERS = ['src', 'transport', 'http', 'backend-helpers.ts'].join('/');
+const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts'].join('/');
+const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
 const RETIRED_COORDINATOR_SHIMS = [
   ['src', 'coordinator', 'discovery.ts'].join('/'),
   ['src', 'coordinator', 'paths.ts'].join('/'),
@@ -241,6 +251,10 @@ describe('architecture boundary guard', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_INDEX);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_INDEX))).toBe(false);
   });
+  it('the retired discuss api seam must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_DISCUSS_API);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_DISCUSS_API))).toBe(false);
+  });
   it('the retired discuss views module must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_DISCUSS_VIEWS);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_DISCUSS_VIEWS))).toBe(false);
@@ -269,6 +283,22 @@ describe('architecture boundary guard', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_INDEX);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_INDEX))).toBe(false);
   });
+  it('the retired simulation core index barrel must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_CORE_INDEX);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_CORE_INDEX))).toBe(false);
+  });
+  it('the retired simulation world owner must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_WORLD);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_WORLD))).toBe(false);
+  });
+  it('the retired simulation schema filename must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_SCHEMA);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_SCHEMA))).toBe(false);
+  });
+  it('the retired simulation normalize filename must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_NORMALIZE);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_NORMALIZE))).toBe(false);
+  });
   it('the retired request-context owner must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_REQUEST_CONTEXT);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_REQUEST_CONTEXT))).toBe(false);
@@ -281,10 +311,29 @@ describe('architecture boundary guard', () => {
       RETIRED_CLAUDE_SHARED_UTILS,
       RETIRED_STRATEGY_SHARED,
       RETIRED_WORKFLOW_INTERNAL_SHARED,
+      RETIRED_DISCUSS_READ_HELPERS,
+      RETIRED_DISCUSS_STATE_HELPERS,
+      RETIRED_HTTP_BACKEND_HELPERS,
+      RETIRED_KB_MUTATION_HELPERS,
+      RETIRED_COMMAND_HELPERS,
     ]) {
       expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
       expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
     }
+  });
+  it('production keeps store/index.ts as the only remaining index barrel', () => {
+    const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));
+    expect(liveIndexes).toEqual(['src/store/index.ts']);
+  });
+  it('production keeps helper-style filenames out of src/', () => {
+    const helperLikeFiles = PRODUCTION_SOURCE_FILES.filter(
+      (filePath) =>
+        filePath.endsWith('/helper.ts')
+        || filePath.endsWith('/helpers.ts')
+        || filePath.endsWith('/shared.ts')
+        || filePath.endsWith('/shared-utils.ts'),
+    );
+    expect(helperLikeFiles).toEqual([]);
   });
   it('the removed coordinator shim files must remain deleted', () => {
     for (const shimPath of RETIRED_COORDINATOR_SHIMS) {

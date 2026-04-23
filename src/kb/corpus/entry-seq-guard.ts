@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import type { KbRuntime } from '../contracts.js';
 import { rewriteLegacyNoteFrontmatter } from './frontmatter.js';
 import { sortedMarkdownEntries } from './markdown-entries.js';
-import { writeFileAtomic } from './mutation-helpers.js';
+import { writeFileAtomic } from './file-atomic.js';
 import { stripMdExt } from '../paths.js';
 
 export type EntrySeqGuardTarget = Pick<KbRuntime, 'notePath' | 'notesDir'>;

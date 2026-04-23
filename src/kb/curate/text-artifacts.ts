@@ -33,7 +33,7 @@ import {
   generateCommunityFiles,
   loadExistingCommunityState,
 } from './community-detection.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/mutation-helpers.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../corpus/index-records.js';
 import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
 import { stripMdExt } from '../paths.js';
 import { noteMetadataHash, sourceMetadataHash } from '../metadata-hash.js';

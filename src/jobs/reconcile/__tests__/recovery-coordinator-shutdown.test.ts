@@ -42,6 +42,7 @@ async function loadModules() {
   const [
     progressStoreModule,
     lifecycleModule,
+    recoveryErrorsModule,
     engineModule,
     eventBusModule,
     pathsModule,
@@ -50,6 +51,7 @@ async function loadModules() {
   ] = await Promise.all([
     import('../../job-store.js'),
     import('../../../coordinator/control.js'),
+    import('../errors.js'),
     import('../../../coordinator/live/admission.js'),
     import('../../../coordinator/event-bus.js'),
     import('../../../infra/paths.js'),
@@ -60,6 +62,7 @@ async function loadModules() {
   return {
     progressStoreModule,
     lifecycleModule,
+    recoveryErrorsModule,
     engineModule,
     eventBusModule,
     pathsModule,
@@ -433,7 +436,7 @@ describe('recovery coordinator shutdown', () => {
       const startResult = await controller.start().catch((error: unknown) => error);
       await controller.waitForShutdown();
 
-      expect(startResult).toBeInstanceOf(modules.lifecycleModule.StartupInterruptedError);
+      expect(startResult).toBeInstanceOf(modules.recoveryErrorsModule.StartupInterruptedError);
       expect(harness.fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
       expect(cleanupSpy).toHaveBeenCalledTimes(1);
       expect(harness.recoverPersistedDiscussFn).not.toHaveBeenCalled();
@@ -493,7 +496,7 @@ describe('recovery coordinator shutdown', () => {
       const startResult = await controller.start().catch((error: unknown) => error);
       await controller.waitForShutdown();
 
-      expect(startResult).toBeInstanceOf(modules.lifecycleModule.StartupInterruptedError);
+      expect(startResult).toBeInstanceOf(modules.recoveryErrorsModule.StartupInterruptedError);
       expect(harness.fakeService.adoptRunningJob).toHaveBeenCalledTimes(1);
       expect(recoveryPollHandle).not.toBeNull();
       expect(clearIntervalSpy).toHaveBeenCalledWith(recoveryPollHandle);

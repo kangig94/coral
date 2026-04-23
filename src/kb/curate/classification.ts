@@ -1,5 +1,5 @@
 import { deriveNoteIdentity } from '../corpus/frontmatter.js';
-import { cloneKbIndex, cloneEntityMetaRecord, cloneEntityRelationship } from '../corpus/mutation-helpers.js';
+import { cloneKbIndex, cloneEntityMetaRecord, cloneEntityRelationship } from '../corpus/index-records.js';
 import { assertNonEmptyText, compareLocale } from '../validation.js';
 import {
   ENTITY_TYPES,

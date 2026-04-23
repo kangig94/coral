@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { TypedEventBus } from '../../coordinator/control.js';
+import { TypedEventBus } from '../../coordinator/event-bus.js';
 import { type StoragePort } from '../../runtime/ports.js';
 import { SimulationRuntime } from '../../simulation/runtime.js';
 import { applyMigrations } from '../../store/migrations.js';

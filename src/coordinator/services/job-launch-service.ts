@@ -2,7 +2,7 @@ import type { ProviderSpec } from '../../providers/contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { resolveEffort } from '../../providers/request-policy.js';
 import type { CallerContext } from '../../transport/request-context.js';
-import type { ProviderRegistry } from '../../providers/registry.js';
+import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';
 import { getSessionById } from '../../sessions/shell/resolve.js';
@@ -12,7 +12,7 @@ import {
   type AcceptedAdmission,
 } from '../../jobs/shell/contracts.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
-import type { ProgressStore } from '../../jobs/job-store.js';
+import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { LaunchDecision } from '../../jobs/launch.js';
 import type { ProviderRequest } from '../../providers/contract.js';
 import type { ExecutionLaunchPool as LaunchPool, ListResult } from '../contracts.js';
@@ -36,11 +36,11 @@ export interface JobLaunchServiceDeps {
   sessionManager: SessionManager;
   backendNamespace: string;
   bundleHash: string;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };
-  progressStore: ProgressStore;
+  progressStore: JobProgressStore;
   sessionLookup?: SessionLookup;
   launchOrchestrator: LaunchOrchestrator;
 }

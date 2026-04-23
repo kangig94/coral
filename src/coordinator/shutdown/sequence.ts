@@ -6,7 +6,7 @@ import { isAppServerRuntime } from '../../jobs/records.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
 import type { KbRuntime } from '../../kb/contracts.js';
 import type { CallerContext } from '../../transport/request-context.js';
-import type { DiscussSessionStore } from '../../discuss/api.js';
+import type { DiscussSessionStore } from '../../discuss/shell/session-store.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../contracts.js';

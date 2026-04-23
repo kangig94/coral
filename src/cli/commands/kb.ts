@@ -8,13 +8,7 @@ import { assertSourceSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/owner-id.js';
 import { UsageError } from '../errors.js';
 import {
-  emit,
-  emitError,
-  getCliDisplayPrefix,
-  getOutputFormat,
   makeClient,
-  parseIntegerFlag,
-  resolveFilePath,
   type KbMemoDeleteOptions,
   type KbMemoListOptions,
   type KbMemoPurgeOptions,
@@ -24,7 +18,9 @@ import {
   type KbSearchOptions,
   type KbSourceImportOptions,
   type KbUpdateOptions,
-} from '../command-helpers.js';
+} from '../command-client.js';
+import { emit, emitError, getCliDisplayPrefix, getOutputFormat } from '../command-output.js';
+import { parseIntegerFlag, resolveFilePath } from '../command-input.js';
 import {
   formatKbDiagnose,
   formatKbDelete,

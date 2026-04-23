@@ -1,10 +1,9 @@
 import type { Command } from 'commander';
 
-import { getBackendStatusFull, shutdownBackend } from '../../transport/http/backend-helpers.js';
-import {
-  emitError,
-  getPluginRoot,
-} from '../command-helpers.js';
+import { getBackendStatusFull } from '../../transport/http/backend-status.js';
+import { shutdownBackend } from '../../transport/http/backend-shutdown.js';
+import { getPluginRoot } from '../command-client.js';
+import { emitError } from '../command-output.js';
 import { formatBackendStatus, formatShutdown } from '../format.js';
 
 export function registerBackendCommands(program: Command): void {

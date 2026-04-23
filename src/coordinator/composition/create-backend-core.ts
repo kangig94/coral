@@ -4,8 +4,8 @@ import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/http/contracts.js';
-import { discussQueries } from '../../discuss/api.js';
-import { knownDiscussSources } from '../../discuss/shell/read-helpers.js';
+import { discussQueries } from '../../discuss/queries.js';
+import { knownDiscussSources } from '../../discuss/shell/session-read-service.js';
 import { listAttachedSessions } from '../../discuss/shell/live-registry.js';
 import {
   handleDiscussAbort,
@@ -46,7 +46,8 @@ import {
   type LifecycleDeps,
 } from '../control.js';
 import type { BackendCoreOptions, BackendCoreResult } from './backend-core-types.js';
-import { isWorkflowInputFailure, workflowCommands, workflowCompiler } from '../../workflow/api.js';
+import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
+import { workflowCommands } from '../../workflow/dispatch.js';
 import { createBackendControl } from './backend-control.js';
 import { resolveBackendDefaults } from './backend-defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
@@ -57,14 +58,6 @@ import { isLivePhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { coordinatorPaths } from '../../infra/coordinator-paths.js';
 import { createEquipmentRpc, createUnavailableEquipmentRpc } from '../equipment/rpc.js';
-
-export type {
-  BackendBootSnapshot,
-  BackendCoreOptions,
-  BackendCoreResult,
-  CreateServerFn,
-  FetchFn,
-} from './backend-core-types.js';
 
 export function createBackendCore(options: BackendCoreOptions): BackendCoreResult {
   const runtime = options.runtime;

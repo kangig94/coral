@@ -7,7 +7,9 @@ import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { CallerContext } from '../transport/request-context.js';
-import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
+import type { DiscussContext } from '../discuss/shell/context.js';
+import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
+import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import {
   isTerminalPhase,
@@ -27,11 +29,7 @@ import type { ShutdownMode } from './shutdown/mode.js';
 import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-export type { EventBusEvents } from './event-bus.js';
-export { TypedEventBus } from './event-bus.js';
 
-export { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
-export { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 export {
   HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
