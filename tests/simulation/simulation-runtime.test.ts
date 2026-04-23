@@ -1,8 +1,8 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { backendInfoPath } from '../../src/infra/backend-discovery.js';
-import { MAX_BUFFER } from '../../src/infra/process-constants.js';
-import { SessionManager } from '../../src/sessions/shell/store.js';
+import { backendInfoPath } from '#src/infra/backend-discovery.js';
+import { MAX_BUFFER } from '#src/infra/process-constants.js';
+import { SessionManager } from '#src/sessions/shell/store.js';
 import {
   InMemoryPaths,
   InMemoryStorage,
@@ -12,7 +12,7 @@ import {
   VirtualTime,
   createSimulationBackend,
   flushMicrotasks,
-} from '../../tools/simulation/core/backend.js';
+} from '#tools/simulation/core/backend.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {

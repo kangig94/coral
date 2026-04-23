@@ -1,0 +1,145 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { parseAgentRef, resolveAgent } from '#src/jobs/shell/agent-resolution.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/pool.js';
+import { ProgressStore } from '#src/jobs/job-store.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
+import { createFilesystemSessionLookup } from '#src/sessions/lookup.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
+import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { streamProviderTerminal } from '#src/providers/stream.js';
+import { workflowCommands, workflowCompiler } from '#src/workflow/api.js';
+import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+
+type RecordedLaunchRequest = ProviderRequest & {
+  instruction?: ProviderInstruction;
+};
+
+function cloneProviderRequest(request: ProviderRequest): RecordedLaunchRequest {
+  return {
+    ...request,
+    coralEnv: { ...request.coralEnv },
+    ...(request.instruction ? { instruction: { ...request.instruction } } : {}),
+  };
+}
+
+describe('pipe executor coral cascade invariant', () => {
+  it('forces coral workflow atoms to resolve from the coral plugin instead of the project override', async () => {
+    const suffix = Math.random().toString(36).slice(2, 10);
+    const SENTINEL_PROJECT = 'SENTINEL_PROJECT_' + suffix;
+    const SENTINEL_CORAL = 'SENTINEL_CORAL_' + suffix;
+
+    const projectRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-'));
+    const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-coral-'));
+
+    try {
+      const projectArchitectPath = join(projectRoot, '.claude', 'agents', 'architect.md');
+      const coralArchitectPath = join(coralPluginRoot, 'agents', 'architect.md');
+
+      mkdirSync(join(projectRoot, '.claude', 'agents'), { recursive: true });
+      mkdirSync(join(coralPluginRoot, 'agents'), { recursive: true });
+      writeFileSync(projectArchitectPath, '---\n---\n' + SENTINEL_PROJECT);
+      writeFileSync(coralArchitectPath, '---\n---\n' + SENTINEL_CORAL);
+
+      expect(projectRoot).not.toBe(coralPluginRoot);
+      expect(existsSync(projectArchitectPath)).toBe(true);
+      expect(existsSync(coralArchitectPath)).toBe(true);
+      expect(readFileSync(projectArchitectPath, 'utf8')).toContain(SENTINEL_PROJECT);
+      expect(readFileSync(coralArchitectPath, 'utf8')).toContain(SENTINEL_CORAL);
+      const runtime = createRealRuntime();
+
+      const resolutionCtx = {
+        projectRoot,
+        coralPluginRoot,
+        discoverPluginRoot: () => null,
+        storage: runtime.storage,
+      };
+
+      const bareResolved = resolveAgent(parseAgentRef('architect'), resolutionCtx);
+      expect(bareResolved.content).toContain(SENTINEL_PROJECT);
+      expect(bareResolved.content).not.toContain(SENTINEL_CORAL);
+      expect(bareResolved.path.startsWith(projectRoot)).toBe(true);
+
+      const forcedResolved = resolveAgent(parseAgentRef('coral:architect'), resolutionCtx);
+      expect(forcedResolved.path.startsWith(join(coralPluginRoot, 'agents') + sep)).toBe(true);
+      expect(forcedResolved.content).toContain(SENTINEL_CORAL);
+      expect(forcedResolved.content).not.toContain(SENTINEL_PROJECT);
+
+      const capturedLaunches: RecordedLaunchRequest[] = [];
+      const stubProvider: Provider = {
+        name: 'stub-provider',
+        execute: (request) => {
+          capturedLaunches.push(cloneProviderRequest(request));
+          return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' } });
+        },
+      };
+
+      const providerRegistry = new ProviderRegistry();
+      providerRegistry.register(toProviderSpec(stubProvider)!);
+
+      const eventBus = new TypedEventBus();
+      const progressStore = new ProgressStore('test-ns', runtime, createDefaultUpcasterRegistry(), { eventBus });
+      const executionSvc = new ExecutionService(
+        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
+        {
+          runtime,
+          progressStore,
+          bundleHash: 'pipe-executor-cascade-test',
+          backendNamespace: pluginRootNamespace(coralPluginRoot),
+          providerHostManager: createProviderHostManager({
+            runtime,
+            spawnProviderServer: async () => {
+              throw new Error('Provider host manager should not be used in pipe executor cascade test');
+            },
+          }),
+          launchCoordinator: new LaunchCoordinator({ runtime }),
+          eventBus,
+          providerRegistry,
+          pluginRegistry: { discoverPluginRoot: () => null },
+          sessionLookup: createFilesystemSessionLookup(runtime),
+        },
+      );
+
+      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
+      const compiled = workflowCompiler.compile(
+        {
+          expression: 'architect',
+          startPrompt: 'hi',
+          provider: 'stub-provider',
+        },
+        providerRegistry,
+      );
+      if ('status' in compiled) {
+        throw new Error(`expected workflow compilation to succeed, got ${compiled.status}`);
+      }
+
+      const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
+
+      expect(decision.status).toBe('running');
+      if (decision.status === 'rejected') {
+        throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
+      }
+      await executionSvc.waitForJobTerminal(decision.job, 1_000);
+      expect(capturedLaunches).toHaveLength(1);
+
+      const [launch] = capturedLaunches;
+      expect(launch.instruction).toBeDefined();
+      if (!launch.instruction) {
+        throw new Error('Expected coralDispatch launch to include a resolved instruction');
+      }
+      expect(launch.instruction.content).toContain(SENTINEL_CORAL);
+      expect(launch.instruction.content).not.toContain(SENTINEL_PROJECT);
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(coralPluginRoot, { recursive: true, force: true });
+    }
+  });
+});

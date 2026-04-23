@@ -6,6 +6,14 @@
   "exports": {
     "./infra": "./dist/infra/index.js"
   },
+  "imports": {
+    "#src/*.js": "./src/*.ts",
+    "#tests/*.js": "./tests/*.ts",
+    "#tools/*.js": "./tools/*.ts",
+    "#src/*": "./src/*",
+    "#tests/*": "./tests/*",
+    "#tools/*": "./tools/*"
+  },
   "files": [
     "dist/",
     "bridge/coral-backend.cjs",
@@ -19,10 +27,10 @@
     "build:release": "tsc && node scripts/build-server.mjs --flavor prod --release",
     "check:simulation": "node scripts/check-simulation.mjs",
     "dev": "CORAL_FLAVOR=dev tsc --watch",
-    "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix",
-    "format": "prettier --write 'src/**/*.ts'",
-    "format:check": "prettier --check 'src/**/*.ts'",
+    "lint": "eslint src/ tests/ tools/",
+    "lint:fix": "eslint src/ tests/ tools/ --fix",
+    "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts' 'tools/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.ts' 'tests/**/*.ts' 'tools/**/*.ts'",
     "test": "node scripts/test.mjs",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",

@@ -1,25 +1,17 @@
 import { z } from 'zod';
 
 import { jobContinuitySnapshotSchema, type JobContinuitySnapshot } from './continuity.js';
-import {
-  jobTerminalSchema,
-  type JobTerminal,
-  type WorkflowResultMeta,
-  type WorkflowStepMeta,
-} from './result.js';
+import { jobTerminalSchema, type JobTerminal } from './result.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
-import {
-  type ProviderAction,
-  type ProviderInstruction,
-} from '../providers/contract.js';
+import { type ProviderAction, type ProviderInstruction } from '../providers/contract.js';
 import { jobPhaseSchema, type JobPhase } from './phase.js';
 
 export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
   return (
-    typeof status.backendNamespace === 'string'
-    && status.backendNamespace.length > 0
-    && status.backendNamespace === namespace
+    typeof status.backendNamespace === 'string' &&
+    status.backendNamespace.length > 0 &&
+    status.backendNamespace === namespace
   );
 }
 
@@ -125,9 +117,7 @@ export interface AppServerRuntime {
 
 export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime;
 
-export function isAppServerRuntime(
-  record: JobRuntime | null | undefined,
-): record is AppServerRuntime {
+export function isAppServerRuntime(record: JobRuntime | null | undefined): record is AppServerRuntime {
   return record?.transport === 'app-server';
 }
 

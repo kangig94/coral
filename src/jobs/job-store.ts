@@ -17,15 +17,7 @@ import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore, ReplayCursor } from './progress-store-contract.js';
-import type {
-  JobKind,
-  JobLaunch,
-  JobProgress,
-  JobRuntime,
-  JobStatus,
-  JobTerminal,
-  LaunchState,
-} from './records.js';
+import type { JobLaunch, JobProgress, JobRuntime, JobStatus, JobTerminal, LaunchState } from './records.js';
 
 export type ProgressStoreOptions = {
   eventBus?: JobEventBus;
@@ -89,21 +81,18 @@ export class JobStore implements JobProgressStore {
     upcasters: UpcasterRegistry,
     options: ProgressStoreOptions = {},
   ) {
-    const {
-      eventBus = createNoopJobEventBus(),
-      db,
-      appendEvents,
-      reducers = composeReducers(jobsRegistry),
-    } = options;
+    const { eventBus = createNoopJobEventBus(), db, appendEvents, reducers = composeReducers(jobsRegistry) } = options;
 
     this.eventBus = eventBus;
     this.schemas = reducers.schemas;
     this.upcasters = upcasters;
-    this.db = db ?? openStoreDatabase({
-      path: this.resolveDefaultDbPath(),
-      storage: this.runtime.storage,
-      migrationsDir: ensureStoreMigrationsDir(this.runtime.storage),
-    });
+    this.db =
+      db ??
+      openStoreDatabase({
+        path: this.resolveDefaultDbPath(),
+        storage: this.runtime.storage,
+        migrationsDir: ensureStoreMigrationsDir(this.runtime.storage),
+      });
     this.appendEvents =
       appendEvents ??
       ((inputs) => {
@@ -590,11 +579,19 @@ export class JobStore implements JobProgressStore {
       return 0;
     }
 
-    return this.countProjectedLiveJobsByNamespace(namespace) + this.countLiveOverrideJobs((status) => status.backendNamespace === namespace) + this.countLiveDraftJobs((status) => status.backendNamespace === namespace);
+    return (
+      this.countProjectedLiveJobsByNamespace(namespace) +
+      this.countLiveOverrideJobs((status) => status.backendNamespace === namespace) +
+      this.countLiveDraftJobs((status) => status.backendNamespace === namespace)
+    );
   }
 
   liveJobCount(bundleHash?: string): number {
-    return this.countProjectedLiveJobs(bundleHash) + this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash) + this.countLiveDraftJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash);
+    return (
+      this.countProjectedLiveJobs(bundleHash) +
+      this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash) +
+      this.countLiveDraftJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash)
+    );
   }
 
   hydrateEventCounter(jobId: string): void {
@@ -811,10 +808,7 @@ export class JobStore implements JobProgressStore {
   private countProjectedLiveJobsByNamespace(namespace: string): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
     const phasePlaceholders = ['queued', 'launching', 'running'];
-    const clauses = [
-      `phase IN (${phasePlaceholders.map(() => '?').join(', ')})`,
-      `backend_namespace = ?`,
-    ];
+    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`, `backend_namespace = ?`];
     const params: unknown[] = [...phasePlaceholders, namespace];
 
     if (excludedJobIds.length > 0) {

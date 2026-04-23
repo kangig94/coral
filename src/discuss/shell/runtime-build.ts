@@ -1,23 +1,12 @@
-import {
-  makeEvent,
-  type PersistedDiscussAgentRun,
-  type SessionCreatedAgentExecutionConfig,
-} from '../events.js';
+import { makeEvent, type PersistedDiscussAgentRun, type SessionCreatedAgentExecutionConfig } from '../events.js';
 import type { PersistedDiscussSnapshot } from '../events.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
-import type { JobStatus } from '../../jobs/records.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
-import type {
-  AgentConfig,
-  DiscussContext,
-  DiscussLaunchDecision,
-  DiscussService,
-  DiscussWaitResult,
-} from './context.js';
+import type { AgentConfig, DiscussContext } from './context.js';
 
 export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set([

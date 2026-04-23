@@ -31,33 +31,39 @@ export default tseslint.config(
   //   no-floating-promises, no-misused-promises, await-thenable)
 
   // =========================================================
-  // All src/ rules
+  // All TypeScript rules
   // =========================================================
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'tests/**/*.ts', 'tools/**/*.ts'],
     rules: {
       // -- Principle 2: Transport Safety --
       // console.log in MCP server code corrupts the stdio transport.
       'no-console': 'error',
 
       // -- Principle 3: Explicit Intent --
-      'eqeqeq': ['error', 'always'],
+      eqeqeq: ['error', 'always'],
       'prefer-const': 'error',
       'no-var': 'error',
-      '@typescript-eslint/consistent-type-imports': ['error', {
-        prefer: 'type-imports',
-        fixStyle: 'inline-type-imports',
-      }],
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        {
+          prefer: 'type-imports',
+          fixStyle: 'inline-type-imports',
+        },
+      ],
       '@typescript-eslint/no-explicit-any': 'error',
 
       // -- Principle 4: Dead Code Lies --
-      '@typescript-eslint/no-unused-vars': ['error', {
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_',
-        caughtErrorsIgnorePattern: '^_',
-        destructuredArrayIgnorePattern: '^_',
-        ignoreRestSiblings: true,
-      }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
 
       // Ensure re-thrown errors preserve the original cause for debugging
       'preserve-caught-error': 'error',
@@ -92,17 +98,16 @@ export default tseslint.config(
   // Applies to: execution/, kb/, workflow/ (backend process code)
   // =========================================================
   {
-    files: [
-      'src/execution/**/*.ts',
-      'src/kb/**/*.ts',
-      'src/workflow/**/*.ts',
-    ],
-    ignores: ['src/**/__tests__/**'],
+    files: ['src/execution/**/*.ts', 'src/kb/**/*.ts', 'src/workflow/**/*.ts'],
     rules: {
-      'no-restricted-syntax': ['error', {
-        selector: "MemberExpression[object.object.name='process'][object.property.name='stderr'][property.name='write']",
-        message: 'Use backendLog from shared/backend-log.ts instead of process.stderr.write in backend code.',
-      }],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "MemberExpression[object.object.name='process'][object.property.name='stderr'][property.name='write']",
+          message: 'Use backendLog from infra/backend-log.ts instead of process.stderr.write in backend code.',
+        },
+      ],
     },
   },
 
@@ -110,7 +115,7 @@ export default tseslint.config(
   // Test files: relax strict rules
   // =========================================================
   {
-    files: ['src/**/__tests__/**/*.ts'],
+    files: ['tests/**/*.ts'],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'off',

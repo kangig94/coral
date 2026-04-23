@@ -1,0 +1,831 @@
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { readDiscussDiscovery, readDiscussEventLog, readDiscussSummaryIndex } from '#tests/helpers/persistence-readers.js';
+import {
+  discussBaseDirForSource,
+  discussSourcesPath,
+  discussDiscoveryPath,
+  discussEventLogPath,
+  discussSessionDir,
+  discussSummaryIndexPath,
+  discussStatePath,
+  resolveProjectSource,
+  sourceToSlug,
+} from '#src/infra/paths.js';
+import { replayDiscussEvents } from '#src/discuss/reducer.js';
+import { decideBid, decideBidRoundClose, decideSessionCreate, decideSpeech } from '#src/discuss/state-machine.js';
+import type { DiscussCreateInput, Result } from '#src/discuss/session-types.js';
+import { DiscussSessionStore, DiscussStaleWriteError } from '#src/discuss/shell/session-store.js';
+import { CoralSetupError } from '#src/runtime/errors.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+
+const SESSION_ID = 'session-1';
+const SECOND_SESSION_ID = 'session-2';
+const TOPIC = 'Should the city pedestrianize the downtown core?';
+
+let projectRoot = '';
+let homeRoot = '';
+let source = '';
+const originalHome = process.env.HOME;
+const activeStores: DiscussSessionStore[] = [];
+
+function createStore(
+  src: string,
+  storageOverrides: Partial<ReturnType<typeof createRealRuntime>['storage']> = {},
+): DiscussSessionStore {
+  const runtime = createRealRuntime();
+  const store = new DiscussSessionStore(src, {
+    storage: {
+      ...runtime.storage,
+      ...storageOverrides,
+    },
+    time: runtime.time,
+    paths: runtime.paths,
+  });
+  activeStores.push(store);
+  return store;
+}
+
+function unwrap<T>(result: Result<T>): T {
+  if (result.ok) {
+    return result.value;
+  }
+  throw new Error(result.error);
+}
+
+function makeInput(): DiscussCreateInput {
+  return {
+    topic: TOPIC,
+    min_bid_delay_ms: 0,
+    agents: [
+      { name: 'alpha', persona: 'Alpha', participation: 'required' },
+      { name: 'beta', persona: 'Beta', participation: 'required' },
+    ],
+  };
+}
+
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  const tmpPath = `${filePath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(value, null, 2), 'utf8');
+  renameSync(tmpPath, filePath);
+}
+
+async function appendRoundTripHistory(
+  store: DiscussSessionStore,
+  sessionId = SESSION_ID,
+): Promise<{
+  finalSnapshot: Awaited<ReturnType<DiscussSessionStore['append']>>;
+}> {
+  const input = makeInput();
+  const createEvents = unwrap(
+    decideSessionCreate(
+      input,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      1,
+      '2026-03-11T00:00:00.000Z',
+    ),
+  );
+  const created = await store.append(sessionId, 0, createEvents);
+
+  const bidAlpha = unwrap(
+    decideBid(
+      created.state,
+      'alpha',
+      60,
+      'I should open the discussion.',
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      3,
+      '2026-03-11T00:00:01.000Z',
+    ),
+  );
+  const afterAlpha = await store.append(sessionId, created.lastAppliedSeq, bidAlpha);
+
+  const bidBeta = unwrap(
+    decideBid(
+      afterAlpha.state,
+      'beta',
+      75,
+      'I should take the first turn.',
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      4,
+      '2026-03-11T00:00:02.000Z',
+    ),
+  );
+  const afterBeta = await store.append(sessionId, afterAlpha.lastAppliedSeq, bidBeta);
+
+  const closeRound = unwrap(
+    decideBidRoundClose(
+      afterBeta.state,
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      5,
+      '2026-03-11T00:00:03.000Z',
+    ),
+  );
+  const afterClose = await store.append(sessionId, afterBeta.lastAppliedSeq, closeRound);
+
+  const speech = unwrap(
+    decideSpeech(
+      afterClose.state,
+      'beta',
+      'I will open with the transportation impact.',
+      { sessionId: sessionId, projectRoot: projectRoot, topic: TOPIC },
+      6,
+      '2026-03-11T00:00:04.000Z',
+    ),
+  );
+  const finalSnapshot = await store.append(sessionId, afterClose.lastAppliedSeq, speech);
+
+  return { finalSnapshot };
+}
+
+function buildExpectedSummaryRow(snapshot: Awaited<ReturnType<DiscussSessionStore['append']>>): {
+  sessionId: string;
+  projectRoot: string;
+  topic: string;
+  status: string;
+  createdAt: string;
+  agentCount: number;
+  updatedAt: string;
+  lastSeq: number;
+} {
+  return {
+    sessionId: snapshot.sessionId,
+    projectRoot: snapshot.projectRoot,
+    topic: snapshot.state.topic,
+    status: snapshot.state.status,
+    createdAt: snapshot.state.created_at,
+    agentCount: Object.keys(snapshot.state.agents).length,
+    updatedAt: snapshot.updatedAt,
+    lastSeq: snapshot.lastAppliedSeq,
+  };
+}
+
+function releaseLocksLater(lockDirs: string[], delayMs = 150): Promise<void> {
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `
+        import { rmSync } from 'node:fs';
+
+        const lockDirs = JSON.parse(process.env.LOCK_DIRS ?? '[]');
+        const delayMs = Number(process.env.LOCK_DELAY_MS ?? '0');
+
+        setTimeout(() => {
+          for (const lockDir of lockDirs) {
+            rmSync(lockDir, { recursive: true, force: true });
+          }
+        }, delayMs);
+      `,
+    ],
+    {
+      env: {
+        ...process.env,
+        LOCK_DIRS: JSON.stringify(lockDirs),
+        LOCK_DELAY_MS: String(delayMs),
+      },
+      stdio: 'ignore',
+    },
+  );
+
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Lock releaser exited with code ${code ?? 'null'}`));
+    });
+  });
+}
+
+beforeEach(() => {
+  homeRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-home-'));
+  process.env.HOME = homeRoot;
+  projectRoot = mkdtempSync(join(tmpdir(), 'coral-discuss-store-'));
+  source = resolveProjectSource(projectRoot);
+});
+
+afterEach(() => {
+  // Dispose stores to cancel pending flush timers before restoring HOME
+  for (const store of activeStores.splice(0)) {
+    store.dispose();
+  }
+  // Restore HOME first, then clean leaked dirs under real home
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  const slug = sourceToSlug(source);
+  rmSync(join(homedir(), '.coral', 'projects', slug), { recursive: true, force: true });
+  rmSync(join(homedir(), '.coral', 'projects', 'local-project'), { recursive: true, force: true });
+  rmSync(projectRoot, { recursive: true, force: true });
+  rmSync(homeRoot, { recursive: true, force: true });
+});
+
+describe('DiscussSessionStore', () => {
+  it('appends events and loads the same snapshot back', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+
+    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+    expect(store.listSummaries()).toEqual([
+      {
+        sessionId: SESSION_ID,
+        projectRoot,
+        topic: TOPIC,
+        status: 'bidding',
+        createdAt: '2026-03-11T00:00:00.000Z',
+        agentCount: 2,
+        authority: 'persisted',
+      },
+    ]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+
+  it('recovers the full session state by replaying the event log when state.json is deleted', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+    const statePath = discussStatePath(store.resolveSessionDir(SESSION_ID));
+
+    unlinkSync(statePath);
+
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
+  });
+
+  it('replays only the tail past snapshot.lastAppliedSeq and matches full replay', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+    const sessionDir = store.resolveSessionDir(SESSION_ID);
+    const logEvents = readDiscussEventLog(discussEventLogPath(sessionDir));
+    const truncatedSnapshot = replayDiscussEvents(logEvents.slice(0, 4));
+
+    writeJsonAtomic(discussStatePath(sessionDir), truncatedSnapshot);
+
+    const { logByteOffset: _dropped, ...expected } = finalSnapshot;
+    const loaded = store.load(SESSION_ID);
+    expect(loaded).not.toBeNull();
+    const { logByteOffset: _droppedLoaded, ...actual } = loaded!;
+    expect(actual).toEqual(expected);
+  });
+
+  it('rejects compare-and-append when expectedSeq is stale', async () => {
+    const store = createStore(source);
+    const input = makeInput();
+    const createEvents = unwrap(
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+    const created = await store.append(SESSION_ID, 0, createEvents);
+
+    const bidEvents = unwrap(
+      decideBid(
+        created.state,
+        'alpha',
+        60,
+        'Still fresh.',
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        3,
+        '2026-03-11T00:00:01.000Z',
+      ),
+    );
+
+    await expect(store.append(SESSION_ID, 1, bidEvents)).rejects.toBeInstanceOf(DiscussStaleWriteError);
+    await expect(store.append(SESSION_ID, 1, bidEvents)).rejects.toMatchObject({
+      expectedSeq: 1,
+      actualSeq: created.lastAppliedSeq,
+    });
+  });
+
+  it('throws CoralSetupError when durable event-log append fails', async () => {
+    const store = createStore(source, {
+      appendFileDurableSync: () => false,
+    });
+
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+
+    const append = store.append(SESSION_ID, 0, createEvents);
+
+    await expect(append).rejects.toBeInstanceOf(CoralSetupError);
+    await expect(append).rejects.toMatchObject({
+      code: 'durable_write_failed',
+    });
+  });
+
+  it('throws CoralSetupError when durable JSON state writes fail', async () => {
+    const store = createStore(source, {
+      writeAtomicDurableSync: () => false,
+    });
+
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+
+    const append = store.append(SESSION_ID, 0, createEvents);
+
+    await expect(append).rejects.toBeInstanceOf(CoralSetupError);
+    await expect(append).rejects.toMatchObject({
+      code: 'durable_write_failed',
+    });
+  });
+
+  it('waits for the session filesystem lock before appending', async () => {
+    const store = createStore(source);
+    const lockDir = join(discussSessionDir(projectRoot, SESSION_ID), '.lock');
+    mkdirSync(lockDir, { recursive: true });
+    const createEvents = unwrap(
+      decideSessionCreate(
+        makeInput(),
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+
+    const appendPromise = store.append(SESSION_ID, 0, createEvents);
+
+    let settled = false;
+    void appendPromise.finally(() => {
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(settled).toBe(false);
+
+    rmSync(lockDir, { recursive: true, force: true });
+
+    await expect(appendPromise).resolves.toMatchObject({
+      sessionId: SESSION_ID,
+      lastAppliedSeq: createEvents.at(-1)?.seq,
+    });
+  });
+
+  it('updates discovery.json after each committed append', async () => {
+    const store = createStore(source);
+    const input = makeInput();
+    const createEvents = unwrap(
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+    const created = await store.append(SESSION_ID, 0, createEvents);
+    store.flushDirtyIndexes();
+    const firstDiscovery = readDiscussDiscovery(projectRoot);
+
+    expect(firstDiscovery).toEqual({
+      source,
+      updatedAt: created.updatedAt,
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: created.state.created_at,
+        },
+      ],
+    });
+
+    const bidEvents = unwrap(
+      decideBid(
+        created.state,
+        'alpha',
+        60,
+        'Discovery should advance on this append.',
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        3,
+        '2026-03-11T00:00:01.000Z',
+      ),
+    );
+    const afterBid = await store.append(SESSION_ID, created.lastAppliedSeq, bidEvents);
+    store.flushDirtyIndexes();
+    const secondDiscovery = readDiscussDiscovery(projectRoot);
+
+    expect(secondDiscovery?.updatedAt).toBe(afterBid.updatedAt);
+    expect(secondDiscovery?.sessions).toHaveLength(1);
+    expect(secondDiscovery?.sessions[0]).toMatchObject({
+      sessionId: SESSION_ID,
+      topic: TOPIC,
+      createdAt: created.state.created_at,
+    });
+  });
+
+  it('preserves both discovery rows when different sessions append concurrently', async () => {
+    const firstStore = createStore(source);
+    const secondStore = createStore(source);
+    const input = makeInput();
+
+    const firstCreate = unwrap(
+      decideSessionCreate(
+        input,
+        { sessionId: SESSION_ID, projectRoot: projectRoot, topic: TOPIC },
+        1,
+        '2026-03-11T00:00:00.000Z',
+      ),
+    );
+    const secondCreate = unwrap(
+      decideSessionCreate(
+        input,
+        { sessionId: SECOND_SESSION_ID, projectRoot: projectRoot, topic: `${TOPIC} (session 2)` },
+        1,
+        '2026-03-11T00:00:00.500Z',
+      ),
+    );
+
+    await Promise.all([
+      firstStore.append(SESSION_ID, 0, firstCreate),
+      secondStore.append(SECOND_SESSION_ID, 0, secondCreate),
+    ]);
+
+    firstStore.flushDirtyIndexes();
+    secondStore.flushDirtyIndexes();
+
+    const discovery = readDiscussDiscovery(projectRoot);
+    expect(discovery?.sessions.map((session) => session.sessionId).sort()).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(
+      readDiscussSummaryIndex(projectRoot)
+        ?.sessions.map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+  });
+
+  it('loads and appends shared sessions from another checkout of the same source', async () => {
+    const firstProjectRoot = join(homeRoot, 'checkout-a', 'project');
+    const secondProjectRoot = join(homeRoot, 'checkout-b', 'project');
+    mkdirSync(firstProjectRoot, { recursive: true });
+    mkdirSync(secondProjectRoot, { recursive: true });
+
+    const firstSource = resolveProjectSource(firstProjectRoot);
+    const secondSource = resolveProjectSource(secondProjectRoot);
+    expect(secondSource).toBe(firstSource);
+
+    const firstStore = createStore(firstSource);
+    const secondStore = createStore(secondSource);
+
+    const created = await firstStore.append(
+      SESSION_ID,
+      0,
+      unwrap(
+        decideSessionCreate(
+          makeInput(),
+          { sessionId: SESSION_ID, projectRoot: firstProjectRoot, topic: TOPIC },
+          1,
+          '2026-03-11T00:00:00.000Z',
+        ),
+      ),
+    );
+
+    expect(secondStore.load(SESSION_ID)).toMatchObject({
+      sessionId: SESSION_ID,
+      projectRoot: firstProjectRoot,
+      lastAppliedSeq: created.lastAppliedSeq,
+    });
+
+    const updated = await secondStore.append(
+      SESSION_ID,
+      created.lastAppliedSeq,
+      unwrap(
+        decideBid(
+          created.state,
+          'alpha',
+          60,
+          'Alternate checkout append.',
+          { sessionId: SESSION_ID, projectRoot: secondProjectRoot, topic: TOPIC },
+          created.lastAppliedSeq + 1,
+          '2026-03-11T00:00:01.000Z',
+        ),
+      ),
+    );
+    secondStore.flushDirtyIndexes();
+
+    const logEvents = readDiscussEventLog(discussEventLogPath(secondStore.resolveSessionDir(SESSION_ID)));
+    expect(logEvents.at(-1)).toMatchObject({
+      sessionId: SESSION_ID,
+      projectRoot: secondProjectRoot,
+      seq: created.lastAppliedSeq + 1,
+    });
+    expect(updated.projectRoot).toBe(firstProjectRoot);
+    expect(firstStore.load(SESSION_ID)).toEqual(updated);
+    expect(readDiscussDiscovery(firstProjectRoot)).toMatchObject({
+      source: firstSource,
+    });
+    expect(readDiscussSummaryIndex(firstProjectRoot)).toMatchObject({
+      source: firstSource,
+      sessions: [
+        expect.objectContaining({
+          sessionId: SESSION_ID,
+          projectRoot: firstProjectRoot,
+        }),
+      ],
+    });
+  });
+
+  it('falls back from missing, stale, or corrupt discovery data when listing and loading committed sessions', async () => {
+    const store = createStore(source);
+    await appendRoundTripHistory(store, SESSION_ID);
+    await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
+
+    const firstSnapshot = store.load(SESSION_ID);
+    const secondSnapshot = store.load(SECOND_SESSION_ID);
+    expect(firstSnapshot).not.toBeNull();
+    expect(secondSnapshot).not.toBeNull();
+
+    writeJsonAtomic(discussDiscoveryPath(projectRoot), {
+      source,
+      updatedAt: '2026-03-11T00:00:05.000Z',
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: '2026-03-11T00:00:00.000Z',
+        },
+      ],
+    });
+
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(store.load(SECOND_SESSION_ID)).toEqual(secondSnapshot);
+
+    unlinkSync(discussDiscoveryPath(projectRoot));
+
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(store.load(SESSION_ID)).toEqual(firstSnapshot);
+
+    writeFileSync(discussDiscoveryPath(projectRoot), '{ not valid json }', 'utf8');
+
+    expect(
+      store
+        .listRecoveryCandidates()
+        .map((session) => session.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+  });
+
+  it('hydrates summary-index.json and repairs the source registry on first index listing', async () => {
+    const store = createStore(source);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
+
+    unlinkSync(discussSummaryIndexPath(projectRoot));
+    writeJsonAtomic(discussSourcesPath(), {
+      updatedAt: '2026-03-11T00:00:04.000Z',
+      sources: [],
+    });
+
+    const coldStartStore = createStore(source);
+
+    expect(
+      coldStartStore
+        .listSummariesFromIndex()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: secondSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+
+  it('repairs stale summary-index.json rows from persisted sessions on first index listing', async () => {
+    const store = createStore(source);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
+
+    writeJsonAtomic(discussSummaryIndexPath(projectRoot), {
+      source,
+      updatedAt: firstSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot)],
+    });
+
+    const coldStartStore = createStore(source);
+
+    expect(
+      coldStartStore
+        .listSummariesFromIndex()
+        .map((summary) => summary.sessionId)
+        .sort(),
+    ).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
+    });
+  });
+
+  it('waits for source and registry filesystem locks before flushing dirty indexes', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+    const sourceLockDir = join(discussBaseDirForSource(source), '.lock');
+    const registryLockDir = `${discussSourcesPath()}.lock`;
+    mkdirSync(sourceLockDir, { recursive: true });
+    mkdirSync(registryLockDir, { recursive: true });
+
+    const releaseLocks = releaseLocksLater([sourceLockDir, registryLockDir]);
+    const startedAt = Date.now();
+    store.flushDirtyIndexes();
+    const elapsedMs = Date.now() - startedAt;
+    await releaseLocks;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(100);
+    expect(readDiscussDiscovery(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [
+        {
+          sessionId: SESSION_ID,
+          topic: TOPIC,
+          sessionDir: discussSessionDir(projectRoot, SESSION_ID),
+          createdAt: finalSnapshot.state.created_at,
+        },
+      ],
+    });
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+
+  it('waits for source and registry filesystem locks when repairing summary-index.json on cold start', async () => {
+    const store = createStore(source);
+    const { finalSnapshot: firstSnapshot } = await appendRoundTripHistory(store, SESSION_ID);
+    const { finalSnapshot: secondSnapshot } = await appendRoundTripHistory(store, SECOND_SESSION_ID);
+    store.flushDirtyIndexes();
+
+    unlinkSync(discussSummaryIndexPath(projectRoot));
+    writeJsonAtomic(discussSourcesPath(), {
+      updatedAt: '2026-03-11T00:00:04.000Z',
+      sources: [],
+    });
+
+    const sourceLockDir = join(discussBaseDirForSource(source), '.lock');
+    const registryLockDir = `${discussSourcesPath()}.lock`;
+    mkdirSync(sourceLockDir, { recursive: true });
+    mkdirSync(registryLockDir, { recursive: true });
+
+    const coldStartStore = createStore(source);
+    const releaseLocks = releaseLocksLater([sourceLockDir, registryLockDir]);
+    const startedAt = Date.now();
+    const summaries = coldStartStore.listSummariesFromIndex();
+    const elapsedMs = Date.now() - startedAt;
+    await releaseLocks;
+
+    expect(elapsedMs).toBeGreaterThanOrEqual(100);
+    expect(summaries.map((summary) => summary.sessionId).sort()).toEqual([SESSION_ID, SECOND_SESSION_ID]);
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: secondSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(firstSnapshot), buildExpectedSummaryRow(secondSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: secondSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+
+  it('skips corrupt event-log lines without breaking load', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+    const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
+
+    appendFileSync(logPath, '{ not valid json }\n');
+
+    expect(store.load(SESSION_ID)).toEqual(finalSnapshot);
+  });
+
+  it('writes the committed event batch to the session log', async () => {
+    const store = createStore(source);
+    await appendRoundTripHistory(store);
+    const logPath = discussEventLogPath(store.resolveSessionDir(SESSION_ID));
+
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n');
+
+    expect(lines).toHaveLength(6);
+    expect(JSON.parse(lines[0]) as { kind: string; seq: number }).toMatchObject({
+      kind: 'session.created',
+      seq: 1,
+    });
+    expect(JSON.parse(lines[5]) as { kind: string; seq: number }).toMatchObject({
+      kind: 'speech.recorded',
+      seq: 6,
+    });
+  });
+
+  it('returns correct data from listing methods immediately after append (flush-before-read)', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+
+    const summaries = store.listSummaries();
+    expect(summaries).toEqual([
+      {
+        sessionId: SESSION_ID,
+        projectRoot,
+        topic: TOPIC,
+        status: 'bidding',
+        createdAt: '2026-03-11T00:00:00.000Z',
+        agentCount: 2,
+        authority: 'persisted',
+      },
+    ]);
+
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+  });
+
+  it('flushes dirty indexes to disk on dispose (shutdown flush)', async () => {
+    const store = createStore(source);
+    const { finalSnapshot } = await appendRoundTripHistory(store);
+
+    expect(readDiscussDiscovery(projectRoot)).toBeNull();
+
+    store.dispose();
+
+    const discovery = readDiscussDiscovery(projectRoot);
+    expect(discovery).not.toBeNull();
+    expect(discovery?.sessions).toHaveLength(1);
+    expect(discovery?.sessions[0]).toMatchObject({
+      sessionId: SESSION_ID,
+      topic: TOPIC,
+    });
+    expect(readDiscussSummaryIndex(projectRoot)).toEqual({
+      source,
+      updatedAt: finalSnapshot.updatedAt,
+      sessions: [buildExpectedSummaryRow(finalSnapshot)],
+    });
+    expect(JSON.parse(readFileSync(discussSourcesPath(), 'utf8'))).toEqual({
+      updatedAt: finalSnapshot.updatedAt,
+      sources: [source],
+    });
+  });
+});

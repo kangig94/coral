@@ -2,9 +2,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runScenario } from '../../tools/simulation/runner.js';
-import { simulationDocumentSchema, type SimulationDocument } from '../../tools/simulation/scenario-schema.js';
-import type { SimulationWorld } from '../../tools/simulation/adversarial.js';
+import { runScenario } from '#tools/simulation/runner.js';
+import { simulationDocumentSchema, type SimulationDocument } from '#tools/simulation/scenario-schema.js';
+import type { SimulationWorld } from '#tools/simulation/adversarial.js';
 
 const SCENARIO_DIR = join(process.cwd(), 'tools/simulation/scenarios');
 const worlds: SimulationWorld[] = [];

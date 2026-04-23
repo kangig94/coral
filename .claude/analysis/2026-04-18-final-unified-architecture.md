@@ -1388,7 +1388,7 @@ Current code has several files in the 20K-60K range. §10 names their destinatio
 3. Domain `X/shell/*` may import `X/*` (its own contracts) but not `Y/shell/*` (sibling shells).
 4. `src/transport/*` imports domain contracts only, never domain shells or coordinator.
 5. `src/coordinator/*` is the only layer allowed to import broadly across domains.
-6. `src/testing/*` is never imported by production files.
+6. `tests/helpers/*` is never imported by production files.
 7. No generic filenames (`utils.ts`, `shared.ts`, `types.ts`, `schemas.ts`) at the top of any domain — force ownership.
 
 ### 10.3 Type ownership principles
@@ -1887,7 +1887,7 @@ Every invariant the design rests on, numbered for reference. Grouped by authorit
 27. `src/runtime/*` and `src/infra/*` import nothing from domains, transport, coordinator, or cli.
 28. `src/transport/*` imports domain contracts only, never domain shells or coordinator.
 29. `src/coordinator/*` is the only layer allowed broad cross-domain imports.
-30. `src/testing/*` is never imported by production files.
+30. `tests/helpers/*` is never imported by production files.
 31. No generic filenames (`utils.ts`, `shared.ts`, `types.ts`, `schemas.ts`) at any domain root — ownership must be explicit.
 
 **Equipment**:

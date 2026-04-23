@@ -1,4 +1,4 @@
-import { Command, CommanderError } from 'commander';
+import { type Command, CommanderError } from 'commander';
 import { z } from 'zod';
 
 import {

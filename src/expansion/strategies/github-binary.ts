@@ -2,7 +2,6 @@ import { dirname, join } from 'node:path';
 
 import type { InstallResult } from '../contracts.js';
 import {
-  describeError,
   downloadBuffer,
   fetchLatestReleaseTag,
   findCommand,
@@ -10,7 +9,12 @@ import {
   toolsDirForHome,
   writeInstallMeta,
 } from './install-support.js';
-import { logStrategyEvent, type ExpansionInstallContext, type Strategy, type StrategyInstallOptions } from './strategy.js';
+import {
+  logStrategyEvent,
+  type ExpansionInstallContext,
+  type Strategy,
+  type StrategyInstallOptions,
+} from './strategy.js';
 
 export type GithubBinaryConfig = {
   name: string;
@@ -234,11 +238,11 @@ function readExternalInstallMeta(
     ) as Partial<GithubBinaryExternalInstallMeta>;
 
     if (
-      parsed.method === 'system'
-      && typeof parsed.command === 'string'
-      && parsed.command.trim().length > 0
-      && typeof parsed.detectedAt === 'string'
-      && parsed.detectedAt.trim().length > 0
+      parsed.method === 'system' &&
+      typeof parsed.command === 'string' &&
+      parsed.command.trim().length > 0 &&
+      typeof parsed.detectedAt === 'string' &&
+      parsed.detectedAt.trim().length > 0
     ) {
       return {
         method: 'system',

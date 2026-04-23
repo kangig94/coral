@@ -17,7 +17,6 @@ import {
   type WorkflowExecutionPort,
 } from './command.js';
 import { describeTerminalFailure, formatStepOutput } from './command.js';
-import { BOOTSTRAP_TIMEOUT_MS, readLaunchFailureMessage } from './launch.js';
 import {
   workflowCompletedBodySchema,
   workflowCompletedEvent,
@@ -29,7 +28,7 @@ import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './execu
 import type { PlanSlot, WorkflowPlan } from './plan.js';
 import { appendWorkflowEvents, readProjectionJob, readWorkflowProjection } from './projections.js';
 import { recoverStaleAtom } from './stale-recovery.js';
-import { waitForAtoms, type AwaitStepState } from './wait.js';
+import { waitForAtoms } from './wait.js';
 export { recoverStaleAtom } from './stale-recovery.js';
 
 function slotKind(slot: PlanSlot): 'agent' | 'prompt' {
@@ -40,16 +39,15 @@ function slotCoralOp(slot: PlanSlot): string {
   return slotKind(slot) === 'prompt' ? 'workflow-literal' : `coral:${slot.instruction}`;
 }
 
-function detailForJob(
-  detailsByJob: Map<string, JobProjectionDetail>,
-  jobId: string,
-): JobProjectionDetail {
-  return detailsByJob.get(jobId) ?? {
-    status: null,
-    launch: null,
-    runtime: null,
-    exit: null,
-  };
+function detailForJob(detailsByJob: Map<string, JobProjectionDetail>, jobId: string): JobProjectionDetail {
+  return (
+    detailsByJob.get(jobId) ?? {
+      status: null,
+      launch: null,
+      runtime: null,
+      exit: null,
+    }
+  );
 }
 
 function buildLaunchedAtomsForStep(
@@ -142,8 +140,8 @@ function firstTerminalFailure(
   drainDeadline?: number;
 } | null {
   const targetSlot =
-    (drain ? plan.slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined)
-    ?? plan.slots.find((slot) => {
+    (drain ? plan.slots.find((slot) => slot.slotId === drain.firstFailureSlotId) : undefined) ??
+    plan.slots.find((slot) => {
       const detail = detailForJob(detailsByJob, slot.jobId);
       const outcome = detail.exit?.outcome;
       return outcome && outcome.kind !== 'completed';
@@ -199,7 +197,11 @@ async function resumeWorkflow(
     return null;
   }
 
-  const slotDetailsByJob = loadJobProjectionDetails(db, plan.slots.map((slot) => slot.jobId), readCtx);
+  const slotDetailsByJob = loadJobProjectionDetails(
+    db,
+    plan.slots.map((slot) => slot.jobId),
+    readCtx,
+  );
   const summary = summarizeCompletedSteps(plan, slotDetailsByJob);
   const maxStepIndex = plan.slots.reduce((max, slot) => Math.max(max, slot.stepIndex), -1);
   if (summary.activeStepIndex > maxStepIndex) {

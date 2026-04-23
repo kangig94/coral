@@ -5,16 +5,16 @@ import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { ConsumerDriver } from '../../src/coordinator/consumer-driver.js';
-import { createRealRuntime } from '../../src/runtime/real.js';
-import type { StoragePort } from '../../src/runtime/ports.js';
-import { appendEvents, type AppendInput } from '../../src/store/append.js';
-import { createEmptyRegistry } from '../../src/store/envelope.js';
-import { openStoreDatabase } from '../../src/store/db.js';
-import { applyMigrations } from '../../src/store/migrations.js';
-import { composeReducers } from '../../src/store/reducers.js';
-import { applyTestCounterMigration, testCounterRegistry } from '../../src/store/__tests__/fixtures/test-counter-registry.js';
-import { SimulationRuntime } from '../../tools/simulation/runtime.js';
+import { ConsumerDriver } from '#src/coordinator/consumer-driver.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import type { StoragePort } from '#src/runtime/ports.js';
+import { appendEvents, type AppendInput } from '#src/store/append.js';
+import { createEmptyRegistry } from '#src/store/envelope.js';
+import { openStoreDatabase } from '#src/store/db.js';
+import { applyMigrations } from '#src/store/migrations.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { applyTestCounterMigration, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(MODULE_DIR, '../../src/store/migrations');

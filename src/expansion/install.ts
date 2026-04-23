@@ -46,9 +46,9 @@ function createContext(opts: InstallExpansionOptions = {}): ExpansionInstallCont
 
 function isInstallPathUnwritableError(error: unknown): error is NodeJS.ErrnoException {
   return (
-    error instanceof Error
-    && 'code' in error
-    && ['EACCES', 'EPERM', 'EROFS', 'ENOSPC'].includes(String((error as NodeJS.ErrnoException).code))
+    error instanceof Error &&
+    'code' in error &&
+    ['EACCES', 'EPERM', 'EROFS', 'ENOSPC'].includes(String((error as NodeJS.ErrnoException).code))
   );
 }
 
@@ -70,12 +70,16 @@ async function withInstallLock<T>(
   const lockPath = ctx.paths.equipmentInstallLockPath(name);
   ctx.runtime.storage.mkdirSync(targetDir, { recursive: true });
 
-  let release: (() => void) | null = null;
+  let release: () => void;
   try {
-    release = await acquireDirectoryLock(lockPath, {
-      storage: ctx.runtime.storage,
-      time: ctx.runtime.time,
-    }, timeoutMs);
+    release = await acquireDirectoryLock(
+      lockPath,
+      {
+        storage: ctx.runtime.storage,
+        time: ctx.runtime.time,
+      },
+      timeoutMs,
+    );
   } catch (error) {
     if (isDirectoryLockTimeoutError(error)) {
       return toInstallError('equipment_install_lock_contended', name);
@@ -90,10 +94,7 @@ async function withInstallLock<T>(
   }
 }
 
-export async function installExpansion(
-  name: string,
-  opts: InstallExpansionOptions = {},
-): Promise<InstallResponse> {
+export async function installExpansion(name: string, opts: InstallExpansionOptions = {}): Promise<InstallResponse> {
   const binding = resolveBinding(name);
   if (!binding) {
     return toInstallError('unknown_equipment', name);
@@ -133,9 +134,14 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
 
   const ctx = createExpansionInstallContext(opts.runtime ?? createRealRuntime(), opts.logger);
   try {
-    const response = await withInstallLock(name, ctx, opts.lockTimeoutMs ?? EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS, async () => {
-      return await uninstallArtifactsLocked(name, ctx);
-    });
+    const response = await withInstallLock(
+      name,
+      ctx,
+      opts.lockTimeoutMs ?? EQUIPMENT_INSTALL_LOCK_TIMEOUT_MS,
+      async () => {
+        return await uninstallArtifactsLocked(name, ctx);
+      },
+    );
     return response;
   } catch (error: unknown) {
     if (isInstallPathUnwritableError(error)) {

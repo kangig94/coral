@@ -5,7 +5,6 @@ import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/launch.js';
-import { CliBusyError, type CliBusyErrorDetail } from '../../runtime/cli-busy.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';
 
@@ -337,7 +336,9 @@ export async function spawnProviderServerTransport(params: {
           sendProviderServerMessage(entry, { id, method, params });
         } catch (error) {
           entry.pending.delete(id);
-          reject(error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`));
+          reject(
+            error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`),
+          );
         }
       });
     },
@@ -589,7 +590,10 @@ function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
     entry.closeOutcome = error;
   }
   entry.notificationHandlers.clear();
-  rejectPendingProviderRequests(entry, error ?? createProviderServerError(entry.provider, 'closed', { stderr: entry.stderr }));
+  rejectPendingProviderRequests(
+    entry,
+    error ?? createProviderServerError(entry.provider, 'closed', { stderr: entry.stderr }),
+  );
   entry.readline.close();
 }
 
@@ -716,7 +720,11 @@ function readOutputFile(storage: StoragePort, path: string): string {
   }
 }
 
-function readAppendedLines(storage: StoragePort, path: string, fromOffset: number): { lines: string[]; newOffset: number } {
+function readAppendedLines(
+  storage: StoragePort,
+  path: string,
+  fromOffset: number,
+): { lines: string[]; newOffset: number } {
   try {
     const stats = storage.statSync(path);
     if (stats.size <= fromOffset) {

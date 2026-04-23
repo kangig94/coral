@@ -5,5 +5,5 @@
     "rootDir": "."
   },
   "include": ["tools/simulation/**/*.ts"],
-  "exclude": ["node_modules", "dist", "bridge", "build", "tools/simulation/**/__tests__/**", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "bridge", "build"]
 }

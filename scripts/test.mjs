@@ -15,13 +15,15 @@ import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { glob } from 'fs/promises';
 
-const TEST_PATTERN = 'src/**/*.test.ts';
+const TEST_PATTERNS = ['tests/unit/**/*.test.ts', 'tests/invariants/**/*.test.ts'];
 const MARKER = /\/\/\s*@flaky\b/;
 
 const flaky = [];
-for await (const file of glob(TEST_PATTERN)) {
-  const head = readFileSync(file, 'utf8').slice(0, 512);
-  if (MARKER.test(head)) flaky.push(file);
+for (const pattern of TEST_PATTERNS) {
+  for await (const file of glob(pattern)) {
+    const head = readFileSync(file, 'utf8').slice(0, 512);
+    if (MARKER.test(head)) flaky.push(file);
+  }
 }
 
 function runAsync(cmd) {

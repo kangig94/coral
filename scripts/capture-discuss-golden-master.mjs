@@ -11,7 +11,7 @@ const DIST_ROOT = resolve(ROOT, 'dist');
 const BUILD_ROOT = resolve(ROOT, 'build');
 const SIMULATION_BUNDLE = resolve(BUILD_ROOT, 'simulation-core.mjs');
 const DISCUSS_HELPERS_BUNDLE = resolve(BUILD_ROOT, 'discuss-golden-helpers.mjs');
-const FIXTURE_DIR = resolve(ROOT, 'src/discuss/__tests__/fixtures');
+const FIXTURE_DIR = resolve(ROOT, 'tests/unit/discuss/fixtures');
 const FIXTURE_JSON = resolve(FIXTURE_DIR, 'session-store-golden.json');
 const FIXTURE_EVENTS = resolve(FIXTURE_DIR, 'session-store-golden.events.jsonl');
 const FIXTURE_TS = Date.parse('2035-04-15T01:02:03.000Z');
@@ -93,7 +93,7 @@ async function main() {
   await Promise.all([
     esbuild.build({
       ...debugBundleOptions,
-      entryPoints: [resolve(ROOT, 'src/discuss/shell/__tests__/discuss-test-helpers.ts')],
+      entryPoints: [resolve(ROOT, 'tests/unit/discuss/shell/discuss-test-helpers.ts')],
       outfile: DISCUSS_HELPERS_BUNDLE,
       external: [...debugBundleOptions.external, 'vitest'],
     }),
@@ -104,12 +104,7 @@ async function main() {
     }),
   ]);
 
-  const [
-    helpers,
-    operations,
-    persistence,
-    simulation,
-  ] = await Promise.all([
+  const [helpers, operations, persistence, simulation] = await Promise.all([
     import(pathToFileURL(DISCUSS_HELPERS_BUNDLE).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/operations.js')).href),
     import(pathToFileURL(resolve(DIST_ROOT, 'discuss/shell/persistence.js')).href),
@@ -127,7 +122,11 @@ async function main() {
     { mode: 'start', content: '{"score": 82, "thought": "Open with the transit-heavy downtown blocks."}' },
     { mode: 'resume', content: 'Start with bus lanes, curb access windows, and delivery exemptions.' },
     { mode: 'resume', content: '{"score": 12, "thought": "The threshold is no longer met."}' },
-    { mode: 'resume', content: 'Pedestrianize the transit core first, protect freight windows, and validate the rollout with a staged pilot.' },
+    {
+      mode: 'resume',
+      content:
+        'Pedestrianize the transit core first, protect freight windows, and validate the rollout with a staged pilot.',
+    },
   ];
 
   const service = {

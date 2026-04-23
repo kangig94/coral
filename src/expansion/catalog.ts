@@ -6,19 +6,11 @@ import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
 import { catalogEntrySchema, onboardingSchema, type CatalogEntry, type Onboarding } from './contracts.js';
 import { EQUIPMENT_ADDON_FILENAMES } from './paths.js';
-import {
-  equipmentAddonStrategy,
-  type EquipmentAddonConfig,
-} from './strategies/equipment-addon.js';
-import {
-  githubBinaryStrategy,
-  type GithubBinaryConfig,
-} from './strategies/github-binary.js';
+import { equipmentAddonStrategy, type EquipmentAddonConfig } from './strategies/equipment-addon.js';
+import { githubBinaryStrategy, type GithubBinaryConfig } from './strategies/github-binary.js';
 import type { Strategy } from './strategies/strategy.js';
 
 const catalogIdSchema = z.enum(['needle', 'cgc']);
-const activationSchema = z.enum(['equipment', 'none']);
-const strategyKindSchema = z.enum(['equipment-addon', 'github-binary']);
 
 const equipmentAddonConfigSchema = z
   .object({
@@ -104,8 +96,7 @@ const NEEDLE_ONBOARDING_CHOICES = [
   },
 ] as const;
 
-type Activation = z.infer<typeof activationSchema>;
-type StrategyKind = z.infer<typeof strategyKindSchema>;
+type StrategyKind = 'equipment-addon' | 'github-binary';
 
 type CatalogSourceEntry = z.infer<typeof equipmentAddonBindingSchema> | z.infer<typeof githubBinaryBindingSchema>;
 

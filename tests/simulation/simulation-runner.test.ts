@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runScenario } from '../../tools/simulation/runner.js';
-import { simulationDocumentSchema } from '../../tools/simulation/scenario-schema.js';
-import type { SimulationWorld } from '../../tools/simulation/adversarial.js';
+import { runScenario } from '#tools/simulation/runner.js';
+import { simulationDocumentSchema } from '#tools/simulation/scenario-schema.js';
+import type { SimulationWorld } from '#tools/simulation/adversarial.js';
 
 const FIRST_BOOTED_SESSION_ID = '00000000-0000-0000-0000-000000000002';
 const FIRST_BOOTED_JOB_ID = '00000000-0000-0000-0000-000000000003';

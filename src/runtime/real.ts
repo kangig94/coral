@@ -190,7 +190,8 @@ export function createRealRuntime(): Runtime {
     appendFileSync: (path, data) => appendFileSync(path, data),
     appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
     unlinkSync: (path) => unlinkSync(path),
-    tryExclusiveWriteSync: (path, data, options) => tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
+    tryExclusiveWriteSync: (path, data, options) =>
+      tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     chmodSync: (path, mode) => chmodSync(path, mode),
@@ -254,7 +255,15 @@ export function createRealRuntime(): Runtime {
 
       const wrapper = spawnChild(
         process.execPath,
-        ['-e', WRAPPER_SCRIPT, options.jobDir, options.command, JSON.stringify(options.args), options.cwd ?? '', options.prompt ?? ''],
+        [
+          '-e',
+          WRAPPER_SCRIPT,
+          options.jobDir,
+          options.command,
+          JSON.stringify(options.args),
+          options.cwd ?? '',
+          options.prompt ?? '',
+        ],
         {
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -527,8 +536,9 @@ function isExitRecord(value: unknown): value is DurableProcessExit {
     value !== null &&
     typeof value === 'object' &&
     typeof (value as { endTime?: unknown }).endTime === 'string' &&
-    (((value as { exitCode?: unknown }).exitCode === null) || typeof (value as { exitCode?: unknown }).exitCode === 'number') &&
-    (((value as { signal?: unknown }).signal === null) || typeof (value as { signal?: unknown }).signal === 'string')
+    ((value as { exitCode?: unknown }).exitCode === null ||
+      typeof (value as { exitCode?: unknown }).exitCode === 'number') &&
+    ((value as { signal?: unknown }).signal === null || typeof (value as { signal?: unknown }).signal === 'string')
   );
 }
 
@@ -639,10 +649,12 @@ function waitForDurableRuntime(options: {
   }, DURABLE_POLL_TIMEOUT_MS);
   timeout.unref?.();
 
-  return runtimeDeferred.promise.finally(() => options.time.clearTimeout(timeout)).then((record) => ({
-    runtimeRecord: record,
-    exitPromise: exitDeferred.promise,
-  }));
+  return runtimeDeferred.promise
+    .finally(() => options.time.clearTimeout(timeout))
+    .then((record) => ({
+      runtimeRecord: record,
+      exitPromise: exitDeferred.promise,
+    }));
 }
 
 function processIsAlive(pid: number): boolean {
@@ -687,10 +699,8 @@ function tryExclusiveWriteSyncNode(
   try {
     writeFileSync(
       path,
-      normalizeStorageData(data, options?.encoding),
-      options?.encoding === undefined
-        ? { mode, flag: 'wx' }
-        : { encoding: options.encoding, mode, flag: 'wx' },
+      normalizeStorageData(data),
+      options?.encoding === undefined ? { mode, flag: 'wx' } : { encoding: options.encoding, mode, flag: 'wx' },
     );
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -718,7 +728,7 @@ function writeAtomicSyncNode(
   try {
     writeFileSync(
       tempPath,
-      normalizeStorageData(data, options?.encoding),
+      normalizeStorageData(data),
       mode === undefined
         ? options?.encoding === undefined
           ? undefined
@@ -750,7 +760,7 @@ function writeAtomicDurableSyncNode(
   let fd: number | null = null;
   try {
     fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
-    writeAllSync(fd, Buffer.from(normalizeStorageData(data, options?.encoding ?? 'utf-8')));
+    writeAllSync(fd, normalizeStorageBuffer(data, options?.encoding ?? 'utf-8'));
     fdatasyncSync(fd);
     closeSync(fd);
     fd = null;
@@ -773,8 +783,12 @@ function writeAtomicDurableSyncNode(
   }
 }
 
-function normalizeStorageData(data: StorageData, encoding: BufferEncoding = 'utf-8'): string | Uint8Array {
+function normalizeStorageData(data: StorageData): string | Uint8Array {
   return typeof data === 'string' ? data : Buffer.from(data);
+}
+
+function normalizeStorageBuffer(data: StorageData, encoding: BufferEncoding): Buffer {
+  return typeof data === 'string' ? Buffer.from(data, encoding) : Buffer.from(data);
 }
 
 function appendFileDurableSyncNode(path: string, data: string): boolean {

@@ -1,6 +1,6 @@
 import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../durable-transport.js';
-import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import {
   acquireSharedProviderServerLease,
   createProviderServerAttachment,
@@ -12,17 +12,8 @@ import {
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
 import { closeAllProviderServerEntries, closeProviderServerEntry, shutdownHandle } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
-import {
-  hostKeyFromSpec,
-  type ProviderHostEntry,
-  type ProviderServerAttachment,
-} from './state.js';
-export type {
-  HostStatsState,
-  ProviderHostEntry,
-  ProviderServerAttachment,
-  ProviderServerWaiter,
-} from './state.js';
+import { hostKeyFromSpec, type ProviderHostEntry, type ProviderServerAttachment } from './state.js';
+export type { HostStatsState, ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
 
 export interface ProviderHostManager {
   acquireServer(spec: ProviderServerSpec, options?: { signal?: AbortSignal }): Promise<ProviderServerLease>;
@@ -196,12 +187,10 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   }
 }
 
-export function createProviderHostManager(
-  options: {
-    runtime: Pick<Runtime, 'time' | 'env'>;
-    idleTimeoutMs?: number;
-    spawnProviderServer: SpawnProviderServerFn;
-  },
-): ProviderHostManager {
+export function createProviderHostManager(options: {
+  runtime: Pick<Runtime, 'time' | 'env'>;
+  idleTimeoutMs?: number;
+  spawnProviderServer: SpawnProviderServerFn;
+}): ProviderHostManager {
   return new DefaultProviderHostManager(options);
 }

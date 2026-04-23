@@ -9,7 +9,6 @@ import type {
   MockDurableScript,
   MockExecSyncScript,
   MockKillAction,
-  MockSpawnContext,
   MockSpawnScript,
 } from './mock-script-types.js';
 import type {
@@ -28,7 +27,13 @@ import { createDeferred, type Deferred } from '../../../src/infra/deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { type VirtualTime } from './virtual-time.js';
-export type { ChildOutputChunk, MockDurableScript, MockExecSyncScript, MockKillAction, MockSpawnScript } from './mock-script-types.js';
+export type {
+  ChildOutputChunk,
+  MockDurableScript,
+  MockExecSyncScript,
+  MockKillAction,
+  MockSpawnScript,
+} from './mock-script-types.js';
 
 export type { MockSpawnContext } from './mock-script-types.js';
 

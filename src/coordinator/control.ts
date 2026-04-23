@@ -11,14 +11,11 @@ import type { DiscussContext } from '../discuss/shell/context.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/operations.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
-import {
-  isTerminalPhase,
-} from '../jobs/phase.js';
+import { isTerminalPhase } from '../jobs/phase.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
 import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
-import { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/pool.js';
@@ -30,11 +27,7 @@ import type { ProjectRequestPort, RecoveryCapableService } from './contracts.js'
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 
-export {
-  HANDOFF_DRAIN_TIMEOUT_MS,
-  SHUTDOWN_DRAIN_TIMEOUT_MS,
-  SHUTDOWN_POLL_MS,
-} from './shutdown/sequence.js';
+export { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from './shutdown/sequence.js';
 export type { ShutdownMode } from './shutdown/mode.js';
 
 export type LifecycleState = 'starting' | 'running' | 'draining' | 'stopped';
@@ -180,10 +173,15 @@ export function cleanupStaleJobs(
 export function markJobsAsError(progressStore: ProgressStore, namespace: string, message: string): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
-      markJobAsError(progressStore, status, {
-        kind: 'wrapper_crashed',
-        cause: { message },
-      }, () => {});
+      markJobAsError(
+        progressStore,
+        status,
+        {
+          kind: 'wrapper_crashed',
+          cause: { message },
+        },
+        () => {},
+      );
     } catch {
       // fail-isolated: skip this job, continue with others
     }
@@ -219,9 +217,7 @@ export type RecoverPersistedDiscussDeps = {
   readonly assertStartupStillActive: () => void;
 };
 
-export type RecoverPersistedDiscussFn = (
-  deps: RecoverPersistedDiscussDeps,
-) => Promise<RecoveredDiscussResume[]>;
+export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
 
 export type StartupRecoveryDeps = {
   readonly identity: BackendIdentity;
@@ -382,9 +378,7 @@ async function runLifecycleStartup({
 
     const { port, host } = await listenFn(server);
     const { socketPath } =
-      ipcServer && listenIpcFn
-        ? await listenIpcFn(ipcServer)
-        : { socketPath: coordinatorPaths(flavor).socketPath };
+      ipcServer && listenIpcFn ? await listenIpcFn(ipcServer) : { socketPath: coordinatorPaths(flavor).socketPath };
     assertStartupStillActive();
     runtimeState.setStartedAt(now());
 
