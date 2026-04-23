@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { jobAbortSchema, jobWaitSchema } from '../jobs/api.js';
+import { jobAbortSchema, jobWaitSchema } from '../transport/rpc-jobs.js';
 import {
   agentIdentSchema,
   sessionCreateSchema,

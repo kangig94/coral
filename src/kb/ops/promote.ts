@@ -12,7 +12,7 @@ import {
   writeFileAtomic,
 } from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime.js';
+import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 
 export async function promote(
   rt: KbRuntime,

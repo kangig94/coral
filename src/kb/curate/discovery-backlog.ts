@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import type { CurateDiscoveryBacklogNoteRow, CurateDiscoveryBacklogRow } from '../../store/schema.js';
-import type { PendingDiscovery } from './state-shared.js';
+import type { PendingDiscovery } from './state-model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
 const backlogRowSchema = z.object({

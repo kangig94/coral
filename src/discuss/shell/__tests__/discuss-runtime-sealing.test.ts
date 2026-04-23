@@ -8,7 +8,7 @@ import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } fro
 import { renderEntries } from '../../transcript.js';
 import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '../../session-types.js';
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '../../state-machine.js';
-import type { CallerContext } from '../../../infra/request-context.js';
+import type { CallerContext } from '../../../transport/request-context.js';
 import { parseJobStatus, type JobStatus } from '../../../jobs/records.js';
 import { nowIsoString } from '../../../infra/time.js';
 import {

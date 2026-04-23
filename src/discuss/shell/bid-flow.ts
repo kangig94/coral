@@ -1,6 +1,6 @@
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../events.js';
 import { decideBid, decideEnd, decideExpel } from '../state-machine.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import { buildBidPrompt, buildFirstTurnInstruction } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,

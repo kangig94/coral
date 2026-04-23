@@ -23,7 +23,7 @@ import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
 import type { SpawnCliFn } from '../../curate/types.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../../runtime.js';
+import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../../runtime-effects.js';
 import {
   commitIndexUpdate,
   buildCommunityIndexEntry,

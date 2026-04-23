@@ -1,5 +1,5 @@
 import { currentEventMetadata, withCallerContext } from './caller-context.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type {
   ExecutionLaunchPool as LaunchPool,
   ExecutionServiceDeps,

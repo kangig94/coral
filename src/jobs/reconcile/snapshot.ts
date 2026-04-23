@@ -9,7 +9,7 @@ import { SessionManager } from '../../sessions/shell/store.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import type { JobStoreSnapshot } from './plan.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { withBackendNamespace } from './job-helpers.js';
+import { withBackendNamespace } from './recovery-effects.js';
 import { noopAppendEvents } from '../../store/append.js';
 
 function toExitRecord(detail: JobProjectionDetail): DurableProcessExit | null {

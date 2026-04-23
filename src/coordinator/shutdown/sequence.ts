@@ -1,11 +1,11 @@
 import type { Server, ServerResponse } from 'node:http';
 import { errorMessage, formatError } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { listLiveJobs } from '../../jobs/reconcile/job-helpers.js';
+import { listLiveJobs } from '../../jobs/reconcile/recovery-effects.js';
 import { isAppServerRuntime } from '../../jobs/records.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
-import type { CallerContext } from '../../infra/request-context.js';
-import type { MutableRuntimeState } from '../control.js';
+import type { KbRuntime } from '../../kb/contracts.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { DiscussSessionStore } from '../../discuss/api.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -22,6 +22,14 @@ export const SHUTDOWN_POLL_MS = 50;
 export type LifecycleWiringState = {
   ownershipCheckerTeardown: (() => void) | null;
 };
+
+export interface ShutdownRuntimeState {
+  setLifecycle(state: 'starting' | 'running' | 'draining' | 'stopped'): void;
+  getKbSubsystem(): {
+    curateScheduler: { stop?: () => Promise<void> };
+    kb: KbRuntime;
+  } | null;
+}
 
 type FinalizeLiveAppServerJobsForHandoffContext = {
   progressStore: ProgressStore;
@@ -67,7 +75,7 @@ type RunShutdownSequenceContext = {
   reason: string;
   state: LifecycleWiringState;
   teardownRecoveryCoordinator: () => void;
-  runtimeState: MutableRuntimeState;
+  runtimeState: ShutdownRuntimeState;
   idleTimer: IdleTimer;
   closeServerFn: (server: Server) => Promise<void>;
   closeIpcServerFn?: (listener: IpcListener) => Promise<void>;

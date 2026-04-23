@@ -12,37 +12,17 @@ import {
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
 import { closeAllProviderServerEntries, closeProviderServerEntry, shutdownHandle } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
-
-export type ProviderServerAttachment = {
-  rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
-  subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
-  closed: Promise<Error | void>;
-};
-
-export type ProviderServerWaiter = {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  cleanup: () => void;
-};
-
-export type HostStatsState = {
-  liveControllers: number;
-  activeTurns: number;
-};
-
-export type ProviderHostEntry = {
-  hostKey: string;
-  spec: ProviderServerSpec;
-  handle: ProviderServerHandle | null;
-  spawnPromise: Promise<ProviderServerHandle> | null;
-  leaseHeld: boolean;
-  sharedLeaseCount: number;
-  waiters: ProviderServerWaiter[];
-  closingError: Error | null;
-  hostStats: HostStatsState | null;
-  idleTimer: ReturnType<RuntimeTimePort['setTimeout']> | null;
-  disposeHostNotifications: (() => void) | null;
-};
+import {
+  hostKeyFromSpec,
+  type ProviderHostEntry,
+  type ProviderServerAttachment,
+} from './state.js';
+export type {
+  HostStatsState,
+  ProviderHostEntry,
+  ProviderServerAttachment,
+  ProviderServerWaiter,
+} from './state.js';
 
 export interface ProviderHostManager {
   acquireServer(spec: ProviderServerSpec, options?: { signal?: AbortSignal }): Promise<ProviderServerLease>;
@@ -54,19 +34,7 @@ export interface ProviderHostManager {
   shutdown(): Promise<void>;
 }
 
-export function normalizedHostEnvEntries(spec: Pick<ProviderServerSpec, 'env'>): Array<[string, string]> {
-  return Object.entries(spec.env ?? {}).sort(([left], [right]) => left.localeCompare(right));
-}
-
-export function hostKeyFromSpec(spec: ProviderServerSpec): string {
-  return JSON.stringify({
-    provider: spec.provider,
-    command: spec.command,
-    args: [...spec.args],
-    cwd: spec.cwd,
-    env: normalizedHostEnvEntries(spec),
-  });
-}
+export { hostKeyFromSpec, normalizedHostEnvEntries } from './state.js';
 
 export class DefaultProviderHostManager implements ProviderHostManager {
   private readonly entries = new Map<string, ProviderHostEntry>();

@@ -29,7 +29,7 @@ import {
   handleKbSourceRead,
   handleKbUpdate,
 } from '../../../kb/tool-handlers.js';
-import type { CallerContext } from '../../../infra/request-context.js';
+import type { CallerContext } from '../../../transport/request-context.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),

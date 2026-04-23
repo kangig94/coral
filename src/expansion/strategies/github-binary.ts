@@ -9,7 +9,7 @@ import {
   readInstallMeta,
   toolsDirForHome,
   writeInstallMeta,
-} from './shared.js';
+} from './install-support.js';
 import { logStrategyEvent, type ExpansionInstallContext, type Strategy, type StrategyInstallOptions } from './strategy.js';
 
 export type GithubBinaryConfig = {

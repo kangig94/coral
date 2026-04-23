@@ -1,7 +1,7 @@
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
-import type { ProviderHostEntry } from './pool.js';
+import type { ProviderHostEntry } from './state.js';
 
 export function cloneSpec(spec: ProviderServerSpec): ProviderServerSpec {
   return {

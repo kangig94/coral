@@ -4,16 +4,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LaunchCoordinator } from '../../coordinator/live/admission.js';
 import type { ChildProcessLike } from '../../runtime/ports.js';
-import {
-  SimulationRuntime,
-  createMockAppServerSpawnScript,
-  flushMicrotasks,
-  loadRecording,
-  recordSpawn,
-  recordingToDurableScript,
-  recordingToSpawnScript,
-  saveRecording,
-} from '../index.js';
+import { loadRecording, recordSpawn, recordingToDurableScript, recordingToSpawnScript, saveRecording } from '../recording.js';
+import { SimulationRuntime } from '../runtime.js';
+import { createMockAppServerSpawnScript } from '../core/mock-app.js';
+import { flushMicrotasks } from '../core/virtual-time.js';
 
 const tempDirs: string[] = [];
 

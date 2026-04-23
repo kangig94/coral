@@ -4,7 +4,7 @@ import { isBackendHealth } from './backend-health.js';
 import { throwBackendCommunicationError } from './backend-helpers.js';
 import { BackendToolHttpError } from './client-errors.js';
 import type { AbortResult } from '../../jobs/abort-result.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type {
   BidResult,
   DiscussDetailResponse,
@@ -156,7 +156,7 @@ type WorkflowOptions = {
 export { isBackendHealth };
 export type { BackendHealth };
 export { BackendToolHttpError } from './client-errors.js';
-export type { CallerContext } from '../../infra/request-context.js';
+export type { CallerContext } from '../../transport/request-context.js';
 
 export class BackendClient {
   private readonly ensureBackendHandle: (pluginRoot?: string) => Promise<BackendHandle>;

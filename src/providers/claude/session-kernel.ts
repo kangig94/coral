@@ -23,7 +23,7 @@ import {
   readBootstrapSignature,
   readString,
   type PreparedClaudeRequest,
-} from './shared-utils.js';
+} from './request-prep.js';
 
 function buildClaudeSessionRequestFailed(message: string) {
   return providerRequestFailed({

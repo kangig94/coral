@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { PipelineAST } from './ast.js';
 import {
@@ -15,13 +15,11 @@ import {
 } from './command.js';
 import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
 import { workflowCompletedEvent, workflowDrainEnteredEvent, workflowPlanDeclaredEvent, workflowPlanRevisedEvent } from './events.js';
+import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './execution-constants.js';
 import { buildWorkflowPlan, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
-import { recoverStaleAtom } from './recover.js';
+import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
-
-export const DEFAULT_WAIT_POLL_INTERVAL_MS = 500;
-export const DEFAULT_STALE_TIMEOUT_MS = 900_000;
 
 type ExecutePlannedStepsOptions = {
   context?: string;

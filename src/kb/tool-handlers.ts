@@ -29,7 +29,7 @@ import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, compareLocale } from './validation.js';
 import { type KbReadKind } from './read-contract.js';
 import { readEntry, type KbReadPathResolver } from './read.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import {
   deriveErrorMessage,
   domainError,

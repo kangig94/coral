@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { CurateRetryQueueRow } from '../../store/schema.js';
 import type { KbEntryId } from '../entry-types.js';
-import { kbEntryIdSchema, type PendingRepair } from './state-shared.js';
+import { kbEntryIdSchema, type PendingRepair } from './state-model.js';
 import {
   prepareCached,
   type SqliteTarget,

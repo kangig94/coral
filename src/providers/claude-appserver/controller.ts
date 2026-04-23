@@ -19,7 +19,7 @@ import {
 } from '../claude/control-protocol.js';
 import { extractClaudeProgressMessage } from '../claude/progress.js';
 import type { PermissionMode } from '../claude/control-protocol.js';
-import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/shared-utils.js';
+import { hashSortedEnv, normalizeControllerEnv, sameBootstrapSignature } from '../claude/request-prep.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
   CLAUDE_BROKER_BUSY_RPC_CODE,

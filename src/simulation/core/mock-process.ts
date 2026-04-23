@@ -5,6 +5,14 @@ import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/
 import { nowIsoString } from '../../infra/time.js';
 import { attachSpawnRecordingMetadata } from '../recording.js';
 import type {
+  ChildOutputChunk,
+  MockDurableScript,
+  MockExecSyncScript,
+  MockKillAction,
+  MockSpawnContext,
+  MockSpawnScript,
+} from './mock-script-types.js';
+import type {
   ChildProcessLike,
   ChildReadableLike,
   ChildStdinLike,
@@ -20,63 +28,9 @@ import { createDeferred, type Deferred } from './test-deferred.js';
 import { toError } from './constants.js';
 import type { InMemoryStorage } from './memory-storage.js';
 import { type VirtualTime } from './virtual-time.js';
+export type { ChildOutputChunk, MockDurableScript, MockExecSyncScript, MockKillAction, MockSpawnScript } from './mock-script-types.js';
 
-export type ChildOutputChunk = {
-  delayMs?: number;
-  data: string;
-};
-
-export type MockKillAction = {
-  signal?: NodeJS.Signals | 0 | 'default';
-  delayMs?: number;
-  exitCode?: number | null;
-  exitSignal?: string | null;
-};
-
-export type MockSpawnScript = {
-  pid?: number;
-  stdout?: string | ChildOutputChunk[];
-  stderr?: string | ChildOutputChunk[];
-  onSpawn?: (context: MockSpawnContext) => void;
-  close?: {
-    delayMs?: number;
-    code?: number | null;
-    signal?: string | null;
-  } | null;
-  error?: {
-    delayMs?: number;
-    error: Error | string;
-  } | null;
-  kills?: MockKillAction[];
-};
-
-export type MockDurableScript = {
-  pid?: number;
-  runtimeDelayMs?: number;
-  stdout?: string | ChildOutputChunk[];
-  stderr?: string | ChildOutputChunk[];
-  runtimeRecord?: Partial<DurableCliRuntimeRecord>;
-  exit?: {
-    delayMs?: number;
-    exitCode?: number | null;
-    signal?: string | null;
-  } | null;
-  kills?: MockKillAction[];
-  waitForExitError?: Error | string;
-};
-
-export type MockExecSyncScript = {
-  command: string;
-  args: string[];
-  result: ExecResult;
-};
-
-export type MockSpawnContext = {
-  child: MockChildProcess;
-  schedule: (delayMs: number, fn: () => void) => void;
-  close: (outcome?: { code?: number | null; signal?: string | null }) => void;
-  fail: (error: Error | string) => void;
-};
+export type { MockSpawnContext } from './mock-script-types.js';
 
 type ProcessExitOutcome = {
   delayMs?: number;

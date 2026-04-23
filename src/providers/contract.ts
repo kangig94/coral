@@ -9,21 +9,22 @@ import {
   type FaultPayload,
 } from './fault.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
-import type { ProviderCliRunner } from './cli-runner.js';
 import type {
   AbortReason,
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
+  ProviderCliRunner,
   ProviderTransportClose,
-} from './app-server/types.js';
+} from './protocol.js';
 
 export type { ProviderContinuityBlob } from '../sessions/continuity.js';
 export type {
   AbortReason,
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
+  ProviderCliRunner,
   ProviderTransportClose,
-} from './app-server/types.js';
+} from './protocol.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type ProviderAction = 'exec' | 'resume' | 'fork';

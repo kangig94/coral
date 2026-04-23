@@ -13,7 +13,7 @@ import type {
   ProviderSpec,
 } from '../../providers/contract.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import {
   providerProgressEvent,
   providerTerminalEvent,

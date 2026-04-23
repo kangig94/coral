@@ -66,7 +66,7 @@ const COORDINATOR_ALLOWED = new Set([
   'src/providers/contract.ts',
   'src/providers/registry.ts',
 ]);
-const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts'] as const;
+const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = ['src/jobs', 'src/sessions', 'src/discuss', 'src/workflow', 'src/kb', 'src/providers'] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {

@@ -6,7 +6,7 @@ import { isRecord, isStringArray } from '../../infra/json.js';
 import { assertNoteSlug, compareLocale } from '../validation.js';
 import { isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
-import { parseJsonArray, uniqueTrimmedList } from './shared.js';
+import { parseJsonArray, uniqueTrimmedList } from './content-normalize.js';
 import {
   compareCursor,
   getCurateRepairFrontier,

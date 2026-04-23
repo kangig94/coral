@@ -1,6 +1,6 @@
 import type { ProviderServerLease } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../durable-transport.js';
-import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './pool.js';
+import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
 
 export function createAbortError(message: string): Error {
   const error = new Error(message);

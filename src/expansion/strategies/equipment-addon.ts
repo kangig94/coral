@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 
 import type { Onboarding, InstallResult } from '../contracts.js';
-import { describeError, downloadBuffer, ensureExecSucceeded, findCommand, readInstallMeta, writeInstallMeta } from './shared.js';
+import { describeError, downloadBuffer, ensureExecSucceeded, findCommand, readInstallMeta, writeInstallMeta } from './install-support.js';
 import { logStrategyEvent, type ExpansionInstallContext, type Strategy, type StrategyInstallOptions } from './strategy.js';
 
 const NEEDLE_ARCH_MAP: Record<string, string> = {

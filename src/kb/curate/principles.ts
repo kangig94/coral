@@ -15,7 +15,7 @@ import {
 } from '../corpus/mutation-helpers.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
 import { getEntry, isNoteEntry, noteEntryId, type KbIndex, type NoteEntry } from '../entry-types.js';
-import { queueManifestAuthorityDelta } from '../runtime.js';
+import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { readClaimedEntry } from './claim-io.js';
 import {
   buildDiscoveryPrompt,

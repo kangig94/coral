@@ -1,6 +1,6 @@
 import { makeEvent, type FollowUpQueueItem } from '../events.js';
 import { decideEnd, decideEpochSummary } from '../state-machine.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import {
   FOLLOW_UP_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,

@@ -1,6 +1,6 @@
 import { basename, dirname } from 'node:path';
 import type { ChildProcessLike, ChildStdinLike, StoragePort } from '../runtime/ports.js';
-import type { ChildOutputChunk, MockDurableScript, MockSpawnScript } from './core/mock-process.js';
+import type { ChildOutputChunk, MockDurableScript, MockSpawnScript } from './core/mock-script-types.js';
 
 type SpawnRecordingEvent = {
   timestamp: number;

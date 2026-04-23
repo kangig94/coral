@@ -22,7 +22,7 @@ import {
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
 import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
-import { buildPreparedClaudeRequest, sameBootstrapSignature } from './shared-utils.js';
+import { buildPreparedClaudeRequest, sameBootstrapSignature } from './request-prep.js';
 
 type ClaudeContinuityState = ClaudePersistedContinuity & {
   resumable: boolean;

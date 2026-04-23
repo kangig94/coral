@@ -23,7 +23,7 @@ import { writeFileAtomic } from '../corpus/mutation-helpers.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime.js';
+import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { compareLocale, stripMarkdownCodeFences } from '../validation.js';
 import {
   communityEntryId,

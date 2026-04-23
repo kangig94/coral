@@ -13,7 +13,7 @@ import {
 } from '../corpus/mutation-helpers.js';
 import { assertWithin } from '../paths.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime.js';
+import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import {
   deleteEntry,
   isSourceEntry,

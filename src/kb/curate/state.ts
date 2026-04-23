@@ -55,7 +55,7 @@ import {
   type CurateState,
   type PendingDiscovery,
   type PendingRepair,
-} from './state-shared.js';
+} from './state-model.js';
 import {
   prepareCached,
   resolveSqliteDb,

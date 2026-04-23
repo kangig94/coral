@@ -19,7 +19,7 @@ import {
   jobDetailRequestSchema,
   jobsListRequestSchema,
   jobWaitSchema,
-} from '../jobs/api.js';
+} from './rpc-jobs.js';
 import {
   kbCommunityReadRequestSchema,
   kbDiagnoseRequestSchema,

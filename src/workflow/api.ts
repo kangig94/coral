@@ -1,6 +1,6 @@
 import { z, ZodError } from 'zod';
 import type { ProviderCatalog } from '../providers/catalog.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type { LaunchDecision } from '../jobs/launch.js';
 import { identPattern, providerIdentPattern } from '../infra/identifiers.js';
 import { isOwnerId } from '../infra/owner-id.js';

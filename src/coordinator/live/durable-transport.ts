@@ -4,10 +4,10 @@ import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../../infra/process-constants.js';
 import { buildJsonRpcError } from '../../infra/json-rpc-error.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { JobRuntime } from '../../jobs/records.js';
+import type { LaunchPool } from '../../jobs/launch.js';
 import { CliBusyError, type CliBusyErrorDetail } from '../../runtime/cli-busy.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ChildProcessLike, Runtime, StoragePort } from '../../runtime/ports.js';
-import type { LaunchPool } from './admission.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;

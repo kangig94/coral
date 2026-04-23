@@ -1,5 +1,5 @@
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type { ToolDomainResult } from '../transport/tool-result.js';
 import { domainError, domainResultToHttp, launchToHttp } from './http/tool-response.js';
 import type { HttpHandlerPorts } from './http/contracts.js';

@@ -3,7 +3,7 @@ declare const __PLUGIN_ROOT__: string;
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';

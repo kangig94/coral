@@ -21,7 +21,7 @@ import {
   recordMetadataMutation,
   writeFileAtomic,
 } from '../corpus/mutation-helpers.js';
-import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../runtime.js';
+import { queueManifestAuthorityDelta, writeEntityGraphLocked } from '../runtime-effects.js';
 import {
   isNoteEntry,
   isSourceEntry,
@@ -31,7 +31,7 @@ import {
   type EntityMeta,
   type EntityRelationship,
 } from '../entry-types.js';
-import { fingerprintEntryContent, uniqueTrimmedList } from './shared.js';
+import { fingerprintEntryContent, uniqueTrimmedList } from './content-normalize.js';
 import {
   compareCursor,
   compareOptionalCursor,

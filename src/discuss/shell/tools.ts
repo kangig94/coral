@@ -5,7 +5,7 @@ import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartS
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import * as discussOperations from './operations.js';
 import { seedPersonas } from '../persona-seed.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 
 type ToolDomainResult =
   | { ok: true; data: unknown }

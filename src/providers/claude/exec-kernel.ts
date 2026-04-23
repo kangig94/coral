@@ -8,7 +8,7 @@ import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { parseClaudeStreamJson, type ParsedClaudeStreamOutput } from './output-parser.js';
 import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
-import { buildPreparedClaudeRequest } from './shared-utils.js';
+import { buildPreparedClaudeRequest } from './request-prep.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
 const CLAUDE_EXEC_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;

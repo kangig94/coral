@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProgressStore } from '../../jobs/job-store.js';
 import { SimulationRuntime } from '../../simulation/core/index.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import { applyMigrations } from '../../store/migrations.js';

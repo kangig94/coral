@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { BackendIdentity, MutableRuntimeState as MutableBackendRuntimeState, TypedEventBus } from '../control.js';
 import type { ProjectRequestPort } from '../contracts.js';
 import type { VerifyBackendOwnershipFn } from '../lock.js';

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '../../contract.js';
 import { collectProviderEvents } from '../../stream.js';
 import { claudeExecKernel, isClaudeExecParseError } from '../exec-kernel.js';
-import { buildPreparedClaudeRequest } from '../shared-utils.js';
+import { buildPreparedClaudeRequest } from '../request-prep.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {

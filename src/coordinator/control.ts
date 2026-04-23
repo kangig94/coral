@@ -6,7 +6,7 @@ import { coordinatorPaths } from '../infra/coordinator-paths.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type { DiscussContext, DiscussSessionStore, RecoveredDiscussResume } from '../discuss/api.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import {
@@ -14,7 +14,7 @@ import {
 } from '../jobs/phase.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from '../jobs/reconcile/coordinator.js';
 import { createReplacementBackendOwnershipChecker } from '../jobs/reconcile/ownership-checker.js';
-import { listLiveJobs, markJobAsError } from '../jobs/reconcile/job-helpers.js';
+import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { StartupInterruptedError } from '../jobs/reconcile/errors.js';
 import { adoptOrphanedCrossNamespaceJobs } from '../jobs/reconcile/cross-namespace-adoption.js';
 import type { ProgressStore } from '../jobs/job-store.js';

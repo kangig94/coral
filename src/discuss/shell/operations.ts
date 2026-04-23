@@ -9,7 +9,7 @@ import {
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { buildWatchEvents } from '../projections.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import { buildAgentExecutionConfig, isManualParticipant } from './runtime-build.js';
 import * as discussLoop from './loop.js';
 import {

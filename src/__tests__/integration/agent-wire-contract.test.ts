@@ -20,7 +20,7 @@ import { createPluginRegistry } from '../../infra/plugin-registry.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '../../providers/contract.js';
 import { toProviderSpec, type Provider } from '../../testing/scripted-provider.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import * as ProviderRequestPolicy from '../../providers/request-policy.js';
 import * as ToolInputSchemas from '../../transport/http/tool-input.js';
 import { streamProviderTerminal } from '../../providers/stream.js';

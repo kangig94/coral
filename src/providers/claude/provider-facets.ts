@@ -15,7 +15,7 @@ import {
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from './request-mapping.js';
-import { readString } from './shared-utils.js';
+import { readString } from './request-prep.js';
 
 async function brokerRpc<R = unknown>(
   lease: ProviderServerLease,

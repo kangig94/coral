@@ -1,9 +1,8 @@
 import type BetterSqlite3 from 'better-sqlite3';
 
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef, TerminalOutcome } from '../jobs/outcome.js';
-import { errorMessage } from '../infra/error-format.js';
 import type { ProgressStore } from '../jobs/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-contracts.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
@@ -25,15 +24,13 @@ import {
   workflowDrainEnteredBodySchema,
   workflowPlanRevisedEvent,
 } from './events.js';
-import { executePlannedSteps, DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './executor.js';
-import { formatAtomProgress } from './internal/format.js';
+import { executePlannedSteps } from './executor.js';
+import { DEFAULT_STALE_TIMEOUT_MS, DEFAULT_WAIT_POLL_INTERVAL_MS } from './execution-constants.js';
 import type { PlanSlot, WorkflowPlan } from './plan.js';
 import { appendWorkflowEvents, readProjectionJob, readWorkflowProjection } from './projections.js';
+import { recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms, type AwaitStepState } from './wait.js';
-
-const MAX_STALE_RECOVERY_RETRIES = 2;
-const STALE_ABORT_TIMEOUT_MS = 30_000;
-const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
+export { recoverStaleAtom } from './stale-recovery.js';
 
 function slotKind(slot: PlanSlot): 'agent' | 'prompt' {
   return slot.label === slot.instruction ? 'agent' : 'prompt';
@@ -181,128 +178,6 @@ function firstTerminalFailure(
     terminalOutcome: terminal.outcome,
     drainDeadline: drain?.drainDeadline,
   };
-}
-
-export async function recoverStaleAtom(
-  state: AwaitStepState,
-  executionSvc: WorkflowExecutionPort,
-  ctx: CallerContext,
-  options: {
-    signal?: AbortSignal;
-    staleTimeoutMs: number;
-    workDir?: string;
-    onProgress: (message: string) => void;
-    buildPartialStepDetails: () => StepDetail[];
-  },
-): Promise<boolean> {
-  const now = Date.now();
-
-  for (const atom of state.pending.values()) {
-    const lastActive = state.lastActivityAt.get(atom.atomKey) ?? now;
-    if (now - lastActive < options.staleTimeoutMs) continue;
-
-    const retries = state.staleRetries.get(atom.atomKey) ?? 0;
-    if (retries >= MAX_STALE_RECOVERY_RETRIES) {
-      throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex}, atom '${atom.agent}' stale after ${retries} recovery attempts`,
-        false,
-        options.buildPartialStepDetails(),
-        {
-          failedStep: atom.stepIndex,
-          failedAtom: atom.agent,
-          failedJobId: atom.jobId,
-          failedSlotId: atom.slotId,
-        },
-      );
-    }
-
-    state.expectedStaleAborts.add(atom.jobId);
-    options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
-    executionSvc.abort([atom.jobId]);
-
-    try {
-      await executionSvc.waitForJobTerminal(atom.jobId, STALE_ABORT_TIMEOUT_MS);
-    } catch (error: unknown) {
-      throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
-        false,
-        options.buildPartialStepDetails(),
-        {
-          failedStep: atom.stepIndex,
-          failedAtom: atom.agent,
-          failedJobId: atom.jobId,
-          failedSlotId: atom.slotId,
-        },
-      );
-    }
-
-    if (options.signal?.aborted) {
-      throw createWorkflowExecutionError(
-        'Pipeline aborted (launched atoms may continue)',
-        true,
-        options.buildPartialStepDetails(),
-      );
-    }
-
-    const resumed = await executionSvc.resume(
-      atom.providerName,
-      {
-        sessionId: atom.sessionId,
-        prompt: STALE_RESUME_PROMPT,
-        cwd: options.workDir ?? ctx.projectRoot,
-      },
-      ctx,
-    );
-
-    if (resumed.status === 'rejected' || !resumed.job || !resumed.session) {
-      throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${resumed.message ?? 'unknown error'}`,
-        false,
-        options.buildPartialStepDetails(),
-        {
-          failedStep: atom.stepIndex,
-          failedAtom: atom.agent,
-          failedJobId: atom.jobId,
-          failedSlotId: atom.slotId,
-        },
-      );
-    }
-
-    const launchState = await executionSvc.awaitLaunch(resumed.job, BOOTSTRAP_TIMEOUT_MS);
-    if (launchState === 'error') {
-      const message = await readLaunchFailureMessage(resumed.job, executionSvc, options.signal);
-      throw createWorkflowExecutionError(
-        `Step ${atom.stepIndex}, atom '${atom.agent}' resume failed: ${message ?? 'unknown error'}`,
-        false,
-        options.buildPartialStepDetails(),
-        {
-          failedStep: atom.stepIndex,
-          failedAtom: atom.agent,
-          failedJobId: atom.jobId,
-          failedSlotId: atom.slotId,
-        },
-      );
-    }
-
-    state.pending.delete(atom.jobId);
-    delete state.cursor.jobs[atom.jobId];
-    state.pending.set(resumed.job, {
-      ...atom,
-      jobId: resumed.job,
-      sessionId: resumed.session,
-    });
-    state.staleRetries.set(atom.atomKey, retries + 1);
-
-    const resumedAt = Date.now();
-    for (const sibling of state.pending.values()) {
-      state.lastActivityAt.set(sibling.atomKey, resumedAt);
-    }
-
-    options.onProgress(formatAtomProgress(atom, 'resumed'));
-    return true;
-  }
-
-  return false;
 }
 
 async function resumeWorkflow(

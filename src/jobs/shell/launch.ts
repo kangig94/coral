@@ -35,7 +35,7 @@ import type { AppendEventsFn } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
 import { consumeJobStream } from './continuity-consumer.js';
-import { materializeProviderTerminal } from '../reconcile/job-helpers.js';
+import { materializeProviderTerminal } from '../reconcile/recovery-effects.js';
 import { SessionClaimError, rejectLaunch, toProviderRequest } from './contracts.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';

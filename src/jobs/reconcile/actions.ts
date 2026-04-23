@@ -3,7 +3,7 @@ import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
 import type { JobLaunch, JobRuntime, JobTerminal } from '../records.js';
 import type { DurableCliRuntimeRecord } from '../../runtime/durable-runtime.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type {
   ProviderRecoveryContract,
 } from '../../providers/contract.js';
@@ -15,7 +15,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import { SessionManager } from '../../sessions/shell/store.js';
 import type { RecoveryCapableService } from './contracts.js';
-import { markJobAsError, materializeProviderTerminal } from './job-helpers.js';
+import { markJobAsError, materializeProviderTerminal } from './recovery-effects.js';
 import { noopAppendEvents } from '../../store/append.js';
 import { materializeJobRecoveryFault } from '../shell/legacy-ingest.js';
 

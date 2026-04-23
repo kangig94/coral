@@ -22,7 +22,7 @@ import type {
   ProviderServerSpec,
   ProviderSpec,
 } from '../providers/contract.js';
-import type { CallerContext } from '../infra/request-context.js';
+import type { CallerContext } from '../transport/request-context.js';
 import type { EffortLevel } from '../providers/request-policy.js';
 import type { AbortResult } from '../jobs/abort-result.js';
 import type { Runtime } from '../runtime/ports.js';

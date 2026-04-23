@@ -19,7 +19,7 @@ import {
   normalizeControllerEnv,
   readBootstrapSignature,
   readString,
-} from './shared-utils.js';
+} from './request-prep.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;

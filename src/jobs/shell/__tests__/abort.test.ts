@@ -50,7 +50,7 @@ import { createProviderHostManager, type ProviderHostManager } from '../../../co
 import { createRealRuntime } from '../../../runtime/real.js';
 import { createFilesystemSessionLookup } from '../../../sessions/lookup.js';
 import type { SessionManager } from '../../../sessions/shell/store.js';
-import type { CallerContext } from '../../../infra/request-context.js';
+import type { CallerContext } from '../../../transport/request-context.js';
 import { ExecutionService } from '../../../coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '../../../store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '../../../testing/scripted-provider.js';

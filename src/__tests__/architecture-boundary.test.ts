@@ -44,6 +44,15 @@ const RETIRED_DISCUSS_TIME_UTIL = ['src', 'discuss', 'util', 'time.ts'].join('/'
 const RETIRED_COORDINATOR_LOG = ['src', 'coordinator', 'log.ts'].join('/');
 const RETIRED_EXPORTS_PATHS = ['src', 'jobs', 'exports', 'paths.ts'].join('/');
 const RETIRED_CORPUS_PATHS = ['src', 'kb', 'corpus', 'paths.ts'].join('/');
+const RETIRED_INFRA_INDEX = ['src', 'infra', 'index.ts'].join('/');
+const RETIRED_SIMULATION_INDEX = ['src', 'simulation', 'index.ts'].join('/');
+const RETIRED_REQUEST_CONTEXT = ['src', 'infra', 'request-context.ts'].join('/');
+const RETIRED_JOB_HELPERS = ['src', 'jobs', 'reconcile', 'job-helpers.ts'].join('/');
+const RETIRED_CURATE_SHARED = ['src', 'kb', 'curate', 'shared.ts'].join('/');
+const RETIRED_CURATE_STATE_SHARED = ['src', 'kb', 'curate', 'state-shared.ts'].join('/');
+const RETIRED_CLAUDE_SHARED_UTILS = ['src', 'providers', 'claude', 'shared-utils.ts'].join('/');
+const RETIRED_STRATEGY_SHARED = ['src', 'expansion', 'strategies', 'shared.ts'].join('/');
+const RETIRED_WORKFLOW_INTERNAL_SHARED = ['src', 'workflow', 'internal', 'shared.ts'].join('/');
 const RETIRED_COORDINATOR_SHIMS = [
   ['src', 'coordinator', 'discovery.ts'].join('/'),
   ['src', 'coordinator', 'paths.ts'].join('/'),
@@ -251,6 +260,31 @@ describe('architecture boundary guard', () => {
   it('the retired kb corpus path alias must remain deleted', () => {
     expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_CORPUS_PATHS);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_CORPUS_PATHS))).toBe(false);
+  });
+  it('the retired infra index barrel must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_INFRA_INDEX);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_INFRA_INDEX))).toBe(false);
+  });
+  it('the retired simulation index barrel must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_SIMULATION_INDEX);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_SIMULATION_INDEX))).toBe(false);
+  });
+  it('the retired request-context owner must remain deleted', () => {
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_REQUEST_CONTEXT);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_REQUEST_CONTEXT))).toBe(false);
+  });
+  it('the retired fallback helper filenames must remain deleted', () => {
+    for (const retiredPath of [
+      RETIRED_JOB_HELPERS,
+      RETIRED_CURATE_SHARED,
+      RETIRED_CURATE_STATE_SHARED,
+      RETIRED_CLAUDE_SHARED_UTILS,
+      RETIRED_STRATEGY_SHARED,
+      RETIRED_WORKFLOW_INTERNAL_SHARED,
+    ]) {
+      expect(PRODUCTION_SOURCE_FILES).not.toContain(retiredPath);
+      expect(existsSync(resolve(REPO_ROOT, retiredPath))).toBe(false);
+    }
   });
   it('the removed coordinator shim files must remain deleted', () => {
     for (const shimPath of RETIRED_COORDINATOR_SHIMS) {

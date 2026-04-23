@@ -1,16 +1,7 @@
 import type { Runtime } from '../runtime/ports.js';
 import { listSessionShards, readSessionRefs } from './shell/resolve.js';
-
-export type SessionLookupRef = {
-  sessionId: string;
-  provider: string;
-  shardDir: string;
-};
-
-export interface SessionLookup {
-  listSessionRefs(): SessionLookupRef[];
-  lookupSessionShard(sessionId: string): { shardDir: string; provider: string } | null;
-}
+import type { SessionLookup, SessionLookupRef } from './lookup-contract.js';
+export type { SessionLookup, SessionLookupRef } from './lookup-contract.js';
 
 type SessionLookupRuntime = Pick<Runtime, 'storage' | 'paths'>;
 

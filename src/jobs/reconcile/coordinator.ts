@@ -1,7 +1,7 @@
 import { formatError } from '../../infra/error-format.js';
 import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { ProgressStore } from '../job-store.js';
 import { planRecovery } from './plan.js';
@@ -10,7 +10,7 @@ import type { Runtime, RuntimeTimerHandle } from '../../runtime/ports.js';
 import type { RecoveryCapableService, LaunchFenceState } from './contracts.js';
 import { adoptOrphanedCrossNamespaceJobs } from './cross-namespace-adoption.js';
 import { StartupInterruptedError } from './errors.js';
-import { markJobAsError } from './job-helpers.js';
+import { markJobAsError } from './recovery-effects.js';
 import type { JobEventBus } from '../event-bus.js';
 import {
   applyRecoveryAction,

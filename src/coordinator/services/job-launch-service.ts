@@ -1,7 +1,7 @@
 import type { ProviderSpec } from '../../providers/contract.js';
 import type { SessionEntry } from '../../sessions/api.js';
 import { resolveEffort } from '../../providers/request-policy.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionManager } from '../../sessions/shell/store.js';

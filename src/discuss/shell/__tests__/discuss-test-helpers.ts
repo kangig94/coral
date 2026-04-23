@@ -19,7 +19,7 @@ import { buildWatchEvents } from '../../projections.js';
 import { DiscussSessionStore } from '../../shell/session-store.js';
 import { attachSession, detachSession, listSessions } from '../../shell/registry.js';
 import { isAbortEnded, readSessionEvents } from '../../shell/persistence.js';
-import type { CallerContext } from '../../../infra/request-context.js';
+import type { CallerContext } from '../../../transport/request-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { SimulationRuntime } from '../../../simulation/core/index.js';

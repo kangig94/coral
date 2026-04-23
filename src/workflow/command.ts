@@ -19,7 +19,7 @@ export {
   type WaitInternalState,
   type WorkflowExecutionPort,
   type WorkflowSessionHandle,
-} from './internal/shared.js';
+} from './internal/execution-contract.js';
 
 export function describeTerminalFailure(
   result: JobTerminal,

@@ -4,7 +4,7 @@ import { captureRemovedNoteManifestDeltas } from '../corpus/manifest-authority.j
 import { deleteEntry, noteEntryId, type KbDeleteInput } from '../entry-types.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/mutation-helpers.js';
 import type { KbRuntime } from '../contracts.js';
-import { queueManifestAuthorityDelta } from '../runtime.js';
+import { queueManifestAuthorityDelta } from '../runtime-effects.js';
 import { assertNoteSlug } from '../validation.js';
 
 export async function deleteFn(rt: KbRuntime, input: KbDeleteInput): Promise<{ deleted: string }> {

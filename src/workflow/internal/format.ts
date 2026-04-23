@@ -1,6 +1,6 @@
 import { truncate } from '../../infra/format-progress.js';
 import type { PipeAtom } from '../ast.js';
-import type { LaunchedAtom } from './shared.js';
+import type { LaunchedAtom } from './execution-contract.js';
 
 export function stripElapsedPrefix(message: string): string {
   if (!message.startsWith('[')) return message;

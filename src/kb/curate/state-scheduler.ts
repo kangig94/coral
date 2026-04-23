@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 import type { CurateSchedulerRow } from '../../store/schema.js';
-import type { CurateCursor } from './state-shared.js';
-import { cursorEntryKind, kbEntryIdSchema } from './state-shared.js';
+import type { CurateCursor } from './state-model.js';
+import { cursorEntryKind, kbEntryIdSchema } from './state-model.js';
 import { prepareCached, type SqliteTarget } from './sqlite.js';
 
 type CurateSchedulerState = {

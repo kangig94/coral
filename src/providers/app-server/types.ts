@@ -1,19 +1,6 @@
+import type { AbortReason, AppServerNotificationMessage, ProviderTransportClose } from '../protocol.js';
 import type { ProviderTerminalEventBody } from '../contract.js';
-
-export type AppServerSubscriptionPhase = 'beforeInitialize' | 'afterInitialize';
-
-export type AbortReason = 'signal_abort' | 'user_abort' | 'queue_shutdown';
-
-export type AppServerNotificationMessage = {
-  method: string;
-  params?: Record<string, unknown>;
-};
-
-export type ProviderTransportClose =
-  | {
-      kind: 'transport_closed';
-      error?: Error | null;
-    };
+export type { AbortReason, AppServerNotificationMessage, AppServerSubscriptionPhase, ProviderTransportClose } from '../protocol.js';
 
 export type DriverStepOutcome = {
   terminal?: TurnOutcome;

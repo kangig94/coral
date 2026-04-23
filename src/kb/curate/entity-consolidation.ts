@@ -8,7 +8,7 @@ import {
   type RelationshipType,
 } from '../entry-types.js';
 import { compareLocale } from '../validation.js';
-import { uniqueTrimmedList } from './shared.js';
+import { uniqueTrimmedList } from './content-normalize.js';
 
 const GENERIC_PLURAL_SEGMENTS = new Set([
   'aliases',

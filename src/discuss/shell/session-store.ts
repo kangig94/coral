@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 import { readDiscussSourcesWithStorage, listPersistedDiscussSessionsForSourceWithStorage, readDiscussEventLogWithStorage, readDiscussSnapshotWithStorage, readDiscussSummaryIndexForSourceWithStorage, resolveDiscussSessionDirForSourceWithStorage } from './discuss-sources-catalog.js';
-import { type DiscussSummaryDto } from '../api.js';
+import { type DiscussSummaryDto } from '../read-contract.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type {
   DiscussDiscoveryData,

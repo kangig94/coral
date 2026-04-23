@@ -19,7 +19,7 @@ import {
   handleDiscussWatch,
 } from '../../shell/tools.js';
 import { getSession } from '../../shell/registry.js';
-import type { CallerContext } from '../../../infra/request-context.js';
+import type { CallerContext } from '../../../transport/request-context.js';
 import type { ExecutionService } from '../../../coordinator/execution-service.js';
 import type { ToolDomainResult } from '../../../transport/http/tool-response.js';
 import {

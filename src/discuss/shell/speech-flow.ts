@@ -1,5 +1,5 @@
 import { decideSpeech, decideSpeechTimeout } from '../state-machine.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import { buildSpeechPrompt } from './prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,

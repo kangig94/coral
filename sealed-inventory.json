@@ -1,7 +1,6 @@
 {
   "roots": [
     "src/simulation/core/index.ts",
-    "src/simulation/index.ts",
     "src/simulation/world.ts",
     "src/simulation/runner.ts"
   ],

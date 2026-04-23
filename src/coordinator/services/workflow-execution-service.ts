@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { ProgressStore } from '../../jobs/job-store.js';
@@ -33,7 +33,7 @@ import {
   claimJobAtomic,
   serializeWorkflowResult,
 } from './execution-shared.js';
-import type { WorkflowExecutionPort } from '../../workflow/internal/shared.js';
+import type { WorkflowExecutionPort } from '../../workflow/internal/execution-contract.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;

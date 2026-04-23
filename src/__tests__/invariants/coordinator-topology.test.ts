@@ -50,6 +50,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/provider-hosts/lease.ts',
   'src/coordinator/live/provider-hosts/pool.ts',
   'src/coordinator/live/provider-hosts/recovery.ts',
+  'src/coordinator/live/provider-hosts/state.ts',
   'src/coordinator/live/worker-limits.ts',
   'src/coordinator/lock.ts',
   'src/coordinator/recording/observer.ts',

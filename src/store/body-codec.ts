@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 
 import type { EventsRow } from './schema.js';
-import type { UpcasterRegistry } from './envelope.js';
+import type { UpcasterRegistry } from './upcaster-registry.js';
 
 export const BODY_DECODER = new TextDecoder();
 

@@ -3,7 +3,7 @@ import type { ProviderServerHandle } from '../durable-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { Runtime, RuntimeTimePort } from '../../../runtime/ports.js';
 import { clearIdleTimer } from './idle.js';
-import type { ProviderHostEntry } from './pool.js';
+import type { ProviderHostEntry } from './state.js';
 
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
 

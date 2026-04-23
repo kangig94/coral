@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { streamProviderTerminal } from '../../providers/stream.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { toProviderSpec } from '../../testing/scripted-provider.js';
-import type { CallerContext } from '../../infra/request-context.js';
+import type { CallerContext } from '../../transport/request-context.js';
 import type { WorkflowCommand } from '../api.js';
 
 const ctx: CallerContext = {
