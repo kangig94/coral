@@ -440,14 +440,15 @@ describe('claude exec-provider dispatcher', () => {
       expect(runtime.runCli).not.toHaveBeenCalled();
       expect(terminal.terminal).toEqual({
         content: '',
-        outcome: {
-          kind: 'failed',
-          fault: {
-            kind: 'provider_request_failed',
-            provider: 'claude',
-            message:
-              'This Claude session already established persistent continuity. Start a new Coral session before forking.',
-          },
+        outcome: { kind: 'failed' },
+      });
+      expect(terminal.failureCause).toEqual({
+        type: 'session.provider_failed',
+        body: {
+          provider: 'claude',
+          reason: 'request_failed',
+          message:
+            'This Claude session already established persistent continuity. Start a new Coral session before forking.',
         },
       });
     },
@@ -475,14 +476,15 @@ describe('claude exec-provider dispatcher', () => {
     expect(runtime.runCli).not.toHaveBeenCalled();
     expect(terminal.terminal).toEqual({
       content: '',
-      outcome: {
-        kind: 'failed',
-        fault: {
-          kind: 'provider_request_failed',
-          provider: 'claude',
-          message:
-            'This Claude session already established persistent continuity with cwd=/persisted-workspace, systemPromptHash=sha256:system, permissionMode=default. Start a new Coral session before changing that bootstrap signature.',
-        },
+      outcome: { kind: 'failed' },
+    });
+    expect(terminal.failureCause).toEqual({
+      type: 'session.provider_failed',
+      body: {
+        provider: 'claude',
+        reason: 'request_failed',
+        message:
+          'This Claude session already established persistent continuity with cwd=/persisted-workspace, systemPromptHash=sha256:system, permissionMode=default. Start a new Coral session before changing that bootstrap signature.',
       },
     });
   });

@@ -46,25 +46,26 @@ async function finalizeClaudeFromArtifacts(
     throw new Error('Claude recovery could not parse stream-json output.');
   }
 
+  const failureCause =
+    options.signal !== null || (!parsed.isError && (options.exitCode === null || options.exitCode === 0))
+      ? undefined
+      : parsed.isError
+        ? providerRequestFailed({
+            provider: 'claude',
+            message: parsed.response || 'Claude request failed.',
+          })
+        : adapterOutputUnparseable({
+            provider: 'claude',
+            exitCode: options.exitCode,
+            stdout,
+            stderr,
+            parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
+          });
   const outcome: TerminalOutcome =
     options.signal !== null
       ? { kind: 'aborted', reason: 'signal_abort' as const }
       : parsed.isError || (options.exitCode !== null && options.exitCode !== 0)
-        ? {
-            kind: 'failed' as const,
-            fault: parsed.isError
-              ? providerRequestFailed({
-                  provider: 'claude',
-                  message: parsed.response || 'Claude request failed.',
-                })
-              : adapterOutputUnparseable({
-                  provider: 'claude',
-                  exitCode: options.exitCode,
-                  stdout,
-                  stderr,
-                  parseError: `Claude exited with code ${options.exitCode} before a valid result was recovered.`,
-                }),
-          }
+        ? { kind: 'failed' as const }
         : { kind: 'completed' as const };
 
   return {
@@ -79,6 +80,7 @@ async function finalizeClaudeFromArtifacts(
         outcome,
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
+      ...(failureCause === undefined ? {} : { failureCause }),
     },
     continuity:
       parsed.sessionId !== null
@@ -100,6 +102,13 @@ async function finalizeCodexFromArtifacts(
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.stdoutPath);
   const stderr = readArtifact(options.stderrPath);
+  const failureCause =
+    options.signal === null && options.exitCode !== null && options.exitCode !== 0
+      ? providerRequestFailed({
+          provider: 'codex',
+          message: `Codex exited with code ${options.exitCode} before recovery completed.`,
+        })
+      : undefined;
   return {
     terminal: {
       kind: 'terminal',
@@ -111,15 +120,10 @@ async function finalizeCodexFromArtifacts(
             ? { kind: 'aborted', reason: 'signal_abort' as const }
             : options.exitCode === null || options.exitCode === 0
               ? { kind: 'completed' as const }
-              : {
-                  kind: 'failed' as const,
-                  fault: providerRequestFailed({
-                    provider: 'codex',
-                    message: `Codex exited with code ${options.exitCode} before recovery completed.`,
-                  }),
-                },
+              : { kind: 'failed' as const },
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
+      ...(failureCause === undefined ? {} : { failureCause }),
     },
     continuity: options.fallbackConversationRef
       ? undefined

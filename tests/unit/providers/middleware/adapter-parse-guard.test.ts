@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
-import { adapterOutputUnparseable } from '#src/providers/fault.js';
 import { adapterParseGuard, type ParseErrorDetail } from '#src/providers/middleware/adapter-parse-guard.js';
 
 const BASE_REQUEST: ProviderRequest = {
@@ -55,15 +54,16 @@ describe('adapterParseGuard', () => {
         kind: 'terminal',
         terminal: {
           content: '',
-          outcome: {
-            kind: 'failed',
-            fault: adapterOutputUnparseable({
-              provider: 'claude',
-              ...parseFailure,
-            }),
-          },
+          outcome: { kind: 'failed' },
         },
         diagnostics: {},
+        failureCause: {
+          type: 'session.adapter_unparseable',
+          body: {
+            provider: 'claude',
+            ...parseFailure,
+          },
+        },
       },
     ]);
   });

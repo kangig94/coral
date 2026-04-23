@@ -1,6 +1,6 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
-import type { Provider, ProviderRuntime, ProviderServerLease } from '../contract.js';
+import type { Provider, ProviderRuntime, ProviderServerLease, ProviderTerminalEventBody } from '../contract.js';
 import { providerRequestFailed } from '../fault.js';
 import {
   bindAppServerNotificationHandler,
@@ -25,7 +25,7 @@ import {
   type PreparedClaudeRequest,
 } from './request-prep.js';
 
-function buildClaudeSessionRequestFailed(message: string) {
+function buildClaudeSessionFailureCause(message: string) {
   return providerRequestFailed({
     provider: 'claude',
     message,
@@ -278,7 +278,7 @@ function applyNotification(
   }
 }
 
-function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): ReturnType<typeof buildFailedTerminal> {
+function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): ProviderTerminalEventBody {
   if (outcome.kind === 'completed') {
     const failureMessage = outcome.turn.isError
       ? buildProviderFailureMessage('Claude', outcome.turn.errors.join(' '))
@@ -292,15 +292,17 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome): Re
         durationMs: outcome.turn.durationMs,
         usage: outcome.turn.costUsd === undefined ? undefined : { costUsd: outcome.turn.costUsd },
         outcome: outcome.turn.isError
-          ? {
-              kind: 'failed',
-              fault: buildClaudeSessionRequestFailed(
-                failureMessage ?? 'Claude session driver reported a failed turn.',
-              ),
-            }
+          ? { kind: 'failed' }
           : { kind: 'completed' },
       }),
       diagnostics: buildJobDiagnostics({}),
+      ...(outcome.turn.isError
+        ? {
+            failureCause: buildClaudeSessionFailureCause(
+              failureMessage ?? 'Claude session driver reported a failed turn.',
+            ),
+          }
+        : {}),
     };
   }
 
@@ -336,12 +338,10 @@ function buildFailedTerminal(
       content,
       model,
       durationMs,
-      outcome: {
-        kind: 'failed',
-        fault: buildClaudeSessionRequestFailed(message),
-      },
+      outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),
+    failureCause: buildClaudeSessionFailureCause(message),
   };
 }
 

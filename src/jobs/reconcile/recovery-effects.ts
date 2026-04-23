@@ -13,7 +13,7 @@ import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import {
   jobRecoveryNeedsDomainEvent,
   materializeJobRecoveryFault,
-  materializeProviderFault,
+  materializeProviderFailureCause,
   type RuntimeIngestOptions,
 } from '../shell/fault-materializer.js';
 
@@ -145,21 +145,25 @@ export function materializeProviderTerminal(
     ...(terminal.terminal.exitCode === undefined ? {} : { exitCode: terminal.terminal.exitCode }),
     ...(terminal.terminal.warnings === undefined ? {} : { warnings: terminal.terminal.warnings }),
     ...(terminal.terminal.usage === undefined ? {} : { usage: terminal.terminal.usage }),
-    outcome: materializeProviderOutcome(progressStore, terminal.terminal.outcome, options),
+    outcome: materializeProviderOutcome(progressStore, terminal, options),
   };
 }
 
 function materializeProviderOutcome(
   progressStore: Pick<ProgressStore, 'appendEventsWithResult'>,
-  outcome: ProviderTerminalEventBody['terminal']['outcome'],
+  terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
 ): TerminalOutcome {
+  const { outcome } = terminal.terminal;
   switch (outcome.kind) {
     case 'completed':
       return { kind: 'completed' };
     case 'aborted':
       return { kind: 'aborted', reason: outcome.reason };
     case 'failed':
-      return materializeProviderFault(progressStore, outcome.fault, options);
+      if (terminal.failureCause === undefined) {
+        throw new Error('Provider terminal failed without a canonical failureCause.');
+      }
+      return materializeProviderFailureCause(progressStore, terminal.failureCause, options);
   }
 }

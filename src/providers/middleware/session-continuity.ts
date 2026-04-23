@@ -47,14 +47,8 @@ export interface SessionContinuityContract<TState> {
   isSessionUnavailable(err: unknown): boolean;
 }
 
-const SESSION_CONTINUITY_FAULT_KIND = 'provider_session_unavailable' as const;
-
-function buildSessionUnavailableFault(provider: string, reason: string) {
-  const fault = providerSessionUnavailable({ provider, reason });
-  if (fault.kind !== SESSION_CONTINUITY_FAULT_KIND) {
-    throw new Error('sessionContinuity emitted an unexpected fault kind.');
-  }
-  return fault;
+function buildSessionUnavailableFailureCause(provider: string, reason: string) {
+  return providerSessionUnavailable({ provider, reason });
 }
 
 export function sessionContinuity<TState>(
@@ -129,12 +123,10 @@ export function sessionContinuity<TState>(
           kind: 'terminal',
           terminal: buildJobTerminal({
             content: '',
-            outcome: {
-              kind: 'failed',
-              fault: buildSessionUnavailableFault(providerName ?? 'unknown', errorReason(err)),
-            },
+            outcome: { kind: 'failed' },
           }),
           diagnostics: buildJobDiagnostics({}),
+          failureCause: buildSessionUnavailableFailureCause(providerName ?? 'unknown', errorReason(err)),
         };
         return;
       } finally {

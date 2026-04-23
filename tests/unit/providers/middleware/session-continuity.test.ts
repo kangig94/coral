@@ -216,16 +216,17 @@ describe('sessionContinuity', () => {
         kind: 'terminal',
         terminal: {
           content: '',
-          outcome: {
-            kind: 'failed',
-            fault: {
-              kind: 'provider_session_unavailable',
-              provider: 'claude',
-              reason: 'session missing',
-            },
-          },
+          outcome: { kind: 'failed' },
         },
         diagnostics: {},
+        failureCause: {
+          type: 'session.provider_failed',
+          body: {
+            provider: 'claude',
+            reason: 'session_unavailable',
+            message: 'session missing',
+          },
+        },
       },
     ]);
   });

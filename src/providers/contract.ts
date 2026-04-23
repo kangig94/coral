@@ -3,10 +3,9 @@ import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
-  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-  PROVIDER_REQUEST_FAILED_KIND,
-  PROVIDER_SESSION_UNAVAILABLE_KIND,
-  type FaultPayload,
+  SESSION_ADAPTER_UNPARSEABLE_EVENT,
+  SESSION_PROVIDER_FAILED_EVENT,
+  type ProviderFailureCause,
 } from './fault.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import type {
@@ -95,7 +94,7 @@ export interface ProviderServerLease {
 export type TerminalOutcome =
   | { kind: 'completed' }
   | { kind: 'aborted'; reason: 'signal_abort' | 'user_abort' | 'queue_shutdown' }
-  | { kind: 'failed'; fault: FaultPayload };
+  | { kind: 'failed' };
 
 export interface JobTerminal {
   content: string;
@@ -131,6 +130,7 @@ export type ProviderTerminalEventBody = {
   kind: 'terminal';
   terminal: JobTerminal;
   diagnostics: JobDiagnostics;
+  failureCause?: ProviderFailureCause;
 };
 
 export type ProviderEventBody =
@@ -140,30 +140,31 @@ export type ProviderEventBody =
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
 
-export const faultPayloadSchema = z.discriminatedUnion('kind', [
+export const providerFailureCauseSchema = z.discriminatedUnion('type', [
   z
     .object({
-      kind: z.literal(ADAPTER_OUTPUT_UNPARSEABLE_KIND),
-      provider: z.string(),
-      exitCode: z.number().nullable(),
-      stdout: z.string(),
-      stderr: z.string(),
-      parseError: z.string(),
+      type: z.literal(SESSION_ADAPTER_UNPARSEABLE_EVENT),
+      body: z
+        .object({
+          provider: z.string(),
+          exitCode: z.number().nullable(),
+          stdout: z.string(),
+          stderr: z.string(),
+          parseError: z.string(),
+        })
+        .strict(),
     })
     .strict(),
   z
     .object({
-      kind: z.literal(PROVIDER_SESSION_UNAVAILABLE_KIND),
-      provider: z.string(),
-      reason: z.string(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal(PROVIDER_REQUEST_FAILED_KIND),
-      provider: z.string(),
-      message: z.string(),
-      cause: z.unknown().optional(),
+      type: z.literal(SESSION_PROVIDER_FAILED_EVENT),
+      body: z
+        .object({
+          provider: z.string(),
+          reason: z.enum(['session_unavailable', 'request_failed']),
+          message: z.string(),
+        })
+        .strict(),
     })
     .strict(),
 ]);
@@ -171,7 +172,7 @@ export const faultPayloadSchema = z.discriminatedUnion('kind', [
 export const terminalOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z.object({ kind: z.literal('aborted'), reason: z.enum(abortReasons) }).strict(),
-  z.object({ kind: z.literal('failed'), fault: faultPayloadSchema }).strict(),
+  z.object({ kind: z.literal('failed') }).strict(),
 ]);
 
 export const jobTerminalSchema = z
@@ -220,10 +221,27 @@ export const providerTerminalEventBodySchema = z
     kind: z.literal('terminal'),
     terminal: jobTerminalSchema,
     diagnostics: jobDiagnosticsSchema,
+    failureCause: providerFailureCauseSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((event, ctx) => {
+    if (event.terminal.outcome.kind === 'failed' && event.failureCause === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['failureCause'],
+        message: 'failed provider terminals must carry a canonical failureCause',
+      });
+    }
+    if (event.terminal.outcome.kind !== 'failed' && event.failureCause !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['failureCause'],
+        message: 'non-failed provider terminals must not carry failureCause',
+      });
+    }
+  });
 
-export const providerEventBodySchema = z.discriminatedUnion('kind', [
+export const providerEventBodySchema = z.union([
   providerProgressEventBodySchema,
   providerContinuityEventBodySchema,
   providerTerminalEventBodySchema,

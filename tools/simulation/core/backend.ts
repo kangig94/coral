@@ -201,13 +201,7 @@ function buildDefaultExecutionOutcome(
     return { kind: 'aborted', reason: 'signal_abort' };
   }
   if (typeof exitCode === 'number' && exitCode !== 0) {
-    return {
-      kind: 'failed',
-      fault: providerRequestFailed({
-        provider: scenario?.name ?? DEFAULT_FAKE_PROVIDER,
-        message: `Fake provider exited with code ${exitCode}.`,
-      }),
-    };
+    return { kind: 'failed' };
   }
   return { kind: 'completed' };
 }
@@ -216,13 +210,25 @@ function buildRecoveredArtifactFailureOutcome(
   scenario: FakeProviderScenario | undefined,
   message: string,
 ): SimulationTerminalOutcome {
-  return {
-    kind: 'failed',
-    fault: providerRequestFailed({
-      provider: scenario?.name ?? DEFAULT_FAKE_PROVIDER,
-      message,
-    }),
-  };
+  return { kind: 'failed' };
+}
+
+function buildSimulationFailureCause(
+  scenario: FakeProviderScenario | undefined,
+  message: string,
+): ReturnType<typeof providerRequestFailed> {
+  return providerRequestFailed({
+    provider: scenario?.name ?? DEFAULT_FAKE_PROVIDER,
+    message,
+  });
+}
+
+function failureCauseForSimulationOutcome(
+  scenario: FakeProviderScenario | undefined,
+  outcome: SimulationTerminalOutcome,
+  message: string,
+): ReturnType<typeof providerRequestFailed> | undefined {
+  return outcome.kind === 'failed' ? buildSimulationFailureCause(scenario, message) : undefined;
 }
 
 export function createFakeProvider(
@@ -267,6 +273,13 @@ export function createFakeProvider(
 
         const exitCode = scenario?.result?.exitCode ?? cli.code;
         const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
+        const failureCause = failureCauseForSimulationOutcome(
+          scenario,
+          outcome,
+          typeof exitCode === 'number' && exitCode !== 0
+            ? `Fake provider exited with code ${exitCode}.`
+            : 'Fake provider failed.',
+        );
         if (scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined) {
           emit({
             kind: 'continuity',
@@ -282,6 +295,7 @@ export function createFakeProvider(
             exitCode,
             durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
             outcome,
+            failureCause,
           }),
         );
       }),
@@ -301,12 +315,22 @@ export function createFakeProvider(
           (recoveredArtifactFailed
             ? buildRecoveredArtifactFailureOutcome(scenario, `artifact recovery failed: ${stderr}`)
             : buildDefaultExecutionOutcome(scenario, signal !== null, exitCode));
+        const failureCause = failureCauseForSimulationOutcome(
+          scenario,
+          outcome,
+          recoveredArtifactFailed
+            ? `artifact recovery failed: ${stderr}`
+            : typeof exitCode === 'number' && exitCode !== 0
+              ? `Fake provider exited with code ${exitCode}.`
+              : 'Fake provider failed.',
+        );
         return {
           terminal: providerTerminalEvent({
             ...scenario?.result,
             content: scenario?.result?.content ?? stdout,
             exitCode: scenario?.result?.exitCode ?? exitCode,
             outcome,
+            failureCause,
           }),
           continuity:
             scenario?.result?.conversationRef !== undefined || scenario?.result?.nonResumable !== undefined

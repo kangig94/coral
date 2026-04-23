@@ -24,18 +24,13 @@ import type {
 } from './protocol.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
-const CODEX_THREAD_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
 export const PRE_TURN_MAILBOX_CAP = 64;
 
-function buildCodexThreadRequestFailed(message: string) {
-  const fault = providerRequestFailed({
+function buildCodexThreadFailureCause(message: string) {
+  return providerRequestFailed({
     provider: 'codex',
     message,
   });
-  if (fault.kind !== CODEX_THREAD_REQUEST_FAILURE_KIND) {
-    throw new Error('Codex thread kernel emitted an unexpected fault kind.');
-  }
-  return fault;
 }
 
 export type PreTurnMailboxStatus = {
@@ -692,12 +687,10 @@ function buildFailedTerminal(
       content: '',
       model: state.model,
       durationMs: Date.now() - state.startedAt,
-      outcome: {
-        kind: 'failed',
-        fault: buildCodexThreadRequestFailed(buildProviderFailureMessage('Codex', message)),
-      },
+      outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),
+    failureCause: buildCodexThreadFailureCause(buildProviderFailureMessage('Codex', message)),
   };
 }
 
@@ -721,15 +714,17 @@ function buildCompletedTerminal(
       outcome: turnAborted
         ? { kind: 'aborted', reason: 'signal_abort' }
         : turnFailed
-          ? {
-              kind: 'failed',
-              fault: buildCodexThreadRequestFailed(
-                failureMessage ?? 'Codex session driver reported a failed turn.',
-              ),
-            }
+          ? { kind: 'failed' }
           : { kind: 'completed' },
     }),
     diagnostics: buildJobDiagnostics({}),
+    ...(turnFailed && !turnAborted
+      ? {
+          failureCause: buildCodexThreadFailureCause(
+            failureMessage ?? 'Codex session driver reported a failed turn.',
+          ),
+        }
+      : {}),
   };
 }
 

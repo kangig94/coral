@@ -1,11 +1,6 @@
 import type { AppendedEvent } from '../../store/append.js';
 import type { CoralEventInput } from '../../store/index.js';
-import {
-  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-  PROVIDER_REQUEST_FAILED_KIND,
-  PROVIDER_SESSION_UNAVAILABLE_KIND,
-  type FaultPayload,
-} from '../../providers/fault.js';
+import type { ProviderFailureCause } from '../../providers/fault.js';
 import type {
   CauseRef,
   JobLifecycleFault,
@@ -204,42 +199,22 @@ export function materializeSessionAdapterUnparseable(
   );
 }
 
-export function materializeProviderFault(
+export function materializeProviderFailureCause(
   progressStore: RuntimeAppendStore,
-  fault: FaultPayload,
+  failure: ProviderFailureCause,
   options: RuntimeIngestOptions,
 ): TerminalOutcome {
-  switch (fault.kind) {
-    case ADAPTER_OUTPUT_UNPARSEABLE_KIND:
+  switch (failure.type) {
+    case 'session.adapter_unparseable':
       return materializeSessionAdapterUnparseable(
         progressStore,
-        {
-          provider: fault.provider,
-          exitCode: fault.exitCode,
-          stdout: fault.stdout,
-          stderr: fault.stderr,
-          parseError: fault.parseError,
-        },
+        failure.body,
         options,
       );
-    case PROVIDER_SESSION_UNAVAILABLE_KIND:
+    case 'session.provider_failed':
       return materializeSessionProviderFailed(
         progressStore,
-        {
-          provider: fault.provider,
-          reason: 'session_unavailable',
-          message: fault.reason,
-        },
-        options,
-      );
-    case PROVIDER_REQUEST_FAILED_KIND:
-      return materializeSessionProviderFailed(
-        progressStore,
-        {
-          provider: fault.provider,
-          reason: 'request_failed',
-          message: fault.message,
-        },
+        failure.body,
         options,
       );
   }

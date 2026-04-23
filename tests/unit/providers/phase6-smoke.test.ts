@@ -487,10 +487,10 @@ describe('phase6 provider smoke', () => {
     const terminal = expectSingleTerminalLast(events);
 
     expect(events.filter(isContinuityEvent)).toHaveLength(0);
-    expect(terminal.terminal.outcome).toMatchObject({
-      kind: 'failed',
-      fault: {
-        kind: 'adapter_output_unparseable',
+    expect(terminal.terminal.outcome).toEqual({ kind: 'failed' });
+    expect(terminal.failureCause).toMatchObject({
+      type: 'session.adapter_unparseable',
+      body: {
         provider: 'claude',
         exitCode: 7,
       },
@@ -520,11 +520,12 @@ describe('phase6 provider smoke', () => {
     const terminal = expectSingleTerminalLast(events);
 
     expect(events.filter(isContinuityEvent)).toHaveLength(0);
-    expect(terminal.terminal.outcome).toEqual({
-      kind: 'failed',
-      fault: {
-        kind: 'provider_request_failed',
+    expect(terminal.terminal.outcome).toEqual({ kind: 'failed' });
+    expect(terminal.failureCause).toEqual({
+      type: 'session.provider_failed',
+      body: {
         provider: 'claude',
+        reason: 'request_failed',
         message: 'This Claude session already established persistent continuity. Start a new Coral session before forking.',
       },
     });

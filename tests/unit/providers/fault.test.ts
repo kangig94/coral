@@ -1,31 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import type { TerminalOutcome } from '#src/providers/contract.js';
 import { adapterOutputUnparseable, providerRequestFailed, providerSessionUnavailable } from '#src/providers/fault.js';
 
 describe('provider fault builders', () => {
-  it('builds adapter_output_unparseable payloads that round-trip through terminal.outcome', () => {
-    const fault = adapterOutputUnparseable({
+  it('builds session.adapter_unparseable failure causes', () => {
+    const failureCause = adapterOutputUnparseable({
       provider: 'claude',
       exitCode: 23,
       stdout: 'stdout',
       stderr: 'stderr',
       parseError: 'Unexpected token',
     });
-    const outcome: TerminalOutcome = { kind: 'failed', fault };
 
-    expect(fault).toEqual({
-      kind: 'adapter_output_unparseable',
-      provider: 'claude',
-      exitCode: 23,
-      stdout: 'stdout',
-      stderr: 'stderr',
-      parseError: 'Unexpected token',
-    });
-    expect(outcome).toEqual({
-      kind: 'failed',
-      fault: {
-        kind: 'adapter_output_unparseable',
+    expect(failureCause).toEqual({
+      type: 'session.adapter_unparseable',
+      body: {
         provider: 'claude',
         exitCode: 23,
         stdout: 'stdout',
@@ -35,50 +24,36 @@ describe('provider fault builders', () => {
     });
   });
 
-  it('builds provider_session_unavailable payloads that round-trip through terminal.outcome', () => {
-    const fault = providerSessionUnavailable({
+  it('builds session.provider_failed causes for unavailable sessions', () => {
+    const failureCause = providerSessionUnavailable({
       provider: 'codex',
       reason: 'thread missing',
     });
-    const outcome: TerminalOutcome = { kind: 'failed', fault };
 
-    expect(fault).toEqual({
-      kind: 'provider_session_unavailable',
-      provider: 'codex',
-      reason: 'thread missing',
-    });
-    expect(outcome).toEqual({
-      kind: 'failed',
-      fault: {
-        kind: 'provider_session_unavailable',
+    expect(failureCause).toEqual({
+      type: 'session.provider_failed',
+      body: {
         provider: 'codex',
-        reason: 'thread missing',
+        reason: 'session_unavailable',
+        message: 'thread missing',
       },
     });
   });
 
-  it('builds provider_request_failed payloads that round-trip through terminal.outcome', () => {
+  it('builds session.provider_failed causes for failed requests', () => {
     const cause = new Error('upstream failed');
-    const fault = providerRequestFailed({
+    const failureCause = providerRequestFailed({
       provider: 'claude',
       message: 'request failed',
       cause,
     });
-    const outcome: TerminalOutcome = { kind: 'failed', fault };
 
-    expect(fault).toEqual({
-      kind: 'provider_request_failed',
-      provider: 'claude',
-      message: 'request failed',
-      cause,
-    });
-    expect(outcome).toEqual({
-      kind: 'failed',
-      fault: {
-        kind: 'provider_request_failed',
+    expect(failureCause).toEqual({
+      type: 'session.provider_failed',
+      body: {
         provider: 'claude',
+        reason: 'request_failed',
         message: 'request failed',
-        cause,
       },
     });
   });

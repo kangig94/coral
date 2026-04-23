@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/index.js';
 import {
-  ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-  PROVIDER_REQUEST_FAILED_KIND,
-  PROVIDER_SESSION_UNAVAILABLE_KIND,
+  adapterOutputUnparseable,
+  providerRequestFailed,
+  providerSessionUnavailable,
 } from '#src/providers/fault.js';
 import {
   materializeJobLaunchRejected,
   materializeJobRecoveryFault,
-  materializeProviderFault,
+  materializeProviderFailureCause,
   materializeSessionInterrupted,
 } from '#src/jobs/shell/fault-materializer.js';
 
@@ -176,15 +176,14 @@ describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
 
   it.each([
     [
-      ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-      {
-        kind: ADAPTER_OUTPUT_UNPARSEABLE_KIND,
+      'adapter output',
+      adapterOutputUnparseable({
         provider: 'claude',
         exitCode: 17,
         stdout: 'partial stdout',
         stderr: 'partial stderr',
         parseError: 'bad json',
-      },
+      }),
       'session.adapter_unparseable',
       {
         provider: 'claude',
@@ -195,12 +194,11 @@ describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
       },
     ],
     [
-      PROVIDER_SESSION_UNAVAILABLE_KIND,
-      {
-        kind: PROVIDER_SESSION_UNAVAILABLE_KIND,
+      'session unavailable',
+      providerSessionUnavailable({
         provider: 'claude',
         reason: 'thread missing',
-      },
+      }),
       'session.provider_failed',
       {
         provider: 'claude',
@@ -209,12 +207,11 @@ describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
       },
     ],
     [
-      PROVIDER_REQUEST_FAILED_KIND,
-      {
-        kind: PROVIDER_REQUEST_FAILED_KIND,
+      'request failed',
+      providerRequestFailed({
         provider: 'codex',
         message: 'transport reset',
-      },
+      }),
       'session.provider_failed',
       {
         provider: 'codex',
@@ -227,7 +224,7 @@ describe('fault-materializer canonical output boundary (AC3.6, AC3.7)', () => {
     (_kind, fault, expectedType, expectedBody) => {
       const recorder = createAppendRecorder();
 
-      const outcome = materializeProviderFault(recorder.progressStore, fault, OPTIONS);
+      const outcome = materializeProviderFailureCause(recorder.progressStore, fault, OPTIONS);
 
       expect(outcome).toEqual({
         kind: 'failed',

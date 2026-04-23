@@ -1,27 +1,27 @@
-export const ADAPTER_OUTPUT_UNPARSEABLE_KIND = 'adapter_output_unparseable' as const;
-export const PROVIDER_SESSION_UNAVAILABLE_KIND = 'provider_session_unavailable' as const;
-export const PROVIDER_REQUEST_FAILED_KIND = 'provider_request_failed' as const;
+export const SESSION_ADAPTER_UNPARSEABLE_EVENT = 'session.adapter_unparseable' as const;
+export const SESSION_PROVIDER_FAILED_EVENT = 'session.provider_failed' as const;
 
-export type FaultPayload =
+export type ProviderFailureCause =
   | {
-      kind: typeof ADAPTER_OUTPUT_UNPARSEABLE_KIND;
-      provider: string;
-      exitCode: number | null;
-      stdout: string;
-      stderr: string;
-      parseError: string;
+      type: typeof SESSION_ADAPTER_UNPARSEABLE_EVENT;
+      body: {
+        provider: string;
+        exitCode: number | null;
+        stdout: string;
+        stderr: string;
+        parseError: string;
+      };
     }
   | {
-      kind: typeof PROVIDER_SESSION_UNAVAILABLE_KIND;
-      provider: string;
-      reason: string;
-    }
-  | {
-      kind: typeof PROVIDER_REQUEST_FAILED_KIND;
-      provider: string;
-      message: string;
-      cause?: unknown;
+      type: typeof SESSION_PROVIDER_FAILED_EVENT;
+      body: {
+        provider: string;
+        reason: 'session_unavailable' | 'request_failed';
+        message: string;
+      };
     };
+
+export type ProviderFailureCauseBody = ProviderFailureCause['body'];
 
 type AdapterOutputUnparseableInput = {
   provider: string;
@@ -42,30 +42,37 @@ type ProviderRequestFailedInput = {
   cause?: unknown;
 };
 
-export function adapterOutputUnparseable(input: AdapterOutputUnparseableInput): FaultPayload {
+export function adapterOutputUnparseable(input: AdapterOutputUnparseableInput): ProviderFailureCause {
   return {
-    kind: ADAPTER_OUTPUT_UNPARSEABLE_KIND,
-    provider: input.provider,
-    exitCode: input.exitCode,
-    stdout: input.stdout,
-    stderr: input.stderr,
-    parseError: input.parseError,
+    type: SESSION_ADAPTER_UNPARSEABLE_EVENT,
+    body: {
+      provider: input.provider,
+      exitCode: input.exitCode,
+      stdout: input.stdout,
+      stderr: input.stderr,
+      parseError: input.parseError,
+    },
   };
 }
 
-export function providerSessionUnavailable(input: ProviderSessionUnavailableInput): FaultPayload {
+export function providerSessionUnavailable(input: ProviderSessionUnavailableInput): ProviderFailureCause {
   return {
-    kind: PROVIDER_SESSION_UNAVAILABLE_KIND,
-    provider: input.provider,
-    reason: input.reason,
+    type: SESSION_PROVIDER_FAILED_EVENT,
+    body: {
+      provider: input.provider,
+      reason: 'session_unavailable',
+      message: input.reason,
+    },
   };
 }
 
-export function providerRequestFailed(input: ProviderRequestFailedInput): FaultPayload {
+export function providerRequestFailed(input: ProviderRequestFailedInput): ProviderFailureCause {
   return {
-    kind: PROVIDER_REQUEST_FAILED_KIND,
-    provider: input.provider,
-    message: input.message,
-    ...(input.cause === undefined ? {} : { cause: input.cause }),
+    type: SESSION_PROVIDER_FAILED_EVENT,
+    body: {
+      provider: input.provider,
+      reason: 'request_failed',
+      message: input.message,
+    },
   };
 }

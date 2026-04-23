@@ -1,26 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { JobTerminal, TerminalOutcome } from '#src/providers/contract.js';
-import { adapterOutputUnparseable } from '#src/providers/fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 
 describe('buildJobTerminal', () => {
   it.each([
     ['completed', { kind: 'completed' } satisfies TerminalOutcome],
     ['aborted', { kind: 'aborted', reason: 'signal_abort' } satisfies TerminalOutcome],
-    [
-      'failed',
-      {
-        kind: 'failed',
-        fault: adapterOutputUnparseable({
-          provider: 'claude',
-          exitCode: 7,
-          stdout: 'stdout',
-          stderr: 'stderr',
-          parseError: 'parse failed',
-        }),
-      } satisfies TerminalOutcome,
-    ],
+    ['failed', { kind: 'failed' } satisfies TerminalOutcome],
   ] as const)('builds the native JobTerminal shape for %s outcomes', (_label, outcome) => {
     const terminal: JobTerminal = buildJobTerminal({
       content: 'terminal content',

@@ -101,14 +101,7 @@ export function normalizeFakeProvider(config: WorldConfig['fakeProvider']): Fake
           ...config.result,
           warnings: config.result.warnings ? [...config.result.warnings] : undefined,
           usage: config.result.usage ? { ...config.result.usage } : undefined,
-          outcome: (
-            config.result.outcome.kind === 'failed' && typeof config.result.outcome.fault === 'object'
-              ? {
-                  ...config.result.outcome,
-                  fault: { ...config.result.outcome.fault },
-                }
-              : { ...config.result.outcome }
-          ) as TerminalOutcome,
+          outcome: { ...config.result.outcome } as TerminalOutcome,
         }
       : undefined,
     preflightError: config.preflightError === undefined ? undefined : toRuntimeError(config.preflightError),

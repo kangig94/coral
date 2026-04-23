@@ -199,15 +199,13 @@ function buildDispatchRejectedTerminal(model: string | undefined, reason: string
     terminal: buildJobTerminal({
       content: '',
       model,
-      outcome: {
-        kind: 'failed',
-        fault: providerRequestFailed({
-          provider: 'claude',
-          message: reason,
-        }),
-      },
+      outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),
+    failureCause: providerRequestFailed({
+      provider: 'claude',
+      message: reason,
+    }),
   };
 }
 

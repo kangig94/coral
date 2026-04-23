@@ -112,6 +112,7 @@ export type ProviderTerminalInput = {
   warnings?: JobTerminal['warnings'];
   usage?: JobTerminal['usage'];
   diagnostics?: JobDiagnostics;
+  failureCause?: ProviderTerminalEventBody['failureCause'];
 };
 
 export function providerProgressEvent(
@@ -154,6 +155,7 @@ export function providerTerminalEvent(
       kind: 'terminal',
       terminal: event.terminal,
       diagnostics: event.diagnostics,
+      ...(event.failureCause === undefined ? {} : { failureCause: event.failureCause }),
     };
   }
 
@@ -169,6 +171,7 @@ export function providerTerminalEvent(
       ...(event.usage === undefined ? {} : { usage: { ...event.usage } }),
     },
     diagnostics: event.diagnostics ?? {},
+    ...(event.failureCause === undefined ? {} : { failureCause: event.failureCause }),
   };
 }
 

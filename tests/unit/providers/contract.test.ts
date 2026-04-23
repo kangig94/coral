@@ -7,8 +7,9 @@ import {
 } from '#src/providers/continuity-mutation.js';
 import {
   compose,
-  faultPayloadSchema,
+  providerFailureCauseSchema,
   providerContinuityEventBodySchema,
+  providerTerminalEventBodySchema,
   type Provider,
   type ProviderContinuityEventBody,
   type ProviderEventBody,
@@ -18,7 +19,7 @@ import {
   terminalOutcomeSchema,
   type TerminalOutcome,
 } from '#src/providers/contract.js';
-import type { FaultPayload } from '#src/providers/fault.js';
+import type { ProviderFailureCause } from '#src/providers/fault.js';
 
 type IsEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2)
@@ -157,17 +158,20 @@ describe('compose', () => {
 });
 
 describe('contract schemas', () => {
-  it('keeps zod inference aligned with the native fault and continuity types', () => {
+  it('keeps zod inference aligned with the native failure cause and continuity types', () => {
     expectTypeParity<IsEqual<z.infer<typeof terminalOutcomeSchema>, TerminalOutcome>>();
-    expectTypeParity<IsEqual<z.infer<typeof faultPayloadSchema>, FaultPayload>>();
+    expectTypeParity<IsEqual<z.infer<typeof providerFailureCauseSchema>, ProviderFailureCause>>();
     expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();
     expectTypeParity<IsEqual<z.infer<typeof sessionContinuityMutationSchema>, SessionContinuityMutation>>();
 
     const failed = terminalOutcomeSchema.parse({
       kind: 'failed',
-      fault: {
-        kind: 'provider_request_failed',
+    });
+    const failureCause = providerFailureCauseSchema.parse({
+      type: 'session.provider_failed',
+      body: {
         provider: 'claude',
+        reason: 'request_failed',
         message: 'dispatch rejected',
       },
     });
@@ -189,9 +193,12 @@ describe('contract schemas', () => {
 
     expect(failed).toEqual({
       kind: 'failed',
-      fault: {
-        kind: 'provider_request_failed',
+    });
+    expect(failureCause).toEqual({
+      type: 'session.provider_failed',
+      body: {
         provider: 'claude',
+        reason: 'request_failed',
         message: 'dispatch rejected',
       },
     });
@@ -212,15 +219,17 @@ describe('contract schemas', () => {
     });
   });
 
-  it('rejects aborted outcomes and fault payloads that fall outside the contract', () => {
+  it('rejects aborted outcomes and failure causes that fall outside the contract', () => {
     const invalidAbort = terminalOutcomeSchema.safeParse({
       kind: 'aborted',
       reason: 'timeout',
     });
-    const invalidFault = faultPayloadSchema.safeParse({
-      kind: 'provider_session_unavailable',
-      provider: 'claude',
-      message: 'wrong field',
+    const invalidFailureCause = providerFailureCauseSchema.safeParse({
+      type: 'session.provider_failed',
+      body: {
+        provider: 'claude',
+        message: 'wrong field',
+      },
     });
     const invalidContinuity = providerContinuityEventBodySchema.safeParse({
       kind: 'continuity',
@@ -234,8 +243,30 @@ describe('contract schemas', () => {
     });
 
     expect(invalidAbort.success).toBe(false);
-    expect(invalidFault.success).toBe(false);
+    expect(invalidFailureCause.success).toBe(false);
     expect(invalidContinuity.success).toBe(false);
     expect(invalidContinuityMutation.success).toBe(false);
+  });
+
+  it('requires failureCause only for failed provider terminals', () => {
+    expect(
+      providerTerminalEventBodySchema.safeParse({
+        kind: 'terminal',
+        terminal: { content: '', outcome: { kind: 'failed' } },
+        diagnostics: {},
+      }).success,
+    ).toBe(false);
+
+    expect(
+      providerTerminalEventBodySchema.safeParse({
+        kind: 'terminal',
+        terminal: { content: '', outcome: { kind: 'completed' } },
+        diagnostics: {},
+        failureCause: {
+          type: 'session.provider_failed',
+          body: { provider: 'claude', reason: 'request_failed', message: 'unexpected' },
+        },
+      }).success,
+    ).toBe(false);
   });
 });

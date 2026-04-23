@@ -11,7 +11,6 @@ import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-
 import { buildPreparedClaudeRequest } from './request-prep.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './types.js';
 
-const CLAUDE_EXEC_REQUEST_FAILURE_KIND = 'provider_request_failed' as const;
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
 type ClaudeForkOptions = {
@@ -35,15 +34,11 @@ class ClaudeExecParseError extends Error {
   }
 }
 
-function buildClaudeExecRequestFailed(message: string) {
-  const fault = providerRequestFailed({
+function buildClaudeExecRequestFailureCause(message: string) {
+  return providerRequestFailed({
     provider: 'claude',
     message,
   });
-  if (fault.kind !== CLAUDE_EXEC_REQUEST_FAILURE_KIND) {
-    throw new Error('Claude exec kernel emitted an unexpected fault kind.');
-  }
-  return fault;
 }
 
 export function isClaudeExecParseError(error: unknown): ParseErrorDetail | null {
@@ -94,10 +89,7 @@ export const claudeExecKernel: Provider = (request, runtime) =>
             model: result.model,
             durationMs: result.durationMs,
             usage: result.costUsd === null ? undefined : { costUsd: result.costUsd },
-            outcome: {
-              kind: 'failed',
-              fault: buildClaudeExecRequestFailed(result.response || 'Claude request failed.'),
-            },
+            outcome: { kind: 'failed' },
           })
         : buildJobTerminal({
             response: result.response,
@@ -107,6 +99,9 @@ export const claudeExecKernel: Provider = (request, runtime) =>
             usage: result.costUsd === null ? undefined : { costUsd: result.costUsd },
           }),
       diagnostics: buildJobDiagnostics({}),
+      ...(result.isError
+        ? { failureCause: buildClaudeExecRequestFailureCause(result.response || 'Claude request failed.') }
+        : {}),
     });
   });
 

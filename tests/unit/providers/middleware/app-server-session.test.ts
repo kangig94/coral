@@ -9,7 +9,6 @@ import type {
 } from '#src/providers/contract.js';
 import type { AppServerContract } from '#src/providers/app-server/driver.js';
 import { bindAppServerNotificationHandler, requireAppServerLease } from '#src/providers/app-server/driver.js';
-import { providerRequestFailed } from '#src/providers/fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
 
@@ -117,11 +116,13 @@ function makeContract(overrides: Partial<AppServerContract> = {}): AppServerCont
 function terminalEvent(
   outcome: Extract<ReturnType<typeof buildJobTerminal>['outcome'], { kind: 'completed' | 'aborted' | 'failed' }>,
   content = '',
+  failureCause?: Extract<ProviderEventBody, { kind: 'terminal' }>['failureCause'],
 ): Extract<ProviderEventBody, { kind: 'terminal' }> {
   return {
     kind: 'terminal',
     terminal: buildJobTerminal({ content, outcome }),
     diagnostics: buildJobDiagnostics({}),
+    ...(failureCause === undefined ? {} : { failureCause }),
   };
 }
 
@@ -242,14 +243,16 @@ describe('appServerSession', () => {
     const started = deferred<void>();
     const nextTerminal = deferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent(
-      {
-        kind: 'failed',
-        fault: providerRequestFailed({
-          provider: 'app-server-test',
-          message: 'leaf-authored close handling',
-        }),
-      },
+      { kind: 'failed' },
       '',
+      {
+        type: 'session.provider_failed',
+        body: {
+          provider: 'app-server-test',
+          reason: 'request_failed',
+          message: 'leaf-authored close handling',
+        },
+      },
     );
     const provider: Provider = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
