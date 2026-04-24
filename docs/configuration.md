@@ -21,7 +21,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_DISCUSS_TTL_DAYS` | `0` | Auto-prune window for completed discuss sessions |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
-| `CORAL_FLAVOR` | `prod` when unset | Session-level hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity |
+| `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data/kb-dev/` |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
@@ -33,14 +33,13 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 ### Shell Usage
 
 ```bash
-export CORAL_FLAVOR=dev
 export CORAL_CODEX_MODEL=gpt-5.4
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_BID_THRESHOLD=50
 export CORAL_KB_PATH=/path/to/my-kb
 ```
 
-Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`.
+Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`. For local dev hooks, prefer the project `.claude/settings.local.json` `env` block over shell exports so Claude Code launches hooks with the intended flavor consistently.
 
 ### `.claude/settings.json`
 
