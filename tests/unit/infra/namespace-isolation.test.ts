@@ -141,11 +141,11 @@ describe('infra namespace isolation', () => {
     expect(infoPath.startsWith(instDir)).toBe(true);
   });
 
-  it('backendInfoPath is NOT under the legacy ~/.claude/coral/backend.json location', () => {
-    const root = createPluginRoot('coral-info-not-legacy');
+  it('backendInfoPath is NOT under the retired ~/.claude/coral/backend.json location', () => {
+    const root = createPluginRoot('coral-info-not-retired');
     const infoPath = backendInfoPath(root);
-    const legacyPath = join(homedir(), '.claude', 'coral', 'backend.json');
-    expect(infoPath).not.toBe(legacyPath);
+    const retiredPath = join(homedir(), '.claude', 'coral', 'backend.json');
+    expect(infoPath).not.toBe(retiredPath);
   });
 
   it('backendInfoPath ends with backend.json', () => {

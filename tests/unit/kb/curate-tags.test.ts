@@ -63,7 +63,7 @@ describe('cleanupTags', () => {
     const { cleanupTags } = await loadKbModules();
     const index = createIndex({
       'alpha-main': ['alpha', 'widget', 'ui-pattern', 'deep-alert-pattern'],
-      'alpha-secondary': ['alpha', 'widgets', 'deep-legacy-api'],
+      'alpha-secondary': ['alpha', 'widgets', 'deep-retired-api'],
       'beta-cohort': ['beta', 'widgets', 'deep-alert-patterns'],
       'delta-support': ['delta', 'widgets', 'ui-pattern', 'deep-alert-patterns', 'alphas'],
       'epsilon-support': ['epsilon', 'alphas'],
@@ -77,7 +77,7 @@ describe('cleanupTags', () => {
         ['deep-alert-pattern', 'deep-alert-patterns'],
         ['widget', 'widgets'],
       ]),
-      globalDeletions: new Set(['deep-legacy-api', 'ui-pattern']),
+      globalDeletions: new Set(['deep-retired-api', 'ui-pattern']),
     });
     expect(result.globalReplacements.has('alpha')).toBe(false);
     expect(result.globalDeletions.has('alpha')).toBe(false);

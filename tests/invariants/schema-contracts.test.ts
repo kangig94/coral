@@ -288,7 +288,7 @@ describe('jobWaitSchema', () => {
     expect(jobWaitSchema.parse(input)).toEqual(input);
   });
 
-  it('rejects legacy inline-only fields via strict mode', () => {
+  it('rejects removed inline-only fields via strict mode', () => {
     expect(
       jobWaitSchema.safeParse({
         jobIds: ['job-1'],
@@ -378,7 +378,7 @@ describe('workflowRequestSchema', () => {
     expect(workflowCommandSchema.parse(parsed)).toEqual(parsed);
   });
 
-  it('rejects legacy start_prompt under strict mode', () => {
+  it('rejects removed start_prompt under strict mode', () => {
     const parsed = workflowRequestSchema.safeParse({
       expression: 'architect',
       start_prompt: 'hello',
@@ -397,11 +397,11 @@ describe('workflowRequestSchema', () => {
     );
   });
 
-  it('rejects legacy work_dir under strict mode', () => {
+  it('rejects removed work_dir under strict mode', () => {
     const parsed = workflowRequestSchema.safeParse({
       expression: 'architect',
       startPrompt: 'hello',
-      work_dir: '/tmp/legacy',
+      work_dir: '/tmp/removed',
       projectRoot: '/tmp/project',
     });
 
@@ -428,7 +428,7 @@ describe('workflowRequestSchema', () => {
   });
 });
 
-describe('legacy shared schemas kept for current consumers', () => {
+describe('transport HTTP tool input schemas', () => {
   it('waitInputSchema rejects empty jobs array', () => {
     expect(() =>
       waitInputSchema.parse({

@@ -5,11 +5,12 @@ This test enforces those boundaries with the TypeScript compiler API and treats 
 Known non-goals: computed import(variableName) and relative require('...') are intentionally not covered.
 */
 
-// Phase 1 decision: extracted shared scanning helpers because the reused resolver and AST import scanner exceed the inline duplication threshold.
+// Shared scanning helpers stay extracted because the reused resolver and AST import scanner exceed the inline duplication threshold.
 import { dirname, resolve } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -26,12 +27,16 @@ const WORKFLOW_ROOT = 'src/workflow';
 const JOBS_ROOT = 'src/jobs';
 const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
+const EXECUTION_ROOT = ['src', 'execution'].join('/');
 const CLIENT_ROOT = ['src', 'client'].join('/');
 const SKILLS_ROOT = ['src', 'skills'].join('/');
 const SHARED_ROOT = ['src', 'shared'].join('/');
 const SIMULATION_ROOT = ['src', 'simulation'].join('/');
+const RETIRED_PRIVATE_STATE_ROOT = ['src', ['_', 'le', 'gacy'].join('')].join('/');
 const ROOT_SCENARIOS_ROOT = 'scenarios';
 const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
+const RETIRED_RUNTIME_MODULE = ['src', 'execution', 'runtime.ts'].join('/');
+const RETIRED_RUNTIME_PORTS = ['src', 'shared', 'runtime-ports.ts'].join('/');
 const RETIRED_KB_API = ['src', 'kb', 'api.ts'].join('/');
 const RETIRED_JOBS_VIEWS = ['src', 'jobs', 'views.ts'].join('/');
 const RETIRED_PROVIDERS_API = ['src', 'providers', 'api.ts'].join('/');
@@ -79,6 +84,28 @@ const RETIRED_COORDINATOR_SHIMS = [
   ['src', 'coordinator', 'equipment', 'contract.ts'].join('/'),
   ['src', 'coordinator', 'composition', 'recovery-registry.ts'].join('/'),
 ] as const;
+const RETIRED_RUNTIME_ALIASES = ['RuntimeTime', 'RuntimeStorage', 'RuntimeProcess', 'RuntimeIds', 'RuntimeEnv'];
+const RETIRED_RECORD_IDENTIFIERS = new Set([
+  'Persisted' + 'StatusRecord',
+  'Persisted' + 'LaunchRecord',
+  'Persisted' + 'RuntimeRecord',
+  'Persisted' + 'ExitRecord',
+  'Persisted' + 'ProgressRecord',
+  'Workflow' + 'Checkpoint',
+  'Provider' + 'Result',
+  'Provider' + 'ProgressEvent',
+  'Terminal' + 'Result',
+  'Session' + 'ContinuityPatch',
+]);
+const RETIRED_IDENTIFIER_PREFIX = ['Le', 'gacy'].join('');
+const RETIRED_PREFIX_IDENTIFIER_RE = new RegExp(`^${RETIRED_IDENTIFIER_PREFIX}[A-Za-z0-9_]*$`);
+const RETIRED_BOUNDARY_HELPERS = new Set([
+  `describe${RETIRED_IDENTIFIER_PREFIX}CoralFault`,
+  `${RETIRED_IDENTIFIER_PREFIX.toLowerCase()}WrapperCrashedFault`,
+  `materialize${RETIRED_IDENTIFIER_PREFIX}TerminalOutcome`,
+  `plan${RETIRED_IDENTIFIER_PREFIX}TerminalOutcome`,
+  'Recovery' + 'FaultCompat',
+]);
 const PROVIDERS_ROOT = 'src/providers';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 
@@ -235,6 +262,53 @@ function collectTestQuarantineResidue(): string[] {
   });
 }
 
+function scanRetiredIdentifierResidue(filePath: string): string[] {
+  const sourceText = readFileSync(filePath, 'utf-8');
+  const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const matches = new Set<string>();
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isIdentifier(node)
+      && (
+        RETIRED_RECORD_IDENTIFIERS.has(node.text)
+        || RETIRED_PREFIX_IDENTIFIER_RE.test(node.text)
+        || RETIRED_BOUNDARY_HELPERS.has(node.text)
+        || node.text === 'KbSubsystem'
+      )
+    ) {
+      matches.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return [...matches].sort();
+}
+
+function collectRetiredIdentifierResidue(): string[] {
+  return PRODUCTION_FILE_PATHS.flatMap((filePath) => {
+    const matches = scanRetiredIdentifierResidue(filePath);
+    if (matches.length === 0) {
+      return [];
+    }
+
+    return `${toCanonicalSrcPath(REPO_ROOT, filePath)}: ${matches.join(', ')}`;
+  });
+}
+
+function collectRetiredRuntimeAliasResidue(): string[] {
+  const portsPath = resolve(REPO_ROOT, 'src/runtime/ports.ts');
+  if (!existsSync(portsPath)) {
+    return [];
+  }
+
+  const source = readFileSync(portsPath, 'utf-8');
+  return RETIRED_RUNTIME_ALIASES.filter((alias) =>
+    new RegExp(`\\bexport\\s+type\\s+${alias}\\s*=`).test(source),
+  );
+}
+
 describe('architecture boundary guard', () => {
   it('workflow/ may only import from providers/catalog (allowlist of exactly one path)', () => {
     // Established by e34d8d8.
@@ -281,6 +355,18 @@ describe('architecture boundary guard', () => {
     const sharedFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, SHARED_ROOT));
     expect(sharedFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, SHARED_ROOT))).toBe(false);
+  });
+  it('the retired pre-rewrite runtime boundary stays absent', () => {
+    const executionFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, EXECUTION_ROOT));
+    expect(executionFiles).toEqual([]);
+    expect(existsSync(resolve(REPO_ROOT, EXECUTION_ROOT))).toBe(false);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_PRIVATE_STATE_ROOT))).toBe(false);
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_MODULE);
+    expect(PRODUCTION_SOURCE_FILES).not.toContain(RETIRED_RUNTIME_PORTS);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_MODULE))).toBe(false);
+    expect(existsSync(resolve(REPO_ROOT, RETIRED_RUNTIME_PORTS))).toBe(false);
+    expect(collectRetiredRuntimeAliasResidue()).toEqual([]);
+    expect(collectRetiredIdentifierResidue()).toEqual([]);
   });
   it('the debug-only simulation tool must stay out of src', () => {
     const simulationFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, SIMULATION_ROOT));

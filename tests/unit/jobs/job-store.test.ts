@@ -147,7 +147,7 @@ describe('JobStore', () => {
     expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER'))).toEqual([]);
   });
 
-  it('matches legacy live count semantics for projections, drafts, and namespace overrides', () => {
+  it('matches live count semantics for projections, drafts, and namespace overrides', () => {
     const { store } = createStore();
 
     store.initJob({

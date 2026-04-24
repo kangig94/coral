@@ -116,7 +116,7 @@ describe('entity-community', () => {
     });
     const priorCommunities: ExistingGeneratedCommunity[] = [
       {
-        slug: 'alpha-beta-legacy',
+        slug: 'alpha-beta-retained',
         title: 'Alpha / Beta',
         level: 0,
         members: ['alpha', 'beta'],
@@ -125,7 +125,7 @@ describe('entity-community', () => {
         updatedAt: '2026-04-02',
       },
       {
-        slug: 'gamma-omega-legacy',
+        slug: 'gamma-omega-retained',
         title: 'Gamma / Omega',
         level: 0,
         members: ['gamma', 'omega'],
@@ -138,7 +138,7 @@ describe('entity-community', () => {
         title: 'All Topics',
         level: 1,
         members: ['alpha', 'beta', 'gamma', 'omega'],
-        children: ['community:alpha-beta-legacy', 'community:gamma-omega-legacy'],
+        children: ['community:alpha-beta-retained', 'community:gamma-omega-retained'],
         createdAt: '2026-04-02',
         updatedAt: '2026-04-02',
       },
@@ -148,13 +148,13 @@ describe('entity-community', () => {
 
     expect(communities).toEqual([
       expect.objectContaining({
-        slug: 'alpha-beta-legacy',
+        slug: 'alpha-beta-retained',
         level: 0,
         members: ['alpha', 'beta'],
         parent: 'community:all-topics',
       }),
       expect.objectContaining({
-        slug: 'gamma-omega-legacy',
+        slug: 'gamma-omega-retained',
         level: 0,
         members: ['gamma', 'omega'],
         parent: 'community:all-topics',
@@ -163,7 +163,7 @@ describe('entity-community', () => {
         slug: 'all-topics',
         level: 1,
         members: ['alpha', 'beta', 'gamma', 'omega'],
-        children: ['community:alpha-beta-legacy', 'community:gamma-omega-legacy'],
+        children: ['community:alpha-beta-retained', 'community:gamma-omega-retained'],
       }),
     ]);
   });

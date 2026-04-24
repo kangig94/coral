@@ -33,7 +33,7 @@ describe('kb memo operations', () => {
     vi.resetModules();
   });
 
-  it('lists memos with timestamp prefixes and legacy mtime fallback', async () => {
+  it('lists memos with timestamp prefixes and untimestamped mtime fallback', async () => {
     const { listMemos, paths } = await loadMemoModules();
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
@@ -42,7 +42,7 @@ describe('kb memo operations', () => {
     mkdirSync(dir, { recursive: true });
 
     const timestampedMemo = join(dir, '20260323-010203-alpha.md');
-    const legacyMemo = join(dir, 'legacy.md');
+    const untimestampedMemo = join(dir, 'untimestamped.md');
 
     writeFileSync(
       timestampedMemo,
@@ -55,18 +55,18 @@ Second line
 `,
       'utf-8',
     );
-    writeFileSync(legacyMemo, '\nLegacy summary\nSecond line\n', 'utf-8');
+    writeFileSync(untimestampedMemo, '\nUntimestamped summary\nSecond line\n', 'utf-8');
 
     const timestampedTime = new Date('2026-03-23T01:02:03.000Z');
-    const legacyTime = new Date('2026-03-24T05:06:07.000Z');
+    const untimestampedTime = new Date('2026-03-24T05:06:07.000Z');
     utimesSync(timestampedMemo, timestampedTime, timestampedTime);
-    utimesSync(legacyMemo, legacyTime, legacyTime);
+    utimesSync(untimestampedMemo, untimestampedTime, untimestampedTime);
 
     expect(listMemos(projectRoot)).toEqual({
       memos: [
         {
-          filename: 'legacy.md',
-          summary: 'Legacy summary',
+          filename: 'untimestamped.md',
+          summary: 'Untimestamped summary',
           createdAt: '2026-03-24T05:06:07.000Z',
         },
         {

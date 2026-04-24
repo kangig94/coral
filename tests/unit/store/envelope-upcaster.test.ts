@@ -7,12 +7,12 @@ import { createEmptyRegistry } from '#src/store/envelope.js';
 describe('UpcasterRegistry', () => {
   it('registerUpcaster records the type/fromVersion pair (verified via parseBody behavior)', () => {
     const registry = createEmptyRegistry();
-    registry.registerUpcaster('test.recorded', 1, 2, (body) => ({ upgraded: (body as { legacy: number }).legacy * 10 }));
+    registry.registerUpcaster('test.recorded', 1, 2, (body) => ({ upgraded: (body as { previous: number }).previous * 10 }));
 
     const result = registry.parseBody(
       'test.recorded',
       1,
-      { legacy: 3 },
+      { previous: 3 },
       z.object({ upgraded: z.number() }),
     );
     expect(result).toEqual({ upgraded: 30 });

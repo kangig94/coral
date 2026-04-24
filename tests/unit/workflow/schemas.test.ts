@@ -56,7 +56,7 @@ describe('workflowCommandSchema', () => {
     ).toThrow();
   });
 
-  it('rejects legacy top-level args key', () => {
+  it('rejects removed top-level args key', () => {
     expect(() =>
       workflowCommandSchema.parse({
         expression: 'architect',
@@ -66,11 +66,11 @@ describe('workflowCommandSchema', () => {
     ).toThrow(/Unrecognized key\(s\) in object: 'args'/);
   });
 
-  it('rejects legacy top-level prompt key', () => {
+  it('rejects removed top-level prompt key', () => {
     const parsed = workflowCommandSchema.safeParse({
       expression: 'architect',
       startPrompt: 'hello',
-      prompt: 'legacy hello',
+      prompt: 'removed hello',
     });
 
     expect(parsed.success).toBe(false);
@@ -104,7 +104,7 @@ describe('workflowCommandSchema', () => {
     ).toThrow(/Unrecognized key\(s\) in object: 'stale_timeout_seconds'/);
   });
 
-  it('rejects legacy start_prompt under strict mode', () => {
+  it('rejects removed start_prompt under strict mode', () => {
     expect(() =>
       workflowCommandSchema.parse({
         expression: 'architect',
@@ -113,12 +113,12 @@ describe('workflowCommandSchema', () => {
     ).toThrow(/Unrecognized key\(s\) in object: 'start_prompt'/);
   });
 
-  it('rejects legacy work_dir under strict mode', () => {
+  it('rejects removed work_dir under strict mode', () => {
     expect(() =>
       workflowCommandSchema.parse({
         expression: 'architect',
         startPrompt: 'hello',
-        work_dir: '/tmp/legacy',
+        work_dir: '/tmp/removed',
       }),
     ).toThrow(/Unrecognized key\(s\) in object: 'work_dir'/);
   });

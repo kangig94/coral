@@ -27,7 +27,7 @@ function listSourceFiles(dirPath) {
     const entryPath = join(dirPath, entry.name);
 
     if (entry.isDirectory()) {
-      if (entry.name === '__tests__' || entry.name === '_legacy') {
+      if (entry.name === '__tests__') {
         continue;
       }
 

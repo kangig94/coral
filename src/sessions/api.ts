@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Runtime } from '../runtime/ports.js';
 import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
 import type { SessionCloseReason, SessionInterruptedFault } from './fault.js';
-import type { SessionEntry, SessionHandle } from './entry.js';
+import type { SessionEntry } from './entry.js';
 import type { ContinuitySnapshot } from './continuity.js';
 import type { SessionLookup } from './lookup.js';
 import { resolveSession, type SessionResolveRef } from './shell/resolve.js';
@@ -94,7 +94,7 @@ export type SessionListFilter = {
 };
 
 export const sessionsCommands = {
-  open(store: Pick<SessionManager, 'open'>, args: SessionAllocateOptions): SessionHandle {
+  open(store: Pick<SessionManager, 'open'>, args: SessionAllocateOptions): SessionEntry {
     return store.open(args);
   },
   checkpoint(

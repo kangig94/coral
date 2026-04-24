@@ -1,6 +1,6 @@
 # Corpus Repair Taxonomy
 
-This document is the Phase 5 authority for corpus-repair incident names, detector signals, classifications, and recovery contracts.
+This document is the authority for corpus-repair incident names, detector signals, classifications, and recovery contracts.
 It is intentionally taxonomy-only: no repair code, fixtures, or operational notes belong here.
 
 Classification meanings:
@@ -166,9 +166,9 @@ Canonical incident: `reference-integrity/orphan-principle-refs`
 
 ## Revisions
 
-Phase 5 revision policy:
+Revision policy:
 - One revision is permitted after the initial commit of this document.
 - Every revision must append a new log entry in this section; prior entries are immutable.
 
 Revision log:
-- `r0` — `2026-04-21` — Initial taxonomy created for Phase 5 AC1.
+- `r0` — `2026-04-21` — Initial taxonomy.

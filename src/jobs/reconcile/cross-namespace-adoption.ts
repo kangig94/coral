@@ -5,7 +5,7 @@ import type { ProgressStore } from '../job-store.js';
  * Finalize foreign-namespace live jobs by scanning projections plus the origin
  * `job.launch.requested` envelope namespace in SQLite.
  *
- * Phase 3 no longer rebinds status files or coordinates through claim files.
+ * Recovery no longer rebinds status files or coordinates through claim files.
  * If a job is still projected as `queued`, `launching`, or `running` but its
  * launch event belongs to a different namespace than the current coordinator,
  * we append a terminal `wrapper_lost` event and let the reducer close the job

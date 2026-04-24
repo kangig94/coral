@@ -19,7 +19,7 @@ const discussJournalBodySchema = z
   .object({
     sourceSeq: z.number().int().positive(),
   })
-  // Preserve the Phase 1 live discuss payload contract while Journal ownership stays additive.
+  // Preserve the live discuss payload contract while Journal ownership stays additive.
   .passthrough();
 
 function eventType(kind: DiscussEventKind): string {

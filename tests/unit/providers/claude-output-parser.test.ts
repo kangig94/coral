@@ -87,17 +87,17 @@ describe('parseClaudeStreamJson', () => {
           { type: 'text', text: 'line two' },
         ],
       },
-      session_id: 'legacy-session',
+      session_id: 'single-json-session',
       total_cost_usd: 0.03,
-      model: 'legacy-model',
+      model: 'single-json-model',
     });
 
     const parsed = parse(output);
 
     expect(parsed).toEqual({
       response: 'line one\nline two',
-      sessionId: 'legacy-session',
-      model: 'legacy-model',
+      sessionId: 'single-json-session',
+      model: 'single-json-model',
       costUsd: 0.03,
       durationMs: null,
       numTurns: null,

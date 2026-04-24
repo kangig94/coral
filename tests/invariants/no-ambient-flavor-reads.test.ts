@@ -10,7 +10,7 @@ async function walk(dir: string, out: string[] = []): Promise<string[]> {
   for (const e of entries) {
     const full = join(dir, e.name);
     if (e.isDirectory()) {
-      if (e.name === '_legacy' || e.name === '__tests__' || e.name === 'fixtures' || e.name === 'node_modules') continue;
+      if (e.name === '__tests__' || e.name === 'fixtures' || e.name === 'node_modules') continue;
       await walk(full, out);
     } else if (e.isFile() && e.name.endsWith('.ts')) {
       out.push(full);

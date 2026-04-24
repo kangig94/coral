@@ -426,8 +426,8 @@ describe('readDiscussState', () => {
     const statePath = fixturePath('lenient-state.json');
     writeJsonFixture(statePath, {
       session_id: 'session-1',
-      topic: 'Legacy topic',
-      status: 'legacy-status',
+      topic: 'Lenient topic',
+      status: 'prior-status',
       agents: [],
       futureField: true,
     });
@@ -435,8 +435,8 @@ describe('readDiscussState', () => {
     const result = readDiscussState(statePath);
     expect(result).not.toBeNull();
     expect(result!.session_id).toBe('session-1');
-    expect(result!.topic).toBe('Legacy topic');
-    expect(result!.status).toBe('legacy-status');
+    expect(result!.topic).toBe('Lenient topic');
+    expect(result!.status).toBe('prior-status');
     expect(Array.isArray((result as unknown as { agents: unknown }).agents)).toBe(true);
     expect(result!).toHaveProperty('futureField', true);
   });
@@ -445,8 +445,8 @@ describe('readDiscussState', () => {
     const statePath = fixturePath('invalid-lenient-state.json');
     writeJsonFixture(statePath, {
       session_id: 'session-1',
-      topic: 'Legacy topic',
-      status: 'legacy-status',
+      topic: 'Lenient topic',
+      status: 'prior-status',
       agents: 'not-a-record',
     });
 

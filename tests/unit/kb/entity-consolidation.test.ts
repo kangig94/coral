@@ -140,7 +140,7 @@ describe('entity-consolidation', () => {
     expect(result.replacementMap['rare-entity']).toBe('rare-entity');
   });
 
-  it('folds duplicate canonical ids and canonical-vs-legacy alias conflicts into one deterministic replacement map', () => {
+  it('folds duplicate canonical ids and canonical-vs-prior alias conflicts into one deterministic replacement map', () => {
     const result = consolidateEntityGraph(
       {
         entityMeta: {

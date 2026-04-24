@@ -571,10 +571,10 @@ describe('ipc ensure', () => {
     writeDiscovery(root, {
       pid: process.pid,
       port: 4212,
-      token: 'legacy-token',
-      instanceId: 'legacy-coordinator',
+      token: 'retired-token',
+      instanceId: 'retired-coordinator',
     });
-    writeLockFile(root, process.pid, { instanceId: 'legacy-coordinator' });
+    writeLockFile(root, process.pid, { instanceId: 'retired-coordinator' });
 
     vi.spyOn(process, 'kill').mockImplementation((((pid: number, signal?: NodeJS.Signals | 0) => {
       if (pid === process.pid && signal === 0) return true;

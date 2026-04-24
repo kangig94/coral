@@ -15,7 +15,6 @@ import {
   sessionControllerFromProfile,
   type SessionControllerProfile,
   type SessionEntry,
-  type SessionHandle,
 } from '../entry.js';
 import type { ContinuitySnapshot, ProviderContinuityBlob } from '../continuity.js';
 import type {
@@ -296,7 +295,7 @@ export class SessionManager {
     }
   }
 
-  open(options: SessionAllocateOptions): SessionHandle {
+  open(options: SessionAllocateOptions): SessionEntry {
     const now = nowIsoString(this.time);
     const entry: SessionEntry = {
       sessionId: this.ids.uuid(),

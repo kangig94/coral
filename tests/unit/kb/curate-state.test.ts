@@ -312,7 +312,7 @@ describe('curate state', () => {
 
   it('treats missing community fingerprint rows as undefined when reading scheduler state', () => {
     writeCurateSchedulerState(runtime, {
-      processedThrough: cursor('coral-legacy', 8),
+      processedThrough: cursor('coral-prior', 8),
       discoveryHighSeq: 0,
       discoveryOffset: 0,
       lastRunDay: null,
@@ -328,7 +328,7 @@ describe('curate state', () => {
 
     expect(readCurateState(runtime)).toEqual(
       createCurateState({
-        processedThrough: cursor('coral-legacy', 8),
+        processedThrough: cursor('coral-prior', 8),
         initialized: true,
       }),
     );
