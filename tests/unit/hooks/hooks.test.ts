@@ -309,6 +309,34 @@ describe('kb-lookup-reminder.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).not.toContain('.coral/kb/notes/');
     expect(output.hookSpecificOutput.additionalContext).toContain('KB topics: codex, hooks');
   });
+
+  it('does not inherit the parent CORAL_KB_PATH in hook tests', () => {
+    const fixture = createFixture();
+    const fixtureKbDir = join(fixture.root, '.coral', 'kb', 'notes');
+    const parentKbDir = join(fixture.root, 'parent-kb', 'notes');
+    mkdirSync(fixtureKbDir, { recursive: true });
+    mkdirSync(parentKbDir, { recursive: true });
+    writeFileSync(join(fixtureKbDir, 'fixture-topic.md'), '# Fixture', 'utf-8');
+    writeFileSync(join(parentKbDir, 'parent-leak.md'), '# Parent Leak', 'utf-8');
+
+    const previousKbPath = process.env.CORAL_KB_PATH;
+    process.env.CORAL_KB_PATH = join(fixture.root, 'parent-kb');
+    try {
+      const result = runHook(KB_LOOKUP_REMINDER_HOOK, { hook_event_name: 'PostToolUseFailure' }, { HOME: fixture.root });
+
+      expect(result.status).toBe(0);
+
+      const output = expectHookOutput(result);
+      expect(output.hookSpecificOutput.additionalContext).toContain('KB topics: fixture');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('parent-leak');
+    } finally {
+      if (previousKbPath === undefined) {
+        delete process.env.CORAL_KB_PATH;
+      } else {
+        process.env.CORAL_KB_PATH = previousKbPath;
+      }
+    }
+  });
 });
 
 describe('hooks.json', () => {

@@ -35,12 +35,17 @@ function runHookUtilsModule(
   status: number;
 } {
   const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.CORAL_KB_PATH;
+
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
       delete env[key];
       continue;
     }
     env[key] = value;
+  }
+  if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
+    env.USERPROFILE = env.HOME;
   }
 
   const result = spawnSync(

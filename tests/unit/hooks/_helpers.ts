@@ -131,6 +131,7 @@ export function runHook(
 ): HookRunResult {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CORAL_CHILD;
+  delete env.CORAL_KB_PATH;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
@@ -138,6 +139,9 @@ export function runHook(
       continue;
     }
     env[key] = value;
+  }
+  if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
+    env.USERPROFILE = env.HOME;
   }
 
   const result = spawnSync('node', [hookPath], {
@@ -164,6 +168,7 @@ export async function runHookAsync(
 ): Promise<HookRunResult> {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CORAL_CHILD;
+  delete env.CORAL_KB_PATH;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
@@ -171,6 +176,9 @@ export async function runHookAsync(
       continue;
     }
     env[key] = value;
+  }
+  if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
+    env.USERPROFILE = env.HOME;
   }
 
   return await new Promise<HookRunResult>((resolve, reject) => {
