@@ -33,9 +33,11 @@ import { SessionManager } from '#src/sessions/shell/store.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import {
+  jobsDir,
   pluginRootNamespace,
   projectDataDir,
   resolveProjectSource,
+  sessionBase,
 } from '#src/infra/paths.js';
 import type { BackendServerController } from '#src/coordinator/coordinator.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
@@ -415,7 +417,7 @@ function stubSessionProjection(
     backendNamespace: string;
   },
 ): void {
-  const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(overrides.projectRoot));
+  const shardDir = join(sessionBase(), pluginRootNamespace(overrides.projectRoot));
 
   appendEvents(
     progressStore.getDb(),
@@ -466,7 +468,7 @@ describe('execution backend server', () => {
 
   beforeEach(() => {
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     mkdirSync(mockState.tmpRoot, { recursive: true });
     rmSync(JOBS_DIR, { recursive: true, force: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
@@ -4166,7 +4168,14 @@ describe('execution backend server', () => {
       projectRoot,
       backendNamespace: testBackendNamespace,
     });
-    progressStore.updatePhase(jobId, 'completed');
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+    });
+    progressStore.appendTerminal(jobId, session.sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer({ progressStore });
@@ -4197,15 +4206,6 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
     });
-    stubLaunchRecord(progressStore, {
-      jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-      jobKind: 'workflow',
-    });
-    progressStore.updatePhase(jobId, 'running');
     new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
 
     const backend = await startBackendServer({ progressStore });
@@ -4883,39 +4883,32 @@ describe('execution backend server', () => {
   });
 
   describe('recovery scan', () => {
-    it('marks live jobs missing launch records as stale status records', async () => {
+    it('treats clean initialized live jobs as ghost launches, not missing launch records', async () => {
       const progressStore = createProgressStore();
-      const jobId = 'missing-launch-job';
-      const projectRoot = createProjectRoot('missing-launch-project');
+      const jobId = 'clean-live-job';
+      const projectRoot = createProjectRoot('clean-live-project');
       const session = new SessionManager(projectRoot, runtime).allocate('codex', 'alpha', 'gpt-5', projectRoot);
 
       createdJobIds.add(jobId);
-      // Create a job with live phase (running) but no launch record.
       progressStore.initJob({
         jobId,
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot,
         backendNamespace: testBackendNamespace,
-        initialPhase: 'running',
+        initialPhase: 'launching',
       });
-      // Do not write a launch record; recovery should mark the job as unrecoverable.
       new SessionManager(projectRoot, runtime).claimForJobSync(session.sessionId, jobId);
+      expect(progressStore.readLaunchRecord(jobId)).not.toBeNull();
 
       const _backend = await startBackendServer({ progressStore });
 
-      // After recovery, the job should be marked as a missing_launch_record fault.
-      await vi.waitFor(() => {
-        expect(progressStore.readStatus(jobId)?.phase).toBe('error');
-      });
       const status = progressStore.readStatus(jobId);
       expect(status).toMatchObject({
         phase: 'error',
         result: {
           content: '',
-          outcome: {
-            kind: 'failed',
-          },
+          outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } },
         },
       });
 

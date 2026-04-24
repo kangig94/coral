@@ -179,14 +179,14 @@ describe('readStatusRecord', () => {
     expect(readStatusRecord(testJobId)).toBeNull();
   });
 
-  it('returns null when the launch event body is invalid JSON', () => {
+  it('throws when the launch event body is invalid JSON', () => {
     seedJobProjection({ launchBody: 'not json' });
-    expect(readStatusRecord(testJobId)).toBeNull();
+    expect(() => readStatusRecord(testJobId)).toThrow();
   });
 
-  it('returns null when the launch event body has the wrong shape', () => {
+  it('throws when the launch event body has the wrong shape', () => {
     seedJobProjection({ launchBody: { jobId: 'wrong-shape' } });
-    expect(readStatusRecord(testJobId)).toBeNull();
+    expect(() => readStatusRecord(testJobId)).toThrow();
   });
 
   it('returns the projection-backed status when the launch request event is absent', () => {
@@ -207,9 +207,9 @@ describe('readStatusRecord', () => {
     });
   });
 
-  it('returns null when the launch request body contains unexpected fields under the journal schema', () => {
+  it('throws when the launch request body contains unexpected fields under the journal schema', () => {
     seedJobProjection({ launchBody: { ...makeLaunchBody(), futureField: true } });
-    expect(readStatusRecord(testJobId)).toBeNull();
+    expect(() => readStatusRecord(testJobId)).toThrow();
   });
 });
 
@@ -233,20 +233,20 @@ describe('readProgressLog', () => {
     expect(readProgressLog(testJobId)).toEqual([]);
   });
 
-  it('returns an empty array when a progress event body is invalid JSON', () => {
+  it('throws when a progress event body is invalid JSON', () => {
     seedJobProjection({
       phase: 'running',
       events: [{ type: 'job.progress.emitted', body: 'not json' }],
     });
-    expect(readProgressLog(testJobId)).toEqual([]);
+    expect(() => readProgressLog(testJobId)).toThrow();
   });
 
-  it('returns an empty array when a progress event body has the wrong shape', () => {
+  it('throws when a progress event body has the wrong shape', () => {
     seedJobProjection({
       phase: 'running',
       events: [{ type: 'job.progress.emitted', body: { message: 'working' } }],
     });
-    expect(readProgressLog(testJobId)).toEqual([]);
+    expect(() => readProgressLog(testJobId)).toThrow();
   });
 
   it('skips non-message job progress events that do not surface to the client', () => {
@@ -257,12 +257,12 @@ describe('readProgressLog', () => {
     expect(readProgressLog(testJobId)).toEqual([]);
   });
 
-  it('returns an empty array when a progress event body contains unexpected fields', () => {
+  it('throws when a progress event body contains unexpected fields', () => {
     seedJobProjection({
       phase: 'running',
       events: [{ type: 'job.progress.emitted', body: { kind: 'message', message: 'working', futureField: 'data' } }],
     });
-    expect(readProgressLog(testJobId)).toEqual([]);
+    expect(() => readProgressLog(testJobId)).toThrow();
   });
 
   it('returns terminal records from journal events when present', () => {

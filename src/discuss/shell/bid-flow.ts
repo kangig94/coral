@@ -30,7 +30,7 @@ import {
   mustAnswerText,
   parseBidResponse,
   parseMustAnswerItem,
-} from './flow-shared.js';
+} from './flow-primitives.js';
 
 function buildBidBatch(
   ctx: DiscussContext,

@@ -31,7 +31,7 @@ import {
   makeDecisionContext,
   parseEpochEvaluation,
   renderTranscriptText,
-} from './flow-shared.js';
+} from './flow-primitives.js';
 
 async function collectFollowUpAnswer(
   ctx: DiscussContext,

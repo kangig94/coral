@@ -13,7 +13,6 @@ import type {
   JobProgress,
   JobRuntime,
   JobStatus,
-  LaunchState,
 } from './records.js';
 
 export type InitJobOptions = {
@@ -49,8 +48,6 @@ export interface JobProgressStore {
   rollbackJob(jobId: string): void;
   purgeFromCache(jobId: string): void;
   readStatus(jobId: string): JobStatus | null;
-  updatePhase(jobId: string, phase: JobPhase): void;
-  updateLaunchState(jobId: string, state: LaunchState, message?: string): void;
   writeResultMd(jobId: string, text: string): void;
   writeWorkflowResultMdOrThrow(jobId: string, text: string): void;
   nextEnqueueSequence(): number;

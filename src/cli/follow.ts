@@ -50,7 +50,7 @@ function emitWaitEvent(
   event: WaitStreamEvent,
   cursor: string | null,
   renderContext: WaitRenderContext,
-  renderCauseRef?: (ref: CauseRef, fallbackOutcome?: TerminalOutcome) => string,
+  renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string,
 ): void {
   let line: string;
   switch (event.type) {
@@ -112,13 +112,13 @@ function normalizeExitCode(exitCode: number | null | undefined): number {
 }
 
 function openCauseRenderer(projectRoot: string): {
-  readonly render?: (ref: CauseRef, fallbackOutcome?: TerminalOutcome) => string;
+  readonly render?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string;
   close(): void;
 } {
   try {
     const store = getSharedReadCoralStore(projectRoot, { announceMissing: false });
     return {
-      render: (ref, fallbackOutcome) => describeCauseRef(ref, store, fallbackOutcome),
+      render: (ref, terminalOutcomeDiagnostic) => describeCauseRef(ref, store, terminalOutcomeDiagnostic),
       close: () => {},
     };
   } catch {

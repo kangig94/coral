@@ -1,5 +1,4 @@
 import { formatError } from '../../infra/error-format.js';
-import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../records.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
@@ -7,7 +6,6 @@ import type { ProgressStore } from '../job-store.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProjectionDetail } from '../read-contracts.js';
 import type { JobStoreSnapshot } from './plan.js';
-import { withBackendNamespace } from './recovery-effects.js';
 
 function toExitRecord(detail: JobProjectionDetail): DurableProcessExit | null {
   if (!detail.exit) {
@@ -52,15 +50,7 @@ export function buildRecoverySnapshot(
 
   for (const jobId of jobIds) {
     const detail = progressStore.loadJobProjectionDetail(jobId);
-    let status = detail.status;
-    if (
-      status
-      && isLivePhase(status.phase)
-      && (typeof status.backendNamespace !== 'string' || status.backendNamespace.length === 0)
-    ) {
-      status = withBackendNamespace(status, namespace);
-      progressStore.writeStatus(jobId, status);
-    }
+    const status = detail.status;
 
     hasLaunchByJob.set(jobId, detail.launch !== null);
     hasRuntimeByJob.set(jobId, detail.runtime !== null);

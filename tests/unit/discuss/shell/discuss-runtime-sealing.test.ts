@@ -8,6 +8,7 @@ import type { AgentState, DiscussCreateInput, Result, TranscriptEntry } from '#s
 import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ProgressStore } from '#src/jobs/job-store.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
@@ -31,6 +32,11 @@ import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/sce
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
 const PLUGIN_ROOT = '/virtual/ac7/plugin';
+
+function resolveBackendNamespace(runtime: SimulationRuntime, pluginRoot: string): string {
+  const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
+  return typeof paths.pluginRootNamespace === 'function' ? paths.pluginRootNamespace(pluginRoot) : pluginRootNamespace(pluginRoot);
+}
 const START_TS = '2035-04-15T01:02:03.000Z';
 
 type SimulationDiscussHarness = {
@@ -113,7 +119,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const source = runtime.paths.projectSource(projectRoot);
   const progressStore = new ProgressStore(
-    runtime.paths.pluginRootNamespace(pluginRoot),
+    resolveBackendNamespace(runtime, pluginRoot),
     runtime,
     createDefaultUpcasterRegistry(),
   );
@@ -224,7 +230,7 @@ describe('AC7 runtime-sealed discuss behavior', () => {
     expect(harness.store.listRecoveryCandidates()).toEqual([
       expect.objectContaining({
         sessionId: 'sim-discuss-1',
-        sessionDir: 'journal:sim-discuss-1',
+        journalRef: 'sim-discuss-1',
       }),
     ]);
 

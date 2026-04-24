@@ -17,7 +17,7 @@ const projectSourceCache = new Map<string, string>();
 let _buildFlavor: 'prod' | 'dev' = 'prod';
 let _settledBuildFlavor: 'prod' | 'dev' | null = null;
 
-function fallbackProjectSource(projectRoot: string): string {
+function localProjectSource(projectRoot: string): string {
   return `local/${basename(projectRoot)}`;
 }
 
@@ -91,7 +91,7 @@ export function resolveProjectSource(projectRoot: string): string {
   const cached = projectSourceCache.get(projectRoot);
   if (cached) return cached;
 
-  let source = fallbackProjectSource(projectRoot);
+  let source = localProjectSource(projectRoot);
   try {
     const remote = execFileSync('git', ['remote', 'get-url', 'origin'], {
       cwd: projectRoot,
@@ -100,7 +100,7 @@ export function resolveProjectSource(projectRoot: string): string {
     }).trim();
     source = parseRemoteSource(remote) ?? source;
   } catch {
-    // Fall back to local source naming when the repo has no origin or is not a git checkout.
+    // Non-git projects use a deterministic local source name.
   }
 
   projectSourceCache.set(projectRoot, source);

@@ -1102,7 +1102,7 @@ src/
     services/                        — request/repair services factored out of coordinator.ts
       job-launch-service.ts, job-wait-service.ts, job-abort-service.ts,
       workflow-execution-service.ts, recovery-service.ts,
-      continuity-consumer.ts, execution-shared.ts
+      continuity-consumer.ts, execution-policies.ts
     equipment/                       — active equipment slot lifecycle + RPC surface
       slots.ts, lifecycle.ts, rpc.ts, runtime-activation.ts
     corpus-notify.ts                 — notify bridge from Corpus publication into ConsumerDriver

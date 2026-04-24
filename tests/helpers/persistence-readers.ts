@@ -2,13 +2,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/runtime/ports.js';
 import { currentBuildFlavor } from '#src/infra/paths.js';
+import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { JobProgress, JobStatus } from '#src/jobs/records.js';
+import { sessionEntrySchema, type SessionEntry } from '#src/sessions/entry.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/store/paths.js';
 import { loadJobProjectionDetail, readJobProgress } from '#src/store/queries/jobs.js';
 import { createDefaultStoreReadContext } from '#src/store/read-context.js';
-
-export { isValidSessionEntry, readSessionEntry } from '#src/sessions/shell/session-read.js';
 
 const nodeDiscussReaderStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'existsSync'> = {
   readFileSync: (filePath, encoding) => readFileSync(filePath, encoding),
@@ -20,6 +20,27 @@ const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 're
   ...nodeDiscussReaderStorage,
   mkdirSync: (dirPath, options) => mkdirSync(dirPath, options),
 };
+
+type SessionEntryStorage = Pick<StoragePort, 'readFileSync'>;
+
+export function isValidSessionEntry(value: unknown): value is SessionEntry {
+  return sessionEntrySchema.safeParse(value).success;
+}
+
+export function readSessionEntry(
+  sessionPath: string,
+  storage: SessionEntryStorage = nodeDiscussReaderStorage,
+): SessionEntry | null {
+  try {
+    const parsed = JSON.parse(storage.readFileSync(sessionPath, 'utf-8')) as unknown;
+    return isValidSessionEntry(parsed) ? parsed : null;
+  } catch (error: unknown) {
+    if (isNoEntryError(error) || error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) => T, fallback: T): T {
   const dbPath = storePaths(currentBuildFlavor()).dbFile;
@@ -35,8 +56,6 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
 
   try {
     return read(db);
-  } catch {
-    return fallback;
   } finally {
     db.close();
   }

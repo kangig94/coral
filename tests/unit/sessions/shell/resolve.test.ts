@@ -20,7 +20,7 @@ import { openStoreDatabase } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { ensureStoreSchemasDir } from '#src/store/schema-loader.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { currentBuildFlavor } from '#src/infra/paths.js';
+import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
 import { storePaths } from '#src/store/paths.js';
 import { createProjectionSessionLookup } from '#src/store/queries/sessions.js';
 import { createSessionLookup } from '#src/sessions/lookup.js';
@@ -201,7 +201,7 @@ describe('sessions shell resolve', () => {
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
-    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(workDir));
+    const shardDir = join(sessionBase(), pluginRootNamespace(workDir));
     const db = createSessionDb();
 
     try {

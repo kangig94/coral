@@ -7,8 +7,8 @@ import type { ProviderInstruction } from '../../providers/contract.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { nowIsoString } from '../../infra/time.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
-import { currentBuildFlavor } from '../../infra/paths.js';
-import type { Runtime, RuntimeIdsPort, RuntimePathsPort, RuntimeTimePort } from '../../runtime/ports.js';
+import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '../../infra/paths.js';
+import type { Runtime, RuntimeIdsPort, RuntimeTimePort } from '../../runtime/ports.js';
 import { openBackendStoreDb } from '../../store/db.js';
 import { composeReducers } from '../../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcasters.js';
@@ -55,11 +55,10 @@ export type SessionManagerOptions = {
 
 function toSessionNamespace(
   dir: string,
-  paths: Pick<RuntimePathsPort, 'pluginRootNamespace'>,
   ids: Pick<RuntimeIdsPort, 'sha256'>,
 ): string {
   try {
-    return paths.pluginRootNamespace(dir);
+    return pluginRootNamespace(dir);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return ids.sha256(resolve(dir)).slice(0, 12);
@@ -188,7 +187,6 @@ function createLocalSessionAppendEvents(db: Database, time: RuntimeTimePort): Ap
 }
 
 export class SessionManager {
-  private readonly paths: RuntimePathsPort;
   private readonly time: RuntimeTimePort;
   private readonly ids: RuntimeIdsPort;
   private readonly appendEvents: AppendEventsFn;
@@ -205,13 +203,12 @@ export class SessionManager {
     releaseEmitter: SessionReleasedEmitter = () => {},
     db?: Database,
   ) {
-    this.paths = runtime.paths;
     this.time = runtime.time;
     this.ids = runtime.ids;
     this.db = db ?? openBackendStoreDb(runtime, currentBuildFlavor());
     this.appendEvents = appendEvents ?? createLocalSessionAppendEvents(this.db, this.time);
     this.releaseEmitter = releaseEmitter;
-    this.sessionDir = join(this.paths.sessionBase(), toSessionNamespace(workingDirectory, this.paths, this.ids));
+    this.sessionDir = join(sessionBase(), toSessionNamespace(workingDirectory, this.ids));
   }
 
   static forProduction(
@@ -322,7 +319,7 @@ export class SessionManager {
               model,
               cwd: resolvedCwd,
               projectRoot: resolvedProjectRoot,
-              backendNamespace: this.paths.pluginRootNamespace(resolvedProjectRoot),
+              backendNamespace: pluginRootNamespace(resolvedProjectRoot),
             };
           })()
         : optionsOrProvider;

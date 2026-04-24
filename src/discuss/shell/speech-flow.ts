@@ -13,7 +13,7 @@ import {
 } from './runtime-build.js';
 import { DiscussManagerError, type DiscussContext } from './context.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './flow-shared.js';
+import { type SubflowResult, SPEECH_TIMEOUT_MS, ctxTs, makeDecisionContext } from './flow-primitives.js';
 
 export async function collectSpeech(
   ctx: DiscussContext,

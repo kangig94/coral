@@ -29,7 +29,7 @@ import {
 } from '#src/providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
@@ -55,6 +55,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
 import { toProviderSpec, type PreflightRuntime, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -146,9 +147,10 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const progressStore = options.progressStore ?? createProgressStore();
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? createProgressStore(),
+    progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -160,6 +162,7 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     sessionLookup: createSessionLookup(runtime),
+    ...createTestJobJournalDeps(progressStore, runtime),
   });
 }
 
@@ -615,7 +618,7 @@ describe('ExecutionService abort', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();

@@ -36,7 +36,6 @@ const mockState = vi.hoisted(() => ({
   discussSeed: vi.fn(),
   discussStart: vi.fn(),
   discussWatch: vi.fn(),
-  exemptIpcRequest: vi.fn(),
   discussBid: vi.fn(),
   discussSpeech: vi.fn(),
   discussAbort: vi.fn(),
@@ -110,7 +109,6 @@ vi.mock('#src/cli/command-client.js', async () => {
 
   return {
     ...actual,
-    exemptIpcRequest: mockState.exemptIpcRequest,
     makeClient: () => ({
       createSession: mockState.createSession,
       sendMessage: mockState.sendMessage,
@@ -268,7 +266,6 @@ describe('cli main routing', () => {
     mockState.getBackendStatusFull.mockReset();
     mockState.shutdownBackend.mockReset();
     mockState.streamWait.mockReset();
-    mockState.exemptIpcRequest.mockReset();
     mockState.discussSeed.mockReset();
     mockState.discussStart.mockReset();
     mockState.discussWatch.mockReset();
@@ -1482,7 +1479,7 @@ describe('cli main routing', () => {
     expect(stdout).toBe(`${formatDiscussParticipate(result)}\n`);
   });
 
-  it('routes discuss watch through the exempt IPC request path', async () => {
+  it('routes discuss watch through discussWatch', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1495,11 +1492,11 @@ describe('cli main routing', () => {
       events: [],
       cursor: 4,
     } as const;
-    mockState.exemptIpcRequest.mockResolvedValueOnce(result);
+    mockState.discussWatch.mockResolvedValueOnce(result);
 
     await program.parseAsync(['node', 'coral-cli', 'discuss', 'watch', '--session', 'session-1', '--cursor', '4']);
 
-    expect(mockState.exemptIpcRequest).toHaveBeenCalledWith('discuss.watch', { session: 'session-1', cursor: 4 });
+    expect(mockState.discussWatch).toHaveBeenCalledWith('session-1', 4);
     expect(stdout).toBe(`${formatDiscussWatch(result)}\n`);
   });
 

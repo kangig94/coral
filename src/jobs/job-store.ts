@@ -9,7 +9,7 @@ import { storePaths } from '../store/paths.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobProgress } from '../store/queries/jobs.js';
 import type { Runtime } from '../runtime/ports.js';
-import { currentBuildFlavor } from '../infra/paths.js';
+import { currentBuildFlavor, jobsDir } from '../infra/paths.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { formatElapsed } from '../infra/format-progress.js';
 import { nowIsoString } from '../infra/time.js';
@@ -19,14 +19,12 @@ import { isLivePhase } from './phase.js';
 import type { JobPhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore, TerminalWriteOptions } from './progress-store-contract.js';
 import {
-  cloneJobTerminal,
   normalizeJobTerminal,
   type JobLaunch,
   type JobRuntime,
   type JobStatus,
   type JobTerminal,
   type JobTerminalInput,
-  type LaunchState,
 } from './records.js';
 
 export type ProgressStoreOptions = {
@@ -58,7 +56,6 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly appendEvents: AppendEventsFn;
-  private readonly drafts = new Map<string, JobStatus>();
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
@@ -153,7 +150,7 @@ export class JobStore implements JobProgressStore {
   }
 
   jobDir(jobId: string): string {
-    return join(this.runtime.paths.jobsDir(), jobId);
+    return join(jobsDir(), jobId);
   }
 
   resultPath(jobId: string): string {
@@ -197,31 +194,6 @@ export class JobStore implements JobProgressStore {
     return this.applyNamespaceOverride(loadJobProjectionDetail(this.db, jobId, this), jobId);
   }
 
-  private cloneStatusRecord(status: JobStatus): JobStatus {
-    return {
-      ...status,
-      launch: { ...status.launch },
-      ...(status.continuity === undefined
-        ? {}
-        : {
-            continuity:
-              status.continuity === null
-                ? null
-                : {
-                    ...status.continuity,
-                    ...(status.continuity.providerContinuity === undefined
-                      ? {}
-                      : { providerContinuity: { ...status.continuity.providerContinuity } }),
-                  },
-          }),
-      ...(status.result === undefined
-        ? {}
-        : {
-            result: cloneJobTerminal(status.result),
-          }),
-    };
-  }
-
   private applyNamespaceOverrideToStatus(jobId: string, status: JobStatus): JobStatus {
     const override = this.namespaceOverrides.get(jobId);
     if (!override) {
@@ -232,24 +204,6 @@ export class JobStore implements JobProgressStore {
       ...status,
       backendNamespace: override.backendNamespace,
       ...(override.bundleHash === undefined ? {} : { bundleHash: override.bundleHash }),
-    };
-  }
-
-  private detailWithDraft(jobId: string) {
-    const detail = this.detail(jobId);
-    if (detail.status !== null) {
-      this.drafts.delete(jobId);
-      return detail;
-    }
-
-    const draft = this.drafts.get(jobId);
-    if (!draft) {
-      return detail;
-    }
-
-    return {
-      ...detail,
-      status: this.applyNamespaceOverrideToStatus(jobId, this.cloneStatusRecord(draft)),
     };
   }
 
@@ -281,7 +235,7 @@ export class JobStore implements JobProgressStore {
   }
 
   loadJobProjectionDetail(jobId: string) {
-    return this.detailWithDraft(jobId);
+    return this.detail(jobId);
   }
 
   readJobProgress(jobId: string) {
@@ -289,20 +243,10 @@ export class JobStore implements JobProgressStore {
   }
 
   listJobProjections() {
-    const projections = new Map<string, JobStatus>();
-
-    for (const { jobId, status } of listJobProjections(this.db, this)) {
-      projections.set(jobId, this.applyNamespaceOverrideToStatus(jobId, status));
-    }
-
-    for (const [jobId, draft] of this.drafts) {
-      if (projections.has(jobId)) {
-        continue;
-      }
-      projections.set(jobId, this.applyNamespaceOverrideToStatus(jobId, this.cloneStatusRecord(draft)));
-    }
-
-    return [...projections.entries()].map(([jobId, status]) => ({ jobId, status }));
+    return listJobProjections(this.db, this).map(({ jobId, status }) => ({
+      jobId,
+      status: this.applyNamespaceOverrideToStatus(jobId, status),
+    }));
   }
 
   appendEventsWithResult(inputs: readonly CoralEventInput[]): AppendedEvent[] {
@@ -320,15 +264,24 @@ export class JobStore implements JobProgressStore {
 
     const appended = this.appendEvents(inputs) ?? [];
 
-    for (const input of inputs) {
-      if (input.type === 'job.launch.requested' && input.stream.kind === 'job') {
-        this.drafts.delete(input.stream.id);
-        this.namespaceOverrides.delete(input.stream.id);
-      }
-    }
-
     for (const event of appended) {
       if (event.stream.kind !== 'job') {
+        continue;
+      }
+
+      if (event.type === 'job.launch.requested') {
+        const body = event.body as {
+          sessionId?: string;
+          provider?: string;
+          projectRoot?: string;
+        };
+        this.namespaceOverrides.delete(event.stream.id);
+        this.eventBus.emit('job:created', {
+          jobId: event.stream.id,
+          sessionId: body.sessionId ?? '',
+          provider: body.provider ?? '',
+          projectRoot: body.projectRoot ?? '',
+        });
         continue;
       }
 
@@ -365,30 +318,57 @@ export class JobStore implements JobProgressStore {
   initJob(opts: InitJobOptions): void {
     const dir = this.jobDir(opts.jobId);
     this.runtime.storage.mkdirSync(dir, { recursive: true });
-    const phase = opts.initialPhase ?? 'launching';
-    const draft: JobStatus = {
+    this.jobStartedAt.set(opts.jobId, this.runtime.time.now());
+    const createdAt = nowIsoString(this.runtime.time);
+    this.writeLaunchRecord(opts.jobId, {
       jobId: opts.jobId,
       sessionId: opts.sessionId,
       provider: opts.provider,
       projectRoot: opts.projectRoot,
       backendNamespace: opts.backendNamespace,
       ...(opts.bundleHash === undefined ? {} : { bundleHash: opts.bundleHash }),
-      ...(opts.jobKind === undefined ? {} : { jobKind: opts.jobKind }),
-      phase,
-      launch: {
-        state: phase === 'queued' ? 'queued' : 'pending',
-        updatedAt: nowIsoString(this.runtime.time),
+      jobKind: opts.jobKind ?? 'provider',
+      pool: 'default',
+      enqueueSequence: 0,
+      providerAction: 'exec',
+      request: {
+        prompt: '',
+        cwd: opts.projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
       },
-    };
-    this.drafts.set(opts.jobId, draft);
-    this.jobStartedAt.set(opts.jobId, this.runtime.time.now());
-    this.notifyWaiters();
-    this.eventBus.emit('job:created', {
-      jobId: opts.jobId,
-      sessionId: opts.sessionId,
-      provider: opts.provider,
-      projectRoot: opts.projectRoot,
+      createdAt,
     });
+
+    if (opts.initialPhase === 'queued') {
+      this.appendEvent({
+        type: 'job.queue.queued',
+        stream: { kind: 'job', id: opts.jobId },
+        namespace: opts.backendNamespace,
+        project: opts.projectRoot,
+        refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+        bodyVersion: 1,
+        body: {
+          queuePosition: 0,
+          runningJobIds: [],
+        },
+      });
+      return;
+    }
+
+    if (opts.initialPhase === 'running') {
+      this.appendEvent({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: opts.jobId },
+        namespace: opts.backendNamespace,
+        project: opts.projectRoot,
+        refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+        bodyVersion: 1,
+        body: {
+          startedAt: createdAt,
+        },
+      });
+    }
   }
 
   rollbackJob(jobId: string): void {
@@ -398,45 +378,12 @@ export class JobStore implements JobProgressStore {
   }
 
   purgeFromCache(jobId: string): void {
-    this.drafts.delete(jobId);
     this.namespaceOverrides.delete(jobId);
     this.jobStartedAt.delete(jobId);
   }
 
   readStatus(jobId: string): JobStatus | null {
-    const detail = this.detail(jobId);
-    if (detail.status) {
-      this.drafts.delete(jobId);
-      return detail.status;
-    }
-    return this.drafts.get(jobId) ?? null;
-  }
-
-  writeStatus(jobId: string, record: JobStatus): void {
-    this.drafts.set(jobId, { ...record });
-    this.notifyWaiters();
-  }
-
-  updateLaunchState(jobId: string, state: LaunchState, message?: string): void {
-    const draft = this.drafts.get(jobId);
-    if (!draft) {
-      return;
-    }
-    draft.launch = {
-      state,
-      message,
-      updatedAt: nowIsoString(this.runtime.time),
-    };
-    this.notifyWaiters();
-  }
-
-  updatePhase(jobId: string, phase: JobPhase): void {
-    const draft = this.drafts.get(jobId);
-    if (!draft) {
-      return;
-    }
-    draft.phase = phase;
-    this.notifyWaiters();
+    return this.detail(jobId).status;
   }
 
   writeResultMd(jobId: string, text: string): void {
@@ -473,6 +420,7 @@ export class JobStore implements JobProgressStore {
         jobId,
         sessionId: record.sessionId,
         ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
+        ...(record.workflowSlotId ? { workflowSlotId: record.workflowSlotId } : {}),
       },
       bodyVersion: 1,
       body: {
@@ -490,6 +438,7 @@ export class JobStore implements JobProgressStore {
           coralEnv: { ...record.request.coralEnv },
         },
         ...(record.parentWorkflowJobId ? { parentJobId: record.parentWorkflowJobId } : {}),
+        ...(record.workflowSlotId ? { workflowSlot: record.workflowSlotId } : {}),
         createdAt: record.createdAt,
       },
     });
@@ -501,7 +450,7 @@ export class JobStore implements JobProgressStore {
 
   writeRuntimeRecord(jobId: string, record: JobRuntime): void {
     const detail = this.detail(jobId);
-    const status = detail.status ?? this.drafts.get(jobId);
+    const status = detail.status;
     this.appendEvent({
       type: 'job.runtime.started',
       stream: { kind: 'job', id: jobId },
@@ -552,13 +501,6 @@ export class JobStore implements JobProgressStore {
   }
 
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void {
-    const draft = this.drafts.get(jobId);
-    if (draft) {
-      draft.backendNamespace = newNamespace;
-      if (newBundleHash !== undefined) {
-        draft.bundleHash = newBundleHash;
-      }
-    }
     const detail = this.detail(jobId);
     if (detail.launch !== null || detail.status !== null) {
       this.namespaceOverrides.set(jobId, {
@@ -570,11 +512,7 @@ export class JobStore implements JobProgressStore {
   }
 
   listJobIds(): string[] {
-    const ids = new Set<string>(this.drafts.keys());
-    for (const { jobId } of this.listJobProjections()) {
-      ids.add(jobId);
-    }
-    return [...ids];
+    return this.listJobProjections().map(({ jobId }) => jobId);
   }
 
   liveJobCountByNamespace(namespace: string): number {
@@ -584,16 +522,14 @@ export class JobStore implements JobProgressStore {
 
     return (
       this.countProjectedLiveJobsByNamespace(namespace) +
-      this.countLiveOverrideJobs((status) => status.backendNamespace === namespace) +
-      this.countLiveDraftJobs((status) => status.backendNamespace === namespace)
+      this.countLiveOverrideJobs((status) => status.backendNamespace === namespace)
     );
   }
 
   liveJobCount(bundleHash?: string): number {
     return (
       this.countProjectedLiveJobs(bundleHash) +
-      this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash) +
-      this.countLiveDraftJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash)
+      this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash)
     );
   }
 
@@ -619,7 +555,7 @@ export class JobStore implements JobProgressStore {
   appendProgress(jobId: string, sessionId: string, message: string): number {
     const stamped = formatProgressMessage(this.jobStartedAt.get(jobId), this.runtime.time.now(), message);
     const detail = this.detail(jobId);
-    const status = detail.status ?? this.drafts.get(jobId);
+    const status = detail.status;
     const [appended] = this.appendEventsWithResult([{
       type: 'job.progress.emitted',
       stream: { kind: 'job', id: jobId },
@@ -647,8 +583,7 @@ export class JobStore implements JobProgressStore {
     options: TerminalWriteOptions = {},
   ): number {
     const detail = this.detail(jobId);
-    const hasLaunchProjection = detail.launch !== null;
-    const status = detail.status ?? this.drafts.get(jobId);
+    const status = detail.status;
     const continuity = options.continuity ?? null;
     const terminal = normalizeJobTerminal(result);
     const diagnostics = options.diagnostics;
@@ -680,35 +615,6 @@ export class JobStore implements JobProgressStore {
           : {}),
       },
     }]);
-    if (!hasLaunchProjection) {
-      const draft = this.drafts.get(jobId);
-      if (draft) {
-        const previousPhase = draft.phase;
-        draft.phase = phase;
-        draft.result = cloneJobTerminal(terminal);
-        draft.continuity =
-          continuity === null
-            ? null
-            : {
-                ...continuity,
-                ...(continuity.providerContinuity === undefined
-                  ? {}
-                  : { providerContinuity: { ...continuity.providerContinuity } }),
-              };
-        draft.launch = {
-          state: phase === 'completed' ? 'ready' : 'error',
-          updatedAt: nowIsoString(this.runtime.time),
-        };
-        this.notifyWaiters();
-        if (previousPhase !== draft.phase) {
-          this.eventBus.emit('job:phase_changed', {
-            jobId,
-            phase: draft.phase,
-            previousPhase,
-          });
-        }
-      }
-    }
     return appended?.seq ?? 0;
   }
 
@@ -719,18 +625,6 @@ export class JobStore implements JobProgressStore {
     options: TerminalWriteOptions = {},
   ): void {
     this.appendTerminal(jobId, this.readStatus(jobId)?.sessionId ?? '', result, phase, options);
-  }
-
-  private countLiveDraftJobs(predicate: (status: JobStatus) => boolean): number {
-    let count = 0;
-
-    for (const draft of this.drafts.values()) {
-      if (isLivePhase(draft.phase) && predicate(draft)) {
-        count += 1;
-      }
-    }
-
-    return count;
   }
 
   private countLiveOverrideJobs(predicate: (status: JobStatus) => boolean): number {

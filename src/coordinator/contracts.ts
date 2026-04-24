@@ -146,14 +146,14 @@ export type ExecutionServiceDeps = {
     discoverPluginRoot: (namespace: string) => string | null;
   };
   appendEvents?: AppendEventsFn;
-  loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
-  readJobProgress?: (jobId: string) => JobProgress[];
-  subscribeJobEvents?: (options: {
+  loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
+  readJobProgress: (jobId: string) => JobProgress[];
+  subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobProgress>;
-  getCurrentJournalSeq?: () => number;
+  getCurrentJournalSeq: () => number;
   sessionLookup?: SessionLookup;
 };
 

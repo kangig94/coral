@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StoragePort } from '#src/runtime/ports.js';
+import { pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { createEmptyRegistry } from '#src/store/envelope.js';
@@ -27,8 +28,8 @@ const nodeStorage: Pick<StoragePort, 'readFileSync' | 'readdirSync'> = {
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
-function resolveSessionDir(projectRoot: string, runtime: ReturnType<typeof createRealRuntime>): string {
-  return join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
+function resolveSessionDir(projectRoot: string): string {
+  return join(sessionBase(), pluginRootNamespace(projectRoot));
 }
 
 afterEach(() => {
@@ -86,7 +87,7 @@ describe('sessions consumer-driver notify', () => {
         model: 'gpt-5',
         cwd: workDir,
         projectRoot: workDir,
-        backendNamespace: runtime.paths.pluginRootNamespace(workDir),
+        backendNamespace: pluginRootNamespace(workDir),
       });
 
       await driver.drainAll();
@@ -105,7 +106,7 @@ describe('sessions consumer-driver notify', () => {
         provider: 'codex',
         resumable: 0,
         conversation_ref: null,
-        shard_dir: resolveSessionDir(workDir, runtime),
+        shard_dir: resolveSessionDir(workDir),
         last_seq: 1,
       });
     } finally {

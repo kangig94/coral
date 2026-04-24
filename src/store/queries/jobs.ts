@@ -47,6 +47,7 @@ type JobLaunchProjection = {
     coralEnv: Record<string, string>;
   };
   parentWorkflowJobId?: string;
+  workflowSlotId?: string;
   createdAt: string;
 };
 
@@ -395,6 +396,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       coralEnv: { ...body.request.coralEnv },
     },
     parentWorkflowJobId: body.parentJobId,
+    workflowSlotId: body.workflowSlot,
     createdAt: body.createdAt,
   };
 }

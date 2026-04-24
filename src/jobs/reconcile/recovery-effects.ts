@@ -1,7 +1,5 @@
 import { formatError } from '../../infra/error-format.js';
 import {
-  describeJobProgressFault,
-  describeTerminalOutcome,
   type JobLifecycleFault,
   type JobProgressFault,
   type TerminalOutcome,
@@ -18,18 +16,6 @@ import {
 } from '../shell/fault-materializer.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
-
-function describeJobRecoveryError(fault: JobRecoveryError): string {
-  switch (fault.kind) {
-    case 'missing_launch_record':
-    case 'recovery_parse_failed':
-      return describeJobProgressFault(fault);
-    case 'ghost_launch':
-    case 'wrapper_lost':
-    case 'wrapper_crashed':
-      return describeTerminalOutcome({ kind: 'job_fault', fault });
-  }
-}
 
 export function withBackendNamespace(status: JobStatus, namespace: string): JobStatus {
   return {
@@ -49,13 +35,6 @@ export function listLiveJobs(progressStore: ProgressStore, namespace: string): J
       typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
         ? status.backendNamespace
         : null;
-    if (backendNamespace === null) {
-      const rewritten = withBackendNamespace(status, namespace);
-      progressStore.writeStatus(jobId, rewritten);
-      results.push(rewritten);
-      continue;
-    }
-
     if (backendNamespace === namespace) {
       results.push(status);
     }
@@ -68,7 +47,7 @@ export function markJobAsError(
   progressStore: Pick<
     ProgressStore,
     'appendEventsWithResult' | 'appendTerminal' | 'hasLaunchRecord' | 'markTerminalStatus' | 'readStatus'
-    | 'updateLaunchState' | 'writeLaunchRecord' | 'writeStatus' | 'writeWorkflowResultMdOrThrow'
+    | 'writeLaunchRecord' | 'writeWorkflowResultMdOrThrow'
   >,
   status: JobStatus,
   fault: JobRecoveryError,
@@ -82,27 +61,15 @@ export function markJobAsError(
     jobId: status.jobId,
     sessionId: status.sessionId,
   });
-  const message = describeJobRecoveryError(fault);
   const terminalResult: JobTerminalInput = { content: '', outcome };
   const diagnostics: JobTerminalDiagnostics | undefined =
     status.jobKind === 'workflow' ? { workflow: { steps: [] } } : undefined;
-  progressStore.updateLaunchState(status.jobId, 'error', message);
   if (status.jobKind === 'workflow') {
     try {
       progressStore.writeWorkflowResultMdOrThrow(status.jobId, '');
     } catch (err) {
       log(`Failed to write workflow result for ${status.jobId}: ${formatError(err)}\n`);
     }
-  }
-  if (!progressStore.hasLaunchRecord(status.jobId)) {
-    progressStore.updateLaunchState(status.jobId, 'error', message);
-    const current = progressStore.readStatus(status.jobId) ?? status;
-    progressStore.writeStatus(status.jobId, {
-      ...current,
-      phase: 'error',
-      result: { ...terminalResult, durationMs: terminalResult.durationMs ?? 0 },
-    });
-    return;
   }
   try {
     progressStore.appendTerminal(status.jobId, status.sessionId, terminalResult, 'error', { diagnostics });

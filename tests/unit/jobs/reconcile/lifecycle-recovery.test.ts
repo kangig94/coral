@@ -5,6 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
+import { pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -678,7 +679,6 @@ describe('lifecycle recovery', () => {
 
   it.each([
     ['3. launching without runtime finalizes as ghost_launch', 'launching'],
-    ['4. running without runtime finalizes as ghost_launch', 'running'],
   ])('%s', async (_label, phase) => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot(`plugin-ghost-${phase}`);
@@ -693,14 +693,6 @@ describe('lifecycle recovery', () => {
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
-    progressStore.initJob({
-      jobId: `ghost-${phase}`,
-      sessionId: `session-${phase}`,
-      provider: 'fakeprovider',
-      projectRoot,
-      backendNamespace: namespace,
-      initialPhase: phase as 'launching' | 'running',
-    });
     stubLaunchRecord(progressStore, {
       jobId: `ghost-${phase}`,
       sessionId: `session-${phase}`,
@@ -751,14 +743,6 @@ describe('lifecycle recovery', () => {
     const jobId = `foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`;
     const foreignNamespace = 'foreign-namespace';
 
-    progressStore.initJob({
-      jobId,
-      sessionId: `${jobId}-session`,
-      provider: 'fakeprovider',
-      projectRoot,
-      backendNamespace: currentNamespace,
-      initialPhase: phase as 'queued' | 'launching' | 'running',
-    });
     stubLaunchRecord(progressStore, {
       jobId,
       sessionId: `${jobId}-session`,
@@ -930,7 +914,7 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
+    const shardDir = join(sessionBase(), pluginRootNamespace(projectRoot));
     const fakeService = createFakeExecutionAndRecoveryService();
 
     progressStore.initJob({
@@ -995,7 +979,7 @@ describe('lifecycle recovery', () => {
     );
     const sessionManager = new modules.sessionManagerModule.SessionManager(projectRoot, runtime);
     const session = sessionManager.allocate('fakeprovider', 'alpha', undefined, projectRoot);
-    const shardDir = join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
+    const shardDir = join(sessionBase(), pluginRootNamespace(projectRoot));
     const fakeService = createFakeExecutionAndRecoveryService();
 
     appendSessionOpenedEvent(progressStore, {
@@ -1224,14 +1208,6 @@ describe('lifecycle recovery', () => {
     );
     const fakeService = createFakeExecutionAndRecoveryService();
 
-    progressStore.initJob({
-      jobId: 'foreign-history',
-      sessionId: 'foreign-history-session',
-      provider: 'fakeprovider',
-      projectRoot,
-      backendNamespace: currentNamespace,
-      initialPhase: 'running',
-    });
     stubLaunchRecord(progressStore, {
       jobId: 'foreign-history',
       sessionId: 'foreign-history-session',

@@ -27,11 +27,11 @@ function createStore(): { db: InstanceType<typeof Database>; store: CoralStore }
   return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 
-describe('describeCauseRef phantom seq fallback', () => {
-  it('falls back to the terminal outcome describer when the cause ref event is missing', () => {
+describe('describeCauseRef missing cause diagnostic', () => {
+  it('renders a missing-cause diagnostic with the terminal outcome context', () => {
     const { db, store } = createStore();
     try {
-      const fallbackOutcome: TerminalOutcome = {
+      const terminalOutcome: TerminalOutcome = {
         kind: 'failed',
         causeRef: {
           stream: { kind: 'job', id: 'job-phantom' },
@@ -46,9 +46,11 @@ describe('describeCauseRef phantom seq fallback', () => {
             seq: 1,
           },
           store,
-          fallbackOutcome,
+          terminalOutcome,
         ),
-      ).toBe(describeTerminalOutcome(fallbackOutcome));
+      ).toBe(
+        `<missing job/job-phantom/1> Original terminal outcome: ${describeTerminalOutcome(terminalOutcome)}`,
+      );
     } finally {
       db.close();
     }

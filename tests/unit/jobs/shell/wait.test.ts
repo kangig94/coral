@@ -29,7 +29,7 @@ import {
 } from '#src/providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
@@ -146,9 +146,48 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const progressStore = options.progressStore ?? createProgressStore();
+  const getCurrentJournalSeq = () =>
+    (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  const subscribeJobEvents = async function* ({
+    afterSeq,
+    jobIds,
+    abortSignal,
+  }: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }): AsyncIterable<JobProgress> {
+    let observedSeq = afterSeq;
+    const ids = new Set(jobIds);
+    const waitForAbort = () =>
+      abortSignal
+        ? new Promise<void>((resolve) => {
+            if (abortSignal.aborted) {
+              resolve();
+              return;
+            }
+            abortSignal.addEventListener('abort', () => resolve(), { once: true });
+          })
+        : new Promise<void>(() => {});
+    while (!abortSignal?.aborted) {
+      const events = [...ids]
+        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .sort((left, right) => left.seq - right.seq);
+      if (events.length > 0) {
+        for (const event of events) {
+          observedSeq = Math.max(observedSeq, event.seq);
+          yield event;
+        }
+        continue;
+      }
+      const seq = progressStore.getChangeSeq();
+      await Promise.race([progressStore.waitForChange(seq), runtime.time.sleep(100, { signal: abortSignal }), waitForAbort()]);
+    }
+  };
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? createProgressStore(),
+    progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -160,6 +199,10 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     sessionLookup: createSessionLookup(runtime),
+    loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+    readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
+    subscribeJobEvents,
+    getCurrentJournalSeq,
   });
 }
 
@@ -527,24 +570,6 @@ function createClaimedJob(
     backendNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
-  progressStore.writeLaunchRecord(jobId, {
-    jobId,
-    sessionId: session.sessionId,
-    provider: 'codex',
-    projectRoot: ctx.projectRoot,
-    backendNamespace: TEST_BACKEND_NAMESPACE,
-    jobKind: 'provider',
-    pool: 'default',
-    enqueueSequence: 0,
-    providerAction: 'exec',
-    request: {
-      prompt: 'wait job',
-      cwd: ctx.projectRoot,
-      bypassPermissions: false,
-      coralEnv: {},
-    },
-    createdAt: '2026-03-06T00:00:00.000Z',
-  });
   expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
   return {
     jobId,
@@ -633,7 +658,7 @@ describe('ExecutionService wait', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
@@ -661,20 +686,18 @@ describe('ExecutionService wait', () => {
 
   it('awaitLaunch returns ready once the launch state changes', async () => {
     const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const jobId = `test-await-launch-${Date.now()}`;
-    progressStore.initJob({
-      jobId,
-      sessionId: 'test-session',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: 'test-ns',
-    });
+    const { jobId, progressStore } = createClaimedJob(service, ctx, { initialPhase: 'launching' });
 
     setTimeout(() => {
-      progressStore.updateLaunchState(jobId, 'ready');
+      progressStore.writeRuntimeRecord(jobId, {
+        transport: 'app-server',
+        startTime: isoAt(runtime.time.now()),
+        providerMeta: {
+          provider: 'codex',
+          leaseState: 'waiting',
+          recoveryPolicy: 'session_continuity_only',
+        },
+      });
     }, 10);
 
     await expect(service.awaitLaunch(jobId, 1000)).resolves.toBe('ready');
@@ -847,7 +870,7 @@ describe('ExecutionService wait', () => {
     ]);
   });
 
-  it('waitStream yields terminal from status when no terminal event is replayed', async () => {
+  it('waitStream does not synthesize terminal events from terminal status without Journal evidence', async () => {
     const service = createService(ctx);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -868,71 +891,16 @@ describe('ExecutionService wait', () => {
     vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
 
     const events: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
+    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 0.001 })) {
       events.push(event);
     }
 
     expect(events).toEqual([
       {
-        type: 'terminal',
-        jobId: 'job-1',
-        seq: 1,
-        remainingJobIds: [],
-        resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done', outcome: { kind: 'completed' } },
-        continuity: null,
+        type: 'waiting',
+        waitingJobIds: ['job-1'],
       },
     ]);
-  });
-
-  it('waitStream re-reads terminal status after replay before waiting for more changes', async () => {
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const runningStatus: JobStatus = {
-      jobId: 'job-1',
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      phase: 'running',
-      launch: {
-        state: 'ready',
-        updatedAt: '2026-03-06T00:00:00.000Z',
-      },
-    };
-    const terminalStatus: JobStatus = {
-      ...runningStatus,
-      phase: 'completed',
-      result: { content: 'done', outcome: { kind: 'completed' } },
-    };
-
-    vi.spyOn(progressStore, 'readStatus')
-      .mockImplementationOnce(() => runningStatus)
-      .mockImplementation(() => terminalStatus);
-    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
-    const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockImplementation(() => {
-      throw new Error('waitForChange should not be called once terminal status is visible');
-    });
-
-    const events: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 600 })) {
-      events.push(event);
-    }
-
-    expect(events).toEqual([
-      {
-        type: 'terminal',
-        jobId: 'job-1',
-        seq: 1,
-        remainingJobIds: [],
-        resultPath: `${JOBS_DIR}/job-1/result.md`,
-        result: { content: 'done', outcome: { kind: 'completed' } },
-        continuity: null,
-      },
-    ]);
-    expect(waitForChange).not.toHaveBeenCalled();
   });
 
   it('waitStream emits a replayed terminal persisted one millisecond before the deadline', async () => {
@@ -979,39 +947,31 @@ describe('ExecutionService wait', () => {
     try {
       const startMs = Date.parse('2026-03-06T00:00:00.000Z');
       const timeoutMs = 100;
-      const deadlineMs = startMs + timeoutMs;
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } =
-        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-        getInternals(service);
-
-      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'readJobProgress')
-        .mockImplementationOnce(() => [])
-        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
-      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
+      const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+      setTimeout(() => {
+        progressStore.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+      }, timeoutMs);
 
       const iterator = service
-        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })
+        .waitStream({ jobIds: [jobId], timeoutSeconds: timeoutMs / 1000 })
         [Symbol.asyncIterator]();
       const nextPromise = iterator.next();
 
       await flushMicrotasks();
-      expect(waitForChange).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(timeoutMs + 5);
+      await vi.advanceTimersByTimeAsync(timeoutMs);
 
       await expect(nextPromise).resolves.toEqual({
         done: false,
         value: {
           type: 'terminal',
-          jobId: 'job-1',
-          seq: 1,
+          jobId,
+          seq: expect.any(Number),
           remainingJobIds: [],
-          resultPath: jobResultPath('job-1'),
-          result: { content: 'done', outcome: { kind: 'completed' } },
+          resultPath: jobResultPath(jobId),
+          result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
           continuity: null,
         },
       });
@@ -1105,121 +1065,6 @@ describe('ExecutionService wait', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('status-only fallback on the final on-time poll returns terminal for waitStream and waitStreamOnce', async () => {
-    vi.useFakeTimers();
-    try {
-      const startMs = Date.parse('2026-03-06T00:00:00.000Z');
-      const timeoutMs = 100;
-
-      vi.setSystemTime(startMs);
-      const streamService = createService(ctx);
-      const { progressStore: streamStore } =
-        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-        getInternals(streamService);
-      const streamRunning = makeStatusRecord(ctx, 'job-1', 'running');
-      const streamTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
-
-      vi.spyOn(streamStore, 'readStatus')
-        .mockImplementationOnce(() => streamRunning)
-        .mockImplementationOnce(() => streamRunning)
-        .mockImplementationOnce(() => streamRunning)
-        .mockImplementationOnce(() => streamTerminal);
-      vi.spyOn(streamStore, 'readJobProgress').mockReturnValue([]);
-      const streamWaitForChange = vi.spyOn(streamStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
-
-      const streamIterator = streamService
-        .waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })
-        [Symbol.asyncIterator]();
-      const streamNext = streamIterator.next();
-
-      await flushMicrotasks();
-      expect(streamWaitForChange).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(timeoutMs);
-
-      await expect(streamNext).resolves.toEqual({
-        done: false,
-        value: {
-          type: 'terminal',
-          jobId: 'job-1',
-          seq: 1,
-          remainingJobIds: [],
-          resultPath: jobResultPath('job-1'),
-          result: { content: 'done', outcome: { kind: 'completed' } },
-          continuity: null,
-        },
-      });
-      await expect(streamIterator.next()).resolves.toEqual({ done: true, value: undefined });
-
-      vi.setSystemTime(startMs);
-      const onceService = createService(ctx);
-      const { progressStore: onceStore } =
-        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-        getInternals(onceService);
-      const onceRunning = makeStatusRecord(ctx, 'job-1', 'running');
-      const onceTerminal = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
-
-      vi.spyOn(onceStore, 'readStatus')
-        .mockImplementationOnce(() => onceRunning)
-        .mockImplementationOnce(() => onceRunning)
-        .mockImplementationOnce(() => onceRunning)
-        .mockImplementationOnce(() => onceTerminal);
-      vi.spyOn(onceStore, 'readJobProgress').mockReturnValue([]);
-      const onceWaitForChange = vi.spyOn(onceStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
-
-      const oncePromise = onceService.waitStreamOnce('job-1', timeoutMs);
-
-      await flushMicrotasks();
-      expect(onceWaitForChange).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(timeoutMs);
-
-      await expect(oncePromise).resolves.toEqual({
-        content: 'done',
-        continuity: null,
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('status-only fallback first observed after the deadline yields waiting', async () => {
-    const startMs = Date.parse('2026-03-06T00:00:00.000Z');
-    const timeoutMs = 100;
-    let currentTime = startMs;
-
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
-    const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
-
-    vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
-    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
-      currentTime += ms + 5;
-    });
-
-    vi.spyOn(progressStore, 'readStatus')
-      .mockImplementationOnce(() => runningStatus)
-      .mockImplementationOnce(() => runningStatus)
-      .mockImplementation(() => terminalStatus);
-    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
-    vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
-
-    const events: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
-      events.push(event);
-    }
-
-    expect(events).toEqual([
-      {
-        type: 'waiting',
-        waitingJobIds: ['job-1'],
-      },
-    ]);
   });
 
   it('replayed terminals with invalid or missing ts use the observation-time rule', async () => {
@@ -1356,25 +1201,17 @@ describe('ExecutionService wait', () => {
     try {
       const startMs = Date.parse('2026-03-06T00:00:00.000Z');
       const timeoutMs = 180_000;
-      const deadlineMs = startMs + timeoutMs;
       vi.setSystemTime(startMs);
 
       const service = createService(ctx);
-      const { progressStore } =
-        /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-        getInternals(service);
+      const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+      setTimeout(() => {
+        progressStore.appendTerminal(jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } }, 'completed');
+      }, timeoutMs);
 
-      vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'readJobProgress')
-        .mockImplementationOnce(() => [])
-        .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
-      const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
-
-      const waitOnce = service.waitStreamOnce('job-1', timeoutMs);
+      const waitOnce = service.waitStreamOnce(jobId, timeoutMs);
 
       await flushMicrotasks();
-      expect(waitForChange).toHaveBeenCalledTimes(1);
-
       await vi.advanceTimersByTimeAsync(timeoutMs + 5);
 
       await expect(waitOnce).resolves.toEqual({

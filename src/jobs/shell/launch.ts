@@ -13,7 +13,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import type { LaunchDecision } from '../launch.js';
 import { isTerminalPhase } from '../phase.js';
 import type { JobPhase } from '../phase.js';
-import type { JobLaunch, JobStatus, JobTerminalInput } from '../records.js';
+import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import { phaseForOutcome, type AbortReason, type CauseRef, type JobLaunchRejected, type TerminalOutcome } from '../outcome.js';
 import { type AbortRegistry } from './abort-registry.js';
@@ -46,10 +46,6 @@ const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> =
   checkpoint: () => missingContinuityMiddleware('checkpoint'),
   transportClosed: () => missingContinuityMiddleware('transportClosed'),
 };
-
-function canAdvanceLaunchState(status: JobStatus | null): status is JobStatus {
-  return status !== null && !isTerminalPhase(status.phase) && status.launch.state !== 'ready';
-}
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
@@ -247,42 +243,33 @@ export class LaunchOrchestrator {
     const createdAt = nowIsoString(this.deps.runtime.time);
 
     abortRegistry.register(jobId);
-    this.appendJobEvent(
+    progressStore.writeLaunchRecord(jobId, {
       jobId,
       sessionId,
-      'job.launch.requested',
-      {
-        sessionId,
-        provider: provider.name,
-        providerAction: request.action,
-        projectRoot,
-        backendNamespace,
-        bundleHash,
-        jobKind: 'provider',
-        pool,
-        enqueueSequence,
-        request: {
-          prompt: request.prompt,
-          name: request.name,
-          model: request.model,
-          cwd: request.cwd ?? '',
-          effort: request.effort,
-          bypassPermissions: request.bypassPermissions,
-          systemPrompt: request.systemPrompt,
-          conversationRef: request.conversationRef,
-          instruction: request.instruction,
-          coralEnv: request.coralEnv,
-        },
-        parentJobId: opts.parentWorkflowJobId,
-        workflowSlot: opts.workflowSlotId,
-        createdAt,
+      provider: provider.name,
+      providerAction: request.action,
+      projectRoot,
+      backendNamespace,
+      bundleHash,
+      jobKind: 'provider',
+      pool,
+      enqueueSequence,
+      request: {
+        prompt: request.prompt,
+        name: request.name,
+        model: request.model,
+        cwd: request.cwd ?? '',
+        effort: request.effort,
+        bypassPermissions: request.bypassPermissions,
+        systemPrompt: request.systemPrompt,
+        conversationRef: request.conversationRef,
+        instruction: request.instruction,
+        coralEnv: request.coralEnv,
       },
-      {
-        parentJobId: opts.parentWorkflowJobId,
-        workflowSlotId: opts.workflowSlotId,
-        projectRoot,
-      },
-    );
+      parentWorkflowJobId: opts.parentWorkflowJobId,
+      workflowSlotId: opts.workflowSlotId,
+      createdAt,
+    });
 
     const decisionStatus = admission.type === 'queued' ? 'queued' : 'running';
     if (admission.type === 'queued') {
@@ -326,7 +313,6 @@ export class LaunchOrchestrator {
           }
 
           permitAcquired = true;
-          this.markJobLaunching(jobId);
           this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
           this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
@@ -366,7 +352,6 @@ export class LaunchOrchestrator {
           return;
         }
 
-        this.markJobLaunching(jobId);
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
@@ -392,12 +377,8 @@ export class LaunchOrchestrator {
     sessionManager.releaseJob(sessionId, jobId);
   }
 
-  markJobRunning(jobId: string): void {
-    if (this.deps.progressStore.readLaunchRecord(jobId) !== null) {
-      return;
-    }
-    this.deps.progressStore.updateLaunchState(jobId, 'ready');
-    this.deps.progressStore.updatePhase(jobId, 'running');
+  markJobRunning(_jobId: string): void {
+    // Runtime state is projected from job.runtime.started.
   }
 
   writeJobTerminal(
@@ -452,10 +433,6 @@ export class LaunchOrchestrator {
           },
         },
         appendProgress: (message) => {
-          const currentStatus = this.deps.progressStore.readStatus(jobId);
-          if (canAdvanceLaunchState(currentStatus)) {
-            this.markJobRunning(jobId);
-          }
           this.appendProgressEvent(jobId, sessionId, message);
         },
         appendTerminal: (event) => {
@@ -572,10 +549,6 @@ export class LaunchOrchestrator {
     continuity: JobContinuitySnapshot | null,
   ): void {
     const { progressStore } = this.deps;
-    if (canAdvanceLaunchState(progressStore.readStatus(jobId))) {
-      this.markJobReady(jobId);
-    }
-
     const metadata = this.resolveEventMetadata(jobId, projectRoot);
     const materialized = materializeProviderTerminal(
       progressStore,
@@ -607,13 +580,6 @@ export class LaunchOrchestrator {
       throw new Error(`Expected claimed session ${sessionId} for job ${jobId}.`);
     }
     return session.version;
-  }
-
-  private markJobLaunching(jobId: string): void {
-    if (this.deps.progressStore.readLaunchRecord(jobId) !== null) {
-      return;
-    }
-    this.deps.progressStore.updatePhase(jobId, 'launching');
   }
 
   private async waitForQueuedPermit(admission: QueuedHandle, signal: AbortSignal): Promise<'granted' | 'aborted'> {
@@ -653,13 +619,6 @@ export class LaunchOrchestrator {
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
-  }
-
-  private markJobReady(jobId: string): void {
-    if (this.deps.progressStore.readLaunchRecord(jobId) !== null) {
-      return;
-    }
-    this.deps.progressStore.updateLaunchState(jobId, 'ready');
   }
 
   private finishAbortedJob(jobId: string, sessionId: string, reason: AbortReason): void {

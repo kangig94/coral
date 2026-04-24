@@ -5,6 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { jobsDir } from '#src/infra/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
@@ -219,8 +220,8 @@ function stubRuntimeRecord(
 ): void {
   progressStore.writeRuntimeRecord(options.jobId, {
     pid: options.pid,
-    stdoutPath: join(runtime.paths.jobsDir(), options.jobId, 'stdout'),
-    stderrPath: join(runtime.paths.jobsDir(), options.jobId, 'stderr'),
+    stdoutPath: join(jobsDir(), options.jobId, 'stdout'),
+    stderrPath: join(jobsDir(), options.jobId, 'stderr'),
     startTime: options.startTime ?? '2026-04-17T00:00:00.000Z',
   });
 }

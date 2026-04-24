@@ -73,16 +73,19 @@ const RETIRED_CLAUDE_SHARED_UTILS = ['src', 'providers', 'claude', 'shared-utils
 const RETIRED_STRATEGY_SHARED = ['src', 'expansion', 'strategies', 'shared.ts'].join('/');
 const RETIRED_WORKFLOW_INTERNAL_SHARED = ['src', 'workflow', 'internal', 'shared.ts'].join('/');
 const RETIRED_DISCUSS_READ_HELPERS = ['src', 'discuss', 'shell', 'read-helpers.ts'].join('/');
+const RETIRED_DISCUSS_FLOW_SHARED = ['src', 'discuss', 'shell', 'flow-shared.ts'].join('/');
 const RETIRED_DISCUSS_STATE_HELPERS = ['src', 'discuss', 'state-helpers.ts'].join('/');
 const RETIRED_HTTP_BACKEND_HELPERS = ['src', 'transport', 'http', 'backend-helpers.ts'].join('/');
 const RETIRED_KB_MUTATION_HELPERS = ['src', 'kb', 'corpus', 'mutation-helpers.ts'].join('/');
 const RETIRED_COMMAND_HELPERS = ['src', 'cli', 'command-helpers.ts'].join('/');
+const RETIRED_COORDINATOR_EXECUTION_SHARED = ['src', 'coordinator', 'services', 'execution-shared.ts'].join('/');
 const RETIRED_STORE_KB_QUERIES = ['src', 'store', 'queries', 'kb.ts'].join('/');
 const RETIRED_STORE_CORPUS_STATE = ['src', 'store', 'corpus-state.ts'].join('/');
 const RETIRED_STORE_SCHEMA_SQL = ['src', 'store', 'schema.sql'].join('/');
 const RETIRED_STORE_MIGRATIONS_MODULE = ['src', 'store', 'migrations.ts'].join('/');
 const RETIRED_STORE_MIGRATIONS_DIR = ['src', 'store', 'migrations'].join('/');
 const RETIRED_STORE_SCHEMAS_MODULE = ['src', 'store', 'schemas.ts'].join('/');
+const RETIRED_SESSION_JSON_READER = ['src', 'sessions', 'shell', 'session-read.ts'].join('/');
 const RETIRED_BRIDGE_MANIFEST = ['src', 'infra', 'bridge-manifest.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
@@ -562,16 +565,19 @@ describe('architecture boundary guard', () => {
       RETIRED_STRATEGY_SHARED,
       RETIRED_WORKFLOW_INTERNAL_SHARED,
       RETIRED_DISCUSS_READ_HELPERS,
+      RETIRED_DISCUSS_FLOW_SHARED,
       RETIRED_DISCUSS_STATE_HELPERS,
       RETIRED_HTTP_BACKEND_HELPERS,
       RETIRED_KB_MUTATION_HELPERS,
       RETIRED_COMMAND_HELPERS,
+      RETIRED_COORDINATOR_EXECUTION_SHARED,
       RETIRED_STORE_KB_QUERIES,
       RETIRED_STORE_CORPUS_STATE,
       RETIRED_STORE_SCHEMA_SQL,
       RETIRED_STORE_MIGRATIONS_MODULE,
       RETIRED_STORE_MIGRATIONS_DIR,
       RETIRED_STORE_SCHEMAS_MODULE,
+      RETIRED_SESSION_JSON_READER,
       RETIRED_TRANSPORT_SHARED_CONTEXT,
       RETIRED_COORDINATOR_CALLER_CONTEXT,
       RETIRED_STORE_CORPUS_CONSUMER,

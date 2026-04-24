@@ -2,7 +2,7 @@ declare const __VERSION__: string;
 
 import type { PluginRegistry } from '../../infra/plugin-registry.js';
 import { createPluginRegistry } from '../../infra/plugin-registry.js';
-import { setBuildFlavor } from '../../infra/paths.js';
+import { pluginRootNamespace, setBuildFlavor } from '../../infra/paths.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -55,7 +55,7 @@ export function createBackendWorld(
 ): BackendWorld {
   const bootSnapshot = options.bootSnapshot ?? {};
   const pluginRoot = defaultsPlan.eager.resolvedPluginRoot;
-  const namespace = options.backendNamespace ?? runtime.paths.pluginRootNamespace(pluginRoot);
+  const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
   const resolveProjectSource =
     options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
   const version = bootSnapshot.version ?? (typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0');

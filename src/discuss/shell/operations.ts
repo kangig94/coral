@@ -27,7 +27,7 @@ import { appendRuntimeEvents, afterCommit, commitDecision, isAbortEnded, readSes
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { collectBids } from './bid-flow.js';
-import { makeDecisionContext } from './flow-shared.js';
+import { makeDecisionContext } from './flow-primitives.js';
 
 function readDiscussMaxEpochs(ctx: DiscussContext): number {
   const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);

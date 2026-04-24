@@ -75,7 +75,7 @@ function createHarness(options: {
   applyStoreSchemas({ db, storage: storageAdapter as never, schemasDir: SCHEMAS_DIR });
 
   const runtime = new SimulationRuntime();
-  const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry());
+  const progressStore = new ProgressStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), { db });
   const plan = createWorkflowPlan();
   appendWorkflowEvents(db, [workflowPlanDeclaredEvent(plan.workflowId, plan)]);
 
@@ -105,8 +105,17 @@ function createHarness(options: {
       `INSERT INTO projection_jobs (
          job_id, phase, session_id, provider, project_root, backend_namespace,
          job_kind, created_at, last_seq
-       )
-       VALUES (?, ?, ?, ?, ?, ?, 'provider', '2026-04-20T00:00:00.000Z', ?)`,
+	       )
+	       VALUES (?, ?, ?, ?, ?, ?, 'provider', '2026-04-20T00:00:00.000Z', ?)
+	       ON CONFLICT(job_id) DO UPDATE SET
+	         phase = excluded.phase,
+	         session_id = excluded.session_id,
+	         provider = excluded.provider,
+	         project_root = excluded.project_root,
+	         backend_namespace = excluded.backend_namespace,
+	         job_kind = excluded.job_kind,
+	         created_at = excluded.created_at,
+	         last_seq = excluded.last_seq`,
     ).run(
       plan.slots[0].jobId,
       options.projectionPhase,

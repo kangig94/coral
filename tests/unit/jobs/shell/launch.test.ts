@@ -20,7 +20,7 @@ import {
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
@@ -137,9 +137,48 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const progressStore = options.progressStore ?? createProgressStore();
+  const getCurrentJournalSeq = () =>
+    (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  const subscribeJobEvents = async function* ({
+    afterSeq,
+    jobIds,
+    abortSignal,
+  }: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }): AsyncIterable<JobProgress> {
+    let observedSeq = afterSeq;
+    const ids = new Set(jobIds);
+    const waitForAbort = () =>
+      abortSignal
+        ? new Promise<void>((resolve) => {
+            if (abortSignal.aborted) {
+              resolve();
+              return;
+            }
+            abortSignal.addEventListener('abort', () => resolve(), { once: true });
+          })
+        : new Promise<void>(() => {});
+    while (!abortSignal?.aborted) {
+      const events = [...ids]
+        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .sort((left, right) => left.seq - right.seq);
+      if (events.length > 0) {
+        for (const event of events) {
+          observedSeq = Math.max(observedSeq, event.seq);
+          yield event;
+        }
+        continue;
+      }
+      const seq = progressStore.getChangeSeq();
+      await Promise.race([progressStore.waitForChange(seq), runtime.time.sleep(100, { signal: abortSignal }), waitForAbort()]);
+    }
+  };
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? createProgressStore(),
+    progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -151,6 +190,10 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     sessionLookup: createSessionLookup(runtime),
+    loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+    readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
+    subscribeJobEvents,
+    getCurrentJournalSeq,
   });
 }
 
@@ -606,7 +649,7 @@ describe('ExecutionService launch', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();

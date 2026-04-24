@@ -35,7 +35,7 @@ import {
   buildSessionControllerProfile,
   claimJobAtomic,
   serializeWorkflowResult,
-} from './execution-shared.js';
+} from './execution-policies.js';
 import type { WorkflowExecutionPort } from '../../workflow/internal/execution-contract.js';
 
 export interface WorkflowExecutionServiceDeps {
@@ -80,10 +80,7 @@ export class WorkflowExecutionService {
     try {
       await claimJobAtomic(
         {
-          progressStore: this.deps.progressStore,
           sessionManager: this.deps.sessionManager,
-          backendNamespace: this.deps.backendNamespace,
-          bundleHash: this.deps.bundleHash,
         },
         session,
         jobId,

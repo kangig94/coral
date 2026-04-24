@@ -59,6 +59,7 @@ export function adoptOrphanedCrossNamespaceJobs(
           jobId: row.job_id,
           sessionId: launch.sessionId,
           ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
+          ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
         },
         bodyVersion: 1,
         body: {

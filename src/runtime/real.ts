@@ -23,14 +23,8 @@ import { homedir as osHomedir } from 'node:os';
 import { dirname } from 'node:path';
 import { composeCoralPaths } from '../infra/coral-paths.js';
 import {
-  backendInfoPath,
-  backendLockPath,
   getSettledBuildFlavor,
-  installationDirForNamespace,
-  jobsDir,
-  pluginRootNamespace,
   resolveProjectSource,
-  sessionBase,
 } from '../infra/paths.js';
 import type { CoralPaths } from '../infra/coral-paths.js';
 import type {
@@ -190,12 +184,6 @@ export function createRealRuntime(): Runtime {
 
   let cachedCoralPaths: CoralPaths | undefined;
   const paths: RuntimePaths = {
-    jobsDir,
-    sessionBase,
-    installationDirForNamespace,
-    backendInfoPath,
-    backendLockPath,
-    pluginRootNamespace,
     projectSource: resolveProjectSource,
     get coral(): CoralPaths {
       if (cachedCoralPaths !== undefined) {

@@ -110,6 +110,7 @@ export interface JobLaunch {
     coralEnv: Record<string, string>;
   };
   parentWorkflowJobId?: string;
+  workflowSlotId?: string;
   createdAt: string;
 }
 

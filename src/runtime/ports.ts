@@ -44,12 +44,6 @@ export interface StoragePort {
 }
 
 export interface RuntimePaths {
-  jobsDir(): string;
-  sessionBase(): string;
-  installationDirForNamespace(namespace: string): string;
-  backendInfoPath(pluginRoot: string): string;
-  backendLockPath(pluginRoot: string): string;
-  pluginRootNamespace(pluginRoot: string): string;
   projectSource(projectRoot: string): string;
   readonly coral: CoralPaths;
 }

@@ -57,7 +57,7 @@ function toRecoveryCandidate(snapshot: PersistedDiscussSnapshot): DiscussDiscove
   return {
     sessionId: snapshot.sessionId,
     topic: snapshot.state.topic,
-    sessionDir: `journal:${snapshot.sessionId}`,
+    journalRef: snapshot.sessionId,
     createdAt: snapshot.state.created_at,
   };
 }

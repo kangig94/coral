@@ -5,10 +5,7 @@ import type {
 } from '../../providers/contract.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
 import { backendLog } from '../../infra/backend-log.js';
-import {
-  describeSessionInterrupted,
-  type SessionInterruptedFault,
-} from '../../sessions/fault.js';
+import type { SessionInterruptedFault } from '../../sessions/fault.js';
 import {
   isAppServerRuntime,
   type AppServerRuntime,
@@ -42,7 +39,7 @@ import {
   materializeInterruptedSessionOutcome,
   type InterruptedAppServerReason,
   type InterruptedProbeOutcome,
-} from './execution-shared.js';
+} from './execution-policies.js';
 
 export interface RecoveryServiceDeps {
   runtime: Runtime;
@@ -248,11 +245,6 @@ export class RecoveryService {
       fault,
     );
 
-    this.deps.progressStore.updateLaunchState(
-      launchRecord.jobId,
-      'error',
-      describeSessionInterrupted(fault),
-    );
     this.deps.launchOrchestrator.writeJobTerminal(
       launchRecord.jobId,
       launchRecord.sessionId,

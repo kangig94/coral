@@ -1,5 +1,4 @@
 import type { WaitCoordinator } from '../../jobs/shell/wait.js';
-import type { JobProgressStore } from '../../jobs/progress-store-contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgress, LaunchState } from '../../jobs/records.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
@@ -7,15 +6,14 @@ import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '.
 
 export interface JobWaitServiceDeps {
   runtime: Pick<Runtime, 'time'>;
-  progressStore: JobProgressStore;
   waitCoordinator: WaitCoordinator;
-  loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
-  subscribeJobEvents?: (options: {
+  loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
+  subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobProgress>;
-  getCurrentJournalSeq?: () => number;
+  getCurrentJournalSeq: () => number;
 }
 
 export class JobWaitService {
@@ -26,49 +24,36 @@ export class JobWaitService {
   }
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
-    if (this.deps.loadJobProjectionDetail && this.deps.subscribeJobEvents && this.deps.getCurrentJournalSeq) {
-      const current = this.deps.loadJobProjectionDetail(jobId).status ?? this.deps.progressStore.readStatus(jobId);
-      if (current && current.launch.state !== 'pending') {
-        return current.launch.state;
-      }
-
-      const controller = new AbortController();
-      const iterator = this.deps.subscribeJobEvents({
-        afterSeq: this.deps.getCurrentJournalSeq(),
-        jobIds: [jobId],
-        abortSignal: controller.signal,
-      })[Symbol.asyncIterator]();
-
-      try {
-        const start = this.deps.runtime.time.now();
-        while (true) {
-          const status = this.deps.loadJobProjectionDetail(jobId).status ?? this.deps.progressStore.readStatus(jobId);
-          if (status && status.launch.state !== 'pending') {
-            return status.launch.state;
-          }
-
-          const remainingMs = timeoutMs - (this.deps.runtime.time.now() - start);
-          if (remainingMs <= 0) {
-            return 'pending';
-          }
-
-          await Promise.race([iterator.next(), this.deps.runtime.time.sleep(remainingMs)]);
-        }
-      } finally {
-        controller.abort();
-        await iterator.return?.();
-      }
+    const current = this.deps.loadJobProjectionDetail(jobId).status;
+    if (current && current.launch.state !== 'pending') {
+      return current.launch.state;
     }
 
-    const start = this.deps.runtime.time.now();
-    while (true) {
-      const seq = this.deps.progressStore.getChangeSeq();
-      const status = this.deps.progressStore.readStatus(jobId);
-      if (status && status.launch.state !== 'pending') return status.launch.state;
+    const controller = new AbortController();
+    const iterator = this.deps.subscribeJobEvents({
+      afterSeq: this.deps.getCurrentJournalSeq(),
+      jobIds: [jobId],
+      abortSignal: controller.signal,
+    })[Symbol.asyncIterator]();
 
-      const remainingMs = timeoutMs - (this.deps.runtime.time.now() - start);
-      if (remainingMs <= 0) return 'pending';
-      await Promise.race([this.deps.progressStore.waitForChange(seq), this.deps.runtime.time.sleep(remainingMs)]);
+    try {
+      const start = this.deps.runtime.time.now();
+      while (true) {
+        const status = this.deps.loadJobProjectionDetail(jobId).status;
+        if (status && status.launch.state !== 'pending') {
+          return status.launch.state;
+        }
+
+        const remainingMs = timeoutMs - (this.deps.runtime.time.now() - start);
+        if (remainingMs <= 0) {
+          return 'pending';
+        }
+
+        await Promise.race([iterator.next(), this.deps.runtime.time.sleep(remainingMs)]);
+      }
+    } finally {
+      controller.abort();
+      await iterator.return?.();
     }
   }
 

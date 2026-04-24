@@ -25,6 +25,7 @@ import * as ProviderRequestPolicy from '#src/providers/request-policy.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import type { LifecycleState } from '#src/coordinator/control.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 function assertNotMocked(name: string, value: unknown): void {
   if (vi.isMockFunction(value)) {
@@ -256,6 +257,7 @@ describe('agent wire contract', () => {
         providerRegistry,
         pluginRegistry,
         sessionLookup: createSessionLookup(runtime),
+        ...createTestJobJournalDeps(progressStore, runtime),
       });
       services.set(ctx.projectRoot, created);
       return created;

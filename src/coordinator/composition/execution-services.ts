@@ -3,6 +3,7 @@ import type { ProjectRequestPort } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ExecutionServiceDeps, RecoveryCapableService } from '../contracts.js';
 import type { BackendWorld } from './backend-world.js';
+import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 
 type CreateExecutionServicesDeps = {
   world: BackendWorld;
@@ -45,6 +46,16 @@ export function createExecutionServices({
       eventBus: world.eventBus,
       providerRegistry: world.providerRegistry,
       pluginRegistry: world.pluginRegistry,
+      loadJobProjectionDetail: (jobId) => world.progressStore.loadJobProjectionDetail(jobId),
+      readJobProgress: (jobId) => world.progressStore.readJobProgress(jobId),
+      subscribeJobEvents,
+      getCurrentJournalSeq: () =>
+        (
+          world.progressStore
+            .getDb()
+            .prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
+            .get() as { seq: number }
+        ).seq,
     });
     services.set(key, created);
     return created;

@@ -14,7 +14,7 @@ vi.mock('node:os', async () => {
   };
 });
 
-import { currentBuildFlavor } from '#src/infra/paths.js';
+import { currentBuildFlavor, pluginRootNamespace, sessionBase } from '#src/infra/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { appendEvents } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -31,7 +31,7 @@ import { SessionManager } from '#src/sessions/shell/store.js';
 const runtime = createRealRuntime();
 
 function resolveSessionDir(projectRoot: string): string {
-  return join(runtime.paths.sessionBase(), runtime.paths.pluginRootNamespace(projectRoot));
+  return join(sessionBase(), pluginRootNamespace(projectRoot));
 }
 
 describe('sessions shell store', () => {

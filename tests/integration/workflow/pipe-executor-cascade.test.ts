@@ -19,6 +19,7 @@ import { streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcasters.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -106,6 +107,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
           sessionLookup: createSessionLookup(runtime),
+          ...createTestJobJournalDeps(progressStore, runtime),
         },
       );
 

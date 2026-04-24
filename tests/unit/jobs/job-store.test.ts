@@ -142,12 +142,12 @@ describe('JobStore', () => {
       outcome: { kind: 'completed' },
     };
 
-    expect(tails).toEqual([2, 3, 4, 5, 6]);
-    expect(store.appendTerminal(jobId, sessionId, terminalResult, 'completed')).toBe(8);
+    expect(tails).toEqual([3, 4, 5, 6, 7]);
+    expect(store.appendTerminal(jobId, sessionId, terminalResult, 'completed')).toBe(9);
     expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER'))).toEqual([]);
   });
 
-  it('matches live count semantics for projections, drafts, and namespace overrides', () => {
+  it('matches live count semantics for projections and namespace overrides', () => {
     const { store } = createStore();
 
     store.initJob({

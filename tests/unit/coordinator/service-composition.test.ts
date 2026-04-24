@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/shell/agent-resolution.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import type { AppServerRuntime, JobLaunch, JobStatus } from '#src/jobs/records.js';
+import type { AppServerRuntime, JobLaunch, JobProgress, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
@@ -19,7 +19,7 @@ import { providerRequestFailed, providerSessionUnavailable } from '#src/provider
 import type { ProviderRequest } from '#src/providers/contract.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-import { pluginRootNamespace } from '#src/infra/paths.js';
+import { jobsDir, pluginRootNamespace } from '#src/infra/paths.js';
 import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { type AgentRef } from '#src/jobs/shell/agent-resolution.js';
@@ -131,9 +131,48 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const progressStore = options.progressStore ?? createProgressStore();
+  const getCurrentJournalSeq = () =>
+    (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  const subscribeJobEvents = async function* ({
+    afterSeq,
+    jobIds,
+    abortSignal,
+  }: {
+    afterSeq: number;
+    jobIds: readonly string[];
+    abortSignal?: AbortSignal;
+  }): AsyncIterable<JobProgress> {
+    let observedSeq = afterSeq;
+    const ids = new Set(jobIds);
+    const waitForAbort = () =>
+      abortSignal
+        ? new Promise<void>((resolve) => {
+            if (abortSignal.aborted) {
+              resolve();
+              return;
+            }
+            abortSignal.addEventListener('abort', () => resolve(), { once: true });
+          })
+        : new Promise<void>(() => {});
+    while (!abortSignal?.aborted) {
+      const events = [...ids]
+        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .sort((left, right) => left.seq - right.seq);
+      if (events.length > 0) {
+        for (const event of events) {
+          observedSeq = Math.max(observedSeq, event.seq);
+          yield event;
+        }
+        continue;
+      }
+      const seq = progressStore.getChangeSeq();
+      await Promise.race([progressStore.waitForChange(seq), runtime.time.sleep(100, { signal: abortSignal }), waitForAbort()]);
+    }
+  };
   return new ExecutionService(ctx, {
     runtime,
-    progressStore: options.progressStore ?? createProgressStore(),
+    progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
@@ -145,6 +184,10 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     sessionLookup: createSessionLookup(runtime),
+    loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+    readJobProgress: (jobId) => progressStore.readJobProgress(jobId),
+    subscribeJobEvents,
+    getCurrentJournalSeq,
   });
 }
 
@@ -527,7 +570,7 @@ describe('ExecutionService', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
@@ -1911,12 +1954,15 @@ describe('ExecutionService', () => {
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         progressStore.writeLaunchRecord(jobId, launchRecord);
         // Existing progress no longer requires a per-job counter hydration step.
-        progressStore.appendProgress(jobId, sessionId, 'step-1');
-        progressStore.appendProgress(jobId, sessionId, 'step-2');
+        const firstProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-1');
+        const secondProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-2');
 
         service.recoverQueuedJob(launchRecord);
 
-        expect(progressStore.readJobProgress(jobId).map((event) => event.seq)).toEqual([2, 3]);
+        expect(progressStore.readJobProgress(jobId).map((event) => event.seq)).toEqual([
+          firstProgressSeq,
+          secondProgressSeq,
+        ]);
       });
 
       it('job eventually executes when queue capacity opens', async () => {
@@ -2513,7 +2559,7 @@ describe('ExecutionService adversarial', () => {
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime();
-    JOBS_DIR = runtime.paths.jobsDir();
+    JOBS_DIR = jobsDir();
     launchCoordinator = new LaunchCoordinator({ runtime });
     spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();

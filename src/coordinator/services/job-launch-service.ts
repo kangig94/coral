@@ -29,7 +29,7 @@ import {
   type ResumeIntent,
   runProviderPreflight,
   toPreflightRuntime,
-} from './execution-shared.js';
+} from './execution-policies.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
@@ -447,10 +447,7 @@ export class JobLaunchService {
       (claimSession, jobId, claimProviderName, claimProjectRoot, options) =>
         claimJobAtomic(
           {
-            progressStore: this.deps.progressStore,
             sessionManager: this.deps.sessionManager,
-            backendNamespace: this.deps.backendNamespace,
-            bundleHash: this.deps.bundleHash,
           },
           claimSession,
           jobId,

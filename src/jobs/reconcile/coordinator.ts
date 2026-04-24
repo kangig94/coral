@@ -1,5 +1,4 @@
 import { formatError } from '../../infra/error-format.js';
-import { isTerminalPhase } from '../phase.js';
 import { isAppServerRuntime } from '../records.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
@@ -198,12 +197,6 @@ export function createRecoveryCoordinator({
 
             if (messages.length === 0) {
               return;
-            }
-
-            const status = progressStore.readStatus(jobId);
-            if (status && !isTerminalPhase(status.phase) && status.launch.state !== 'ready') {
-              progressStore.updateLaunchState(jobId, 'ready');
-              progressStore.updatePhase(jobId, 'running');
             }
 
             for (const message of messages) {

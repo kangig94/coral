@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { pluginRootNamespace } from '#src/infra/paths.js';
 import { resolveBackendDefaults } from '#src/coordinator/composition/backend-defaults.js';
 import type { LockRecord } from '#src/coordinator/lock.js';
 
@@ -59,7 +60,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     runtime,
   );
-  const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
+  const expectedNamespace = pluginRootNamespace(pluginRoot);
   const info: BackendInfo = {
     pid: process.pid,
     port: 4312,

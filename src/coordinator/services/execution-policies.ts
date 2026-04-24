@@ -244,10 +244,7 @@ export async function runProviderPreflight(
 
 export async function claimJobAtomic(
   deps: {
-    progressStore: Pick<JobProgressStore, 'initJob' | 'rollbackJob'>;
     sessionManager: Pick<SessionManager, 'claimForJobAtomic'>;
-    backendNamespace: string;
-    bundleHash: string;
   },
   session: SessionEntry,
   jobId: string,
@@ -255,29 +252,18 @@ export async function claimJobAtomic(
   projectRoot: string,
   options: ClaimJobOptions = {},
 ): Promise<SessionEntry> {
-  deps.progressStore.initJob({
-    jobId,
-    sessionId: session.sessionId,
-    provider: providerName,
-    projectRoot,
-    backendNamespace: deps.backendNamespace,
-    bundleHash: deps.bundleHash,
-    jobKind: options.jobKind,
-    initialPhase: options.initialPhase ?? 'launching',
-  });
+  void providerName;
+  void projectRoot;
+  void options.jobKind;
+  void options.initialPhase;
 
-  try {
-    const claimed = await deps.sessionManager.claimForJobAtomic(
-      session.sessionId,
-      jobId,
-      options.expectedVersion ?? session.version,
-    );
-    if (!claimed) {
-      throw new SessionClaimError();
-    }
-    return session;
-  } catch (error: unknown) {
-    deps.progressStore.rollbackJob(jobId);
-    throw error;
+  const claimed = await deps.sessionManager.claimForJobAtomic(
+    session.sessionId,
+    jobId,
+    options.expectedVersion ?? session.version,
+  );
+  if (!claimed) {
+    throw new SessionClaimError();
   }
+  return session;
 }

@@ -3,6 +3,7 @@ declare const __PLUGIN_ROOT__: string;
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { readBackendInfo, removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
+import { pluginRootNamespace } from '../../infra/paths.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { acquireLock, releaseLock, type BackendOwnershipState, type LockRecord, type VerifyBackendOwnershipFn } from '../lock.js';
 import type { LaunchCoordinator } from '../live/admission.js';
@@ -74,10 +75,10 @@ function resolveDefaultPluginRoot(): string {
 async function verifyBackendOwnershipWithHealthcheck(
   pluginRoot: string,
   record: LockRecord,
-  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'time'>,
   fetchFn: FetchFn,
 ): Promise<BackendOwnershipState> {
-  const expectedNamespace = runtime.paths.pluginRootNamespace(pluginRoot);
+  const expectedNamespace = pluginRootNamespace(pluginRoot);
   const info = readBackendInfo(pluginRoot, runtime);
   if (!info) {
     return 'stale';
@@ -129,7 +130,7 @@ async function verifyBackendOwnershipWithHealthcheck(
 }
 
 function createDefaultBackendOwnershipVerifier(
-  runtime: Pick<Runtime, 'process' | 'storage' | 'paths' | 'time'>,
+  runtime: Pick<Runtime, 'process' | 'storage' | 'time'>,
   fetchFn: FetchFn,
 ): VerifyBackendOwnershipFn {
   return ({ pluginRoot, record }) => verifyBackendOwnershipWithHealthcheck(pluginRoot, record, runtime, fetchFn);

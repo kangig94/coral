@@ -5,7 +5,7 @@ import type {
 } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { isProviderContinuityBlob } from './execution-shared.js';
+import { isProviderContinuityBlob } from './execution-policies.js';
 
 type SessionContinuityApi = {
   checkpointJobContinuityAtomic(

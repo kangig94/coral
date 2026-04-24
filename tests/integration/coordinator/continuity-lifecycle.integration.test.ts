@@ -30,6 +30,7 @@ import { startDiscussSession } from '#src/discuss/shell/operations.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { AgentConfig } from '#src/discuss/shell/context.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
+import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -147,6 +148,7 @@ describe('coordinator continuity lifecycle integration', () => {
       providerRegistry: providerRegistry as never,
       pluginRegistry: { discoverPluginRoot: () => null },
       sessionLookup: createSessionLookup(runtime),
+      ...createTestJobJournalDeps(progressStore, runtime),
     });
     return { service, progressStore };
   }

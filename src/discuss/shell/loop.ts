@@ -9,7 +9,7 @@ import { commitDecision } from './persistence.js';
 import { collectBids } from './bid-flow.js';
 import { collectSpeech } from './speech-flow.js';
 import { handleEpochTransition, runFollowUpTurns } from './followup-flow.js';
-import { makeDecisionContext } from './flow-shared.js';
+import { makeDecisionContext } from './flow-primitives.js';
 import { handleSynthesis } from './synthesis-flow.js';
 import { getSession } from './registry.js';
 

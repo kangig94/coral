@@ -104,7 +104,7 @@ describe('DiscussSessionStore', () => {
       expect.objectContaining({
         sessionId: SESSION_ID,
         topic: TOPIC,
-        sessionDir: `journal:${SESSION_ID}`,
+        journalRef: SESSION_ID,
       }),
     );
   });

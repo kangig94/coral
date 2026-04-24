@@ -1,7 +1,6 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
-import type { JobProgressStore } from '../progress-store-contract.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { RuntimeTimePort } from '../../runtime/ports.js';
@@ -89,27 +88,26 @@ function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<
 }
 
 export interface WaitCoordinatorDeps {
-  progressStore: JobProgressStore;
   sessionManager: SessionManager;
   launchCoordinator: LaunchCoordinator;
   eventBus: JobEventBus;
   jobPools: ReadonlyMap<string, LaunchPool>;
   time: RuntimeTimePort;
-  loadJobProjectionDetail?: (jobId: string) => JobProjectionDetail;
-  readJobProgress?: (jobId: string) => JobProgress[];
-  subscribeJobEvents?: (options: {
+  loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
+  readJobProgress: (jobId: string) => JobProgress[];
+  subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobProgress>;
-  getCurrentJournalSeq?: () => number;
+  getCurrentJournalSeq: () => number;
 }
 
 export class WaitCoordinator {
   constructor(private readonly deps: WaitCoordinatorDeps) {}
 
   private readQueryStatus(jobId: string): JobStatus | null {
-    return this.deps.loadJobProjectionDetail?.(jobId).status ?? this.deps.progressStore.readStatus(jobId);
+    return this.deps.loadJobProjectionDetail(jobId).status;
   }
 
   private readQueryContinuity(jobId: string): JobContinuitySnapshot | null {
@@ -208,142 +206,11 @@ export class WaitCoordinator {
   }
 
   async *waitForJobs(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
-    if (
-      this.deps.loadJobProjectionDetail &&
-      this.deps.readJobProgress &&
-      this.deps.subscribeJobEvents &&
-      this.deps.getCurrentJournalSeq
-    ) {
-      yield* this.waitForJobsFromJournal(req);
-      return;
-    }
-
-    const { progressStore, launchCoordinator, jobPools } = this.deps;
-    const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
-    const startMs = this.deps.time.now();
-    const timeoutMs = timeoutSeconds * 1000;
-    const deadlineMs = startMs + timeoutMs;
-    let observedSeq = cursor?.afterSeq ?? 0;
-    const emittedQueued = new Set<string>();
-    const pending = new Set(jobIds);
-
-    while (pending.size > 0) {
-      if (abortSignal?.aborted) {
-        return;
-      }
-
-      const seq = progressStore.getChangeSeq();
-
-      for (const jobId of [...pending]) {
-        const status = progressStore.readStatus(jobId);
-        if (!status) {
-          continue;
-        }
-
-        if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
-          emittedQueued.add(jobId);
-          const pool = jobPools.get(jobId) ?? 'default';
-          yield {
-            type: 'queued',
-            jobId,
-            sessionId: status.sessionId,
-            queuePosition: launchCoordinator.queuePosition(jobId, pool) ?? 0,
-            runningJobIds: launchCoordinator.getActiveJobIds(pool),
-          };
-        }
-      }
-
-      const events = [...pending]
-        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
-        .sort(compareProgressSeq);
-      let replaySawTerminal = false;
-
-      for (const event of events) {
-        observedSeq = Math.max(observedSeq, event.seq);
-        if (event.type === 'progress') {
-          yield toProgressWaitEvent(event);
-          continue;
-        }
-
-        replaySawTerminal = true;
-        const parsedTerminalMs = Date.parse(event.ts ?? '');
-        const replayEligible = Number.isFinite(parsedTerminalMs)
-          ? parsedTerminalMs <= deadlineMs
-          : this.deps.time.now() <= deadlineMs;
-
-        if (!replayEligible) {
-          break;
-        }
-
-        yield toTerminalWaitEvent(
-          event,
-          pending,
-          progressStore.resultPath(event.jobId),
-          this.readQueryContinuity(event.jobId),
-        );
-        return;
-      }
-
-      if (replaySawTerminal) {
-        continue;
-      }
-
-      // Non-journal fakes can expose a terminal projection without replayable history.
-      // Use projection lastSeq when present so the public cursor still remains seq-based.
-      for (const jobId of [...pending]) {
-        const currentStatus = progressStore.readStatus(jobId);
-        if (currentStatus && isTerminalPhase(currentStatus.phase)) {
-          const now = this.deps.time.now();
-          if (now > deadlineMs) {
-            continue;
-          }
-          const terminalSeq =
-            currentStatus.lastSeq !== undefined && currentStatus.lastSeq > 0
-              ? currentStatus.lastSeq
-              : observedSeq + 1;
-          if (terminalSeq <= observedSeq && cursor?.afterSeq !== undefined) {
-            continue;
-          }
-          const remainingJobIds = [...pending].filter((id) => id !== jobId);
-          yield {
-            type: 'terminal',
-            jobId,
-            seq: terminalSeq,
-            remainingJobIds,
-            resultPath: progressStore.resultPath(jobId),
-            result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-            continuity: currentStatus.continuity ?? null,
-          };
-          return;
-        }
-      }
-
-      const now = this.deps.time.now();
-      if (now > deadlineMs) {
-        yield { type: 'waiting', waitingJobIds: [...pending] };
-        return;
-      }
-
-      const remainingMs = deadlineMs - now;
-      const abortWaiter = createAbortWaiter(abortSignal);
-      const next = await Promise.race([
-        progressStore.waitForChange(seq),
-        this.deps.time.sleep(remainingMs),
-        ...(abortWaiter ? [abortWaiter.promise] : []),
-      ]);
-      abortWaiter?.dispose();
-      if (next === ABORTED) {
-        return;
-      }
-    }
+    yield* this.waitForJobsFromJournal(req);
   }
 
   private async *waitForJobsFromJournal(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const { launchCoordinator, jobPools, readJobProgress, subscribeJobEvents, getCurrentJournalSeq } = this.deps;
-    if (!this.deps.loadJobProjectionDetail || !readJobProgress || !subscribeJobEvents || !getCurrentJournalSeq) {
-      return;
-    }
-
     const { jobIds, timeoutSeconds = 600, cursor, abortSignal } = req;
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
@@ -518,7 +385,7 @@ export class WaitCoordinator {
   }
 
   private readStatusOrThrow(jobId: string): JobStatus {
-    const status = this.readQueryStatus(jobId) ?? this.deps.progressStore.readStatus(jobId);
+    const status = this.readQueryStatus(jobId);
     if (!status) {
       throw new Error(`Job not found: ${jobId}`);
     }

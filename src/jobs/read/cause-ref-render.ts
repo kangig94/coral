@@ -18,10 +18,18 @@ export interface CircularCauseRefDiagnostic {
   readonly path: readonly string[];
 }
 
+export interface MissingCauseRefDiagnostic {
+  readonly stream: CauseRef['stream'];
+  readonly seq: number;
+  readonly path: readonly string[];
+  readonly terminalOutcome?: TerminalOutcome;
+}
+
 export interface CauseRefRenderResult {
   readonly description: string;
   readonly chain: readonly string[];
   readonly cycle?: CircularCauseRefDiagnostic;
+  readonly missing?: MissingCauseRefDiagnostic;
 }
 
 function refKey(ref: CauseRef): string {
@@ -63,13 +71,11 @@ function ensureSentence(text: string): string {
 }
 
 // AC2.3: sessions/fault.ts is the canonical authority with exhaustive-switch + assertNever.
-// Wrap with a defensive fallback for runtime values that bypass the type system
-// (e.g. journal events carrying an unknown continuity string).
+// Runtime-injected values are rendered as diagnostics instead of widening the type.
 function safeContinuitySentenceFragment(value: SessionContinuityState): string {
   try {
     return continuitySentenceFragment(value);
   } catch {
-    // noop — assertNever guards at compile time; this catches runtime injections
     return 'continuity unavailable';
   }
 }
@@ -175,7 +181,7 @@ function renderCauseRef(
   store: CoralStore,
   visited: Set<string>,
   path: string[],
-  fallbackOutcome?: TerminalOutcome,
+  terminalOutcomeDiagnostic?: TerminalOutcome,
 ): CauseRefRenderResult {
   const key = refKey(ref);
   if (visited.has(key)) {
@@ -194,17 +200,29 @@ function renderCauseRef(
   visited.add(key);
   const event = store.getEvent(ref.stream, ref.seq);
   if (!event) {
-    if (path.length === 0 && fallbackOutcome) {
-      const description = describeTerminalOutcome(fallbackOutcome);
+    if (path.length === 0 && terminalOutcomeDiagnostic) {
+      const terminalDescription = describeTerminalOutcome(terminalOutcomeDiagnostic);
+      const description = `${markerForMissing(ref)} Original terminal outcome: ${terminalDescription}`;
       return {
         description,
         chain: [...path, description],
+        missing: {
+          stream: ref.stream,
+          seq: ref.seq,
+          path,
+          terminalOutcome: terminalOutcomeDiagnostic,
+        },
       };
     }
 
     return {
       description: markerForMissing(ref),
       chain: [...path, markerForMissing(ref)],
+      missing: {
+        stream: ref.stream,
+        seq: ref.seq,
+        path,
+      },
     };
   }
 
@@ -228,11 +246,11 @@ function renderCauseRef(
 export function describeCauseRefDetailed(
   ref: CauseRef,
   store: CoralStore,
-  fallbackOutcome?: TerminalOutcome,
+  terminalOutcomeDiagnostic?: TerminalOutcome,
 ): CauseRefRenderResult {
-  return renderCauseRef(ref, store, new Set<string>(), [], fallbackOutcome);
+  return renderCauseRef(ref, store, new Set<string>(), [], terminalOutcomeDiagnostic);
 }
 
-export function describeCauseRef(ref: CauseRef, store: CoralStore, fallbackOutcome?: TerminalOutcome): string {
-  return describeCauseRefDetailed(ref, store, fallbackOutcome).description;
+export function describeCauseRef(ref: CauseRef, store: CoralStore, terminalOutcomeDiagnostic?: TerminalOutcome): string {
+  return describeCauseRefDetailed(ref, store, terminalOutcomeDiagnostic).description;
 }
