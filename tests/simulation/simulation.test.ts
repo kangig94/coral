@@ -216,7 +216,6 @@ describe('deterministic simulation lifecycle replay', () => {
       sessionId: launch.sessionId,
       provider: 'fake-provider',
       phase: 'completed',
-      launch: { state: 'ready' },
       result: {
         content: 'final simulation result',
         outcome: { kind: 'completed' },

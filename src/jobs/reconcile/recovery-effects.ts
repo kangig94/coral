@@ -90,7 +90,7 @@ function syntheticLaunchRecord(status: JobStatus): JobLaunch {
       bypassPermissions: false,
       coralEnv: {},
     },
-    createdAt: status.launch.updatedAt,
+    createdAt: status.updatedAt,
   };
 }
 

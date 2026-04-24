@@ -922,10 +922,7 @@ describe('transport/http http-client', () => {
             projectRoot: '/tmp/project',
             backendNamespace: 'test',
             phase: 'running' as const,
-            launch: {
-              state: 'ready' as const,
-              updatedAt: '2026-04-08T00:00:00.000Z',
-            },
+            updatedAt: '2026-04-08T00:00:00.000Z',
           },
         },
       ],

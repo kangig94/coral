@@ -205,7 +205,6 @@ describe('jobs queries', () => {
     expect(detailsByJob.get('job-completed')).toMatchObject({
       status: {
         phase: 'completed',
-        launch: { state: 'ready' },
         result: {
           content: 'done',
         },
@@ -243,9 +242,8 @@ describe('jobs queries', () => {
       },
     });
 
-    expect(detailsByJob.get('job-rejected')?.status?.launch).toMatchObject({
-      state: 'error',
-      message: 'Launch rejected (codex busy: 7/10).',
+    expect(detailsByJob.get('job-rejected')?.status).toMatchObject({
+      phase: 'error',
     });
 
     expect(detailsByJob.get('job-missing')).toEqual({

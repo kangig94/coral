@@ -2,7 +2,7 @@
 // contract stays under workflow/internal/ so workflow ownership remains explicit.
 import type { AbortResult } from '../../jobs/abort-result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
-import type { LaunchState } from '../../jobs/records.js';
+import type { LaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { CauseRef, TerminalOutcome } from '../../jobs/outcome.js';
 
@@ -75,7 +75,7 @@ export interface WorkflowExecutionPort {
     message?: string;
   }>;
   abort(jobIds: string[]): AbortResult;
-  awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
+  awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void>;
   cleanupWorkflowSessions(sessions: readonly WorkflowSessionHandle[]): void;

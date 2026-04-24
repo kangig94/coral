@@ -171,8 +171,7 @@ describe('readStatusRecord', () => {
     expect(result!.projectRoot).toBe('/tmp/project');
     expect(result!.backendNamespace).toBe('ns');
     expect(result!.phase).toBe('completed');
-    expect(result!.launch.state).toBe('ready');
-    expect(result!.launch.updatedAt).toBe(NOW);
+    expect(result!.updatedAt).toBe(NOW);
   });
 
   it('returns null when the projection store has no matching job', () => {
@@ -199,11 +198,8 @@ describe('readStatusRecord', () => {
       backendNamespace: 'ns',
       jobKind: 'provider',
       phase: 'running',
+      updatedAt: NOW,
       lastSeq: 0,
-      launch: {
-        state: 'ready',
-        updatedAt: NOW,
-      },
     });
   });
 

@@ -391,9 +391,8 @@ describe('coordinator continuity lifecycle integration', () => {
 
     // Recovery continuity flows to session state; terminal bodies never
     // carry conversationRef / nonResumable per arch §8.3 invariant #5.
-    // progressStore status lags when the initJob'd draft has no journal
-    // projection seed — the session assertion below is the load-bearing
-    // check for AC15 verify clause (e).
+    // The session assertion below is the load-bearing check that recovered
+    // continuity is projected from journal-owned session state.
     expect(sessionManager.get('recovery', explicitSession.sessionId)).toMatchObject({
       conversationRef: 'thread-recovered',
       state: 'ready',

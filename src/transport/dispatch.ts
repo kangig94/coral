@@ -218,7 +218,7 @@ export async function executeCatalogRequest(
         ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
         all: parsed.all === true,
       });
-      jobs.sort((left, right) => right.status.launch.updatedAt.localeCompare(left.status.launch.updatedAt));
+      jobs.sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
       return unary({ jobs });
     }
 

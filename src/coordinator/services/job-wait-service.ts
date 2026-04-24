@@ -1,6 +1,7 @@
 import type { WaitCoordinator } from '../../jobs/shell/wait.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { JobProgress, LaunchState } from '../../jobs/records.js';
+import type { JobProgress } from '../../jobs/records.js';
+import { deriveLaunchReadiness, type LaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../../jobs/wait.js';
 
@@ -23,10 +24,10 @@ export class JobWaitService {
     return this.deps.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);
   }
 
-  async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
-    const current = this.deps.loadJobProjectionDetail(jobId).status;
-    if (current && current.launch.state !== 'pending') {
-      return current.launch.state;
+  async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {
+    const current = deriveLaunchReadiness(this.deps.loadJobProjectionDetail(jobId));
+    if (current !== 'pending') {
+      return current;
     }
 
     const controller = new AbortController();
@@ -39,9 +40,9 @@ export class JobWaitService {
     try {
       const start = this.deps.runtime.time.now();
       while (true) {
-        const status = this.deps.loadJobProjectionDetail(jobId).status;
-        if (status && status.launch.state !== 'pending') {
-          return status.launch.state;
+        const readiness = deriveLaunchReadiness(this.deps.loadJobProjectionDetail(jobId));
+        if (readiness !== 'pending') {
+          return readiness;
         }
 
         const remainingMs = timeoutMs - (this.deps.runtime.time.now() - start);

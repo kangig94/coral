@@ -1,65 +1,29 @@
 import { formatError } from '../../infra/error-format.js';
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '../records.js';
-import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { SessionEntry } from '../../sessions/entry.js';
 import type { ProgressStore } from '../job-store.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
-import type { JobProjectionDetail } from '../read-contracts.js';
-import type { JobStoreSnapshot } from './plan.js';
-
-function toExitRecord(detail: JobProjectionDetail): DurableProcessExit | null {
-  if (!detail.exit) {
-    return null;
-  }
-
-  return {
-    exitCode: detail.exit.exitCode ?? null,
-    signal: detail.exit.signal ?? null,
-    endTime: detail.exit.endTime,
-  };
-}
-
-function toTerminalPayload(detail: JobProjectionDetail): JobTerminal | null {
-  const exit = detail.exit;
-  if (!exit) {
-    return null;
-  }
-
-  return {
-    content: exit.content,
-    outcome: exit.outcome,
-    durationMs: exit.durationMs,
-  };
-}
+import type { RecoveryJobFacts, RecoveryProjectionSnapshot } from './plan.js';
 
 export function buildRecoverySnapshot(
   progressStore: ProgressStore,
   namespace: string,
   log: (message: string) => void,
   sessionLookup: SessionLookup,
-): JobStoreSnapshot {
+): RecoveryProjectionSnapshot {
   const jobIds = Object.freeze([...progressStore.listJobIds()]);
-  const hasLaunchByJob = new Map<string, boolean>();
-  const hasRuntimeByJob = new Map<string, boolean>();
-  const hasExitByJob = new Map<string, boolean>();
-  const statusesByJob = new Map<string, JobStatus | null>();
-  const launchesByJob = new Map<string, JobLaunch | null>();
-  const runtimesByJob = new Map<string, JobRuntime | null>();
-  const exitsByJob = new Map<string, DurableProcessExit | null>();
-  const terminalPayloadsByJob = new Map<string, JobTerminal | null>();
+  const factsByJob = new Map<string, RecoveryJobFacts>();
 
   for (const jobId of jobIds) {
     const detail = progressStore.loadJobProjectionDetail(jobId);
-    const status = detail.status;
-
-    hasLaunchByJob.set(jobId, detail.launch !== null);
-    hasRuntimeByJob.set(jobId, detail.runtime !== null);
-    hasExitByJob.set(jobId, detail.exit !== null);
-    statusesByJob.set(jobId, status);
-    launchesByJob.set(jobId, detail.launch);
-    runtimesByJob.set(jobId, detail.runtime);
-    exitsByJob.set(jobId, toExitRecord(detail));
-    terminalPayloadsByJob.set(jobId, toTerminalPayload(detail));
+    factsByJob.set(jobId, {
+      jobId,
+      hasLaunchRequest: detail.launch !== null,
+      hasRuntimeStart: detail.runtime !== null,
+      hasTerminalRecord: detail.exit !== null,
+      status: detail.status,
+      launchRecord: detail.launch,
+      runtimeRecord: detail.runtime,
+    });
   }
 
   const sessionRefs: Array<{ sessionId: string; provider: string }> = [];
@@ -74,17 +38,18 @@ export function buildRecoverySnapshot(
     }
   }
 
-  const snapshot: JobStoreSnapshot = {
+  const snapshot: RecoveryProjectionSnapshot = {
     jobIds,
     currentNamespace: namespace,
-    hasLaunch: (jobId: string): boolean => hasLaunchByJob.get(jobId) === true,
-    hasRuntime: (jobId: string): boolean => hasRuntimeByJob.get(jobId) === true,
-    hasExit: (jobId: string): boolean => hasExitByJob.get(jobId) === true,
-    readStatus: (jobId: string): JobStatus | null => statusesByJob.get(jobId) ?? null,
-    readLaunch: (jobId: string): JobLaunch | null => launchesByJob.get(jobId) ?? null,
-    readRuntime: (jobId: string): JobRuntime | null => runtimesByJob.get(jobId) ?? null,
-    readExit: (jobId: string): DurableProcessExit | null => exitsByJob.get(jobId) ?? null,
-    readTerminalPayload: (jobId: string): JobTerminal | null => terminalPayloadsByJob.get(jobId) ?? null,
+    readJob: (jobId: string): RecoveryJobFacts => factsByJob.get(jobId) ?? {
+      jobId,
+      hasLaunchRequest: false,
+      hasRuntimeStart: false,
+      hasTerminalRecord: false,
+      status: null,
+      launchRecord: null,
+      runtimeRecord: null,
+    },
     listSessionRefs: (): Array<{ sessionId: string; provider: string }> => [...sessionRefs],
     readSession: (sessionId: string): SessionEntry | null => sessionsById.get(sessionId) ?? null,
   };

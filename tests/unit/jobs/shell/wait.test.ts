@@ -618,10 +618,7 @@ function makeStatusRecord(
     projectRoot: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
     phase,
-    launch: {
-      state: 'ready',
-      updatedAt: '2026-03-06T00:00:00.000Z',
-    },
+    updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
   };
 }
@@ -684,7 +681,7 @@ describe('ExecutionService wait', () => {
     vi.restoreAllMocks();
   });
 
-  it('awaitLaunch returns ready once the launch state changes', async () => {
+  it('awaitLaunch returns ready once launch readiness changes', async () => {
     const service = createService(ctx);
     const { jobId, progressStore } = createClaimedJob(service, ctx, { initialPhase: 'launching' });
 
@@ -819,10 +816,7 @@ describe('ExecutionService wait', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'running',
-      launch: {
-        state: 'ready',
-        updatedAt: '2026-03-06T00:00:00.000Z',
-      },
+      updatedAt: '2026-03-06T00:00:00.000Z',
     };
     const replay: JobProgress[] = [
       {
@@ -882,10 +876,7 @@ describe('ExecutionService wait', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       phase: 'completed',
-      launch: {
-        state: 'ready',
-        updatedAt: '2026-03-06T00:00:00.000Z',
-      },
+      updatedAt: '2026-03-06T00:00:00.000Z',
       result: { content: 'done', outcome: { kind: 'completed' } },
     });
     vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
@@ -1281,7 +1272,7 @@ describe('ExecutionService wait', () => {
             projectRoot: ctx.projectRoot,
             backendNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
-            launch: { state: 'ready', updatedAt: '' },
+            updatedAt: '',
           };
         }
         if (jobId === jobIdB) {
@@ -1292,7 +1283,7 @@ describe('ExecutionService wait', () => {
             projectRoot: ctx.projectRoot,
             backendNamespace: TEST_BACKEND_NAMESPACE,
             phase: 'running',
-            launch: { state: 'ready', updatedAt: '' },
+            updatedAt: '',
           };
         }
         return null;
@@ -1387,7 +1378,7 @@ describe('ExecutionService wait', () => {
           projectRoot: ctx.projectRoot,
           backendNamespace: TEST_BACKEND_NAMESPACE,
           phase: 'running',
-          launch: { state: 'ready', updatedAt: '' },
+          updatedAt: '',
         };
       });
       vi.spyOn(progressStore, 'readJobProgress').mockImplementation((...args: unknown[]) => {

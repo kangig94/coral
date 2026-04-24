@@ -20,10 +20,6 @@ export function belongsToNamespace(status: JobStatus, namespace: string): boolea
   );
 }
 
-export type LaunchState = 'pending' | 'queued' | 'ready' | 'busy' | 'error';
-
-export const launchStateSchema = z.enum(['pending', 'queued', 'ready', 'busy', 'error']);
-
 export type JobKind = 'provider' | 'workflow';
 
 export interface JobExit extends JobTerminal {
@@ -43,12 +39,8 @@ export interface JobStatus {
   bundleHash?: string;
   jobKind?: JobKind;
   phase: JobPhase;
+  updatedAt: string;
   lastSeq?: number;
-  launch: {
-    state: LaunchState;
-    message?: string;
-    updatedAt: string;
-  };
   result?: JobTerminal;
   continuity?: JobContinuitySnapshot | null;
 }
@@ -63,14 +55,8 @@ export const jobStatusSchema = z
     bundleHash: z.string().optional(),
     jobKind: z.enum(['provider', 'workflow']).optional(),
     phase: jobPhaseSchema,
+    updatedAt: z.string(),
     lastSeq: z.number().int().nonnegative().optional(),
-    launch: z
-      .object({
-        state: launchStateSchema,
-        message: z.string().optional(),
-        updatedAt: z.string(),
-      })
-      .passthrough(),
     result: jobTerminalSchema.optional(),
     diagnostics: jobDiagnosticsSchema.optional(),
     continuity: jobContinuitySnapshotSchema.nullable().optional(),

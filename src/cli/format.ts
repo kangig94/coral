@@ -290,7 +290,7 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     phase: status.phase,
     provider: status.provider,
     cwd: readJobCwd(status),
-    age: formatRelativeAge(status.launch.updatedAt, now),
+    age: formatRelativeAge(status.updatedAt, now),
   }));
 }
 

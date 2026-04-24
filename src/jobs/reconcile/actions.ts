@@ -53,9 +53,9 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
   } = ctx;
 
   switch (action.type) {
-    case 'deleteIncompleteDir':
+    case 'discardIncompleteAdmission':
       runtime.storage.rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
-      log(`Deleted incomplete admission: ${action.jobId}\n`);
+      log(`Discarded incomplete admission: ${action.jobId}\n`);
       return;
     case 'markError': {
       markJobAsError(progressStore, action.status, action.fault, log);
@@ -127,8 +127,8 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
 
 export function logRecoveryActionFailure(action: RecoveryAction, error: unknown, log: (message: string) => void): void {
   switch (action.type) {
-    case 'deleteIncompleteDir':
-      log(`Failed to delete incomplete admission ${action.jobId}: ${formatError(error)}\n`);
+    case 'discardIncompleteAdmission':
+      log(`Failed to discard incomplete admission ${action.jobId}: ${formatError(error)}\n`);
       return;
     case 'markError':
       switch (action.fault.kind) {

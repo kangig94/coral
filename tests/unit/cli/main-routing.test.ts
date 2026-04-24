@@ -230,10 +230,7 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
         projectRoot: process.cwd(),
         backendNamespace: 'default',
         phase,
-        launch: {
-          state: 'ready',
-          updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
-        },
+        updatedAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
       },
     })),
   };

@@ -3,7 +3,6 @@ import type BetterSqlite3 from 'better-sqlite3';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema, jobTerminalRecordedBodySchema } from '../../jobs/events.js';
 import { jobLaunchRequestBodySchema } from '../../jobs/launch.js';
-import { describeLaunchRejected, jobLaunchRejectedSchema } from '../../jobs/outcome.js';
 import { type JobPhase } from '../../jobs/phase.js';
 import type { JobProjectionDetail } from '../../jobs/read-contracts.js';
 import {
@@ -336,36 +335,6 @@ function readLatestProjectionStatusEvents(
   return eventsByJob;
 }
 
-function deriveLaunchState(
-  phase: JobPhase,
-  rejected: EventRow | null,
-  runtime: EventRow | null,
-  terminal: EventRow | null,
-  ctx: StoreReadContext,
-): { state: JobStatus['launch']['state']; message?: string } {
-  if (rejected) {
-    const body = decodeBody(rejected, jobLaunchRejectedSchema, ctx);
-    return {
-      state: 'error',
-      message: describeLaunchRejected(body),
-    };
-  }
-
-  if (phase === 'queued') {
-    return { state: 'queued' };
-  }
-
-  if (phase === 'launching') {
-    return { state: 'pending' };
-  }
-
-  if ((phase === 'error' || phase === 'aborted') && !runtime && terminal) {
-    return { state: 'error' };
-  }
-
-  return { state: 'ready' };
-}
-
 function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext): JobLaunchProjection | null {
   if (!row) {
     return null;
@@ -518,11 +487,8 @@ function projectionRowToStatus(
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
     phase: projection.phase as JobPhase,
+    updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,
-    launch: {
-      ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
-      updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
-    },
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
     ...(terminalRecord ? { continuity: terminalRecord.continuity } : {}),
   };

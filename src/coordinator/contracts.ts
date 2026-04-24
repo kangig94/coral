@@ -13,8 +13,8 @@ import type {
   JobProgress,
   JobRuntime,
   JobTerminalInput,
-  LaunchState,
 } from '../jobs/records.js';
+import type { LaunchReadiness } from '../jobs/launch-readiness.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type {
   ProviderServerLease,
@@ -49,7 +49,7 @@ interface CoordinatorJobOps {
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   waitStreamOnce(jobId: string, timeoutMs?: number): Promise<WaitStreamOnceResult>;
-  awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState>;
+  awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   list(providerName: string): ListResult;
 }
 

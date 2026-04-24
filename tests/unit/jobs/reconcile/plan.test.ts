@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
-import type { JobStoreSnapshot, RecoveryAction, RecoveryPlan } from '#src/jobs/reconcile/plan.js'
+import type { RecoveryProjectionSnapshot, RecoveryAction, RecoveryJobFacts } from '#src/jobs/reconcile/plan.js'
 import { planRecovery } from '#src/jobs/reconcile/plan.js'
 
 const NOW = '2026-04-12T00:00:00.000Z'
@@ -16,9 +16,9 @@ type JobFixture = {
   runtime?: JobRuntime | null
   exit?: DurableProcessExit | null
   terminalPayload?: JobTerminal | null
-  hasLaunch?: boolean
-  hasRuntime?: boolean
-  hasExit?: boolean
+  hasLaunchRequest?: boolean
+  hasRuntimeStart?: boolean
+  hasTerminalRecord?: boolean
   includeInJobIds?: boolean
 }
 
@@ -31,9 +31,9 @@ type SessionFixture = {
 }
 
 type StoredJob = {
-  hasLaunch: boolean
-  hasRuntime: boolean
-  hasExit: boolean
+  hasLaunchRequest: boolean
+  hasRuntimeStart: boolean
+  hasTerminalRecord: boolean
   status: JobStatus | null
   launch: JobLaunch | null
   runtime: JobRuntime | null
@@ -41,7 +41,7 @@ type StoredJob = {
   terminalPayload: JobTerminal | null
 }
 
-class InMemoryRecoverySnapshot implements JobStoreSnapshot {
+class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
   readonly jobIds: string[] = []
   readonly currentNamespace: string
   private readonly jobs = new Map<string, StoredJob>()
@@ -54,9 +54,9 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
 
   addJob(fixture: JobFixture): this {
     this.jobs.set(fixture.jobId, {
-      hasLaunch: fixture.hasLaunch ?? (fixture.launch !== undefined && fixture.launch !== null),
-      hasRuntime: fixture.hasRuntime ?? (fixture.runtime !== undefined && fixture.runtime !== null),
-      hasExit: fixture.hasExit ?? (fixture.exit !== undefined && fixture.exit !== null),
+      hasLaunchRequest: fixture.hasLaunchRequest ?? (fixture.launch !== undefined && fixture.launch !== null),
+      hasRuntimeStart: fixture.hasRuntimeStart ?? (fixture.runtime !== undefined && fixture.runtime !== null),
+      hasTerminalRecord: fixture.hasTerminalRecord ?? (fixture.exit !== undefined && fixture.exit !== null),
       status: fixture.status ?? null,
       launch: fixture.launch ?? null,
       runtime: fixture.runtime ?? null,
@@ -90,36 +90,17 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
     return this
   }
 
-  hasLaunch(jobId: string): boolean {
-    return this.jobs.get(jobId)?.hasLaunch ?? false
-  }
-
-  hasRuntime(jobId: string): boolean {
-    return this.jobs.get(jobId)?.hasRuntime ?? false
-  }
-
-  hasExit(jobId: string): boolean {
-    return this.jobs.get(jobId)?.hasExit ?? false
-  }
-
-  readStatus(jobId: string): JobStatus | null {
-    return this.jobs.get(jobId)?.status ?? null
-  }
-
-  readLaunch(jobId: string): JobLaunch | null {
-    return this.jobs.get(jobId)?.launch ?? null
-  }
-
-  readRuntime(jobId: string): JobRuntime | null {
-    return this.jobs.get(jobId)?.runtime ?? null
-  }
-
-  readExit(jobId: string): DurableProcessExit | null {
-    return this.jobs.get(jobId)?.exit ?? null
-  }
-
-  readTerminalPayload(jobId: string): JobTerminal | null {
-    return this.jobs.get(jobId)?.terminalPayload ?? null
+  readJob(jobId: string): RecoveryJobFacts {
+    const job = this.jobs.get(jobId)
+    return {
+      jobId,
+      hasLaunchRequest: job?.hasLaunchRequest ?? false,
+      hasRuntimeStart: job?.hasRuntimeStart ?? false,
+      hasTerminalRecord: job?.hasTerminalRecord ?? false,
+      status: job?.status ?? null,
+      launchRecord: job?.launch ?? null,
+      runtimeRecord: job?.runtime ?? null,
+    }
   }
 
   listSessionRefs(): Array<{ sessionId: string; provider: string }> {
@@ -134,9 +115,7 @@ class InMemoryRecoverySnapshot implements JobStoreSnapshot {
 function makeStatus(
   jobId: string,
   phase: JobStatus['phase'],
-  overrides: Partial<JobStatus> & {
-    launch?: Partial<JobStatus['launch']>
-  } = {},
+  overrides: Partial<JobStatus> = {},
 ): JobStatus {
   const base: JobStatus = {
     jobId,
@@ -145,19 +124,12 @@ function makeStatus(
     projectRoot: `/projects/${jobId}`,
     backendNamespace: CURRENT_NAMESPACE,
     phase,
-    launch: {
-      state: 'pending',
-      updatedAt: NOW,
-    },
+    updatedAt: NOW,
   }
 
   return {
     ...base,
     ...overrides,
-    launch: {
-      ...base.launch,
-      ...overrides.launch,
-    },
   }
 }
 
@@ -285,19 +257,19 @@ function summarizeActions(actions: RecoveryAction[]) {
 }
 
 describe('planRecovery', () => {
-  it('returns deleteIncompleteDir for incomplete admission', () => {
+  it('returns discardIncompleteAdmission for incomplete admission', () => {
     const snapshot = new InMemoryRecoverySnapshot()
       .addJob({
         jobId: 'incomplete-job',
         status: null,
         launch: makeLaunch('incomplete-job'),
-        hasLaunch: true,
+        hasLaunchRequest: true,
       })
 
     const plan = planRecovery(snapshot)
     expect(plan.register).toEqual([])
     expect(plan.cleanup).toEqual([
-      { type: 'deleteIncompleteDir', jobId: 'incomplete-job' },
+      { type: 'discardIncompleteAdmission', jobId: 'incomplete-job' },
     ])
   })
 
@@ -306,7 +278,7 @@ describe('planRecovery', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'missing-launch-job',
       status,
-      hasLaunch: false,
+      hasLaunchRequest: false,
     })
 
     const plan = planRecovery(snapshot)
@@ -327,8 +299,8 @@ describe('planRecovery', () => {
       jobId: 'ghost-job',
       status,
       launch: makeLaunch('ghost-job'),
-      hasLaunch: true,
-      hasRuntime: false,
+      hasLaunchRequest: true,
+      hasRuntimeStart: false,
     })
 
     const plan = planRecovery(snapshot)
@@ -349,8 +321,8 @@ describe('planRecovery', () => {
       jobId: 'queued-job',
       status: makeStatus('queued-job', 'queued'),
       launch: launchRecord,
-      hasLaunch: true,
-      hasRuntime: false,
+      hasLaunchRequest: true,
+      hasRuntimeStart: false,
     })
 
     const plan = planRecovery(snapshot)
@@ -372,8 +344,8 @@ describe('planRecovery', () => {
       status: makeStatus('running-job', 'running'),
       launch: launchRecord,
       runtime: runtimeRecord,
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -397,9 +369,9 @@ describe('planRecovery', () => {
       launch: launchRecord,
       runtime: runtimeRecord,
       exit: makeExit({ exitCode: 1 }),
-      hasLaunch: true,
-      hasRuntime: true,
-      hasExit: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
+      hasTerminalRecord: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -420,8 +392,8 @@ describe('planRecovery', () => {
       status: makeStatus('terminal-job', 'completed'),
       launch: makeLaunch('terminal-job'),
       runtime: makeRuntime('terminal-job'),
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -435,8 +407,8 @@ describe('planRecovery', () => {
       status: makeStatus('foreign-job', 'running', { backendNamespace: FOREIGN_NAMESPACE }),
       launch: makeLaunch('foreign-job', { backendNamespace: FOREIGN_NAMESPACE }),
       runtime: makeRuntime('foreign-job'),
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -453,8 +425,8 @@ describe('planRecovery', () => {
         status: makeStatus('app-server-job', 'running'),
         launch: launchRecord,
         runtime: runtimeRecord,
-        hasLaunch: true,
-        hasRuntime: true,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
       }),
     )
 
@@ -541,8 +513,8 @@ describe('planRecovery', () => {
         status: makeStatus('live-job', 'running'),
         launch: makeLaunch('live-job'),
         runtime: makeRuntime('live-job'),
-        hasLaunch: true,
-        hasRuntime: true,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
       })
       .addSession({
         shardDir: '/sessions/live',
@@ -568,13 +540,13 @@ describe('planRecovery', () => {
       jobId: 'corrupt-status-job',
       status: null,
       launch: makeLaunch('corrupt-status-job'),
-      hasLaunch: true,
+      hasLaunchRequest: true,
     })
 
     const plan = planRecovery(snapshot)
     expect(plan.register).toEqual([])
     expect(plan.cleanup).toEqual([
-      { type: 'deleteIncompleteDir', jobId: 'corrupt-status-job' },
+      { type: 'discardIncompleteAdmission', jobId: 'corrupt-status-job' },
     ])
   })
 
@@ -583,8 +555,8 @@ describe('planRecovery', () => {
       jobId: 'corrupt-launch-job',
       status: makeStatus('corrupt-launch-job', 'queued'),
       launch: null,
-      hasLaunch: true,
-      hasRuntime: false,
+      hasLaunchRequest: true,
+      hasRuntimeStart: false,
     })
 
     const plan = planRecovery(snapshot)
@@ -598,8 +570,8 @@ describe('planRecovery', () => {
       status: makeStatus('corrupt-runtime-job', 'running'),
       launch: makeLaunch('corrupt-runtime-job'),
       runtime: null,
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -607,14 +579,14 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([])
   })
 
-  it('returns no action for unrecognized classifier rows', () => {
+  it('returns no action for projection fact combinations without recovery semantics', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'unknown-job',
       status: makeStatus('unknown-job', 'queued'),
       launch: makeLaunch('unknown-job'),
       runtime: makeRuntime('unknown-job'),
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
     const plan = planRecovery(snapshot)
@@ -629,22 +601,22 @@ describe('planRecovery', () => {
         status: makeStatus('running-a', 'running'),
         launch: makeLaunch('running-a', { enqueueSequence: 30 }),
         runtime: makeRuntime('running-a', { pid: 3001 }),
-        hasLaunch: true,
-        hasRuntime: true,
+        hasLaunchRequest: true,
+        hasRuntimeStart: true,
       })
       .addJob({
         jobId: 'queued-b',
         status: makeStatus('queued-b', 'queued'),
         launch: makeLaunch('queued-b', { enqueueSequence: 2 }),
-        hasLaunch: true,
-        hasRuntime: false,
+        hasLaunchRequest: true,
+        hasRuntimeStart: false,
       })
       .addJob({
         jobId: 'ghost-c',
         status: makeStatus('ghost-c', 'launching'),
         launch: makeLaunch('ghost-c', { enqueueSequence: 9 }),
-        hasLaunch: true,
-        hasRuntime: false,
+        hasLaunchRequest: true,
+        hasRuntimeStart: false,
       })
       .addSession({
         shardDir: '/sessions/deterministic',
@@ -677,48 +649,48 @@ describe('planRecovery', () => {
           status: makeStatus('running-second', 'running'),
           launch: runningSecondLaunch,
           runtime: runningSecondRuntime,
-          hasLaunch: true,
-          hasRuntime: true,
+          hasLaunchRequest: true,
+          hasRuntimeStart: true,
         })
         .addJob({
           jobId: 'incomplete',
           status: null,
           launch: makeLaunch('incomplete'),
-          hasLaunch: true,
+          hasLaunchRequest: true,
         })
         .addJob({
           jobId: 'missing-launch',
           status: makeStatus('missing-launch', 'launching'),
-          hasLaunch: false,
+          hasLaunchRequest: false,
         })
         .addJob({
           jobId: 'queued-late',
           status: makeStatus('queued-late', 'queued'),
           launch: queuedLateLaunch,
-          hasLaunch: true,
-          hasRuntime: false,
+          hasLaunchRequest: true,
+          hasRuntimeStart: false,
         })
         .addJob({
           jobId: 'ghost',
           status: makeStatus('ghost', 'running'),
           launch: makeLaunch('ghost'),
-          hasLaunch: true,
-          hasRuntime: false,
+          hasLaunchRequest: true,
+          hasRuntimeStart: false,
         })
         .addJob({
           jobId: 'queued-early',
           status: makeStatus('queued-early', 'queued'),
           launch: queuedEarlyLaunch,
-          hasLaunch: true,
-          hasRuntime: false,
+          hasLaunchRequest: true,
+          hasRuntimeStart: false,
         })
         .addJob({
           jobId: 'running-first',
           status: makeStatus('running-first', 'launching'),
           launch: runningFirstLaunch,
           runtime: runningFirstRuntime,
-          hasLaunch: true,
-          hasRuntime: true,
+          hasLaunchRequest: true,
+          hasRuntimeStart: true,
         })
         .addJob({
           jobId: 'terminal',
@@ -730,9 +702,9 @@ describe('planRecovery', () => {
           launch: staleDeadLaunch,
           runtime: staleDeadRuntime,
           exit: makeExit({ exitCode: 1 }),
-          hasLaunch: true,
-          hasRuntime: true,
-          hasExit: true,
+          hasLaunchRequest: true,
+          hasRuntimeStart: true,
+          hasTerminalRecord: true,
         })
         .addSession({
           shardDir: '/sessions/order',
@@ -756,7 +728,7 @@ describe('planRecovery', () => {
       { type: 'registerQueued', jobId: 'queued-late', enqueueSequence: 9 },
     ])
     expect(summarizeActions(plan.cleanup)).toEqual([
-      { type: 'deleteIncompleteDir', jobId: 'incomplete' },
+      { type: 'discardIncompleteAdmission', jobId: 'incomplete' },
       { type: 'markError', jobId: 'missing-launch', fault: 'missing_launch_record' },
       { type: 'markError', jobId: 'ghost', fault: 'ghost_launch' },
       {
@@ -772,38 +744,24 @@ describe('planRecovery', () => {
     ])
   })
 
-  it('malformed snapshots never throw', () => {
+  it('propagates snapshot read failures', () => {
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'throwing-job',
       status: makeStatus('throwing-job', 'running'),
       launch: makeLaunch('throwing-job'),
       runtime: makeRuntime('throwing-job'),
-      hasLaunch: true,
-      hasRuntime: true,
+      hasLaunchRequest: true,
+      hasRuntimeStart: true,
     })
 
-    ;(snapshot as any).hasLaunch = () => {
-      throw new Error('broken hasLaunch')
-    }
-    ;(snapshot as any).readStatus = () => {
-      throw new Error('broken readStatus')
+    ;(snapshot as any).readJob = () => {
+      throw new Error('broken readJob')
     }
     ;(snapshot as any).listSessionRefs = () => {
       throw new Error('broken listSessionRefs')
     }
 
-    let thrown: unknown = null
-    let result: RecoveryPlan = { register: [], cleanup: [] }
-
-    try {
-      result = planRecovery(snapshot)
-    } catch (error: unknown) {
-      thrown = error
-    }
-
-    expect(thrown).toBeNull()
-    expect(result.register).toEqual([])
-    expect(result.cleanup).toEqual([])
+    expect(() => planRecovery(snapshot)).toThrow('broken readJob')
   })
 
 })

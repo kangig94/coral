@@ -609,10 +609,7 @@ function _makeStatusRecord(
     projectRoot: ctx.projectRoot,
     backendNamespace: TEST_BACKEND_NAMESPACE,
     phase,
-    launch: {
-      state: 'ready',
-      updatedAt: '2026-03-06T00:00:00.000Z',
-    },
+    updatedAt: '2026-03-06T00:00:00.000Z',
     ...(options.result ? { result: toCompletedJobTerminal(options.result) } : {}),
   };
 }
@@ -1393,9 +1390,6 @@ describe('ExecutionService launch', () => {
       sessionId: decision.session,
       provider: 'codex',
       phase: 'queued',
-      launch: {
-        state: 'queued',
-      },
     });
   });
 

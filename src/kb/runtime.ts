@@ -71,8 +71,6 @@ import {
 } from './runtime-snapshot.js';
 import { commitMutationState, previewPendingMutationState } from './runtime-mutation-state.js';
 
-export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
-
 type MutationLockContext = KbMutationLockContext<
   KbIndex,
   KbCorpusPublication,

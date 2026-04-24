@@ -16,8 +16,8 @@ import type {
   JobRuntime,
   JobTerminalDiagnostics,
   JobTerminalInput,
-  LaunchState,
 } from '../jobs/records.js';
+import type { LaunchReadiness } from '../jobs/launch-readiness.js';
 import type { TerminalWriteOptions } from '../jobs/progress-store-contract.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -297,7 +297,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, context);
   }
 
-  async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchState> {
+  async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {
     return this.waitService.awaitLaunch(jobId, timeoutMs);
   }
 
