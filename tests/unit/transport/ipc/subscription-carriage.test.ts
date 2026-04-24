@@ -30,7 +30,7 @@ function makeWaitEvents(): WaitStreamEvent[] {
       jobId: 'job-1',
       remainingJobIds: [],
       resultPath: '/tmp/result.md',
-      result: { content: 'done', outcome: { kind: 'completed' } },
+      result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
     },
   ];
 }

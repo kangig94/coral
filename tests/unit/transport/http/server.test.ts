@@ -4216,7 +4216,7 @@ describe('execution backend server', () => {
     expect(recoveredSession?.lastJobId).toBe(jobId);
   });
 
-  it('recovers orphaned workflow jobs with an empty artifact, workflow marker, and released session claim', async () => {
+  it('recovers orphaned workflow jobs with an empty artifact, workflow diagnostics, and released session claim', async () => {
     const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
@@ -4262,19 +4262,20 @@ describe('execution backend server', () => {
     });
     const body = await response.text();
     const status = progressStore.readStatus(jobId);
+    const detail = progressStore.loadJobProjectionDetail(jobId);
     const recoveredSession = new SessionManager(projectRoot, runtime).get('codex', session.sessionId);
 
     expect(response.status).toBe(200);
     expect(body).toContain('event: terminal');
     expect(body).toContain(`"resultPath":"${jobResultPath(jobId)}"`);
-    expect(body).toContain('"workflow":{"steps":[]}');
+    expect(body).not.toContain('"workflow":{"steps":[]}');
+    expect(detail.exit?.diagnostics.workflow).toEqual({ steps: [] });
     expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('');
     expect(status).toMatchObject({
       phase: 'error',
       jobKind: 'workflow',
       result: {
         content: '',
-        workflow: { steps: [] },
         outcome: {
           kind: 'job_fault',
           fault: {

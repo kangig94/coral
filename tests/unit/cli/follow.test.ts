@@ -346,7 +346,7 @@ describe('cli follow', () => {
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
         expect(params.cursor).toEqual({ jobs: { 'job-1': 1 } });
         return makeSubscription(async function* () {
-          yield makeTerminalEvent({ exitCode: 7 });
+          yield makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } });
         });
       });
 
@@ -355,7 +355,7 @@ describe('cli follow', () => {
     expect(stdout).toBe(
       `${formatLaunch(options.launchResult)}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
-        `${formatWaitTerminal(makeTerminalEvent({ exitCode: 7 }), cursorAfterProgress, false)}\n`,
+        `${formatWaitTerminal(makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } }), cursorAfterProgress, false)}\n`,
     );
     expect(stderr).toBe('');
     expect(backoffScheduler).toHaveBeenCalledTimes(1);
@@ -450,10 +450,12 @@ describe('cli follow', () => {
   });
 
   it.each([
-    [{ exitCode: null }, 1],
-    [{ exitCode: 256 }, 1],
-    [{ exitCode: 1.5 }, 1],
-    [{ outcome: { kind: 'aborted' as const, reason: 'signal_abort' as const }, exitCode: 0 }, 1],
+    [{ exitCode: null }, 0],
+    [{ exitCode: 256 }, 0],
+    [{ exitCode: 1.5 }, 0],
+    [{ outcome: { kind: 'provider_exit' as const, code: 256 } }, 1],
+    [{ outcome: { kind: 'provider_exit' as const, code: 1.5 } }, 1],
+    [{ outcome: { kind: 'aborted' as const, reason: 'signal_abort' as const } }, 1],
   ])('maps terminal result %j to exit code %i', async (result, expected) => {
     const { launchAndFollow } = await loadFollowModule();
 

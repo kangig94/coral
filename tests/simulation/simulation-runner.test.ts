@@ -239,7 +239,6 @@ describe('scenario runner', () => {
     expect(run.world.getJobStatus(FIRST_BOOTED_JOB_ID)).toMatchObject({
       phase: 'error',
       result: {
-        exitCode: 9,
         outcome: {
           kind: 'failed',
         },

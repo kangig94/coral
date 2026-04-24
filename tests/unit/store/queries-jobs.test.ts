@@ -211,15 +211,6 @@ describe('jobs queries', () => {
         launch: { state: 'ready' },
         result: {
           content: 'done',
-          warnings: ['soft warning'],
-          usage: {
-            inputTokens: 12,
-            outputTokens: 34,
-            costUsd: 0.56,
-          },
-          workflow: {
-            steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
-          },
         },
         continuity: {
           conversationRef: 'thread-completed',
@@ -239,7 +230,17 @@ describe('jobs queries', () => {
       },
       exit: {
         content: 'done',
-        warnings: ['soft warning'],
+        diagnostics: {
+          warnings: ['soft warning'],
+          usage: {
+            inputTokens: 12,
+            outputTokens: 34,
+            costUsd: 0.56,
+          },
+          workflow: {
+            steps: [{ agent: 'architect', step: 0, atom: 0, provider: 'codex', start: 1, end: 2 }],
+          },
+        },
         continuity: {
           conversationRef: 'thread-completed',
           resumable: true,
