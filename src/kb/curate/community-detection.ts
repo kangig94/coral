@@ -1,113 +1,42 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import * as GraphologyModule from 'graphology';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
-import type { AbstractGraph, GraphConstructor } from 'graphology-types';
-import { unlinkIfExists } from '../../infra/fs-errors.js';
-import {
-  captureCommunityManifestDelta,
-  captureRemovedCommunityManifestDelta,
-} from '../corpus/manifest-authority.js';
-import {
-  extractBody,
-  extractTitle,
-  parseCommunityFrontmatter,
-  parseMembersFromBody,
-  parseSummaryFromBody,
-  serializeCommunityFrontmatter,
-} from '../corpus/frontmatter.js';
-import { sortedMarkdownEntries } from '../corpus/markdown-entries.js';
-import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { stripMdExt } from '../paths.js';
-import type { KbMutationEffects, KbRuntime } from '../contracts.js';
 import { compareLocale } from '../validation.js';
-import {
-  communityEntryId,
-  isNoteEntry,
-  isSourceEntry,
-  type EntityGraph,
-  type KbIndex,
-} from '../entry-types.js';
+import { communityEntryId, type KbIndex } from '../entry-types.js';
 import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './community-identity.js';
+import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './community-graph.js';
+import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './community-types.js';
+export {
+  buildCommunityDocuments,
+  generateCommunityFiles,
+  loadExistingCommunityState,
+  renderCommunityDocument,
+} from './community-documents.js';
+export { buildEntityRelationshipGraph, computeGraphFingerprint } from './community-graph.js';
 export {
   computeCommunitySummaryInputFingerprintForCommunity,
   computeCommunitySummaryInputFingerprints,
   generateCommunitySummary,
 } from './community-summary.js';
+export type {
+  CommunityDocument,
+  DetectedCommunity,
+  ExistingGeneratedCommunity,
+  TagGraph,
+  TagGraphEdge,
+} from './community-types.js';
 
-type TagGraphNodeAttributes = Record<string, never>;
-type TagGraphEdgeAttributes = { weight: number };
 type Louvain = {
-  detailed(
-    graph: AbstractGraph<TagGraphNodeAttributes, TagGraphEdgeAttributes>,
-    options?: Record<string, unknown>,
-  ): DetailedLouvainOutput;
+  detailed(graph: TagGraph['graph'], options?: Record<string, unknown>): DetailedLouvainOutput;
 };
 type LouvainDetails = DetailedLouvainOutput;
 
-const Graph =
-  (GraphologyModule as unknown as { default?: GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes> })
-    .default ?? (GraphologyModule as unknown as GraphConstructor<TagGraphNodeAttributes, TagGraphEdgeAttributes>);
 const louvain: Louvain =
   (louvainModule as unknown as { default?: Louvain }).default ?? (louvainModule as unknown as Louvain);
-
-export type TagGraphEdge = {
-  left: string;
-  right: string;
-  weight: number;
-};
-
-export type TagGraph = {
-  graph: AbstractGraph<TagGraphNodeAttributes, TagGraphEdgeAttributes>;
-  tags: string[];
-  edges: TagGraphEdge[];
-  adjacency: ReadonlyMap<string, ReadonlyMap<string, number>>;
-};
-
-export type DetectedCommunity = {
-  slug: string;
-  title: string;
-  level: number;
-  members: string[];
-  parent?: string;
-  children?: string[];
-};
-
-export type ExistingGeneratedCommunity = {
-  slug: string;
-  title: string;
-  level: number;
-  members: string[];
-  parent?: string;
-  children?: string[];
-  summary?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type CommunityDocument = {
-  slug: string;
-  title: string;
-  level: number;
-  members: string[];
-  parent?: string;
-  children?: string[];
-  summary?: string;
-  createdAt: string;
-  updatedAt: string;
-  content: string;
-};
 
 type DetectCommunitiesOptions = {
   priorCommunities?: ExistingGeneratedCommunity[];
   reservedSlugs?: ReadonlySet<string>;
-};
-
-type BuildCommunityDocumentsOptions = {
-  priorGeneratedCommunities: ExistingGeneratedCommunity[];
-  today: string;
 };
 
 type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug' | 'parent' | 'children'> & {
@@ -147,18 +76,6 @@ const COMMUNITY_RESOLUTION_TARGET_MIDPOINT =
   (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
 
-function edgeKey(left: string, right: string): string {
-  return left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`;
-}
-
-function parseEdgeKey(key: string): [string, string] {
-  const [left, right] = key.split('\u0000');
-  if (left === undefined || right === undefined) {
-    throw new Error(`Invalid tag graph edge key: ${key}`);
-  }
-  return [left, right];
-}
-
 function internalWeightedDegree(
   node: string,
   memberSet: ReadonlySet<string>,
@@ -176,10 +93,6 @@ function internalWeightedDegree(
     }
   }
   return total;
-}
-
-function formatEdgeWeight(weight: number): string {
-  return weight.toFixed(12);
 }
 
 function titleCaseTag(tag: string): string {
@@ -233,21 +146,6 @@ function deriveCommunityTitle(rankedMembers: string[]): string {
   return rankedMembers.slice(0, COMMUNITY_SLUG_TAG_LIMIT).map(titleCaseTag).join(' / ');
 }
 
-function renderMembersSection(members: string[]): string {
-  return ['## Members', '', ...members.map((member) => `- #${member}`)].join('\n');
-}
-
-function renderChildrenSection(children: string[]): string {
-  return ['## Children', '', ...children.map((child) => `- ${child}`)].join('\n');
-}
-
-function normalizeEntityGraph(index: KbIndex): EntityGraph {
-  return {
-    entityMeta: index.entityMeta,
-    relationships: index.relationships,
-  };
-}
-
 export function seededRng(seed: number): () => number {
   let state = seed >>> 0;
 
@@ -258,96 +156,6 @@ export function seededRng(seed: number): () => number {
     value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
     return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
   };
-}
-
-export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph {
-  const sortedTags = Object.keys(entityGraph.entityMeta).sort(compareLocale);
-  const tagSet = new Set(sortedTags);
-  const edgeWeights = new Map<string, number>();
-
-  const sortedRelationships = [...entityGraph.relationships].sort((left, right) => {
-    const sourceCompare = compareLocale(left.source, right.source);
-    if (sourceCompare !== 0) {
-      return sourceCompare;
-    }
-    const targetCompare = compareLocale(left.target, right.target);
-    if (targetCompare !== 0) {
-      return targetCompare;
-    }
-    const typeCompare = compareLocale(left.type, right.type);
-    if (typeCompare !== 0) {
-      return typeCompare;
-    }
-    return compareLocale(left.description, right.description);
-  });
-
-  for (const relationship of sortedRelationships) {
-    if (
-      relationship.source === relationship.target ||
-      !tagSet.has(relationship.source) ||
-      !tagSet.has(relationship.target)
-    ) {
-      continue;
-    }
-
-    const evidence = uniqueSorted(relationship.evidence);
-    const contribution = evidence.length;
-    if (contribution === 0) {
-      continue;
-    }
-
-    const key = edgeKey(relationship.source, relationship.target);
-    edgeWeights.set(key, (edgeWeights.get(key) ?? 0) + contribution);
-  }
-
-  const edges = [...edgeWeights.entries()]
-    .map(([key, weight]) => {
-      const [left, right] = parseEdgeKey(key);
-      return { left, right, weight };
-    })
-    .sort((left, right) => {
-      const leftCompare = compareLocale(left.left, right.left);
-      if (leftCompare !== 0) {
-        return leftCompare;
-      }
-      return compareLocale(left.right, right.right);
-    });
-
-  const adjacency = new Map<string, Map<string, number>>();
-  for (const tag of sortedTags) {
-    adjacency.set(tag, new Map());
-  }
-  for (const edge of edges) {
-    adjacency.get(edge.left)?.set(edge.right, edge.weight);
-    adjacency.get(edge.right)?.set(edge.left, edge.weight);
-  }
-
-  const graph = new Graph({ type: 'undirected' });
-  for (const tag of sortedTags) {
-    graph.addNode(tag);
-  }
-  for (const edge of edges) {
-    graph.mergeUndirectedEdge(edge.left, edge.right, { weight: edge.weight });
-  }
-
-  return {
-    graph,
-    tags: sortedTags,
-    edges,
-    adjacency,
-  };
-}
-
-function buildEntityRelationshipGraphFromIndex(index: KbIndex): TagGraph {
-  return buildEntityRelationshipGraph(normalizeEntityGraph(index));
-}
-
-export function computeGraphFingerprint(graph: TagGraph): string {
-  const payload = [
-    ...graph.tags.map((tag) => `N\t${tag}`),
-    ...graph.edges.map((edge) => `${edge.left}\t${edge.right}\t${formatEdgeWeight(edge.weight)}`),
-  ].join('\n');
-  return createHash('sha256').update(payload).digest('hex');
 }
 
 function normalizeDendrogramLevels(
@@ -762,132 +570,4 @@ export function computeCommunityTopologyFingerprint(index: KbIndex, graph = buil
 
 export function computeCommunityMembershipFingerprint(members: string[]): string {
   return createHash('sha256').update(uniqueSorted(members).join('\n')).digest('hex');
-}
-
-export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir'>): {
-  generated: ExistingGeneratedCommunity[];
-  reservedSlugs: Set<string>;
-} {
-  const generated: ExistingGeneratedCommunity[] = [];
-  const reservedSlugs = new Set<string>();
-
-  for (const entry of sortedMarkdownEntries(kb.communitiesDir())) {
-    const slug = stripMdExt(entry);
-    const raw = readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
-
-    try {
-      const frontmatter = parseCommunityFrontmatter(raw);
-      const body = extractBody(raw);
-      generated.push({
-        slug,
-        title: extractTitle(raw),
-        level: frontmatter.level,
-        members: parseMembersFromBody(body),
-        ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
-        ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
-        summary: parseSummaryFromBody(body),
-        createdAt: frontmatter.createdAt,
-        updatedAt: frontmatter.updatedAt,
-      });
-    } catch {
-      reservedSlugs.add(slug);
-    }
-  }
-
-  return { generated, reservedSlugs };
-}
-
-export function renderCommunityDocument(document: {
-  title: string;
-  members: string[];
-  level?: number;
-  parent?: string;
-  children?: string[];
-  summary?: string;
-  createdAt: string;
-  updatedAt: string;
-}): string {
-  const frontmatter = serializeCommunityFrontmatter({
-    createdAt: document.createdAt,
-    updatedAt: document.updatedAt,
-    level: document.level,
-    ...(document.parent === undefined ? {} : { parent: document.parent }),
-    ...(document.children === undefined ? {} : { children: document.children }),
-  });
-  const summarySection = document.summary === undefined ? '' : `## Summary\n\n${document.summary}\n\n`;
-  const childrenSection =
-    document.children === undefined || document.children.length === 0
-      ? ''
-      : `\n\n${renderChildrenSection(document.children)}`;
-
-  return `${frontmatter}# ${document.title}\n\n${summarySection}${renderMembersSection(document.members)}${childrenSection}\n`;
-}
-
-export function buildCommunityDocuments(
-  communities: DetectedCommunity[],
-  options: BuildCommunityDocumentsOptions,
-): CommunityDocument[] {
-  const priorBySlug = new Map(
-    options.priorGeneratedCommunities.map((community) => [community.slug, community] as const),
-  );
-
-  return communities.map((community) => {
-    const priorCommunity = priorBySlug.get(community.slug);
-    const createdAt = priorCommunity?.createdAt ?? options.today;
-    const summary = priorCommunity?.summary;
-    const title = community.title;
-
-    return {
-      slug: community.slug,
-      title,
-      level: community.level,
-      members: community.members,
-      ...(community.parent === undefined ? {} : { parent: community.parent }),
-      ...(community.children === undefined ? {} : { children: community.children }),
-      ...(summary === undefined ? {} : { summary }),
-      createdAt,
-      updatedAt: options.today,
-      content: renderCommunityDocument({
-        title,
-        members: community.members,
-        level: community.level,
-        ...(community.parent === undefined ? {} : { parent: community.parent }),
-        ...(community.children === undefined ? {} : { children: community.children }),
-        ...(summary === undefined ? {} : { summary }),
-        createdAt,
-        updatedAt: options.today,
-      }),
-    };
-  });
-}
-
-export function generateCommunityFiles(
-  kb: KbRuntime,
-  mutation: KbMutationEffects,
-  documents: CommunityDocument[],
-  priorGeneratedCommunities: ExistingGeneratedCommunity[],
-  onWrite?: () => void,
-): boolean {
-  let wroteFiles = false;
-
-  for (const community of priorGeneratedCommunities) {
-    const communityPath = kb.communityPath(community.slug);
-    if (!existsSync(communityPath)) {
-      continue;
-    }
-
-    unlinkIfExists(communityPath);
-    mutation.queueManifestAuthorityDelta(captureRemovedCommunityManifestDelta(community.slug));
-    onWrite?.();
-    wroteFiles = true;
-  }
-
-  for (const document of documents) {
-    writeFileAtomic(kb.communityPath(document.slug), document.content);
-    mutation.queueManifestAuthorityDelta(captureCommunityManifestDelta(document.slug, document.content));
-    onWrite?.();
-    wroteFiles = true;
-  }
-
-  return wroteFiles;
 }
