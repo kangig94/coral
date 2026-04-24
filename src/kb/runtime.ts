@@ -1,11 +1,7 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import type BetterSqlite3 from 'better-sqlite3';
 import { errorMessage } from '../infra/error-format.js';
-import { isNoEntryError } from '../infra/fs-errors.js';
-import { readPendingRepairRows, type PendingRepairRetryCandidate } from './curate/retry.js';
-import { deriveStableCorpusSnapshotId, type CorpusSnapshot } from './corpus/snapshot.js';
+import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type {
   KbInboundSyncOptions,
   KbCachedOramaIndex,
@@ -30,21 +26,9 @@ import {
   createManifestAuthority,
 } from './corpus/manifest-authority.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from './corpus/index-records.js';
+import { cloneKbIndex } from './corpus/index-records.js';
 import { createOramaDb } from './orama-factory.js';
 import type { KbOramaDb, KbOramaTokenizer } from './orama-schema.js';
-import {
-  communityPathFromName,
-  communitiesDir as pathsCommunitiesDir,
-  notePathFromName,
-  notesDir as pathsNotesDir,
-  oramaSnapshotDir,
-  principlePathFromName,
-  principlesDir as pathsPrinciplesDir,
-  sourceImportStageDir as pathsSourceImportStageDir,
-  sourcePathFromName,
-  sourcesDir as pathsSourcesDir,
-} from './paths.js';
 import { detectTextArtifactRebuildInfo, rebuildTextArtifactsAndPersistRepairState } from './curate/text-artifacts.js';
 import {
   type EntityGraph,
@@ -53,7 +37,6 @@ import {
 import { createOramaBaseProjection } from './search/orama-backend.js';
 import { diffSearchVisibleEntryIds } from './search/visible-entry-diff.js';
 import { createCorpusStateMirror } from './runtime-state.js';
-import { loadKbNote, loadKbSource } from './read.js';
 import type { TextRetrieval, VectorRetrieval } from './search/contract.js';
 import {
   applyMutationLane,
@@ -80,6 +63,14 @@ import {
   isGitSyncResult,
   type InboundSyncMutationDiff,
 } from './corpus/inbound-sync.js';
+import { createKbRuntimePaths, type KbRuntimePaths } from './runtime-paths.js';
+import { pendingRepairNeedsRetry } from './runtime-pending-repair.js';
+import { buildInboundSyncIndexDelta } from './runtime-inbound-index.js';
+import {
+  buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot,
+  emptyRuntimeActivationSnapshot,
+} from './runtime-snapshot.js';
+import { commitMutationState, previewPendingMutationState } from './runtime-mutation-state.js';
 
 export const KB_ENTRYSEQ_MIGRATION_VERSION = 1;
 
@@ -99,20 +90,12 @@ export interface CreateKbRuntimeOptions {
   readOnlyOrama?: boolean;
 }
 
-function emptySnapshot(retrieval: VectorRetrieval): KbRuntimeActivationSnapshot {
-  return {
-    retrieval,
-    snapshotId: null,
-    contentSeq: 0,
-    contentManifestHash: null,
-  };
-}
-
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly runtimeDir: string;
   readonly db: BetterSqlite3.Database;
   private readonly readOnlyOrama: boolean;
+  private readonly paths: KbRuntimePaths;
   private readonly manifestAuthority = createManifestAuthority();
   private readonly indexStore: KbIndexStore;
   private readonly oramaSnapshotStore: OramaSnapshotStore;
@@ -169,6 +152,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.readOnlyOrama = readOnlyOrama === true;
+    this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
     this.corpusStateMirror = createCorpusStateMirror(this.db);
     this.oramaSnapshotStore = new OramaSnapshotStore(this.runtimeDir);
     this.indexStore = new KbIndexStore({
@@ -187,7 +171,7 @@ class KbRuntimeImpl implements KbRuntime {
       },
     });
     this.equipmentViewResolver = getEquipmentView;
-    this.emptyEquipmentView = Object.freeze(emptySnapshot(this.baseProjection));
+    this.emptyEquipmentView = Object.freeze(emptyRuntimeActivationSnapshot(this.baseProjection));
 
     mkdirSync(this.runtimeDir, { recursive: true });
 
@@ -211,43 +195,43 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   notesDir(): string {
-    return pathsNotesDir(this.markdownRoot);
+    return this.paths.notesDir();
   }
 
   sourcesDir(): string {
-    return pathsSourcesDir(this.markdownRoot);
+    return this.paths.sourcesDir();
   }
 
   communitiesDir(): string {
-    return pathsCommunitiesDir(this.markdownRoot);
+    return this.paths.communitiesDir();
   }
 
   principlesDir(): string {
-    return pathsPrinciplesDir(this.markdownRoot);
+    return this.paths.principlesDir();
   }
 
   entityGraphPath(): string {
-    return join(this.markdownRoot, '.entity-graph.json');
+    return this.paths.entityGraphPath();
   }
 
   notePath(note: string): string {
-    return notePathFromName(note, this.markdownRoot);
+    return this.paths.notePath(note);
   }
 
   sourcePath(source: string): string {
-    return sourcePathFromName(source, this.markdownRoot);
+    return this.paths.sourcePath(source);
   }
 
   communityPath(community: string): string {
-    return communityPathFromName(community, this.markdownRoot);
+    return this.paths.communityPath(community);
   }
 
   principlePath(principle: string): string {
-    return principlePathFromName(principle, this.markdownRoot);
+    return this.paths.principlePath(principle);
   }
 
   sourceImportStageDir(): string {
-    return pathsSourceImportStageDir(this.runtimeDir);
+    return this.paths.sourceImportStageDir();
   }
 
   readEntityGraph(): EntityGraph | null {
@@ -314,22 +298,10 @@ class KbRuntimeImpl implements KbRuntime {
         this.activeMutationContext.pendingMutationReason = reason;
       }
 
-      const state = this.readIndexState();
-      return {
-        ...applyMutationLane(state, this.activeMutationContext.pendingMutationLane),
-        ...(this.activeMutationContext.pendingMutationReason === undefined
-          ? state.textStaleReason === undefined
-            ? {}
-            : { textStaleReason: state.textStaleReason }
-          : { textStaleReason: this.activeMutationContext.pendingMutationReason }),
-      };
+      return previewPendingMutationState(this.readIndexState(), this.activeMutationContext);
     }
 
-    const state = this.readIndexState();
-    const nextState = {
-      ...applyMutationLane(state, lane),
-      ...(reason === undefined ? {} : { textStaleReason: reason }),
-    };
+    const nextState = commitMutationState(this.readIndexState(), lane, reason);
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
     return nextState;
@@ -529,63 +501,11 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private buildInboundSyncIndexDelta(changedEntryIds: readonly string[]): KbIndex {
-    const nextIndex = cloneKbIndex(this.activeMutationContext?.startIndex ?? this.readIndex());
-
-    for (const entryId of changedEntryIds) {
-      if (entryId.startsWith('note:')) {
-        const slug = entryId.slice('note:'.length);
-        const notePath = this.notePath(slug);
-
-        try {
-          const { frontmatter, title } = loadKbNote(notePath);
-          nextIndex.entries[entryId] = buildNoteIndexEntry({
-            slug,
-            title,
-            ...frontmatter,
-          });
-        } catch (error: unknown) {
-          if (!isNoEntryError(error)) {
-            throw error;
-          }
-          delete nextIndex.entries[entryId];
-        }
-        continue;
-      }
-
-      if (entryId.startsWith('source:')) {
-        const slug = entryId.slice('source:'.length);
-        const sourcePath = this.sourcePath(slug);
-
-        try {
-          const { frontmatter } = loadKbSource(sourcePath);
-          nextIndex.entries[entryId] = buildSourceIndexEntry({
-            slug,
-            ...frontmatter,
-          });
-        } catch (error: unknown) {
-          if (!isNoEntryError(error)) {
-            throw error;
-          }
-          delete nextIndex.entries[entryId];
-        }
-      }
-    }
-
-    return nextIndex;
+    return buildInboundSyncIndexDelta(this.activeMutationContext?.startIndex ?? this.readIndex(), changedEntryIds, this);
   }
 
   private buildCurrentCorpusSnapshot(state: KbIndexStateSnapshot): CorpusSnapshot {
-    const snapshotWithoutId = {
-      contentSeq: state.contentSeq,
-      metadataSeq: state.metadataSeq,
-      contentManifestHash: this.manifestAuthority.getCurrentManifestHash('content'),
-      metadataManifestHash: this.manifestAuthority.getCurrentManifestHash('metadata'),
-    };
-
-    return {
-      ...snapshotWithoutId,
-      snapshotId: deriveStableCorpusSnapshotId(snapshotWithoutId),
-    };
+    return buildRuntimeCorpusSnapshot(state, this.manifestAuthority);
   }
 
   private queueManifestAuthorityDelta(deltas: readonly ManifestAuthorityDelta[]): void {
@@ -679,15 +599,7 @@ class KbRuntimeImpl implements KbRuntime {
       return;
     }
 
-    const state = this.readIndexState();
-    const nextState = {
-      ...applyMutationLane(state, lockContext.pendingMutationLane),
-      ...(lockContext.pendingMutationReason === undefined
-        ? state.textStaleReason === undefined
-          ? {}
-          : { textStaleReason: state.textStaleReason }
-        : { textStaleReason: lockContext.pendingMutationReason }),
-    };
+    const nextState = previewPendingMutationState(this.readIndexState(), lockContext);
     this.writeIndexState(nextState);
     this.refreshIndexBaselineIfPresent();
   }
@@ -797,53 +709,13 @@ class KbRuntimeImpl implements KbRuntime {
     }
   }
 
-  private pendingRepairPath(entry: PendingRepairRetryCandidate): string | null {
-    if (entry.entryId.startsWith('note:')) {
-      return this.notePath(entry.entryId.slice('note:'.length));
-    }
-    if (entry.entryId.startsWith('source:')) {
-      return this.sourcePath(entry.entryId.slice('source:'.length));
-    }
-
-    return null;
-  }
-
-  private readPendingRepairContentHash(path: string): string | null {
-    try {
-      return createHash('sha256').update(readFileSync(path, 'utf-8'), 'utf8').digest('hex');
-    } catch {
-      return null;
-    }
-  }
-
-  private pendingRepairNeedsRetry(): boolean {
-    const pendingRepair = readPendingRepairRows(this);
-    if (pendingRepair.length === 0) {
-      return false;
-    }
-
-    const result = pendingRepair.some((entry) => {
-      const path = this.pendingRepairPath(entry);
-      if (path === null) {
-        return false;
-      }
-      if (entry.observedContentHash === undefined) {
-        return (entry.reason ?? 'pending-repair') === 'pending-repair';
-      }
-
-      const currentHash = this.readPendingRepairContentHash(path);
-      return currentHash === null || currentHash !== entry.observedContentHash;
-    });
-    return result;
-  }
-
   private indexNeedsRebuild(): boolean {
     return detectTextArtifactRebuildInfo(this).needsRebuild;
   }
 
   private textArtifactsNeedRebuild(state?: KbIndexState | null): boolean {
     const currentState = state === undefined ? this.readIndexStateIfPresent() : state;
-    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild() || this.pendingRepairNeedsRetry();
+    return !isFreshTextSnapshot(currentState) || this.indexNeedsRebuild() || pendingRepairNeedsRetry(this);
   }
 
 }
