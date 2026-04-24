@@ -76,8 +76,7 @@ function expectPendingRepairEntries(
   }
 }
 
-// @flaky — mtime comparison race: parallel test I/O can shift directory mtime between reindex() and ensureIndex()
-describe('kb reindex', { retry: 2 }, () => {
+describe('kb reindex', () => {
   beforeEach(() => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-kb-reindex-'));
     process.env.CORAL_KB_PATH = join(mockState.tmpHome, 'vault');
@@ -719,6 +718,17 @@ This note has malformed frontmatter.
     );
 
     await reindex(kb);
+    const pendingRepair = readCurateState(kb).pendingRepair;
+    expectPendingRepairEntries(pendingRepair, [
+      {
+        entryId: noteEntryId('bad-note'),
+        entrySeq: 7,
+      },
+    ]);
+    expect(pendingRepair?.[0]?.observedContentHash).toMatch(/^[a-f0-9]{64}$/);
+    const detectedAt = pendingRepair?.[0]?.detectedAt;
+    expect(detectedAt).toBeDefined();
+    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) + 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
@@ -734,7 +744,7 @@ This note has malformed frontmatter.
     ]);
   });
 
-  it('automatically retries pendingRepair notes after the file changes past detectedAt without relying on directory mtimes', async () => {
+  it('automatically retries pendingRepair notes after file content changes without relying on mtimes', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState, writeCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
@@ -821,7 +831,7 @@ This note is valid now.
 `,
       'utf-8',
     );
-    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) + 60_000));
+    setMtime(join(paths.notesDir(), 'bad-note.md'), new Date(Date.parse(detectedAt!) - 60_000));
     setMtime(paths.notesDir(), new Date(Date.parse(detectedAt!) - 60_000));
 
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
@@ -848,7 +858,7 @@ This note is valid now.
     });
   });
 
-  it('explicit reindex retries pendingRepair sources even when runtime freshness checks stay quiet', async () => {
+  it('automatically retries pendingRepair sources after file content changes even when mtimes stay quiet', async () => {
     const { reindex, createKbRuntime, paths } = await loadKbModules();
     const { readCurateState } = await import('#src/kb/curate/state.js');
     const kb = createRuntime(createKbRuntime, paths);
@@ -899,16 +909,6 @@ Source body.
     const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
 
     await kb.ensureIndex();
-    expect(reindexSuccessSpy).not.toHaveBeenCalled();
-    expectPendingRepairEntries(readCurateState(kb).pendingRepair, [
-      {
-        entryId: sourceEntryId('bad-source'),
-        entrySeq: 8,
-      },
-    ]);
-
-    await reindex(kb);
-
     expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(kb).pendingRepair).toBeNull();
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({

@@ -301,6 +301,7 @@ describe('migrations idempotency', () => {
         'entry_seq',
         'reason',
         'observed_at',
+        'observed_content_hash',
         'locus',
         'canonical_incident',
         'signals_json',

@@ -753,16 +753,18 @@ describe('curate state', () => {
       const pendingRepair = detectRepairs(scan.scanFailures, detectedAt);
 
       expect(pendingRepair).toEqual([
-        {
+        expect.objectContaining({
           entryId: noteEntryId('coral-malformed-note'),
           entrySeq: 7,
           detectedAt,
-        },
-        {
+          observedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+        expect.objectContaining({
           entryId: sourceEntryId('coral-malformed-source'),
           entrySeq: null,
           detectedAt,
-        },
+          observedContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
       ]);
       expect(warn).toHaveBeenCalledTimes(2);
       expect(String(warn.mock.calls[0]?.[0])).toContain(

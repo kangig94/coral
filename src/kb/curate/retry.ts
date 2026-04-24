@@ -15,6 +15,7 @@ const retryRowSchema = z.object({
   entry_seq: z.number().int().positive().nullable(),
   reason: z.string().min(1),
   observed_at: z.string().datetime({ offset: true }),
+  observed_content_hash: z.string().min(1).nullable(),
   locus: z.string().nullable(),
   canonical_incident: z.string().nullable(),
   signals_json: z
@@ -41,11 +42,13 @@ const retryRowSchema = z.object({
 const pendingRepairRowSchema = z.object({
   entry_id: kbEntryIdSchema,
   observed_at: z.string().datetime({ offset: true }),
+  observed_content_hash: z.string().min(1).nullable(),
+  reason: z.string().min(1),
 });
 
-type PendingRepairRow = Pick<KbCurateRetryQueueRow, 'entry_id' | 'observed_at'>;
+type PendingRepairRow = Pick<KbCurateRetryQueueRow, 'entry_id' | 'observed_at' | 'observed_content_hash' | 'reason'>;
 
-export type PendingRepairRetryCandidate = Pick<PendingRepair, 'entryId' | 'detectedAt'>;
+export type PendingRepairRetryCandidate = Pick<PendingRepair, 'entryId' | 'detectedAt' | 'observedContentHash' | 'reason'>;
 
 function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
@@ -53,6 +56,7 @@ function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
     entryId: parsed.entry_id,
     entrySeq: parsed.entry_seq,
     detectedAt: parsed.observed_at,
+    observedContentHash: parsed.observed_content_hash ?? undefined,
     reason: parsed.reason,
     locus: parsed.locus ?? undefined,
     canonicalIncident: parsed.canonical_incident ?? undefined,
@@ -68,6 +72,8 @@ function rowToPendingRepairRetryCandidate(row: PendingRepairRow): PendingRepairR
   return {
     entryId: parsed.entry_id,
     detectedAt: parsed.observed_at,
+    observedContentHash: parsed.observed_content_hash ?? undefined,
+    reason: parsed.reason,
   };
 }
 
@@ -77,6 +83,7 @@ function pendingRepairToRow(entry: PendingRepair): KbCurateRetryQueueRow {
     entry_seq: entry.entrySeq,
     reason: entry.reason ?? DEFAULT_RETRY_REASON,
     observed_at: entry.detectedAt,
+    observed_content_hash: entry.observedContentHash ?? null,
     locus: entry.locus ?? null,
     canonical_incident: entry.canonicalIncident ?? null,
     signals_json: entry.signalsJson ?? null,
@@ -92,6 +99,7 @@ function samePendingRepairRow(left: KbCurateRetryQueueRow, right: KbCurateRetryQ
     left.entry_seq === right.entry_seq &&
     left.reason === right.reason &&
     left.observed_at === right.observed_at &&
+    left.observed_content_hash === right.observed_content_hash &&
     left.locus === right.locus &&
     left.canonical_incident === right.canonical_incident &&
     left.signals_json === right.signals_json &&
@@ -109,6 +117,7 @@ export function readCurateRetryQueue(target: SqliteTarget): PendingRepair[] {
        entry_seq,
        reason,
        observed_at,
+       observed_content_hash,
        locus,
        canonical_incident,
        signals_json,
@@ -126,7 +135,9 @@ export function readPendingRepairRows(target: SqliteTarget): PendingRepairRetryC
     target,
     `SELECT
        entry_id,
-       observed_at
+       observed_at,
+       observed_content_hash,
+       reason
      FROM kb_curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
@@ -145,6 +156,7 @@ export function scanDueCurateRetryQueue(
        entry_seq,
        reason,
        observed_at,
+       observed_content_hash,
        locus,
        canonical_incident,
        signals_json,
@@ -162,7 +174,19 @@ export function scanDueCurateRetryQueue(
 export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepair): void {
   const row = pendingRepairToRow(entry);
   prepareCached<
-    [string, number | null, string, string, string | null, string | null, string | null, string | null, string, number]
+    [
+      string,
+      number | null,
+      string,
+      string,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      string,
+      number,
+    ]
   >(
     target,
     `INSERT INTO kb_curate_retry_queue (
@@ -170,17 +194,19 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
        entry_seq,
        reason,
        observed_at,
+       observed_content_hash,
        locus,
        canonical_incident,
        signals_json,
        repair_hint,
        retry_not_before,
        retry_count
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(entry_id) DO UPDATE SET
        entry_seq = excluded.entry_seq,
        reason = excluded.reason,
        observed_at = excluded.observed_at,
+       observed_content_hash = excluded.observed_content_hash,
        locus = excluded.locus,
        canonical_incident = excluded.canonical_incident,
        signals_json = excluded.signals_json,
@@ -192,6 +218,7 @@ export function upsertCurateRetryEntry(target: SqliteTarget, entry: PendingRepai
     row.entry_seq,
     row.reason,
     row.observed_at,
+    row.observed_content_hash,
     row.locus,
     row.canonical_incident,
     row.signals_json,

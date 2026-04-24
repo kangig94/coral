@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
@@ -26,6 +27,7 @@ export type PendingRepair = {
   entrySeq: number | null;
   entryId: KbEntryId;
   detectedAt: string;
+  observedContentHash?: string;
   reason?: string;
   locus?: string;
   canonicalIncident?: string;
@@ -404,6 +406,10 @@ function parseMalformedEntryId(kind: MalformedEntryKind, slug: string): KbEntryI
   return parseKbEntryId(kind === 'note' ? noteEntryId(slug) : sourceEntryId(slug));
 }
 
+function hashObservedContent(raw: string): string {
+  return createHash('sha256').update(raw, 'utf8').digest('hex');
+}
+
 export function extractMalformedEntryRepair(
   kind: MalformedEntryKind,
   slug: string,
@@ -429,7 +435,16 @@ export function readMalformedEntryRepair(
   detectedAt: string,
 ): PendingRepair | null {
   try {
-    return extractMalformedEntryRepair(kind, slug, readFileSync(path, 'utf-8'), detectedAt);
+    const raw = readFileSync(path, 'utf-8');
+    const repair = extractMalformedEntryRepair(kind, slug, raw, detectedAt);
+    if (repair === null) {
+      return null;
+    }
+
+    return {
+      ...repair,
+      observedContentHash: hashObservedContent(raw),
+    };
   } catch {
     return null;
   }

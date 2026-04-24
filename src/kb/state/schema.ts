@@ -46,6 +46,7 @@ export interface KbCurateRetryQueueRow {
   entry_seq: number | null;
   reason: string;
   observed_at: string;
+  observed_content_hash: string | null;
   locus: string | null;
   canonical_incident: string | null;
   signals_json: string | null;

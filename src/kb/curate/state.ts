@@ -659,6 +659,7 @@ export {
   isClaimStale,
   normalizeCurateStateRepairFrontier,
   noteCursor,
+  readMalformedEntryRepair,
   resetCurateStateForBackfill,
   sameStringList,
 };

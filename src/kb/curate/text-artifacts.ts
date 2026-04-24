@@ -5,7 +5,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import { backendLog } from '../../infra/backend-log.js';
 import {
-  extractMalformedEntryRepair,
+  readMalformedEntryRepair,
   readCurateState,
   writeCurateState,
   type CurateState,
@@ -492,19 +492,6 @@ function applyLaneMutation(
   };
 }
 
-function readMalformedRepairEntry(
-  path: string,
-  kind: 'note' | 'source',
-  slug: string,
-  detectedAt: string,
-): PendingRepair | null {
-  try {
-    return extractMalformedEntryRepair(kind, slug, readFileSync(path, 'utf-8'), detectedAt);
-  } catch {
-    return null;
-  }
-}
-
 function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindexNoteRecord> {
   const notesPath = kb.notesDir();
   const notes: KbReindexNoteRecord[] = [];
@@ -523,7 +510,7 @@ function loadNotes(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReindex
         ...frontmatter,
       });
     } catch (error: unknown) {
-      const repair = readMalformedRepairEntry(join(notesPath, entry), 'note', stripMdExt(entry), detectedAt);
+      const repair = readMalformedEntryRepair(join(notesPath, entry), 'note', stripMdExt(entry), detectedAt);
       if (repair !== null) {
         pendingRepair.push(repair);
       }
@@ -552,7 +539,7 @@ function loadSources(kb: KbRuntime, detectedAt: string): LoadedArtifacts<KbReind
         ...parseSourceFrontmatter(raw),
       });
     } catch (error: unknown) {
-      const repair = readMalformedRepairEntry(join(sourcesPath, entry), 'source', stripMdExt(entry), detectedAt);
+      const repair = readMalformedEntryRepair(join(sourcesPath, entry), 'source', stripMdExt(entry), detectedAt);
       if (repair !== null) {
         pendingRepair.push(repair);
       }

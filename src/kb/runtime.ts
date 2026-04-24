@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { load, save, type RawData } from '@orama/orama';
 import type BetterSqlite3 from 'better-sqlite3';
@@ -2034,6 +2034,14 @@ class KbRuntimeImpl implements KbRuntime {
     return null;
   }
 
+  private readPendingRepairContentHash(path: string): string | null {
+    try {
+      return createHash('sha256').update(readFileSync(path, 'utf-8'), 'utf8').digest('hex');
+    } catch {
+      return null;
+    }
+  }
+
   private pendingRepairNeedsRetry(): boolean {
     const pendingRepair = readPendingRepairRows(this);
     if (pendingRepair.length === 0) {
@@ -2041,17 +2049,16 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     const result = pendingRepair.some((entry) => {
-      const detectedAt = Date.parse(entry.detectedAt);
       const path = this.pendingRepairPath(entry);
-      if (Number.isNaN(detectedAt) || path === null) {
+      if (path === null) {
         return false;
+      }
+      if (entry.observedContentHash === undefined) {
+        return (entry.reason ?? 'pending-repair') === 'pending-repair';
       }
 
-      try {
-        return statSync(path).mtimeMs > detectedAt;
-      } catch {
-        return false;
-      }
+      const currentHash = this.readPendingRepairContentHash(path);
+      return currentHash === null || currentHash !== entry.observedContentHash;
     });
     return result;
   }

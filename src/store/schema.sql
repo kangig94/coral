@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
   entry_seq                  INTEGER,
   reason                     TEXT NOT NULL,
   observed_at                TEXT NOT NULL,
+  observed_content_hash      TEXT,
   locus                      TEXT,
   canonical_incident         TEXT,
   signals_json               TEXT,
