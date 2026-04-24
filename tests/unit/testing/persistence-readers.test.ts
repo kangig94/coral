@@ -322,6 +322,7 @@ describe('readStatusRecord', () => {
       backendNamespace: 'ns',
       jobKind: 'provider',
       phase: 'running',
+      lastSeq: 0,
       launch: {
         state: 'ready',
         updatedAt: NOW,

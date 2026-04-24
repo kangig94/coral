@@ -134,7 +134,7 @@ function createHarness(options: {
       waitRequests.push({
         ...req,
         jobIds: [...req.jobIds],
-        ...(req.cursor ? { cursor: { jobs: { ...req.cursor.jobs } } } : {}),
+        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
       });
       return emit(req.jobIds.map((jobId) => terminal(jobId, `result:${jobId}`)));
     }),
@@ -169,7 +169,7 @@ describe('workflow recovery branch rules (AC4)', () => {
       expect(harness.waitRequests[0]).toEqual({
         jobIds: ['atom-1'],
         timeoutSeconds: 1,
-        cursor: { jobs: { 'atom-1': 17 } },
+        cursor: { afterSeq: 17 },
       });
     } finally {
       harness.db.close();
@@ -193,7 +193,7 @@ describe('workflow recovery branch rules (AC4)', () => {
       expect(harness.waitRequests[0]).toEqual({
         jobIds: ['atom-1'],
         timeoutSeconds: 1,
-        cursor: { jobs: { 'atom-1': 23 } },
+        cursor: { afterSeq: 23 },
       });
     } finally {
       harness.db.close();

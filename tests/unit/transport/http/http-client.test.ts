@@ -936,6 +936,7 @@ describe('transport/http http-client', () => {
         {
           jobId: 'job-1',
           sessionId: 'session-1',
+          seq: 1,
           eventId: 1,
           type: 'progress' as const,
           ts: '2026-04-08T00:00:00.000Z',
@@ -1006,7 +1007,7 @@ describe('transport/http http-client', () => {
       sseResponse(
         [
           'event: progress',
-          'data: {"type":"progress","jobId":"job-1","eventId":1,"message":"working"}',
+          'data: {"type":"progress","jobId":"job-1","seq":4,"message":"working"}',
           '',
           'event: waiting',
           'data: {"type":"waiting","waitingJobIds":["job-1"]}',
@@ -1017,7 +1018,7 @@ describe('transport/http http-client', () => {
 
     const stream = await client.waitJobs(['job-1'], {
       timeoutSeconds: 5,
-      cursor: { jobs: { 'job-1': 3 } },
+      cursor: { afterSeq: 3 },
     });
     const reader = stream.getReader();
     const first = await reader.read();
@@ -1027,7 +1028,7 @@ describe('transport/http http-client', () => {
     expect(first.value).toEqual({
       type: 'progress',
       jobId: 'job-1',
-      eventId: 1,
+      seq: 4,
       message: 'working',
     });
     expect(second.value).toEqual({
@@ -1042,7 +1043,7 @@ describe('transport/http http-client', () => {
         body: JSON.stringify({
           jobIds: ['job-1'],
           timeoutSeconds: 5,
-          cursor: { jobs: { 'job-1': 3 } },
+          cursor: { afterSeq: 3 },
           projectRoot: '/tmp/project',
           owner: 'team-a',
           effort: 'high',

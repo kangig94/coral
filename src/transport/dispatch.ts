@@ -236,7 +236,7 @@ export async function executeCatalogRequest(
         jobIds: string[];
         projectRoot: string;
         timeoutSeconds?: number;
-        cursor?: { jobs: Record<string, number> };
+        cursor?: { afterSeq: number };
       };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
       if (scopeCheck.mismatch.length > 0) {

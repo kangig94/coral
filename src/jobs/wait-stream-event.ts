@@ -10,7 +10,7 @@ const waitProgressEventSchema = z
   .object({
     type: z.literal('progress'),
     jobId: z.string(),
-    eventId: z.number().int(),
+    seq: z.number().int().nonnegative(),
     message: z.string(),
   })
   .strict();
@@ -29,6 +29,7 @@ const waitTerminalEventSchema = z
   .object({
     type: z.literal('terminal'),
     jobId: z.string(),
+    seq: z.number().int().nonnegative(),
     remainingJobIds: z.array(z.string()),
     resultPath: z.string(),
     result: jobTerminalSchema,

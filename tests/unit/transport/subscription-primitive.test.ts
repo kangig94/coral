@@ -65,10 +65,11 @@ describe('subscription primitive', () => {
     const socketPath = makeSocketPath('receive');
     const events = [
       { type: 'queued', jobId: 'job-1', sessionId: 'session-1', queuePosition: 1, runningJobIds: [] },
-      { type: 'progress', jobId: 'job-1', eventId: 1, message: 'working' },
+      { type: 'progress', jobId: 'job-1', seq: 1, message: 'working' },
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 2,
         remainingJobIds: [],
         resultPath: '/tmp/result.md',
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -139,7 +140,7 @@ describe('subscription primitive', () => {
 
   it('treats server-side hangup as end-of-stream', async () => {
     const socketPath = makeSocketPath('hangup');
-    const progressEvent = { type: 'progress', jobId: 'job-1', eventId: 7, message: 'still running' } as const;
+    const progressEvent = { type: 'progress', jobId: 'job-1', seq: 7, message: 'still running' } as const;
 
     await startSubscriptionServer(socketPath, async (socket, request) => {
       writeFrame(socket, {

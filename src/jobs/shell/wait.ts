@@ -1,7 +1,6 @@
 import { isTerminalPhase } from '../phase.js';
 import type { JobProgress, JobStatus } from '../records.js';
 import type { WaitRequest, WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../wait.js';
-import { createReplayCursor } from '../job-store.js';
 import type { JobProgressStore } from '../progress-store-contract.js';
 import { WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS, type LaunchCoordinator, type LaunchPool } from './contracts.js';
 import type { JobEventBus } from '../event-bus.js';
@@ -14,6 +13,45 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 const ABORTED = 'wait-aborted' as const;
 const JOURNAL_WAIT_POLL_MS = 100;
 const POLL_JOURNAL = 'poll-journal' as const;
+
+function compareProgressSeq(left: JobProgress, right: JobProgress): number {
+  if (left.seq !== right.seq) {
+    return left.seq - right.seq;
+  }
+  return left.jobId.localeCompare(right.jobId);
+}
+
+function toProgressWaitEvent(event: JobProgress): WaitStreamEvent {
+  if (event.type !== 'progress') {
+    throw new Error('Expected progress event.');
+  }
+  return {
+    type: 'progress',
+    jobId: event.jobId,
+    seq: event.seq,
+    message: event.message ?? '',
+  };
+}
+
+function toTerminalWaitEvent(
+  event: JobProgress,
+  pending: ReadonlySet<string>,
+  resultPath: string,
+  continuity: JobContinuitySnapshot | null,
+): WaitStreamEvent {
+  if (event.type !== 'terminal') {
+    throw new Error('Expected terminal event.');
+  }
+  return {
+    type: 'terminal',
+    jobId: event.jobId,
+    seq: event.seq,
+    remainingJobIds: [...pending].filter((id) => id !== event.jobId),
+    resultPath,
+    result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
+    continuity: event.continuity ?? continuity,
+  };
+}
 
 function createAbortWaiter(signal: AbortSignal | undefined): { promise: Promise<typeof ABORTED>; dispose(): void } | null {
   if (!signal) {
@@ -185,9 +223,7 @@ export class WaitCoordinator {
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
-
-    const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
-    const fileCursors = new Map(jobIds.map((jobId) => [jobId, createReplayCursor()]));
+    let observedSeq = cursor?.afterSeq ?? 0;
     const emittedQueued = new Set<string>();
     const pending = new Set(jobIds);
 
@@ -199,9 +235,6 @@ export class WaitCoordinator {
       const seq = progressStore.getChangeSeq();
 
       for (const jobId of [...pending]) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- fileCursors initialized from same jobIds as pending
-        const fileCursor = fileCursors.get(jobId)!;
-        const fromEventId = fromEventIds[jobId] ?? 0;
         const status = progressStore.readStatus(jobId);
         if (!status) {
           continue;
@@ -218,60 +251,64 @@ export class WaitCoordinator {
             runningJobIds: launchCoordinator.getActiveJobIds(pool),
           };
         }
+      }
 
-        let replaySawTerminal = false;
+      const events = [...pending]
+        .flatMap((jobId) => progressStore.readJobProgress(jobId).filter((event) => event.seq > observedSeq))
+        .sort(compareProgressSeq);
+      let replaySawTerminal = false;
 
-        const events = progressStore.replayFrom(jobId, fromEventId, fileCursor);
-        for (const event of events) {
-          fromEventIds[jobId] = event.eventId;
-
-          if (event.type === 'progress') {
-            yield {
-              type: 'progress',
-              jobId,
-              eventId: event.eventId,
-              message: event.message ?? '',
-            };
-            continue;
-          }
-
-          replaySawTerminal = true;
-          const parsedTerminalMs = Date.parse(event.ts ?? '');
-          const replayEligible = Number.isFinite(parsedTerminalMs)
-            ? parsedTerminalMs <= deadlineMs
-            : this.deps.time.now() <= deadlineMs;
-
-          if (!replayEligible) {
-            break;
-          }
-
-          const remainingJobIds = [...pending].filter((id) => id !== jobId);
-          yield {
-            type: 'terminal',
-            jobId,
-            remainingJobIds,
-            resultPath: progressStore.resultPath(jobId),
-            result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-            continuity: event.continuity ?? this.readQueryContinuity(jobId),
-          };
-          return;
-        }
-
-        if (replaySawTerminal) {
+      for (const event of events) {
+        observedSeq = Math.max(observedSeq, event.seq);
+        if (event.type === 'progress') {
+          yield toProgressWaitEvent(event);
           continue;
         }
 
-        // Emit a direct terminal snapshot only while this poll iteration is still inside the wait deadline.
-        const currentStatus = isTerminalPhase(status.phase) ? status : progressStore.readStatus(jobId);
+        replaySawTerminal = true;
+        const parsedTerminalMs = Date.parse(event.ts ?? '');
+        const replayEligible = Number.isFinite(parsedTerminalMs)
+          ? parsedTerminalMs <= deadlineMs
+          : this.deps.time.now() <= deadlineMs;
+
+        if (!replayEligible) {
+          break;
+        }
+
+        yield toTerminalWaitEvent(
+          event,
+          pending,
+          progressStore.resultPath(event.jobId),
+          this.readQueryContinuity(event.jobId),
+        );
+        return;
+      }
+
+      if (replaySawTerminal) {
+        continue;
+      }
+
+      // Non-journal fakes can expose a terminal projection without replayable history.
+      // Use projection lastSeq when present so the public cursor still remains seq-based.
+      for (const jobId of [...pending]) {
+        const currentStatus = progressStore.readStatus(jobId);
         if (currentStatus && isTerminalPhase(currentStatus.phase)) {
           const now = this.deps.time.now();
           if (now > deadlineMs) {
             continue;
           }
+          const terminalSeq =
+            currentStatus.lastSeq !== undefined && currentStatus.lastSeq > 0
+              ? currentStatus.lastSeq
+              : observedSeq + 1;
+          if (terminalSeq <= observedSeq && cursor?.afterSeq !== undefined) {
+            continue;
+          }
           const remainingJobIds = [...pending].filter((id) => id !== jobId);
           yield {
             type: 'terminal',
             jobId,
+            seq: terminalSeq,
             remainingJobIds,
             resultPath: progressStore.resultPath(jobId),
             result: currentStatus.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
@@ -311,7 +348,7 @@ export class WaitCoordinator {
     const startMs = this.deps.time.now();
     const timeoutMs = timeoutSeconds * 1000;
     const deadlineMs = startMs + timeoutMs;
-    const fromEventIds: Record<string, number> = cursor?.jobs ? { ...cursor.jobs } : {};
+    const afterSeq = cursor?.afterSeq ?? 0;
     const pending = new Set(jobIds);
     const emittedQueued = new Set<string>();
     const currentMaxSeq = getCurrentJournalSeq();
@@ -336,7 +373,7 @@ export class WaitCoordinator {
 
     try {
       const catchUpMaxSeq = getCurrentJournalSeq();
-      let observedSeq = catchUpMaxSeq;
+      let observedSeq = afterSeq;
       for (const jobId of [...pending]) {
         const status = this.readQueryStatus(jobId);
         if (!status) {
@@ -354,82 +391,44 @@ export class WaitCoordinator {
             runningJobIds: launchCoordinator.getActiveJobIds(pool),
           };
         }
-
-        const history = readJobProgress(jobId).filter(
-          (event) => event.seq <= catchUpMaxSeq && event.eventId > (fromEventIds[jobId] ?? 0),
-        );
-        for (const event of history) {
-          fromEventIds[jobId] = event.eventId;
-          if (event.type === 'progress') {
-            yield {
-              type: 'progress',
-              jobId,
-              eventId: event.eventId,
-              message: event.message ?? '',
-            };
-            continue;
-          }
-
-          yield {
-            type: 'terminal',
-            jobId,
-            remainingJobIds: [...pending].filter((id) => id !== jobId),
-            resultPath: resultPathFor(jobId),
-            result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-            continuity: event.continuity ?? this.readQueryContinuity(jobId),
-          };
-          return;
-        }
-
-        if (status && isTerminalPhase(status.phase)) {
-          yield {
-            type: 'terminal',
-            jobId,
-            remainingJobIds: [...pending].filter((id) => id !== jobId),
-            resultPath: resultPathFor(jobId),
-            result: status.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-            continuity: status.continuity ?? null,
-          };
-          return;
-        }
       }
+
+      const initialHistory = [...pending]
+        .flatMap((jobId) =>
+          readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= catchUpMaxSeq),
+        )
+        .sort(compareProgressSeq);
+      for (const event of initialHistory) {
+        observedSeq = Math.max(observedSeq, event.seq);
+        if (event.type === 'progress') {
+          yield toProgressWaitEvent(event);
+          continue;
+        }
+
+        yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
+        return;
+      }
+      observedSeq = Math.max(observedSeq, catchUpMaxSeq);
 
       const readContinuity = (jobId: string) => this.readQueryContinuity(jobId);
       const catchUpFromJournal = function* (
         maxSeq: number,
       ): Generator<WaitStreamEvent, 'terminal' | 'progress' | 'empty'> {
         let emitted = false;
-        for (const jobId of [...pending]) {
-          const history = readJobProgress(jobId).filter(
-            (event) =>
-              event.seq > observedSeq &&
-              event.seq <= maxSeq &&
-              event.eventId > (fromEventIds[jobId] ?? 0),
-          );
+        const history = [...pending]
+          .flatMap((jobId) => readJobProgress(jobId).filter((event) => event.seq > observedSeq && event.seq <= maxSeq))
+          .sort(compareProgressSeq);
 
-          for (const event of history) {
-            emitted = true;
-            fromEventIds[jobId] = event.eventId;
-            if (event.type === 'progress') {
-              yield {
-                type: 'progress',
-                jobId,
-                eventId: event.eventId,
-                message: event.message ?? '',
-              };
-              continue;
-            }
-
-            yield {
-              type: 'terminal',
-              jobId,
-              remainingJobIds: [...pending].filter((id) => id !== jobId),
-              resultPath: resultPathFor(jobId),
-              result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-              continuity: event.continuity ?? readContinuity(jobId),
-            };
-            return 'terminal';
+        for (const event of history) {
+          emitted = true;
+          observedSeq = Math.max(observedSeq, event.seq);
+          if (event.type === 'progress') {
+            yield toProgressWaitEvent(event);
+            continue;
           }
+
+          yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), readContinuity(event.jobId));
+          return 'terminal';
         }
         return emitted ? 'progress' : 'empty';
       };
@@ -465,7 +464,7 @@ export class WaitCoordinator {
                 return;
               }
             }
-            observedSeq = maxSeq;
+            observedSeq = Math.max(observedSeq, maxSeq);
           }
           continue;
         }
@@ -476,29 +475,17 @@ export class WaitCoordinator {
 
         const event = next.value;
         pendingNext = iterator.next();
-        if (event.eventId <= (fromEventIds[event.jobId] ?? 0)) {
+        if (event.seq <= observedSeq) {
           continue;
         }
-        fromEventIds[event.jobId] = event.eventId;
+        observedSeq = event.seq;
 
         if (event.type === 'progress') {
-          yield {
-            type: 'progress',
-            jobId: event.jobId,
-            eventId: event.eventId,
-            message: event.message ?? '',
-          };
+          yield toProgressWaitEvent(event);
           continue;
         }
 
-        yield {
-          type: 'terminal',
-          jobId: event.jobId,
-          remainingJobIds: [...pending].filter((id) => id !== event.jobId),
-          resultPath: resultPathFor(event.jobId),
-          result: event.result ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-          continuity: event.continuity ?? this.readQueryContinuity(event.jobId),
-        };
+        yield toTerminalWaitEvent(event, pending, resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
         return;
       }
     } finally {

@@ -1308,12 +1308,13 @@ describe('cli main routing', () => {
     const progressEvent = {
       type: 'progress',
       jobId: 'job-1',
-      eventId: 1,
+      seq: 1,
       message: 'working',
     } as const;
     const terminalEvent = {
       type: 'terminal' as const,
       jobId: 'job-1',
+      seq: 2,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
       result: { content: 'done', outcome: { kind: 'completed' as const } },
@@ -1326,7 +1327,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1']);
 
     expect(stdout).toBe(
-      `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ jobs: { 'job-1': 1 } }), false)}\n`,
+      `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 2 }), false)}\n`,
     );
     expect(stderr).toBe('');
   });
@@ -1338,6 +1339,7 @@ describe('cli main routing', () => {
     const terminalEvent = {
       type: 'terminal' as const,
       jobId: 'job-1',
+      seq: 1,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
       result: { content: 'preview text', outcome: { kind: 'completed' as const } },
@@ -1348,7 +1350,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1', '--embed']);
 
-    expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, null, true)}\n`);
+    expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 1 }), true)}\n`);
     expect(stdout).toContain('Result path: /tmp/result.md');
     expect(stderr).toBe('');
   });
@@ -1360,6 +1362,7 @@ describe('cli main routing', () => {
     const terminalEvent = {
       type: 'terminal' as const,
       jobId: 'job-1',
+      seq: 1,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
       result: { content: '', outcome: { kind: 'completed' as const } },
@@ -1370,7 +1373,7 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1', '--embed']);
 
-    expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, null, true)}\n`);
+    expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 1 }), true)}\n`);
     expect(stdout).toContain('Result path: /tmp/result.md');
     expect(stdout).toContain('(empty result)');
     expect(stderr).toBe('');

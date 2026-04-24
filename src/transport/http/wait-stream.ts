@@ -95,14 +95,15 @@ export async function* streamWait(
     );
 
     try {
-      const currentCursor = { jobs: { ...(inputCursor?.jobs ?? {}) } };
+      const currentCursor = { afterSeq: inputCursor?.afterSeq ?? 0 };
       for await (const event of subscription) {
         if (event.type === 'progress') {
-          currentCursor.jobs[event.jobId] = event.eventId;
+          currentCursor.afterSeq = event.seq;
           if (cursorRef) {
             cursorRef.lastEventId = serializeWaitCursor(currentCursor);
           }
         } else if (event.type === 'terminal' && cursorRef) {
+          currentCursor.afterSeq = event.seq;
           cursorRef.lastEventId = serializeWaitCursor(currentCursor);
         }
 

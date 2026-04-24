@@ -387,6 +387,17 @@ describe('architecture boundary guard', () => {
     expect(schemaSql).not.toContain('projection_kb');
     expect(initialMigration).not.toContain('projection_kb');
   });
+  it('public wait contract uses only global journal seq cursors', () => {
+    const waitContract = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait.ts'), 'utf8');
+    const waitEventSchema = readFileSync(resolve(REPO_ROOT, 'src/jobs/wait-stream-event.ts'), 'utf8');
+
+    expect(waitContract).toContain('afterSeq: number');
+    expect(waitContract).toContain('seq: number');
+    expect(waitContract).not.toContain('jobs: Record');
+    expect(waitContract).not.toContain('eventId');
+    expect(waitEventSchema).toContain('seq: z.number().int().nonnegative()');
+    expect(waitEventSchema).not.toContain('eventId');
+  });
   it('production keeps store/index.ts as the only remaining index barrel', () => {
     const liveIndexes = PRODUCTION_SOURCE_FILES.filter((filePath) => filePath.endsWith('/index.ts'));
     expect(liveIndexes).toEqual(['src/store/index.ts']);

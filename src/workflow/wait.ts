@@ -59,7 +59,7 @@ export function waitTimeoutSeconds(staleTimeoutMs: number, pollIntervalMs: numbe
 }
 
 function cloneCursor(cursor?: WaitCursor): WaitCursor {
-  return { jobs: { ...(cursor?.jobs ?? {}) } };
+  return { afterSeq: cursor?.afterSeq ?? 0 };
 }
 
 function cloneMap<K, V>(value?: Map<K, V>): Map<K, V> {
@@ -158,7 +158,7 @@ export function handleWaitEvent(
     }
 
     case 'progress': {
-      state.cursor.jobs[event.jobId] = event.eventId;
+      state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       state.lastActivityAt.set(atom.atomKey, Date.now());
@@ -170,8 +170,8 @@ export function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
+      state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       state.pending.delete(event.jobId);
-      delete state.cursor.jobs[event.jobId];
 
       const terminalState = phaseForOutcome(event.result.outcome) === 'completed' ? 'done' : 'error';
       options.onProgress(formatAtomProgress(atom, terminalState));

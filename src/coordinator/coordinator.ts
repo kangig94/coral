@@ -153,7 +153,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       return appended;
     }
 
-    publishJobEvents(db, appended);
+    publishJobEvents(appended);
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
     return appended;
   };

@@ -43,6 +43,7 @@ export interface JobStatus {
   bundleHash?: string;
   jobKind?: JobKind;
   phase: JobPhase;
+  lastSeq?: number;
   launch: {
     state: LaunchState;
     message?: string;
@@ -62,6 +63,7 @@ export const jobStatusSchema = z
     bundleHash: z.string().optional(),
     jobKind: z.enum(['provider', 'workflow']).optional(),
     phase: jobPhaseSchema,
+    lastSeq: z.number().int().nonnegative().optional(),
     launch: z
       .object({
         state: launchStateSchema,

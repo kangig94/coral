@@ -202,7 +202,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           });
         }
 
-        const currentCursor: WaitCursor = { jobs: { ...(parsedCursor?.jobs ?? {}) } };
+        const currentCursor: WaitCursor = { afterSeq: parsedCursor?.afterSeq ?? 0 };
         const jobLabels =
           jobIds.length > 1
             ? new Map(jobIds.map((id, index) => [id, `j${index}`]))
@@ -219,14 +219,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
         try {
           for await (const event of subscription) {
-            if (event.type === 'progress') {
-              currentCursor.jobs[event.jobId] = event.eventId;
+            if (event.type === 'progress' || event.type === 'terminal') {
+              currentCursor.afterSeq = event.seq;
             }
 
-            const cursor =
-              Object.keys(currentCursor.jobs).length > 0
-                ? serializeWaitCursor(currentCursor)
-                : null;
+            const cursor = currentCursor.afterSeq > 0 ? serializeWaitCursor(currentCursor) : null;
 
             const ctx: WaitRenderContext = getTerminalContext();
             let formatted: string;

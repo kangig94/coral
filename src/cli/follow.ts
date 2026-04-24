@@ -255,12 +255,10 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         );
 
         try {
-          const currentCursor = { jobs: { ...(inputCursor?.jobs ?? {}) } };
+          const currentCursor = { afterSeq: inputCursor?.afterSeq ?? 0 };
           for await (const event of subscription) {
-            if (event.type === 'progress') {
-              currentCursor.jobs[event.jobId] = event.eventId;
-              cursorRef.lastEventId = serializeWaitCursor(currentCursor);
-            } else if (event.type === 'terminal') {
+            if (event.type === 'progress' || event.type === 'terminal') {
+              currentCursor.afterSeq = event.seq;
               cursorRef.lastEventId = serializeWaitCursor(currentCursor);
             }
 

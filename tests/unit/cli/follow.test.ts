@@ -52,7 +52,7 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
   return {
     type: 'progress',
     jobId: 'job-1',
-    eventId: 1,
+    seq: 1,
     message,
   };
 }
@@ -81,6 +81,7 @@ function makeTerminalEvent(
   return {
     type: 'terminal',
     jobId: 'job-1',
+    seq: 1,
     remainingJobIds: [],
     resultPath: '/tmp/result.md',
     result: {
@@ -235,7 +236,7 @@ describe('cli follow', () => {
     const backend = makeBackend();
     const options = makeOptions();
     const terminalEvent = makeTerminalEvent();
-    const terminalCursor = serializeWaitCursor({ jobs: {} });
+    const terminalCursor = serializeWaitCursor({ afterSeq: 1 });
 
     mockState.ensure.mockResolvedValueOnce(backend);
     mockState.subscribe.mockResolvedValueOnce(
@@ -275,24 +276,28 @@ describe('cli follow', () => {
     const queuedEvent = makeQueuedEvent();
     const progressEvent = makeProgressEvent('Halfway there');
     const waitingEvent = makeRunningEvent();
-    const terminalEvent = makeTerminalEvent({
-      content: 'secret result body',
-      warnings: ['be careful'],
-      usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
-      workflow: {
-        steps: [
-          {
-            agent: 'architect',
-            step: 1,
-            atom: 1,
-            provider: 'codex',
-            start: 10,
-            end: 20,
-          },
-        ],
+    const terminalEvent = makeTerminalEvent(
+      {
+        content: 'secret result body',
+        warnings: ['be careful'],
+        usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
+        workflow: {
+          steps: [
+            {
+              agent: 'architect',
+              step: 1,
+              atom: 1,
+              provider: 'codex',
+              start: 10,
+              end: 20,
+            },
+          ],
+        },
       },
-    });
-    const cursorAfterProgress = serializeWaitCursor({ jobs: { 'job-1': 1 } });
+      { seq: 2 },
+    );
+    const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
+    const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
 
     mockState.ensure
       .mockResolvedValueOnce(makeBackend('backend-1'))
@@ -307,7 +312,7 @@ describe('cli follow', () => {
         });
       })
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
-        expect(params.cursor).toEqual({ jobs: { 'job-1': 1 } });
+        expect(params.cursor).toEqual({ afterSeq: 1 });
         return makeSubscription(async function* () {
           yield terminalEvent;
         });
@@ -320,7 +325,7 @@ describe('cli follow', () => {
         `${formatWaitQueued(queuedEvent)}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
         `${formatWaitWaiting(waitingEvent, cursorAfterProgress)}\n` +
-        `${formatWaitTerminal(terminalEvent, cursorAfterProgress, false)}\n`,
+        `${formatWaitTerminal(terminalEvent, cursorAfterTerminal, false)}\n`,
     );
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
   });
@@ -329,7 +334,9 @@ describe('cli follow', () => {
     const { launchAndFollow } = await loadFollowModule();
     const options = makeOptions();
     const progressEvent = makeProgressEvent('Booting');
-    const cursorAfterProgress = serializeWaitCursor({ jobs: { 'job-1': 1 } });
+    const terminalEvent = makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } }, { seq: 2 });
+    const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
+    const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
 
     mockState.ensure
@@ -344,9 +351,9 @@ describe('cli follow', () => {
         });
       })
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
-        expect(params.cursor).toEqual({ jobs: { 'job-1': 1 } });
+        expect(params.cursor).toEqual({ afterSeq: 1 });
         return makeSubscription(async function* () {
-          yield makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } });
+          yield terminalEvent;
         });
       });
 
@@ -355,7 +362,7 @@ describe('cli follow', () => {
     expect(stdout).toBe(
       `${formatLaunch(options.launchResult)}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
-        `${formatWaitTerminal(makeTerminalEvent({ outcome: { kind: 'provider_exit', code: 7 } }), cursorAfterProgress, false)}\n`,
+        `${formatWaitTerminal(terminalEvent, cursorAfterTerminal, false)}\n`,
     );
     expect(stderr).toBe('');
     expect(backoffScheduler).toHaveBeenCalledTimes(1);

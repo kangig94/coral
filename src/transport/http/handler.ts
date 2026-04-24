@@ -282,7 +282,7 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } },
+  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
 ): Promise<void> {
   if (request.cursor !== undefined) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Request body cursor is not supported for /jobs/wait' });
@@ -298,14 +298,8 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const inputCursor = {
-    jobs: {
-      ...(headerCursor?.jobs ?? {}),
-    },
-  };
-  const currentCursor = {
-    jobs: { ...inputCursor.jobs },
-  };
+  const inputCursor = headerCursor ?? { afterSeq: 0 };
+  const currentCursor = { afterSeq: inputCursor.afterSeq };
   const controller = new AbortController();
   const waitRequest: WaitStreamRequest = {
     ...request,
@@ -350,19 +344,19 @@ async function handleJobsWaitSubscription(
 
       const event = next.value as WaitStreamEvent;
       if (event.type === 'progress') {
-        currentCursor.jobs[event.jobId] = event.eventId;
+        currentCursor.afterSeq = event.seq;
         writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
         continue;
       }
 
       if (event.type === 'terminal') {
+        currentCursor.afterSeq = event.seq;
         writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
         continue;
       }
 
       if (event.type === 'queued') {
-        // No cursor update: queued events are synthetic (not persisted in JSONL)
-        // and must not advance the replay cursor position.
+        // No cursor update: queued events are synthetic and not Journal events.
         writeSseEvent(res, 'queued', event);
         continue;
       }
@@ -395,7 +389,7 @@ async function handleCatalogSubscriptionRoute(
         req,
         res,
         deps,
-        request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { jobs: Record<string, number> } },
+        request as { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
       );
       return;
     default:

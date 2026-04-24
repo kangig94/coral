@@ -141,12 +141,13 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
       yield {
         type: 'progress',
         jobId: 'job-1',
-        eventId: 7,
+        seq: 7,
         message: 'working',
       };
       yield {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 8,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -3554,12 +3555,12 @@ describe('execution backend server', () => {
     expect(firstIdLine).toBeTruthy();
     const encodedCursor = firstIdLine?.slice(4) ?? '';
     expect(JSON.parse(Buffer.from(encodedCursor, 'base64url').toString('utf-8'))).toEqual({
-      jobs: { 'job-1': 7 },
+      afterSeq: 7,
     });
     expect(fakeService.waitStream).toHaveBeenCalledWith({
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
-      cursor: { jobs: {} },
+      cursor: { afterSeq: 0 },
       projectRoot: '/tmp/project',
     });
   });
@@ -3581,9 +3582,7 @@ describe('execution backend server', () => {
     });
     const encodedCursor = Buffer.from(
       JSON.stringify({
-        jobs: {
-          'job-1': 4,
-        },
+        afterSeq: 4,
       }),
       'utf-8',
     ).toString('base64url');
@@ -3608,9 +3607,7 @@ describe('execution backend server', () => {
       jobIds: ['job-1'],
       timeoutSeconds: 1,
       cursor: {
-        jobs: {
-          'job-1': 4,
-        },
+        afterSeq: 4,
       },
       projectRoot: '/tmp/project',
     });
@@ -4068,11 +4065,7 @@ describe('execution backend server', () => {
         jobIds: ['job-1'],
         timeoutSeconds: 1,
         projectRoot: '/tmp/project',
-        cursor: {
-          jobs: {
-            'job-1': 4,
-          },
-        },
+        cursor: { afterSeq: 4 },
       }),
     });
 

@@ -281,9 +281,7 @@ describe('jobWaitSchema', () => {
       jobIds: ['job-1'],
       projectRoot: '/tmp/project',
       cursor: {
-        jobs: {
-          'job-1': 4,
-        },
+        afterSeq: 4,
       },
     };
 

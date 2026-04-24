@@ -825,7 +825,7 @@ describe('ExecutionService wait', () => {
     ];
 
     vi.spyOn(progressStore, 'readStatus').mockReturnValue(status);
-    vi.spyOn(progressStore, 'replayFrom').mockReturnValue(replay);
+    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue(replay);
 
     const events: WaitStreamEvent[] = [];
     for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
@@ -836,12 +836,13 @@ describe('ExecutionService wait', () => {
       {
         type: 'progress',
         jobId: 'job-1',
-        eventId: 1,
+        seq: 1,
         message: 'step 1',
       },
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 2,
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -868,7 +869,7 @@ describe('ExecutionService wait', () => {
       },
       result: { content: 'done', outcome: { kind: 'completed' } },
     });
-    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
 
     const events: WaitStreamEvent[] = [];
     for await (const event of service.waitStream({ jobIds: ['job-1'], timeoutSeconds: 1 })) {
@@ -879,6 +880,7 @@ describe('ExecutionService wait', () => {
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 1,
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -913,7 +915,7 @@ describe('ExecutionService wait', () => {
     vi.spyOn(progressStore, 'readStatus')
       .mockImplementationOnce(() => runningStatus)
       .mockImplementation(() => terminalStatus);
-    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
     const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockImplementation(() => {
       throw new Error('waitForChange should not be called once terminal status is visible');
     });
@@ -927,6 +929,7 @@ describe('ExecutionService wait', () => {
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 1,
         remainingJobIds: [],
         resultPath: `${JOBS_DIR}/job-1/result.md`,
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -950,7 +953,7 @@ describe('ExecutionService wait', () => {
         getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([
+      vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([
         makeTerminalReplay('job-1', { ts: isoAt(deadlineMs - 1) }),
       ]);
 
@@ -963,6 +966,7 @@ describe('ExecutionService wait', () => {
         {
           type: 'terminal',
           jobId: 'job-1',
+          seq: 1,
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
           result: { content: 'done', outcome: { kind: 'completed' } },
@@ -988,7 +992,7 @@ describe('ExecutionService wait', () => {
         getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'replayFrom')
+      vi.spyOn(progressStore, 'readJobProgress')
         .mockImplementationOnce(() => [])
         .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
       const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
@@ -1008,6 +1012,7 @@ describe('ExecutionService wait', () => {
         value: {
           type: 'terminal',
           jobId: 'job-1',
+          seq: 1,
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
           result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1033,7 +1038,7 @@ describe('ExecutionService wait', () => {
         getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+      vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
       const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
 
       const iterator = service
@@ -1078,7 +1083,7 @@ describe('ExecutionService wait', () => {
       vi.spyOn(progressStore, 'readStatus').mockImplementation(() => {
         return runtime.time.now() > deadlineMs ? terminalStatus : runningStatus;
       });
-      vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+      vi.spyOn(progressStore, 'readJobProgress').mockImplementation(() => {
         return runtime.time.now() > deadlineMs ? [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs + 1) })] : [];
       });
       const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
@@ -1125,7 +1130,7 @@ describe('ExecutionService wait', () => {
         .mockImplementationOnce(() => streamRunning)
         .mockImplementationOnce(() => streamRunning)
         .mockImplementationOnce(() => streamTerminal);
-      vi.spyOn(streamStore, 'replayFrom').mockReturnValue([]);
+      vi.spyOn(streamStore, 'readJobProgress').mockReturnValue([]);
       const streamWaitForChange = vi.spyOn(streamStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
 
       const streamIterator = streamService
@@ -1143,6 +1148,7 @@ describe('ExecutionService wait', () => {
         value: {
           type: 'terminal',
           jobId: 'job-1',
+          seq: 1,
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
           result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1164,7 +1170,7 @@ describe('ExecutionService wait', () => {
         .mockImplementationOnce(() => onceRunning)
         .mockImplementationOnce(() => onceRunning)
         .mockImplementationOnce(() => onceTerminal);
-      vi.spyOn(onceStore, 'replayFrom').mockReturnValue([]);
+      vi.spyOn(onceStore, 'readJobProgress').mockReturnValue([]);
       const onceWaitForChange = vi.spyOn(onceStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
 
       const oncePromise = onceService.waitStreamOnce('job-1', timeoutMs);
@@ -1204,7 +1210,7 @@ describe('ExecutionService wait', () => {
       .mockImplementationOnce(() => runningStatus)
       .mockImplementationOnce(() => runningStatus)
       .mockImplementation(() => terminalStatus);
-    vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+    vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
     vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
 
     const events: WaitStreamEvent[] = [];
@@ -1236,7 +1242,7 @@ describe('ExecutionService wait', () => {
       getInternals(onTimeService);
 
     vi.spyOn(onTimeStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-    vi.spyOn(onTimeStore, 'replayFrom').mockReturnValue([makeTerminalReplay('job-1', { ts: '' })]);
+    vi.spyOn(onTimeStore, 'readJobProgress').mockReturnValue([makeTerminalReplay('job-1', { ts: '' })]);
 
     const onTimeEvents: WaitStreamEvent[] = [];
     for await (const event of onTimeService.waitStream({ jobIds: ['job-1'], timeoutSeconds: timeoutMs / 1000 })) {
@@ -1247,6 +1253,7 @@ describe('ExecutionService wait', () => {
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 1,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1269,7 +1276,7 @@ describe('ExecutionService wait', () => {
     } as JobProgress;
 
     vi.spyOn(lateStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-    vi.spyOn(lateStore, 'replayFrom').mockImplementation(() => {
+    vi.spyOn(lateStore, 'readJobProgress').mockImplementation(() => {
       return currentTime > startMs + timeoutMs ? [missingTsTerminal] : [];
     });
     vi.spyOn(lateStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
@@ -1291,7 +1298,7 @@ describe('ExecutionService wait', () => {
     const startMs = Date.parse('2026-03-06T00:00:00.000Z');
     const timeoutMs = 100;
     const lateTerminalMs = startMs + timeoutMs + 1;
-    const cursor = { jobs: { 'job-1': 0 } };
+    const cursor = { afterSeq: 0 };
     let currentTime = startMs;
 
     vi.spyOn(runtime.time, 'now').mockImplementation(() => currentTime);
@@ -1305,7 +1312,7 @@ describe('ExecutionService wait', () => {
       getInternals(service);
 
     vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-    vi.spyOn(progressStore, 'replayFrom').mockImplementation(() => {
+    vi.spyOn(progressStore, 'readJobProgress').mockImplementation(() => {
       return currentTime > startMs + timeoutMs ? [makeTerminalReplay('job-1', { ts: isoAt(lateTerminalMs) })] : [];
     });
     vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
@@ -1325,7 +1332,7 @@ describe('ExecutionService wait', () => {
         waitingJobIds: ['job-1'],
       },
     ]);
-    expect(cursor).toEqual({ jobs: { 'job-1': 0 } });
+    expect(cursor).toEqual({ afterSeq: 0 });
 
     const secondEvents: WaitStreamEvent[] = [];
     for await (const event of service.waitStream({
@@ -1340,6 +1347,7 @@ describe('ExecutionService wait', () => {
       {
         type: 'terminal',
         jobId: 'job-1',
+        seq: 1,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
         result: { content: 'done', outcome: { kind: 'completed' } },
@@ -1362,7 +1370,7 @@ describe('ExecutionService wait', () => {
         getInternals(service);
 
       vi.spyOn(progressStore, 'readStatus').mockReturnValue(makeStatusRecord(ctx, 'job-1', 'running'));
-      vi.spyOn(progressStore, 'replayFrom')
+      vi.spyOn(progressStore, 'readJobProgress')
         .mockImplementationOnce(() => [])
         .mockImplementationOnce(() => [makeTerminalReplay('job-1', { ts: isoAt(deadlineMs) })]);
       const waitForChange = vi.spyOn(progressStore, 'waitForChange').mockReturnValue(new Promise<void>(() => {}));
@@ -1412,7 +1420,7 @@ describe('ExecutionService wait', () => {
     expect(events[1]).toMatchObject({
       type: 'progress',
       jobId: decision.job,
-      eventId: 1,
+      seq: expect.any(Number),
     });
     if (events[1]?.type === 'progress') {
       expect(events[1].message).toContain('queued (position 1)');
@@ -1457,7 +1465,7 @@ describe('ExecutionService wait', () => {
         }
         return null;
       });
-      vi.spyOn(progressStore, 'replayFrom').mockReturnValue([]);
+      vi.spyOn(progressStore, 'readJobProgress').mockReturnValue([]);
 
       const events: WaitStreamEvent[] = [];
       for await (const event of service.waitStream({
@@ -1498,7 +1506,7 @@ describe('ExecutionService wait', () => {
           if (jobId === jobIdB) return makeStatusRecord(ctx, jobIdB, 'running', { sessionId: 'session-b' });
           return null;
         });
-        vi.spyOn(progressStore, 'replayFrom').mockImplementation((jobId: string) => {
+        vi.spyOn(progressStore, 'readJobProgress').mockImplementation((jobId: string) => {
           if (jobId === jobIdA && runtime.time.now() > deadlineMs) {
             return [makeTerminalReplay(jobIdA, { sessionId: 'session-a', ts: isoAt(deadlineMs + 1) })];
           }
@@ -1528,7 +1536,7 @@ describe('ExecutionService wait', () => {
       }
     });
 
-    it('cursor fromEventId skips already-delivered events (only newer events returned)', async () => {
+    it('cursor afterSeq skips already-delivered events (only newer events returned)', async () => {
       const jobId = `red-ws-cursor-${randomUUID()}`;
       createdJobIds.add(jobId);
 
@@ -1550,10 +1558,10 @@ describe('ExecutionService wait', () => {
           launch: { state: 'ready', updatedAt: '' },
         };
       });
-      vi.spyOn(progressStore, 'replayFrom').mockImplementation((...args: unknown[]) => {
-        const [jid, fromEventId] = args as [string, number];
+      vi.spyOn(progressStore, 'readJobProgress').mockImplementation((...args: unknown[]) => {
+        const [jid] = args as [string];
         void jid;
-        const all = [
+        return [
           { jobId, sessionId: 'session-1', seq: 1, eventId: 1, type: 'progress' as const, ts: '', message: 'event-1' },
           { jobId, sessionId: 'session-1', seq: 2, eventId: 2, type: 'progress' as const, ts: '', message: 'event-2' },
           {
@@ -1566,14 +1574,13 @@ describe('ExecutionService wait', () => {
             result: { content: 'done', outcome: { kind: 'completed' as const } },
           },
         ];
-        return all.filter((e) => e.eventId > fromEventId);
       });
 
       const events: WaitStreamEvent[] = [];
       for await (const event of service.waitStream({
         jobIds: [jobId],
         timeoutSeconds: 5,
-        cursor: { jobs: { [jobId]: 2 } },
+        cursor: { afterSeq: 2 },
       })) {
         events.push(event);
       }
@@ -1582,6 +1589,7 @@ describe('ExecutionService wait', () => {
       expect(events[0].type).toBe('terminal');
       if (events[0].type !== 'terminal') throw new Error('expected terminal');
       expect(events[0].jobId).toBe(jobId);
+      expect(events[0].seq).toBe(3);
       expect(events[0].resultPath).toBe(jobResultPath(jobId));
 
       const progressMessages = events

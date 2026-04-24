@@ -236,7 +236,7 @@ async function resumeWorkflow(
   }
 
   const completedOutputs = new Map<string, string>();
-  const cursorJobs: Record<string, number> = {};
+  const pendingCursorSeqs: number[] = [];
   const drainRow = readLatestEvent(db, 'workflow', plan.workflowId, 'workflow.drain.entered');
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, readCtx) : null;
 
@@ -249,14 +249,14 @@ async function resumeWorkflow(
 
     const projection = readProjectionJob(db, slot.jobId);
     if (projection) {
-      cursorJobs[slot.jobId] = projection.lastSeq;
+      pendingCursorSeqs.push(projection.lastSeq);
     }
   }
 
   const failure = firstTerminalFailure(plan, drain, slotDetailsByJob);
   const waitState = {
     completedOutputs,
-    cursor: { jobs: cursorJobs },
+    cursor: { afterSeq: pendingCursorSeqs.length === 0 ? 0 : Math.min(...pendingCursorSeqs) },
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),

@@ -2,7 +2,7 @@ import type { JobTerminal } from './records.js';
 import type { JobContinuitySnapshot } from './continuity.js';
 
 export type WaitCursor = {
-  jobs: Record<string, number>;
+  afterSeq: number;
 };
 
 export function isWaitCursor(value: unknown): value is WaitCursor {
@@ -10,12 +10,8 @@ export function isWaitCursor(value: unknown): value is WaitCursor {
     return false;
   }
 
-  const jobs = (value as { jobs?: unknown }).jobs;
-  if (jobs === null || typeof jobs !== 'object' || Array.isArray(jobs)) {
-    return false;
-  }
-
-  return Object.values(jobs).every((eventId) => Number.isInteger(eventId) && (eventId as number) >= 0);
+  const afterSeq = (value as { afterSeq?: unknown }).afterSeq;
+  return Number.isInteger(afterSeq) && (afterSeq as number) >= 0;
 }
 
 export function parseSerializedWaitCursor(raw: string | undefined): WaitCursor | null {
@@ -52,7 +48,7 @@ export type WaitStreamOnceResult = {
 };
 
 export type WaitStreamEvent =
-  | { type: 'progress'; jobId: string; eventId: number; message: string }
+  | { type: 'progress'; jobId: string; seq: number; message: string }
   | {
       type: 'queued';
       jobId: string;
@@ -63,6 +59,7 @@ export type WaitStreamEvent =
   | {
       type: 'terminal';
       jobId: string;
+      seq: number;
       remainingJobIds: string[];
       resultPath: string;
       result: JobTerminal;

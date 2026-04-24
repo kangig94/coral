@@ -1,5 +1,3 @@
-import type BetterSqlite3 from 'better-sqlite3';
-
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobProgress, JobTerminal } from '../records.js';
@@ -19,34 +17,11 @@ function matches(subscriber: JobSubscriber, event: JobEvent): boolean {
   return event.seq > subscriber.afterSeq && subscriber.jobIds.has(event.jobId);
 }
 
-function perJobIndexForSeq(
-  db: BetterSqlite3.Database,
-  jobId: string,
-  seq: number,
-): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(*) AS count
-         FROM events
-        WHERE stream_kind = 'job'
-          AND stream_id = ?
-          AND type IN ('job.progress.emitted', 'job.terminal.recorded')
-          AND seq <= ?`,
-    )
-    .get(jobId, seq) as { count: number };
-
-  return row.count;
-}
-
-function toJobEvent(
-  db: BetterSqlite3.Database,
-  event: AppendedEvent,
-): JobEvent | null {
+function toJobEvent(event: AppendedEvent): JobEvent | null {
   if (event.stream.kind !== 'job') {
     return null;
   }
 
-  const eventId = perJobIndexForSeq(db, event.stream.id, event.seq);
   const sessionId = typeof event.refs?.sessionId === 'string' ? event.refs.sessionId : '';
 
   if (event.type === 'job.progress.emitted') {
@@ -59,7 +34,7 @@ function toJobEvent(
       jobId: event.stream.id,
       sessionId,
       seq: event.seq,
-      eventId,
+      eventId: event.seq,
       type: 'progress',
       ts: event.ts,
       message: body.message ?? '',
@@ -81,7 +56,7 @@ function toJobEvent(
     jobId: event.stream.id,
     sessionId,
     seq: event.seq,
-    eventId,
+    eventId: event.seq,
     type: 'terminal',
     ts: event.ts,
     result: {
@@ -93,12 +68,9 @@ function toJobEvent(
   };
 }
 
-export function publishJobEvents(
-  db: BetterSqlite3.Database,
-  appended: readonly AppendedEvent[],
-): void {
+export function publishJobEvents(appended: readonly AppendedEvent[]): void {
   const projected = appended
-    .map((event) => toJobEvent(db, event))
+    .map((event) => toJobEvent(event))
     .filter((event): event is JobEvent => event !== null);
 
   for (const event of projected) {

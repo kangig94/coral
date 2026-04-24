@@ -43,7 +43,7 @@ function createJournalAppender(db: InstanceType<typeof Database>) {
       reducers,
       upcasters,
     });
-    publishJobEvents(db, appended);
+    publishJobEvents(appended);
   };
 }
 
@@ -174,7 +174,7 @@ describe('wait SSE reconnect', () => {
     expect(first.value).toMatchObject({
       type: 'progress',
       jobId,
-      eventId: 1,
+      seq: 3,
       message: 'progress-1',
     });
     await firstIterator.return?.(undefined);
@@ -184,7 +184,7 @@ describe('wait SSE reconnect', () => {
     const reconnectIterator = coordinator.waitForJobs({
       jobIds: [jobId],
       timeoutSeconds: 5,
-      cursor: { jobs: { [jobId]: 1 } },
+      cursor: { afterSeq: 3 },
     })[Symbol.asyncIterator]();
 
     const replayed = await reconnectIterator.next();
@@ -192,7 +192,7 @@ describe('wait SSE reconnect', () => {
     expect(replayed.value).toMatchObject({
       type: 'progress',
       jobId,
-      eventId: 2,
+      seq: 4,
       message: 'progress-2',
     });
 
@@ -203,7 +203,7 @@ describe('wait SSE reconnect', () => {
     expect(liveProgress.value).toMatchObject({
       type: 'progress',
       jobId,
-      eventId: 3,
+      seq: 5,
       message: 'progress-3',
     });
 
@@ -356,7 +356,7 @@ describe('wait SSE reconnect', () => {
     expect(progress.value).toMatchObject({
       type: 'progress',
       jobId,
-      eventId: 1,
+      seq: 3,
       message: 'progress-before-race',
     });
 

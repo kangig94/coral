@@ -24,10 +24,11 @@ function makeSocketPath(): string {
 function makeWaitEvents(): WaitStreamEvent[] {
   return [
     { type: 'queued', jobId: 'job-1', sessionId: 'session-1', queuePosition: 1, runningJobIds: [] },
-    { type: 'progress', jobId: 'job-1', eventId: 5, message: 'working' },
+    { type: 'progress', jobId: 'job-1', seq: 5, message: 'working' },
     {
       type: 'terminal',
       jobId: 'job-1',
+      seq: 6,
       remainingJobIds: [],
       resultPath: '/tmp/result.md',
       result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
@@ -170,7 +171,7 @@ describe('subscription carriage', () => {
     const ports = createPorts(requests);
     const socketPath = makeSocketPath();
     const listener = createIpcServer(ports);
-    const expectedCursor = { jobs: { 'job-1': 4 } };
+    const expectedCursor = { afterSeq: 4 };
 
     await listenIpcServer(listener, socketPath);
     try {
@@ -251,7 +252,7 @@ describe('subscription carriage', () => {
     const socketPath = makeSocketPath();
     const listener = createIpcServer(ports);
     const baseUrl = await startHttpServer(ports);
-    const expectedCursor = { jobs: { 'job-1': 4 } };
+    const expectedCursor = { afterSeq: 4 };
 
     await listenIpcServer(listener, socketPath);
     try {

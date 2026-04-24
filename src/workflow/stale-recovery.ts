@@ -102,7 +102,6 @@ export async function recoverStaleAtom(
     }
 
     state.pending.delete(atom.jobId);
-    delete state.cursor.jobs[atom.jobId];
     state.pending.set(resumed.job, {
       ...atom,
       jobId: resumed.job,

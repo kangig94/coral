@@ -532,6 +532,7 @@ function projectionRowToStatus(
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
     phase: projection.phase as JobPhase,
+    lastSeq: projection.last_seq,
     launch: {
       ...deriveLaunchState(projection.phase as JobPhase, rejected, runtime, terminal, ctx),
       updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
